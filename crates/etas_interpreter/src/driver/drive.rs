@@ -26,8 +26,12 @@ pub async fn execute_entry_from_snapshot(
     host: &dyn HostServices,
     snapshot: &crate::orchestration::MachineSnapshot,
 ) -> Option<InterpValue> {
-    let machine = match EvalMachine::from_snapshot(snapshot, eval.checked, eval.plan.slots.clone())
-    {
+    let machine = match EvalMachine::from_snapshot(
+        snapshot,
+        eval.checked,
+        eval.plan.slots.clone(),
+        &eval.plan.dispatch,
+    ) {
         Ok(machine) => machine,
         Err(message) => {
             eval.diagnostics.push(Diagnostic::analysis(

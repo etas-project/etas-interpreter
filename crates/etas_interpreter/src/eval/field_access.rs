@@ -262,21 +262,6 @@ impl<'a> EvalContext<'a> {
                     )),
                 }
             }
-            InterpValue::Variant { name, fields }
-                if name == "MemoryVersion" && fields.len() == 1 =>
-            {
-                match field {
-                    "opaque" => Ok(fields
-                        .first()
-                        .cloned()
-                        .unwrap_or_else(|| InterpValue::String(String::new()))),
-                    _ => Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        format!("memory version field `{field}` does not exist at runtime"),
-                    )),
-                }
-            }
             _ => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,

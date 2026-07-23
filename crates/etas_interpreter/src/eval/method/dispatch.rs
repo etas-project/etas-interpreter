@@ -104,18 +104,21 @@ impl<'a> EvalContext<'a> {
                 frame,
             );
         }
-        if method == "run"
-            && let Some(CallTarget::AgentItem(item)) =
-                self.resolve_static_call_target(receiver, frame)
-        {
-            return self.resume_call_args(
-                CallTarget::AgentItem(item),
-                args.to_vec(),
-                0,
-                Vec::new(),
-                span,
-                frame,
-            );
+        if method == "run" {
+            match self.resolve_static_call_target(receiver, frame, span) {
+                Ok(Some(CallTarget::AgentItem(item))) => {
+                    return self.resume_call_args(
+                        CallTarget::AgentItem(item),
+                        args.to_vec(),
+                        0,
+                        Vec::new(),
+                        span,
+                        frame,
+                    );
+                }
+                Ok(_) => {}
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            }
         }
         let receiver = match self.eval_expr(receiver, frame) {
             ControlSignal::Value(value) => value,

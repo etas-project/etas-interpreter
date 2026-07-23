@@ -27,7 +27,12 @@ impl<'a> EvalContext<'a> {
                 };
                 limits.push(limit);
             }
-            let target = if let Some(target) = self.resolve_static_call_target(stage.expr, frame) {
+            let static_target = match self.resolve_static_call_target(stage.expr, frame, stage.span)
+            {
+                Ok(target) => target,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            let target = if let Some(target) = static_target {
                 target
             } else {
                 match self.eval_expr(stage.expr, frame) {

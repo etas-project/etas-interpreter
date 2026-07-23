@@ -275,91 +275,6 @@ fn host_json_to_serde_json(value: &etas_host::HostJsonValue) -> Option<serde_jso
     })
 }
 
-#[cfg(test)]
-mod tests {
-    use super::{host_json_to_serde_json, json_to_typed_interp_value};
-    use crate::value::{InterpValue, NumericValue};
-    use etas_types::{
-        EnumTypeRef, FieldType, NominalTypeRef, PrimitiveType, RecordType, Type, TypeConstructorId,
-        TypeStore,
-    };
-
-    #[test]
-    fn nested_non_finite_host_json_fails_closed() {
-        let array =
-            etas_host::HostJsonValue::Array(vec![etas_host::HostJsonValue::Number(f64::NAN)]);
-        assert!(host_json_to_serde_json(&array).is_none());
-
-        let object = etas_host::HostJsonValue::Object(vec![(
-            "bad".to_owned(),
-            etas_host::HostJsonValue::Number(f64::INFINITY),
-        )]);
-        assert!(host_json_to_serde_json(&object).is_none());
-    }
-
-    #[test]
-    fn typed_json_preserves_applied_nominal_identity_and_substitutes_fields() {
-        let mut store = TypeStore::new();
-        let i64_ty = store.intern(Type::Primitive(PrimitiveType::I64));
-        let parameter = store.intern(Type::Named(etas_types::NamedTypeRef {
-            name: "T".to_owned(),
-        }));
-        let representation = store.intern(Type::Record(RecordType {
-            fields: vec![FieldType {
-                name: "value".to_owned(),
-                ty: parameter,
-            }],
-        }));
-        let nominal = store.intern(Type::Nominal(NominalTypeRef {
-            name: "Box".to_owned(),
-            params: vec!["T".to_owned()],
-            representation: Some(representation),
-        }));
-        let applied = store.intern(Type::Applied {
-            constructor: TypeConstructorId(nominal.0),
-            args: vec![i64_ty],
-        });
-
-        let decoded =
-            json_to_typed_interp_value(&serde_json::json!({ "value": 42 }), applied, &store);
-
-        let Some(InterpValue::Nominal { ty, value }) = decoded else {
-            panic!("expected applied nominal value");
-        };
-        assert_eq!(ty, applied);
-        let InterpValue::Record(fields) = *value else {
-            panic!("expected nominal record representation");
-        };
-        assert_eq!(
-            fields.snapshot(),
-            vec![(
-                "value".to_owned(),
-                InterpValue::Number(NumericValue::I64(42)),
-            )]
-        );
-    }
-
-    #[test]
-    fn typed_json_rejects_enum_payload_without_checked_variant_field_types() {
-        let mut store = TypeStore::new();
-        let enum_ty = store.intern(Type::Enum(EnumTypeRef {
-            name: "Outcome".to_owned(),
-        }));
-
-        assert!(
-            json_to_typed_interp_value(&serde_json::json!({ "Value": [42] }), enum_ty, &store)
-                .is_none()
-        );
-        assert_eq!(
-            json_to_typed_interp_value(&serde_json::json!("Empty"), enum_ty, &store),
-            Some(InterpValue::Variant {
-                name: "Empty".to_owned(),
-                fields: Vec::new(),
-            })
-        );
-    }
-}
-
 fn json_to_typed_interp_value(
     value: &serde_json::Value,
     expected: TypeId,
@@ -798,5 +713,90 @@ fn host_json_support_value_from_host(
                 .map(|(name, value)| (name, host_json_support_value_from_host(value)))
                 .collect(),
         ),
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::{host_json_to_serde_json, json_to_typed_interp_value};
+    use crate::value::{InterpValue, NumericValue};
+    use etas_types::{
+        EnumTypeRef, FieldType, NominalTypeRef, PrimitiveType, RecordType, Type, TypeConstructorId,
+        TypeStore,
+    };
+
+    #[test]
+    fn nested_non_finite_host_json_fails_closed() {
+        let array =
+            etas_host::HostJsonValue::Array(vec![etas_host::HostJsonValue::Number(f64::NAN)]);
+        assert!(host_json_to_serde_json(&array).is_none());
+
+        let object = etas_host::HostJsonValue::Object(vec![(
+            "bad".to_owned(),
+            etas_host::HostJsonValue::Number(f64::INFINITY),
+        )]);
+        assert!(host_json_to_serde_json(&object).is_none());
+    }
+
+    #[test]
+    fn typed_json_preserves_applied_nominal_identity_and_substitutes_fields() {
+        let mut store = TypeStore::new();
+        let i64_ty = store.intern(Type::Primitive(PrimitiveType::I64));
+        let parameter = store.intern(Type::Named(etas_types::NamedTypeRef {
+            name: "T".to_owned(),
+        }));
+        let representation = store.intern(Type::Record(RecordType {
+            fields: vec![FieldType {
+                name: "value".to_owned(),
+                ty: parameter,
+            }],
+        }));
+        let nominal = store.intern(Type::Nominal(NominalTypeRef {
+            name: "Box".to_owned(),
+            params: vec!["T".to_owned()],
+            representation: Some(representation),
+        }));
+        let applied = store.intern(Type::Applied {
+            constructor: TypeConstructorId(nominal.0),
+            args: vec![i64_ty],
+        });
+
+        let decoded =
+            json_to_typed_interp_value(&serde_json::json!({ "value": 42 }), applied, &store);
+
+        let Some(InterpValue::Nominal { ty, value }) = decoded else {
+            panic!("expected applied nominal value");
+        };
+        assert_eq!(ty, applied);
+        let InterpValue::Record(fields) = *value else {
+            panic!("expected nominal record representation");
+        };
+        assert_eq!(
+            fields.snapshot(),
+            vec![(
+                "value".to_owned(),
+                InterpValue::Number(NumericValue::I64(42)),
+            )]
+        );
+    }
+
+    #[test]
+    fn typed_json_rejects_enum_payload_without_checked_variant_field_types() {
+        let mut store = TypeStore::new();
+        let enum_ty = store.intern(Type::Enum(EnumTypeRef {
+            name: "Outcome".to_owned(),
+        }));
+
+        assert!(
+            json_to_typed_interp_value(&serde_json::json!({ "Value": [42] }), enum_ty, &store)
+                .is_none()
+        );
+        assert_eq!(
+            json_to_typed_interp_value(&serde_json::json!("Empty"), enum_ty, &store),
+            Some(InterpValue::Variant {
+                name: "Empty".to_owned(),
+                fields: Vec::new(),
+            })
+        );
     }
 }

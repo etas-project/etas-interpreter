@@ -23,18 +23,6 @@ impl<'a> EvalContext<'a> {
         span: Span,
         frame: &mut Frame,
     ) -> Option<ControlSignal> {
-        if let Some(label) = self.checkpoint_label(value, frame) {
-            return Some(ControlSignal::pending_checkpoint(PendingCheckpoint {
-                label,
-                continuation: Continuation::Bind {
-                    block,
-                    next_stmt_index: stmt_index + 1,
-                    pat,
-                    span,
-                    frame: frame.clone(),
-                },
-            }));
-        }
         let signal = self.eval_expr(value, frame);
         self.finish_bind_signal(block, stmt_index, pat, span, frame, signal)
     }

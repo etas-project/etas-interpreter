@@ -216,6 +216,112 @@ flow main() -> bool {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn run_checked_executes_distinct_option_and_result_unwrap_intrinsics() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.option.unwrap as option_unwrap;
+import std.result.unwrap as result_unwrap;
+
+flow main() -> i32 {
+  let some: Option<i32> = Some(7);
+  let ok: Result<i32, string> = Ok(11);
+  return option_unwrap(some) + result_unwrap(ok);
+}
+"#,
+    );
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await;
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value, Some(value::InterpValue::i32(18)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_checked_reports_option_unwrap_none_from_source() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.option.unwrap;
+
+flow main() -> i32 {
+  let none: Option<i32> = None();
+  return unwrap(none);
+}
+"#,
+    );
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await;
+
+    assert_eq!(result.value, None);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unwrap encountered None")),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_checked_reports_result_unwrap_err_from_source() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.result.unwrap;
+
+flow main() -> i32 {
+  let err: Result<i32, string> = Err("failed");
+  return unwrap(err);
+}
+"#,
+    );
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await;
+
+    assert_eq!(result.value, None);
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("unwrap encountered Err")),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_matches_http_codec_result_variants_without_host() {
     let checked = checked_project(
         r#"

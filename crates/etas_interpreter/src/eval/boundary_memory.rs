@@ -225,7 +225,11 @@ impl<'a> EvalContext<'a> {
             expr: None,
             action: memory_error_raise_action(memory.span),
             error_type: Some(error_type),
-            args: vec![match memory_conflict_value(conflict) {
+            args: vec![match memory_conflict_value(
+                conflict,
+                error_type,
+                self.known_std_types.memory_version,
+            ) {
                 Ok(value) => value,
                 Err(message) => {
                     return ControlSignal::runtime_fault(message, memory.span);
@@ -358,14 +362,19 @@ fn memory_error_raise_action(span: Span) -> ResolvedActionRef {
     }
 }
 
-fn memory_conflict_value(conflict: etas_host::MemoryConflict) -> Result<InterpValue, String> {
-    Ok(InterpValue::Record(
+fn memory_conflict_value(
+    conflict: etas_host::MemoryConflict,
+    conflict_type: etas_types::TypeId,
+    version_type: Option<etas_types::TypeId>,
+) -> Result<InterpValue, String> {
+    let expected = memory_version_option(conflict.expected, version_type)?;
+    let actual = memory_version_option(conflict.actual, version_type)?;
+    Ok(InterpValue::Nominal {
+        ty: conflict_type,
+        value: Box::new(InterpValue::Record(
         vec![
-            (
-                "expected".to_owned(),
-                memory_version_option(conflict.expected),
-            ),
-            ("actual".to_owned(), memory_version_option(conflict.actual)),
+            ("expected".to_owned(), expected),
+            ("actual".to_owned(), actual),
             (
                 "current_value".to_owned(),
                 match conflict.current_value {
@@ -382,7 +391,8 @@ fn memory_conflict_value(conflict: etas_host::MemoryConflict) -> Result<InterpVa
             ),
         ]
         .into(),
-    ))
+        )),
+    })
 }
 
 fn memory_entries_json_value(entries: Vec<etas_host::MemoryEntry>) -> Option<InterpValue> {
@@ -402,15 +412,31 @@ fn memory_entries_json_value(entries: Vec<etas_host::MemoryEntry>) -> Option<Int
     host_value_to_json_interp_value(HostValue::List(entries)).ok()
 }
 
-fn memory_version_option(version: Option<etas_host::MemoryVersion>) -> InterpValue {
-    version
-        .map(|version| InterpValue::OptionSome(Box::new(memory_version_value(version))))
-        .unwrap_or(InterpValue::OptionNone)
+fn memory_version_option(
+    version: Option<etas_host::MemoryVersion>,
+    version_type: Option<etas_types::TypeId>,
+) -> Result<InterpValue, String> {
+    let Some(version) = version else {
+        return Ok(InterpValue::OptionNone);
+    };
+    let version_type = version_type.ok_or_else(|| {
+        "memory conflict contains a version but checked std.memory.MemoryVersion facts are missing"
+            .to_owned()
+    })?;
+    Ok(InterpValue::OptionSome(Box::new(memory_version_value(
+        version,
+        version_type,
+    ))))
 }
 
-fn memory_version_value(version: etas_host::MemoryVersion) -> InterpValue {
-    InterpValue::Variant {
-        name: "MemoryVersion".to_owned(),
-        fields: vec![InterpValue::String(version.opaque)],
+fn memory_version_value(
+    version: etas_host::MemoryVersion,
+    version_type: etas_types::TypeId,
+) -> InterpValue {
+    InterpValue::Nominal {
+        ty: version_type,
+        value: Box::new(InterpValue::Record(
+            vec![("opaque".to_owned(), InterpValue::String(version.opaque))].into(),
+        )),
     }
 }

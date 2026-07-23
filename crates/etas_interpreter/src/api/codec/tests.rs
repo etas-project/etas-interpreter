@@ -12,6 +12,27 @@ fn checked_project() -> etas_frontend::CheckedProject {
     crate::testing::project::checked_project("module app.main; flow main() -> unit { return; }")
 }
 
+fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> Value {
+    let entry = checked.entry.expect("test entry");
+    let checkpoint = InterpreterCheckpoint {
+        id: CheckpointId(0),
+        label: None,
+        compilation: CheckpointCompilationIdentity::for_project(checked, entry)
+            .expect("test compilation identity"),
+        entry_item: entry,
+        args: Vec::new(),
+        machine: MachineSnapshot::default(),
+        handlers: HandlerSnapshot::default(),
+        retry_state: RetrySnapshot::default(),
+        trace: TraceSnapshot::default(),
+        host_context: HostExecutionContext::default(),
+        current_session: None,
+        resource_versions: ResourceVersionSnapshot::default(),
+        completed_host_boundaries: HostBoundaryLedger::default(),
+    };
+    checkpoint_artifact_json(&[PathBuf::from("main.es")], "main", &checkpoint)
+}
+
 #[test]
 fn value_codec_round_trips_every_numeric_width_and_nominal_identity() {
     use crate::value::NumericValue;
@@ -352,7 +373,7 @@ fn checkpoint_codec_rejects_legacy_artifact_without_machine_stack() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v7`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v9`")
     );
 }
 
@@ -377,7 +398,7 @@ fn checkpoint_codec_rejects_v4_artifact_after_handler_scope_schema_change() {
         .expect_err("v4 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v7`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v9`"
         ),
         "{}",
         error.message()
@@ -394,7 +415,7 @@ fn checkpoint_codec_rejects_v5_artifact_after_lossless_host_ledger_schema_change
         .expect_err("v5 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v7`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v9`"
         ),
         "{}",
         error.message()
@@ -411,11 +432,104 @@ fn checkpoint_codec_rejects_v6_artifact_after_canonical_message_schema_change() 
         .expect_err("v6 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v7`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v9`"
         ),
         "{}",
         error.message()
     );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v7_artifact_without_checked_intrinsic_abi() {
+    let artifact = json!({
+        "schema": "etas.cli.interpreter-checkpoint.v7",
+        "checkpoint": {},
+    });
+    let error = checkpoint_from_json(&artifact, &checked_project())
+        .expect_err("v7 checkpoint must be rejected by schema version");
+    assert!(
+        error.message().contains(
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v9`"
+        ),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v8_artifact_with_executable_std_callable_payloads() {
+    let artifact = json!({
+        "schema": "etas.cli.interpreter-checkpoint.v8",
+        "checkpoint": {},
+    });
+    let error = checkpoint_from_json(&artifact, &checked_project())
+        .expect_err("v8 checkpoint must be rejected by schema version");
+    assert!(
+        error.message().contains(
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v9`"
+        ),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_unimported_and_unknown_std_intrinsics() {
+    let checked = checked_project();
+    for (intrinsic, dispatch) in [
+        (etas_std::intrinsic::runtime::FS_READ_BYTES, "host"),
+        (etas_std::intrinsic::runtime::NET_TCP_CONNECT, "host"),
+        (u32::MAX, "runtime"),
+    ] {
+        let mut artifact = minimal_checkpoint_artifact(&checked);
+        artifact["checkpoint"]["args"] = json!([{
+            "kind": "callable",
+            "target": {
+                "kind": "std_intrinsic",
+                "intrinsic": intrinsic,
+                "dispatch": dispatch,
+                "parameter_types": [],
+                "result_type": 0,
+            },
+        }]);
+        let error = checkpoint_from_json(&artifact, &checked)
+            .expect_err("checkpoint must not inject an intrinsic outside the current plan");
+        assert!(
+            error.message().contains("is not imported"),
+            "unexpected error for intrinsic {intrinsic}: {}",
+            error.message()
+        );
+    }
+}
+
+#[test]
+fn checkpoint_codec_rejects_imported_intrinsic_dispatch_category_tampering() {
+    let checked = crate::testing::project::checked_project(
+        r#"
+module app.main;
+
+import std.io.println;
+
+flow main() -> unit ![Console.stdout_write, Error<IOError>] {
+  println("ok");
+  return;
+}
+"#,
+    );
+    let mut artifact = minimal_checkpoint_artifact(&checked);
+    artifact["checkpoint"]["args"] = json!([{
+        "kind": "callable",
+        "target": {
+            "kind": "std_intrinsic",
+            "intrinsic": etas_std::intrinsic::runtime::IO_PRINTLN,
+            "dispatch": "host",
+            "parameter_types": [],
+            "result_type": 0,
+        },
+    }]);
+    let error = checkpoint_from_json(&artifact, &checked)
+        .expect_err("checkpoint dispatch category tampering must fail closed");
+    assert!(error.message().contains("dispatch mismatch"), "{error:?}");
 }
 
 #[test]

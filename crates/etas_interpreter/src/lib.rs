@@ -154,21 +154,6 @@ impl Interpreter {
                 checkpoints,
             };
         }
-        let slots = plan::SlotLayoutTable::for_project(project);
-        if let Err(message) = eval::machine::snapshot::SnapshotValidator::new(project, &slots)
-            .validate_checkpoint(checkpoint)
-        {
-            diagnostics.push(diagnostics::invalid_arguments(
-                item_span(project, checkpoint.entry_item),
-                format!("checkpoint state validation failed: {message}"),
-            ));
-            return RunResult {
-                value: None,
-                diagnostics,
-                events,
-                checkpoints,
-            };
-        }
         if let Err(message) = options.execution_limits.validate() {
             diagnostics.push(diagnostics::invalid_arguments(
                 item_span(project, checkpoint.entry_item),
@@ -193,6 +178,21 @@ impl Interpreter {
                 checkpoints,
             };
         };
+        if let Err(message) =
+            eval::machine::snapshot::SnapshotValidator::new(project, &plan.slots, &plan.dispatch)
+                .validate_checkpoint(checkpoint)
+        {
+            diagnostics.push(diagnostics::invalid_arguments(
+                item_span(project, checkpoint.entry_item),
+                format!("checkpoint state validation failed: {message}"),
+            ));
+            return RunResult {
+                value: None,
+                diagnostics,
+                events,
+                checkpoints,
+            };
+        }
         diagnostics.extend(host::validate_host_readiness(
             &plan,
             host.availability(),

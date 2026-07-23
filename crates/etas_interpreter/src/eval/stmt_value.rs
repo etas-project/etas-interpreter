@@ -8,16 +8,6 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         frame: &mut Frame,
     ) -> Option<ControlSignal> {
-        if let Some(label) = self.checkpoint_label(expr, frame) {
-            return Some(ControlSignal::pending_checkpoint(PendingCheckpoint {
-                label,
-                continuation: Continuation::ContinueBlock {
-                    block,
-                    next_stmt_index: stmt_index + 1,
-                    frame: frame.clone(),
-                },
-            }));
-        }
         let signal = self.eval_expr(expr, frame);
         self.finish_discard_signal(block, stmt_index, frame, signal)
     }

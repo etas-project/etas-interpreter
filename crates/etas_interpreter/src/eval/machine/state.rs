@@ -69,8 +69,10 @@ impl EvalMachine {
         snapshot: &MachineSnapshot,
         checked: &etas_frontend::CheckedProject,
         slots: std::sync::Arc<crate::plan::SlotLayoutTable>,
+        dispatch: &crate::plan::IntrinsicDispatchTable,
     ) -> Result<Self, String> {
-        super::snapshot::SnapshotValidator::new(checked, &slots).validate_machine(snapshot)?;
+        super::snapshot::SnapshotValidator::new(checked, &slots, dispatch)
+            .validate_machine(snapshot)?;
         let stack = snapshot
             .frames
             .iter()

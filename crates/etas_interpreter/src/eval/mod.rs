@@ -130,6 +130,7 @@ pub struct EvalContext<'a> {
 pub struct KnownStdTypes {
     pub io_error: Option<etas_types::TypeId>,
     pub memory_conflict: Option<etas_types::TypeId>,
+    pub memory_version: Option<etas_types::TypeId>,
     pub network_error: Option<etas_types::TypeId>,
     pub stream_error: Option<etas_types::TypeId>,
     pub tls_error: Option<etas_types::TypeId>,
@@ -258,6 +259,7 @@ impl KnownStdTypes {
         Self {
             io_error: resolve_std_type(checked, &["std", "io", "IOError"]),
             memory_conflict: resolve_std_type(checked, &["std", "memory", "MemoryConflict"]),
+            memory_version: resolve_std_type(checked, &["std", "memory", "MemoryVersion"]),
             network_error: resolve_std_type(checked, &["std", "net", "tcp", "NetworkError"]),
             stream_error: resolve_std_type(checked, &["std", "stream", "StreamError"]),
             tls_error: resolve_std_type(checked, &["std", "tls", "TlsError"]),
@@ -269,7 +271,7 @@ pub(crate) fn resolve_std_type(
     checked: &CheckedProject,
     expected_path: &[&str],
 ) -> Option<etas_types::TypeId> {
-    checked.symbols.iter().find_map(|symbol| {
+    let imported = checked.symbols.iter().find_map(|symbol| {
         let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
             return None;
         };
@@ -288,6 +290,15 @@ pub(crate) fn resolve_std_type(
             Some(etas_types::SymbolTypeFact::TypeAlias { target, .. }) => Some(*target),
             _ => None,
         }
+    });
+    imported.or_else(|| {
+        let canonical_name = expected_path.join(".");
+        checked.type_store.iter().find_map(|(id, ty)| match ty {
+            etas_types::Type::Nominal(nominal) if nominal.name == canonical_name => Some(id),
+            etas_types::Type::Enum(enumeration) if enumeration.name == canonical_name => Some(id),
+            etas_types::Type::Named(named) if named.name == canonical_name => Some(id),
+            _ => None,
+        })
     })
 }
 

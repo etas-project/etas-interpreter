@@ -65,7 +65,17 @@ pub(crate) enum CallTargetSnapshot {
     },
     EnumVariant(SymbolId),
     NominalConstructor(etas_types::TypeId),
-    StdCallable(StdCallableSnapshot),
+    PureIntrinsic {
+        intrinsic: etas_std::StdIntrinsicId,
+        parameter_types: Vec<etas_types::TypeId>,
+        result_type: etas_types::TypeId,
+    },
+    StdIntrinsic {
+        intrinsic: etas_std::StdIntrinsicId,
+        dispatch: etas_std::IntrinsicDispatch,
+        parameter_types: Vec<etas_types::TypeId>,
+        result_type: etas_types::TypeId,
+    },
     Limited {
         target: Box<CallTargetSnapshot>,
         limits: Vec<crate::eval::limit::RuntimeLimit>,
@@ -76,27 +86,6 @@ pub(crate) enum CallTargetSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
     pub(crate) locals: Vec<(SymbolId, ValueSnapshot)>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) enum StdCallableSnapshot {
-    PureIntrinsic(etas_std::StdIntrinsicId),
-    OptionNoneConstructor,
-    MemoryVersionConstructor,
-    StreamErrorHostConstructor,
-    CurrentSession,
-    SessionPolicyConstructor(String),
-    RuntimeLimitConstructor(etas_std::StdLimitKind),
-    TrustWrapper(etas_types::TrustWrapper),
-    Console(crate::intrinsic::dispatch::ConsoleCallable),
-    Command(crate::intrinsic::dispatch::CommandCallable),
-    Filesystem(crate::intrinsic::dispatch::FilesystemCallable),
-    Tcp(crate::intrinsic::dispatch::TcpCallable),
-    Stream(crate::intrinsic::dispatch::StreamCallable),
-    Tls(crate::intrinsic::dispatch::TlsCallable),
-    Secret(crate::intrinsic::dispatch::SecretCallable),
-    Json(crate::intrinsic::dispatch::JsonCallable),
-    Browser(crate::intrinsic::dispatch::BrowserCallable),
 }
 
 #[derive(Clone, Debug)]

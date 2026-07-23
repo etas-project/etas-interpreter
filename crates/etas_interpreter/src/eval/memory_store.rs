@@ -163,8 +163,9 @@ impl<'a> EvalContext<'a> {
                     Ok(value) => value,
                     Err(error) => return abort_memory_store(span, error),
                 };
-                let Some(expected) = evaluated_args.get(2).and_then(memory_version_from_interp)
-                else {
+                let Some(expected) = evaluated_args.get(2).and_then(|value| {
+                    memory_version_from_interp(value, self.known_std_types.memory_version)
+                }) else {
                     return abort_memory_store(
                         span,
                         "memory put_versioned expects a MemoryVersion token",
@@ -294,8 +295,9 @@ impl<'a> EvalContext<'a> {
                     Ok(key) => key,
                     Err(error) => return abort_memory_store(span, error),
                 };
-                let Some(expected) = evaluated_args.get(1).and_then(memory_version_from_interp)
-                else {
+                let Some(expected) = evaluated_args.get(1).and_then(|value| {
+                    memory_version_from_interp(value, self.known_std_types.memory_version)
+                }) else {
                     return abort_memory_store(
                         span,
                         "memory delete_versioned expects a MemoryVersion token",
@@ -367,19 +369,28 @@ fn abort_memory_store(span: Span, message: impl Into<String>) -> ControlSignal {
     ControlSignal::invalid_arguments(message.into(), span)
 }
 
-fn memory_version_from_interp(value: &InterpValue) -> Option<etas_host::MemoryVersion> {
-    let InterpValue::Variant { name, fields } = value else {
+fn memory_version_from_interp(
+    value: &InterpValue,
+    expected_type: Option<etas_types::TypeId>,
+) -> Option<etas_host::MemoryVersion> {
+    let InterpValue::Nominal { ty, value } = value else {
         return None;
     };
-    if name != "MemoryVersion" {
+    if Some(*ty) != expected_type {
         return None;
     }
-    let [InterpValue::String(token)] = fields.as_slice() else {
+    let InterpValue::Record(fields) = value.as_ref() else {
         return None;
     };
-    Some(etas_host::MemoryVersion {
-        opaque: token.clone(),
-    })
+    let token =
+        fields
+            .snapshot()
+            .into_iter()
+            .find_map(|(name, value)| match (name.as_str(), value) {
+                ("opaque", InterpValue::String(token)) => Some(token),
+                _ => None,
+            })?;
+    Some(etas_host::MemoryVersion { opaque: token })
 }
 
 pub(super) struct MemoryStoreMethodEval<'a> {

@@ -6,7 +6,7 @@ use etas_hir::{
 
 use crate::{
     control::Frame,
-    intrinsic::dispatch::StdCallable,
+    intrinsic::dispatch::{CheckedPureIntrinsicCall, CheckedStdIntrinsicCall},
     orchestration::{ActiveHandlerArmRecord, HandlerScopeId, RetryAttemptRecord},
     value::InterpValue,
 };
@@ -23,7 +23,8 @@ pub enum CallTarget {
     },
     EnumVariant(SymbolId),
     NominalConstructor(etas_types::TypeId),
-    StdCallable(StdCallable),
+    PureIntrinsic(CheckedPureIntrinsicCall),
+    StdIntrinsic(CheckedStdIntrinsicCall),
     Limited {
         target: Box<CallTarget>,
         limits: Vec<crate::eval::limit::RuntimeLimit>,

@@ -14,16 +14,25 @@ use crate::orchestration::{
     LocalsSnapshot, MachineFrameSnapshot, MachineSnapshot, ModelDecodeSnapshot,
     ModelLoopFrameSnapshot, SliceExprEvalSnapshot, SourceToolReturnFrameSnapshot, ValueSnapshot,
 };
-use crate::plan::SlotLayoutTable;
+use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
     checked: &'a CheckedProject,
     slots: &'a SlotLayoutTable,
+    dispatch: &'a IntrinsicDispatchTable,
 }
 
 impl<'a> SnapshotValidator<'a> {
-    pub(crate) fn new(checked: &'a CheckedProject, slots: &'a SlotLayoutTable) -> Self {
-        Self { checked, slots }
+    pub(crate) fn new(
+        checked: &'a CheckedProject,
+        slots: &'a SlotLayoutTable,
+        dispatch: &'a IntrinsicDispatchTable,
+    ) -> Self {
+        Self {
+            checked,
+            slots,
+            dispatch,
+        }
     }
 
     pub(crate) fn validate_checkpoint(
@@ -713,11 +722,40 @@ impl<'a> SnapshotValidator<'a> {
             CallTargetSnapshot::SpecImplMethod(symbol)
             | CallTargetSnapshot::EnumVariant(symbol) => self.symbol(*symbol, context),
             CallTargetSnapshot::NominalConstructor(ty) => self.type_id(*ty, context),
+            CallTargetSnapshot::PureIntrinsic {
+                intrinsic,
+                parameter_types,
+                result_type,
+            } => {
+                self.dispatch
+                    .validate_pure_intrinsic(*intrinsic)
+                    .map_err(|error| format!("{context}: {error}"))?;
+                for parameter_type in parameter_types {
+                    self.type_id(*parameter_type, context)?;
+                }
+                self.type_id(*result_type, context)
+            }
             CallTargetSnapshot::Lambda { expr, captured } => {
                 self.expr(*expr, context)?;
                 self.frame(captured, context)
             }
-            CallTargetSnapshot::StdCallable(_) => Ok(()),
+            CallTargetSnapshot::StdIntrinsic {
+                intrinsic,
+                dispatch,
+                parameter_types,
+                result_type,
+            } => {
+                self.dispatch
+                    .validate_std_intrinsic(crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                        intrinsic: *intrinsic,
+                        dispatch: *dispatch,
+                    })
+                    .map_err(|error| format!("{context}: {error}"))?;
+                for parameter_type in parameter_types {
+                    self.type_id(*parameter_type, context)?;
+                }
+                self.type_id(*result_type, context)
+            }
             CallTargetSnapshot::Limited { target, .. } => self.call_target(target, context),
             CallTargetSnapshot::Composed(targets) => {
                 for target in targets {
@@ -1141,7 +1179,9 @@ flow main() -> unit {
         continuation: ContinuationSnapshot,
     ) -> Result<(), String> {
         let slots = SlotLayoutTable::for_project(checked);
-        SnapshotValidator::new(checked, &slots).validate_machine(&MachineSnapshot {
+        let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
+            .map_err(|errors| errors.join("; "))?;
+        SnapshotValidator::new(checked, &slots, &dispatch).validate_machine(&MachineSnapshot {
             frames: vec![MachineFrameSnapshot::Continuation { continuation }],
         })
     }
@@ -1260,7 +1300,9 @@ flow main() -> unit {
         let checked = checked_project();
         let block = checked.hir.blocks.iter().next().expect("block").0;
         let slots = SlotLayoutTable::for_project(&checked);
-        let validator = SnapshotValidator::new(&checked, &slots);
+        let dispatch = crate::plan::IntrinsicDispatchTable::for_project(&checked)
+            .expect("test intrinsic dispatch");
+        let validator = SnapshotValidator::new(&checked, &slots, &dispatch);
         let error = validator
             .handler_arm(
                 &ActiveHandlerArmRecord {

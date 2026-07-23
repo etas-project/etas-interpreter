@@ -35,16 +35,6 @@ impl<'a> EvalContext<'a> {
             }
         }
         if let Some(expr) = block_data.final_expr {
-            if let Some(label) = self.checkpoint_label(expr, frame) {
-                return self.finish_block_signal(
-                    ControlSignal::pending_checkpoint(PendingCheckpoint {
-                        label,
-                        continuation: Continuation::BlockValue,
-                    }),
-                    frame,
-                    &scope_snapshot,
-                );
-            }
             let signal = match self.eval_expr(expr, frame) {
                 ControlSignal::Perform(mut perform) => {
                     perform.continuation =

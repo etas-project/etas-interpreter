@@ -1,50 +1,6 @@
 use super::*;
 
 impl<'a> EvalContext<'a> {
-    pub(super) fn is_checkpoint_callee(&self, callee: HirExprId) -> bool {
-        let HirExpr::Path(path) = &self.checked.hir.exprs[callee] else {
-            return false;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return false;
-        };
-        self.checked.symbols.get(symbol).is_some_and(|symbol| {
-            matches!(
-                &symbol.def,
-                SymbolDef::ImportAlias { path, .. }
-                    if path.iter().map(String::as_str).eq(
-                        ["std", "runtime", "checkpoint"].iter().copied()
-                    ) || path.iter().map(String::as_str).eq(
-                        ["std", "runtime", "checkpoint", "checkpoint"].iter().copied()
-                    )
-            )
-        })
-    }
-
-    pub(super) fn checkpoint_label(
-        &mut self,
-        expr: HirExprId,
-        frame: &mut Frame,
-    ) -> Option<Option<String>> {
-        let HirExpr::Call { callee, args, .. } = &self.checked.hir.exprs[expr] else {
-            return None;
-        };
-        if !self.is_checkpoint_callee(*callee) {
-            return None;
-        }
-        let label = args.first().and_then(|arg| {
-            let value = match arg {
-                HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
-            };
-            match self.checked.hir.exprs.get(value) {
-                Some(HirExpr::Literal(HirLiteral::String { value, .. })) => Some(value.clone()),
-                _ => None,
-            }
-        });
-        let _ = frame;
-        Some(label)
-    }
-
     pub(crate) fn execute_from_checkpoint_signal(
         &mut self,
         checkpoint: &InterpreterCheckpoint,

@@ -97,7 +97,9 @@ pub fn checkpoint_from_json(
         },
     };
     let slots = crate::plan::SlotLayoutTable::for_project(checked);
-    crate::eval::machine::snapshot::SnapshotValidator::new(checked, &slots)
+    let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
+        .map_err(|errors| InterpreterCodecError::new(errors.join("; ")))?;
+    crate::eval::machine::snapshot::SnapshotValidator::new(checked, &slots, &dispatch)
         .validate_checkpoint(&checkpoint)
         .map_err(InterpreterCodecError::new)?;
     Ok(checkpoint)

@@ -15,7 +15,7 @@ pub(crate) use checkpoint::{
     ModelExecutionPolicySnapshot, ModelLoopFrameSnapshot, ModelRepairSnapshot,
     ModelResponseDecodeSnapshot, PendingModelSnapshot, SliceExprEvalSnapshot,
     SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot, StaticMethodKindSnapshot,
-    StdCallableSnapshot, ValueSnapshot,
+    ValueSnapshot,
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{WorkflowEvent, WorkflowStepId};

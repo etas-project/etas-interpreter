@@ -728,8 +728,8 @@ flow main(input: string) -> Draft {
         })
         .count();
     assert_eq!(
-        active_calls, 27,
-        "the machine must retain main->descend recursion (25), agent (1), and source-tool (1) call frames"
+        active_calls, 28,
+        "the machine must retain main->descend recursion (25), agent (1), source-tool (1), and checkpoint intrinsic (1) call frames"
     );
     let artifact = crate::api::codec::checkpoint_artifact_json(
         &[std::path::PathBuf::from("main.es")],

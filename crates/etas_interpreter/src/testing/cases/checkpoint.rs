@@ -48,6 +48,73 @@ flow main() -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn public_resume_rejects_injected_std_intrinsic_outside_checked_plan() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.{checkpoint};
+
+flow main() -> unit {
+  checkpoint("pause");
+  return;
+}
+"#,
+    );
+    let first = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
+            RunOptions::default(),
+        )
+        .await;
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+
+    let mut checkpoint = first
+        .checkpoints
+        .first()
+        .expect("checkpoint record")
+        .clone();
+    checkpoint.args.push(value::InterpValue::Callable(
+        crate::control::CallTarget::StdIntrinsic(
+            crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+                identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                    intrinsic: etas_std::StdIntrinsicId(
+                        etas_std::intrinsic::runtime::NET_TCP_CONNECT,
+                    ),
+                    dispatch: etas_std::IntrinsicDispatch::Host,
+                },
+                parameter_types: Vec::new(),
+                result_type: etas_types::TypeId(0),
+            },
+        ),
+    ));
+
+    let rejected = Interpreter
+        .resume_checkpoint(
+            &checked,
+            &checkpoint,
+            &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
+            RunOptions::default(),
+        )
+        .await;
+
+    assert!(rejected.value.is_none());
+    assert!(
+        rejected.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("is not imported by the current checked interpreter plan")
+        }),
+        "{:?}",
+        rejected.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn resume_checkpoint_artifact_restores_deep_non_tail_call_stack() {
     let checked = checked_project(
         r#"

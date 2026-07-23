@@ -24,34 +24,24 @@ impl<'a> EvalContext<'a> {
     pub(super) fn execute_std_callable(
         &mut self,
         kind: StdCallable,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
         match kind {
-            StdCallable::PureIntrinsic(intrinsic) => {
-                match crate::intrinsic::pure::execute_pure_intrinsic(intrinsic, call_args) {
-                    Ok(value) => ControlSignal::Value(value),
-                    Err(error) => {
-                        if let Some(message) = builtin_abort_message(&error) {
-                            return ControlSignal::execution_aborted(message, span);
-                        }
-                        let message =
-                            format!("pure builtin dispatch failed for {intrinsic:?}: {error:?}");
-                        ControlSignal::runtime_fault(message, span)
-                    }
-                }
+            StdCallable::Approval => self.execute_approval_callable(call_args, span),
+            StdCallable::Checkpoint => self.execute_checkpoint_callable(call_args, span),
+            StdCallable::MemoryRegion => {
+                self.execute_memory_region_callable(checked_call.result_type, call_args, span)
             }
-            StdCallable::OptionNoneConstructor => {
-                if !call_args.is_empty() {
-                    return ControlSignal::invalid_arguments(
-                        format!("None expects no arguments, got {}", call_args.len()),
-                        span,
-                    );
-                }
-                ControlSignal::Value(InterpValue::OptionNone)
+            StdCallable::MemoryStore(callable) => {
+                self.execute_memory_store_callable(callable, call_args, span)
             }
             StdCallable::MemoryVersionConstructor => {
                 self.execute_memory_version_constructor(call_args, span)
+            }
+            StdCallable::MoneyUsdConstructor => {
+                self.execute_money_usd_constructor(checked_call.result_type, call_args, span)
             }
             StdCallable::StreamErrorHostConstructor => {
                 self.execute_stream_error_host_constructor(call_args, span)
@@ -88,6 +78,170 @@ impl<'a> EvalContext<'a> {
                 self.execute_browser_callable(callable, call_args, span)
             }
         }
+    }
+
+    fn execute_approval_callable(
+        &mut self,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        if call_args.len() != 3 {
+            return ControlSignal::invalid_arguments(
+                format!(
+                    "std.runtime.approval.approve expects exactly three arguments, got {}",
+                    call_args.len()
+                ),
+                span,
+            );
+        }
+        let path = etas_hir::unresolved_path_from_segments(&["Approval"], span);
+        ControlSignal::pending_perform(PendingPerform {
+            expr: None,
+            action: ResolvedActionRef {
+                effect: HirEffectRef {
+                    path,
+                    args: Vec::new(),
+                    span,
+                },
+                action: "request".to_owned(),
+                action_symbol: ResolveResult::Unresolved,
+                span,
+            },
+            error_type: None,
+            args: call_args,
+            span,
+            continuation: Continuation::BlockValue,
+        })
+    }
+
+    fn execute_checkpoint_callable(
+        &mut self,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [state]: [InterpValue; 1] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!(
+                        "std.runtime.checkpoint expects exactly one argument, got {}",
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+        };
+        let label = match state {
+            InterpValue::String(label) => Some(label),
+            _ => None,
+        };
+        ControlSignal::pending_checkpoint(PendingCheckpoint {
+            label,
+            continuation: Continuation::BlockValue,
+        })
+    }
+
+    fn execute_memory_region_callable(
+        &mut self,
+        result_type: etas_types::TypeId,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [stable_id, name]: [InterpValue; 2] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!(
+                        "std.memory.region expects exactly two arguments, got {}",
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+        };
+        let InterpValue::String(stable_id) = stable_id else {
+            return ControlSignal::invalid_arguments(
+                "std.memory.region stable_id must be a string",
+                span,
+            );
+        };
+        let InterpValue::String(name) = name else {
+            return ControlSignal::invalid_arguments(
+                "std.memory.region store name must be a string",
+                span,
+            );
+        };
+        ControlSignal::Value(InterpValue::ResourceHandle {
+            name,
+            stable_id,
+            ty: result_type,
+        })
+    }
+
+    fn execute_memory_store_callable(
+        &mut self,
+        callable: crate::intrinsic::dispatch::MemoryStoreCallable,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let mut args = call_args.into_iter();
+        let Some(InterpValue::MemoryStore {
+            region_stable_id,
+            path,
+            key_type,
+            value_type,
+        }) = args.next()
+        else {
+            return ControlSignal::invalid_arguments(
+                format!(
+                    "std.memory.{} expects a Store<K, V> as its first argument",
+                    memory_store_callable_name(callable)
+                ),
+                span,
+            );
+        };
+        self.finish_memory_store_method(MemoryStoreArgs {
+            region_stable_id,
+            path,
+            key_type,
+            value_type,
+            method: memory_store_callable_name(callable).to_owned(),
+            evaluated_args: args.collect(),
+            span,
+        })
+    }
+
+    fn execute_money_usd_constructor(
+        &mut self,
+        result_type: etas_types::TypeId,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [amount]: [InterpValue; 1] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!(
+                        "std.runtime.budget.usd expects exactly one argument, got {}",
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+        };
+        if !matches!(amount, InterpValue::Number(_)) {
+            return ControlSignal::invalid_arguments(
+                "std.runtime.budget.usd amount must be numeric",
+                span,
+            );
+        }
+        ControlSignal::Value(InterpValue::Nominal {
+            ty: result_type,
+            value: Box::new(InterpValue::Record(RecordValue::new(vec![
+                ("amount".to_owned(), amount),
+                ("currency".to_owned(), InterpValue::String("USD".to_owned())),
+            ]))),
+        })
     }
 
     fn execute_runtime_limit_constructor(
@@ -209,9 +363,18 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
-        ControlSignal::Value(InterpValue::Variant {
-            name: "MemoryVersion".to_owned(),
-            fields: vec![InterpValue::String(token)],
+        let Some(version_type) = self.known_std_types.memory_version else {
+            return ControlSignal::fault(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "std.memory.version requires checked std.memory.MemoryVersion type facts",
+            );
+        };
+        ControlSignal::Value(InterpValue::Nominal {
+            ty: version_type,
+            value: Box::new(InterpValue::Record(
+                vec![("opaque".to_owned(), InterpValue::String(token))].into(),
+            )),
         })
     }
 
@@ -1345,8 +1508,11 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(super) fn std_callable_for_path(&self, path: &[String]) -> Option<StdCallable> {
-        crate::intrinsic::dispatch::std_callable_for_path(path)
+    pub(super) fn std_intrinsic(
+        &self,
+        symbol: SymbolId,
+    ) -> Option<crate::intrinsic::dispatch::StdIntrinsicIdentity> {
+        self.plan.dispatch.std_intrinsic(symbol)
     }
 }
 
@@ -1458,7 +1624,33 @@ fn runtime_limit_constructor_name(kind: StdLimitKind) -> &'static str {
     }
 }
 
-fn builtin_abort_message(error: &crate::intrinsic::pure::AdapterError) -> Option<String> {
+fn memory_store_callable_name(
+    callable: crate::intrinsic::dispatch::MemoryStoreCallable,
+) -> &'static str {
+    use crate::intrinsic::dispatch::MemoryStoreCallable;
+
+    match callable {
+        MemoryStoreCallable::Get => "get",
+        MemoryStoreCallable::Put => "put",
+        MemoryStoreCallable::PutVersioned => "put_versioned",
+        MemoryStoreCallable::Contains => "contains",
+        MemoryStoreCallable::Keys => "keys",
+        MemoryStoreCallable::Insert => "insert",
+        MemoryStoreCallable::Delete => "delete",
+        MemoryStoreCallable::DeleteVersioned => "delete_versioned",
+        MemoryStoreCallable::Update => "update",
+        MemoryStoreCallable::Clear => "clear",
+        MemoryStoreCallable::Select => "select",
+        MemoryStoreCallable::Query => "query",
+        MemoryStoreCallable::Scan => "scan",
+        MemoryStoreCallable::RelatedTo => "related_to",
+        MemoryStoreCallable::Upsert => "upsert",
+    }
+}
+
+pub(super) fn builtin_abort_message(
+    error: &crate::intrinsic::pure::AdapterError,
+) -> Option<String> {
     match error {
         crate::intrinsic::pure::AdapterError::Builtin(BuiltinError::Abort { message }) => {
             Some(message.clone())

@@ -13,9 +13,17 @@ pub(super) fn capture_call_target(target: &CallTarget) -> Result<CallTargetSnaps
         },
         CallTarget::EnumVariant(symbol) => CallTargetSnapshot::EnumVariant(*symbol),
         CallTarget::NominalConstructor(ty) => CallTargetSnapshot::NominalConstructor(*ty),
-        CallTarget::StdCallable(callable) => {
-            CallTargetSnapshot::StdCallable(super::intrinsic::capture_std_callable(callable))
-        }
+        CallTarget::PureIntrinsic(call) => CallTargetSnapshot::PureIntrinsic {
+            intrinsic: call.intrinsic,
+            parameter_types: call.parameter_types.clone(),
+            result_type: call.result_type,
+        },
+        CallTarget::StdIntrinsic(call) => CallTargetSnapshot::StdIntrinsic {
+            intrinsic: call.identity.intrinsic,
+            dispatch: call.identity.dispatch,
+            parameter_types: call.parameter_types.clone(),
+            result_type: call.result_type,
+        },
         CallTarget::Limited { target, limits } => CallTargetSnapshot::Limited {
             target: Box::new(capture_call_target(target)?),
             limits: limits.clone(),
@@ -41,9 +49,28 @@ pub(super) fn restore_call_target(snapshot: CallTargetSnapshot) -> Result<CallTa
         },
         CallTargetSnapshot::EnumVariant(symbol) => CallTarget::EnumVariant(symbol),
         CallTargetSnapshot::NominalConstructor(ty) => CallTarget::NominalConstructor(ty),
-        CallTargetSnapshot::StdCallable(callable) => {
-            CallTarget::StdCallable(super::intrinsic::restore_std_callable(callable)?)
-        }
+        CallTargetSnapshot::PureIntrinsic {
+            intrinsic,
+            parameter_types,
+            result_type,
+        } => CallTarget::PureIntrinsic(crate::intrinsic::dispatch::CheckedPureIntrinsicCall {
+            intrinsic,
+            parameter_types,
+            result_type,
+        }),
+        CallTargetSnapshot::StdIntrinsic {
+            intrinsic,
+            dispatch,
+            parameter_types,
+            result_type,
+        } => CallTarget::StdIntrinsic(crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+            identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                intrinsic,
+                dispatch,
+            },
+            parameter_types,
+            result_type,
+        }),
         CallTargetSnapshot::Limited { target, limits } => CallTarget::Limited {
             target: Box::new(restore_call_target(*target)?),
             limits,

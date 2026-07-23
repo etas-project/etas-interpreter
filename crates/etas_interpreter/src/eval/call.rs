@@ -61,9 +61,12 @@ impl<'a> EvalContext<'a> {
                 Ok(target) => target,
                 Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             };
-        let target = if let Some(target) =
-            nominal_target.or_else(|| self.resolve_static_call_target(callee, frame))
-        {
+        let static_target =
+            match self.resolve_static_call_target_for_call(call, callee, args, frame, span) {
+                Ok(target) => target,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+        let target = if let Some(target) = nominal_target.or(static_target) {
             target
         } else {
             match self.eval_expr(callee, frame) {
@@ -351,7 +354,34 @@ impl<'a> EvalContext<'a> {
                     ),
                 }
             }
-            CallTarget::StdCallable(kind) => self.execute_std_callable(kind, call_args, span),
+            CallTarget::PureIntrinsic(call) => {
+                match crate::intrinsic::pure::execute_pure_intrinsic(
+                    &call,
+                    call_args,
+                    self.plan.dispatch.pure_abi(),
+                ) {
+                    Ok(value) => ControlSignal::Value(value),
+                    Err(error) => {
+                        if let Some(message) = crate::eval::std_call::builtin_abort_message(&error)
+                        {
+                            return ControlSignal::execution_aborted(message, span);
+                        }
+                        ControlSignal::runtime_fault(
+                            format!(
+                                "checked pure builtin dispatch failed for {:?}: {error:?}",
+                                call.intrinsic
+                            ),
+                            span,
+                        )
+                    }
+                }
+            }
+            CallTarget::StdIntrinsic(call) => {
+                match self.plan.dispatch.resolve_std_callable(call.identity) {
+                    Ok(kind) => self.execute_std_callable(kind, &call, call_args, span),
+                    Err(message) => ControlSignal::missing_checked_fact(message, span),
+                }
+            }
             CallTarget::Limited { target, limits } => {
                 self.execute_limited_call_target(*target, limits, call_args, span)
             }
