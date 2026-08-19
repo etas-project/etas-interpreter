@@ -1,4 +1,4 @@
-use etas_host::{CommandRequest, HostValue, PolicySubject};
+use etas_host::{CommandRequest, HostRequestKind, HostValue, PolicySubject};
 
 use crate::{
     control::{ControlSignal, PendingCommand},
@@ -6,7 +6,9 @@ use crate::{
     host::HostServices,
 };
 
-use super::{error::retry_or_report, policy::evaluate_before_boundary};
+use super::{
+    error::retry_or_report, host_dispatch::HostDispatch, policy::evaluate_before_boundary,
+};
 
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
@@ -16,6 +18,15 @@ pub(in crate::driver) async fn dispatch(
 ) -> Option<ControlSignal> {
     if let Some(value) = eval.replayed_command_result(&command) {
         return Some(eval.resume_command_signal(command, value));
+    }
+    if let Err(error) = command.request.budget.check_time() {
+        return retry_or_report(
+            eval,
+            machine,
+            command.continuation,
+            command.span,
+            format!("command host boundary failed: {}", error.message),
+        );
     }
     let key = eval.command_boundary_key(&command);
     let request_id = command.request.id;
@@ -31,35 +42,37 @@ pub(in crate::driver) async fn dispatch(
     {
         return None;
     }
-    eval.record_host_request_sent(request_id);
-    match host.command(command.request.clone()).await {
-        Ok(response) => {
-            eval.record_host_response_received(response.id);
-            match response.result {
-                Ok(output) => {
-                    let value = eval.command_result_value(&command, output)?;
-                    eval.record_completed_host_boundary("command", key, value.clone());
-                    Some(eval.resume_command_signal(command, value))
-                }
-                Err(error) => retry_or_report(
-                    eval,
-                    machine,
-                    command.continuation,
-                    command.span,
-                    format!("command host boundary failed: {}", error.message),
-                ),
+    match HostDispatch::execute(
+        eval,
+        request_id,
+        HostRequestKind::Command,
+        command.request.authority.clone(),
+        command.request.trace.clone(),
+        host.command(command.request.clone()),
+    )
+    .await
+    {
+        Ok(response) => match response.result {
+            Ok(output) => {
+                let value = eval.command_result_value(&command, output)?;
+                eval.record_completed_host_boundary("command", key, value.clone());
+                Some(eval.resume_command_signal(command, value))
             }
-        }
-        Err(error) => {
-            eval.record_host_response_received(request_id);
-            retry_or_report(
+            Err(error) => retry_or_report(
                 eval,
                 machine,
                 command.continuation,
                 command.span,
                 format!("command host boundary failed: {}", error.message),
-            )
-        }
+            ),
+        },
+        Err(error) => retry_or_report(
+            eval,
+            machine,
+            command.continuation,
+            command.span,
+            format!("command host boundary failed: {}", error.message),
+        ),
     }
 }
 

@@ -78,7 +78,7 @@ flow main() -> unit ![Console, Error<IOError>]
                         policy: boundary_policy_context(policy_ref.clone()),
                     },
                     trace: TraceContext::root(TraceId(77)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -93,6 +93,12 @@ flow main() -> unit ![Console, Error<IOError>]
     let requests = host.policy_requests();
     assert_eq!(requests[0].policy_ref, policy_ref);
     assert_eq!(requests[0].subject.kind, "console");
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::ApprovalRequested { request })
+            if request.id == HostRequestId(900)
+                && request.trace == TraceContext::root(TraceId(77))
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -144,7 +150,7 @@ flow main() -> unit ![Console, Error<IOError>]
                         policy: boundary_policy_context(policy_ref.clone()),
                     },
                     trace: TraceContext::root(TraceId(88)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -215,7 +221,7 @@ flow main() -> unit ![Console, Error<IOError>]
                         policy: boundary_policy_context(policy_ref.clone()),
                     },
                     trace: TraceContext::root(TraceId(89)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -253,7 +259,7 @@ flow main() -> unit ![Console, Error<IOError>]
                         policy: boundary_policy_context(policy_ref.clone()),
                     },
                     trace: TraceContext::root(TraceId(90)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -396,7 +402,7 @@ flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(77)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         ..RunOptions::default()
     };
@@ -484,7 +490,7 @@ flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
                         policy: boundary_policy_context(policy_ref.clone()),
                     },
                     trace: TraceContext::root(TraceId(79)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -589,6 +595,14 @@ flow main() -> Result<string, IOError> ![Console]
             }],
         })
     );
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
+            outcome: etas_host::HostOutcome::Failed(error),
+            ..
+        }) if error.code == HostErrorCode::ProviderUnavailable
+            && error.message == "stdin closed"
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -4,11 +4,11 @@ use etas_core::{Diagnostic, SourceId, Span, TextRange, TextSize};
 use etas_hir::{HirBlockId, HirExprId, HirItemId, HirPatId, HirTypeId, ScopeId, SymbolId};
 use etas_host::{
     ActionArgPattern, ActionInstance, ActionPattern, ApprovalGrant, AuthorityContext, Budget,
-    CommandPolicy, CostBudget, DestructiveOpPolicy, FilesystemPolicy, HostActionGrant,
-    HostJsonValue, HostRequestId, HostValue, ModelContent, ModelMessage, ModelName,
-    ModelProviderId, ModelRequest, ModelRole, ModelToolCall, NetworkEndpoint, NetworkPolicy,
-    PolicyContext, SandboxMode, SandboxPolicy, TimeBudget, TokenBudget, TraceContext, TraceId,
-    TraceSpanId, WorkspaceRoot,
+    CommandPolicy, CostBudget, DestructiveOpPolicy, ExecutionBudget, ExecutionBudgetSnapshot,
+    FilesystemPolicy, HostActionGrant, HostJsonValue, HostRequestId, HostValue, ModelContent,
+    ModelMessage, ModelName, ModelProviderId, ModelRequest, ModelRole, ModelToolCall,
+    NetworkEndpoint, NetworkPolicy, PolicyContext, SandboxMode, SandboxPolicy, TimeBudget,
+    TokenBudget, TraceContext, TraceId, TraceSpanId, WorkspaceRoot,
 };
 use etas_types::TypeId;
 use serde_json::{Value, json};

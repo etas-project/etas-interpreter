@@ -91,12 +91,12 @@ use etas_hir::{
 use etas_host::console::{ConsoleOperation, ConsoleRequest};
 use etas_host::{
     ApprovalGrant, ApprovalRequest, AuthorityContext, BrowserProtocolOperation,
-    BrowserProtocolRequest, Budget, ByteStreamRef, CommandRequest, FilesystemOperation,
-    FilesystemRequest, HostRequestId, HostValue, MemoryOperation, MemoryRegionRef, MemoryRequest,
-    MemoryResult, MemoryWriteMode, ModelContent, ModelMessage, ModelRequest, ModelResponse,
-    ModelRole, SecretOperation, SecretRef, SecretRequest, StoreRef, StreamOperation, StreamRequest,
-    TcpConnectOperation, TcpConnectRequest, TcpEndpoint, TcpStreamRef, TlsConnectOperation,
-    TlsConnectRequest, TraceContext, WorkspacePath,
+    BrowserProtocolRequest, ByteStreamRef, CommandRequest, FilesystemOperation, FilesystemRequest,
+    HostRequestId, HostValue, MemoryOperation, MemoryRegionRef, MemoryRequest, MemoryResult,
+    MemoryWriteMode, ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole,
+    SecretOperation, SecretRequest, StoreRef, StreamOperation, StreamRequest, TcpConnectOperation,
+    TcpConnectRequest, TcpEndpoint, TcpStreamRef, TlsConnectOperation, TlsConnectRequest,
+    TraceContext, WorkspacePath,
 };
 
 pub struct EvalContext<'a> {
@@ -128,12 +128,16 @@ pub struct EvalContext<'a> {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KnownStdTypes {
+    pub browser_session: Option<etas_types::TypeId>,
     pub io_error: Option<etas_types::TypeId>,
     pub memory_conflict: Option<etas_types::TypeId>,
     pub memory_version: Option<etas_types::TypeId>,
     pub network_error: Option<etas_types::TypeId>,
+    pub secret_value: Option<etas_types::TypeId>,
     pub stream_error: Option<etas_types::TypeId>,
+    pub tcp_stream: Option<etas_types::TypeId>,
     pub tls_error: Option<etas_types::TypeId>,
+    pub tls_stream: Option<etas_types::TypeId>,
 }
 
 pub struct EvalContextInput<'a> {
@@ -223,7 +227,7 @@ impl<'a> EvalContext<'a> {
         self.host_context.trace.clone()
     }
 
-    pub(crate) fn host_budget(&self) -> Budget {
+    pub(crate) fn host_budget(&self) -> etas_host::ExecutionBudget {
         self.host_context.budget.clone()
     }
 
@@ -257,12 +261,19 @@ impl<'a> EvalContext<'a> {
 impl KnownStdTypes {
     fn from_checked(checked: &CheckedProject) -> Self {
         Self {
+            browser_session: resolve_std_type(
+                checked,
+                &["std", "browser", "protocol", "BrowserSession"],
+            ),
             io_error: resolve_std_type(checked, &["std", "io", "IOError"]),
             memory_conflict: resolve_std_type(checked, &["std", "memory", "MemoryConflict"]),
             memory_version: resolve_std_type(checked, &["std", "memory", "MemoryVersion"]),
             network_error: resolve_std_type(checked, &["std", "net", "tcp", "NetworkError"]),
+            secret_value: resolve_std_type(checked, &["std", "secret", "SecretValue"]),
             stream_error: resolve_std_type(checked, &["std", "stream", "StreamError"]),
+            tcp_stream: resolve_std_type(checked, &["std", "net", "tcp", "TcpStream"]),
             tls_error: resolve_std_type(checked, &["std", "tls", "TlsError"]),
+            tls_stream: resolve_std_type(checked, &["std", "tls", "TlsStream"]),
         }
     }
 }

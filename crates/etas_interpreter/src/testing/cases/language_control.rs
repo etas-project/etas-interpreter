@@ -368,7 +368,7 @@ import std.codec.text.utf8_encode;
 import std.http.codec.decode_response;
 
 flow main() -> bool {
-  return match decode_response(utf8_encode("HTTP/1.1 200 OK\nTransfer-Encoding: chunked\n\n5\nhello\n6;ext=value\n world\n0\n\n")) {
+  return match decode_response(utf8_encode("HTTP/1.1 200 OK\r\nTransfer-Encoding: chunked\r\n\r\n5\r\nhello\r\n6;ext=value\r\n world\r\n0\r\n\r\n")) {
     Ok(response) => len(response.body) == 11,
     Err(_) => false
   };
@@ -460,10 +460,9 @@ flow main() -> string ![Error<NetworkError>] {
         HostRequirementKind::Stream,
     ]));
     host.seed_tcp_connect_stream("tcp-1", "example.test", 80);
-    host.seed_stream_read_until_limit_error(
-        HostErrorCode::BudgetExceeded,
-        "stream read exceeded byte limit before EOF",
-    );
+    host.seed_stream_read_until_limit_failure(etas_host::StreamFailure::LimitExceeded {
+        limit_bytes: 4,
+    });
 
     let result = Interpreter
         .run_checked(
@@ -492,7 +491,10 @@ flow main() -> string ![Error<NetworkError>] {
             limit_bytes,
             ..
         } => {
-            assert_eq!(stream.id, "tcp-1");
+            assert_eq!(
+                stream.handle(),
+                &etas_host::StreamHandleRef::issued("tcp-1", 0)
+            );
             assert_eq!(*limit_bytes, 4);
         }
         other => panic!("expected ReadUntilLimit stream operation, got {other:?}"),
@@ -629,10 +631,9 @@ flow main() -> string ![Error<NetworkError>] {
         HostRequirementKind::Stream,
     ]));
     host.seed_tcp_connect_stream("tcp-1", "example.test", 80);
-    host.seed_stream_read_until_limit_error(
-        HostErrorCode::BudgetExceeded,
-        "stream read exceeded byte limit before EOF",
-    );
+    host.seed_stream_read_until_limit_failure(etas_host::StreamFailure::LimitExceeded {
+        limit_bytes: 4,
+    });
 
     let result = Interpreter
         .run_checked(
@@ -700,10 +701,9 @@ flow main() -> string ![Error<NetworkError>] {
         HostRequirementKind::Stream,
     ]));
     host.seed_tcp_connect_stream("tcp-1", "example.test", 80);
-    host.seed_stream_read_until_limit_error(
-        HostErrorCode::BudgetExceeded,
-        "stream read exceeded byte limit before EOF",
-    );
+    host.seed_stream_read_until_limit_failure(etas_host::StreamFailure::LimitExceeded {
+        limit_bytes: 4,
+    });
 
     let result = Interpreter
         .run_checked(
@@ -778,10 +778,9 @@ flow main() -> string ![Error<NetworkError>] {
         HostRequirementKind::Stream,
     ]));
     host.seed_tcp_connect_stream("tcp-1", "example.test", 80);
-    host.seed_stream_read_until_limit_error(
-        HostErrorCode::BudgetExceeded,
-        "stream read exceeded byte limit before EOF",
-    );
+    host.seed_stream_read_until_limit_failure(etas_host::StreamFailure::LimitExceeded {
+        limit_bytes: 4,
+    });
 
     let result = Interpreter
         .run_checked(

@@ -1,30 +1,27 @@
 use super::*;
-use etas_host::{HostError, HostErrorCode};
+use etas_host::StreamFailure;
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn stream_host_error_signal(
+    pub(crate) fn stream_failure_signal(
         &mut self,
         host: PendingHostBoundary,
-        error: HostError,
-    ) -> Option<ControlSignal> {
-        let HostBoundaryRequest::Stream(_) = &host.request else {
-            return None;
-        };
+        failure: StreamFailure,
+    ) -> ControlSignal {
         let Some(error_type) = self.known_std_types.stream_error else {
-            return Some(ControlSignal::missing_checked_fact(
+            return ControlSignal::missing_checked_fact(
                 "stream host failure requires checked std.stream StreamError type",
                 host.span,
-            ));
+            );
         };
         let perform = PendingPerform {
             expr: None,
             action: stream_error_raise_action(host.span),
             error_type: Some(error_type),
-            args: vec![stream_error_value(error)],
+            args: vec![stream_error_value(failure)],
             span: host.span,
             continuation: host.continuation,
         };
-        Some(self.propagate_perform_signal(perform))
+        self.propagate_perform_signal(perform)
     }
 }
 
@@ -41,63 +38,91 @@ fn stream_error_raise_action(span: Span) -> ResolvedActionRef {
     }
 }
 
-fn stream_error_value(error: HostError) -> InterpValue {
-    let message = error.message;
-    match error.code {
-        HostErrorCode::BudgetExceeded => InterpValue::Variant {
+fn stream_error_value(failure: StreamFailure) -> InterpValue {
+    match failure {
+        StreamFailure::LimitExceeded { .. } => InterpValue::Variant {
             name: "LimitExceeded".to_owned(),
             fields: Vec::new(),
         },
-        HostErrorCode::ProviderUnavailable if host_error_timed_out(&error.details) => {
-            InterpValue::Variant {
-                name: "TimedOut".to_owned(),
-                fields: Vec::new(),
-            }
-        }
-        HostErrorCode::ProviderUnavailable if host_error_interrupted(&message) => {
-            InterpValue::Variant {
-                name: "Interrupted".to_owned(),
-                fields: Vec::new(),
-            }
-        }
-        HostErrorCode::ProviderUnavailable if host_error_closed(&message) => InterpValue::Variant {
+        StreamFailure::TimedOut => InterpValue::Variant {
+            name: "TimedOut".to_owned(),
+            fields: Vec::new(),
+        },
+        StreamFailure::Cancelled => InterpValue::Variant {
+            name: "Cancelled".to_owned(),
+            fields: Vec::new(),
+        },
+        StreamFailure::Closed => InterpValue::Variant {
             name: "Closed".to_owned(),
             fields: Vec::new(),
         },
-        _ => InterpValue::Variant {
+        StreamFailure::Interrupted => InterpValue::Variant {
+            name: "Interrupted".to_owned(),
+            fields: Vec::new(),
+        },
+        StreamFailure::Host(error) => InterpValue::Variant {
             name: "Host".to_owned(),
             fields: vec![InterpValue::String(format!(
-                "{}: {message}; details={:?}",
-                host_error_code_name(error.code),
+                "{}: {}; details={:?}",
+                error.code.as_str(),
+                error.message,
                 error.details
             ))],
         },
     }
 }
 
-fn host_error_timed_out(details: &[etas_host::HostErrorDetail]) -> bool {
-    details.iter().any(|detail| detail.key == "timeout_ms")
-}
+#[cfg(test)]
+mod tests {
+    use etas_host::{HostError, HostErrorCode, StreamFailure};
 
-fn host_error_closed(message: &str) -> bool {
-    message.to_ascii_lowercase().contains("closed")
-}
+    use super::stream_error_value;
+    use crate::value::InterpValue;
 
-fn host_error_interrupted(message: &str) -> bool {
-    let message = message.to_ascii_lowercase();
-    message.contains("interrupt") || message.contains("cancel")
-}
+    #[test]
+    fn stream_error_mapping_uses_typed_code_not_message_text() {
+        assert_eq!(
+            stream_error_value(StreamFailure::Host(HostError::new(
+                HostErrorCode::ProviderUnavailable,
+                "closed, cancelled, interrupted, and timed out",
+            ))),
+            InterpValue::Variant {
+                name: "Host".to_owned(),
+                fields: vec![InterpValue::String(
+                    "ProviderUnavailable: closed, cancelled, interrupted, and timed out; details=[]"
+                        .to_owned(),
+                )],
+            }
+        );
+        assert_eq!(
+            stream_error_value(StreamFailure::TimedOut),
+            InterpValue::Variant {
+                name: "TimedOut".to_owned(),
+                fields: Vec::new(),
+            }
+        );
+    }
 
-fn host_error_code_name(code: HostErrorCode) -> &'static str {
-    match code {
-        HostErrorCode::ProviderRejected => "ProviderRejected",
-        HostErrorCode::ProviderUnavailable => "ProviderUnavailable",
-        HostErrorCode::ToolRejected => "ToolRejected",
-        HostErrorCode::ToolUnavailable => "ToolUnavailable",
-        HostErrorCode::InvalidRequest => "InvalidRequest",
-        HostErrorCode::InvalidResponse => "InvalidResponse",
-        HostErrorCode::SchemaMismatch => "SchemaMismatch",
-        HostErrorCode::BudgetExceeded => "BudgetExceeded",
-        HostErrorCode::AuthorityDenied => "AuthorityDenied",
+    #[test]
+    fn stream_error_mapping_preserves_all_typed_variants() {
+        let cases = [
+            (
+                StreamFailure::LimitExceeded { limit_bytes: 1 },
+                "LimitExceeded",
+            ),
+            (StreamFailure::TimedOut, "TimedOut"),
+            (StreamFailure::Cancelled, "Cancelled"),
+            (StreamFailure::Closed, "Closed"),
+            (StreamFailure::Interrupted, "Interrupted"),
+        ];
+        for (failure, expected) in cases {
+            assert_eq!(
+                stream_error_value(failure),
+                InterpValue::Variant {
+                    name: expected.to_owned(),
+                    fields: Vec::new(),
+                }
+            );
+        }
     }
 }

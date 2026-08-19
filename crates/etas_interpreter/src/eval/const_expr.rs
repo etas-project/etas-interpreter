@@ -230,8 +230,7 @@ impl<'a> EvalContext<'a> {
         {
             return Some(InterpValue::OptionNone);
         }
-        let registry = etas_std::standard_registry();
-        let symbol = registry.lookup_qualified(path)?;
+        let symbol = self.checked.std_registry.lookup_qualified(path)?;
         let etas_std::StdDecl::Value(value) = &symbol.decl else {
             return None;
         };

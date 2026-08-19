@@ -4,6 +4,10 @@ use crate::{
     host::HostServices,
 };
 
+use etas_host::HostRequestKind;
+
+use super::host_dispatch::HostDispatch;
+
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
@@ -12,32 +16,37 @@ pub(in crate::driver) async fn dispatch(
     if let Some(value) = eval.replayed_session_result(&session) {
         return eval.replay_session_signal(session, value);
     }
+    if let Err(error) = session.request.budget.check_time() {
+        return eval.session_host_error_signal(session, error);
+    }
     let key = eval.session_boundary_key(&session);
     let request_id = session.request.id;
-    eval.record_host_request_sent(request_id);
-    match host.session(session.request.clone()).await {
-        Ok(response) => {
-            eval.record_host_response_received(response.id);
-            match response.result {
-                Ok(result) => {
-                    eval.record_session_result_event(&result);
-                    match eval.session_boundary_result_value(&session, &result) {
-                        Ok(Some(value)) => {
-                            eval.record_completed_host_boundary("session", key, value);
-                        }
-                        Ok(None) => {}
-                        Err(error) => {
-                            return ControlSignal::runtime_fault(error, session.span);
-                        }
+    match HostDispatch::execute(
+        eval,
+        request_id,
+        HostRequestKind::Session,
+        session.request.authority.clone(),
+        session.request.trace.clone(),
+        host.session(session.request.clone()),
+    )
+    .await
+    {
+        Ok(response) => match response.result {
+            Ok(result) => {
+                eval.record_session_result_event(&result);
+                match eval.session_boundary_result_value(&session, &result) {
+                    Ok(Some(value)) => {
+                        eval.record_completed_host_boundary("session", key, value);
                     }
-                    eval.session_result_signal(session, result)
+                    Ok(None) => {}
+                    Err(error) => {
+                        return ControlSignal::runtime_fault(error, session.span);
+                    }
                 }
-                Err(error) => eval.session_host_error_signal(session, error),
+                eval.session_result_signal(session, result)
             }
-        }
-        Err(error) => {
-            eval.record_host_response_received(request_id);
-            eval.session_host_error_signal(session, error)
-        }
+            Err(error) => eval.session_host_error_signal(session, error),
+        },
+        Err(error) => eval.session_host_error_signal(session, error),
     }
 }

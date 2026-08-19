@@ -981,7 +981,7 @@ flow main(input: string) -> i32 {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(59)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),

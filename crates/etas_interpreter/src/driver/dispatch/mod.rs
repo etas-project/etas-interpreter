@@ -3,6 +3,7 @@ pub(super) mod command;
 pub(super) mod console;
 pub(super) mod error;
 pub(super) mod host;
+pub(super) mod host_dispatch;
 pub(super) mod memory;
 pub(super) mod model;
 pub(super) mod policy;

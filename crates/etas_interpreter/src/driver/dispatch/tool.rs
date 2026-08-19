@@ -1,4 +1,5 @@
 use etas_effects::HostRequirementKind;
+use etas_host::HostRequestKind;
 
 use crate::{
     eval::{
@@ -8,7 +9,10 @@ use crate::{
     host::HostServices,
 };
 
-use super::policy::{boundary_policy_ref_for, evaluate_before_boundary};
+use super::{
+    host_dispatch::HostDispatch,
+    policy::{boundary_policy_ref_for, evaluate_before_boundary},
+};
 
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
@@ -47,13 +51,22 @@ pub(in crate::driver) async fn dispatch(
                 ));
                 return false;
             }
-            let request_id = request.id;
-            eval.record_host_request_sent(request_id);
-            let result = host.tool(request).await;
-            match &result {
-                Ok(response) => eval.record_host_response_received(response.id),
-                Err(_) => eval.record_host_response_received(request_id),
+            if let Err(error) = request.budget.check_time() {
+                machine.resume_tool_result(Err(error));
+                return true;
             }
+            let request_id = request.id;
+            let authority = request.authority.clone();
+            let trace = request.trace.clone();
+            let result = HostDispatch::execute(
+                eval,
+                request_id,
+                HostRequestKind::Tool,
+                authority,
+                trace,
+                host.tool(request),
+            )
+            .await;
             machine.resume_tool_result(result);
             true
         }

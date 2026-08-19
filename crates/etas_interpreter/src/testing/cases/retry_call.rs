@@ -39,7 +39,8 @@ flow main() -> unit {
         &[std::path::PathBuf::from("main.es")],
         "main",
         &result.checkpoints[0],
-    );
+    )
+    .expect("retry checkpoint artifact should encode");
     let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("retry checkpoint artifact must decode");
     let resumed = Interpreter

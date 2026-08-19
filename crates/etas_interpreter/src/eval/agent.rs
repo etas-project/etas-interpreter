@@ -198,6 +198,7 @@ impl<'a> EvalContext<'a> {
                 budget: model_policy
                     .budget
                     .clone()
+                    .map(|limits| self.host_budget().with_limits(limits))
                     .unwrap_or_else(|| self.host_budget()),
             },
             decode,
@@ -633,8 +634,7 @@ impl<'a> EvalContext<'a> {
                 "`@trace` constructor must be a std.runtime.trace import",
             ));
         };
-        let registry = etas_std::standard_registry();
-        let Some(std_symbol) = registry.lookup_qualified(path) else {
+        let Some(std_symbol) = self.checked.std_registry.lookup_qualified(path) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,

@@ -7,6 +7,8 @@ use crate::{
     value::InterpValue,
 };
 
+use super::host_dispatch::HostDispatch;
+
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
@@ -34,11 +36,19 @@ pub(in crate::driver) async fn dispatch(
             .push(crate::diagnostics::unhandled_effect_action(&perform));
         return None;
     };
-    eval.record_host_request_sent(request.id);
-    let request_id = request.id;
-    match host.approval(request).await {
+    if let Err(error) = eval.host_budget().check_time() {
+        eval.diagnostics.push(Diagnostic::analysis(
+            AnalysisDiagnosticCode::UnhandledRuntimeError,
+            perform.span,
+            format!("approval host boundary failed: {}", error.message),
+        ));
+        return None;
+    }
+    let authority = eval.host_authority();
+    match HostDispatch::execute_approval(eval, request.clone(), authority, host.approval(request))
+        .await
+    {
         Ok(decision) => {
-            eval.record_host_response_received(request_id);
             let value = match decision {
                 etas_host::ApprovalDecision::Approved { .. } => InterpValue::Bool(true),
                 etas_host::ApprovalDecision::Denied { .. } => InterpValue::Bool(false),
@@ -47,7 +57,6 @@ pub(in crate::driver) async fn dispatch(
             Some(eval.resume_perform_signal(perform, value))
         }
         Err(error) => {
-            eval.record_host_response_received(request_id);
             eval.diagnostics.push(Diagnostic::analysis(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
                 perform.span,

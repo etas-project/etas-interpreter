@@ -99,27 +99,17 @@ fn console_error_value(error: HostError) -> InterpValue {
         | HostErrorCode::InvalidRequest
         | HostErrorCode::InvalidResponse
         | HostErrorCode::SchemaMismatch
-        | HostErrorCode::BudgetExceeded => InterpValue::Variant {
+        | HostErrorCode::BudgetExceeded
+        | HostErrorCode::TimedOut
+        | HostErrorCode::Cancelled
+        | HostErrorCode::Closed
+        | HostErrorCode::Interrupted => InterpValue::Variant {
             name: "Host".to_owned(),
             fields: vec![InterpValue::String(format!(
                 "{}: {}",
-                host_error_code_name(error.code),
+                error.code.as_str(),
                 error.message
             ))],
         },
-    }
-}
-
-fn host_error_code_name(code: HostErrorCode) -> &'static str {
-    match code {
-        HostErrorCode::ProviderRejected => "ProviderRejected",
-        HostErrorCode::ProviderUnavailable => "ProviderUnavailable",
-        HostErrorCode::ToolRejected => "ToolRejected",
-        HostErrorCode::ToolUnavailable => "ToolUnavailable",
-        HostErrorCode::InvalidRequest => "InvalidRequest",
-        HostErrorCode::InvalidResponse => "InvalidResponse",
-        HostErrorCode::SchemaMismatch => "SchemaMismatch",
-        HostErrorCode::BudgetExceeded => "BudgetExceeded",
-        HostErrorCode::AuthorityDenied => "AuthorityDenied",
     }
 }

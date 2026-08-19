@@ -1,5 +1,5 @@
 use etas_host::{
-    HostValue, PolicySubject,
+    HostRequestKind, HostValue, PolicySubject,
     console::{ConsoleOperation, ConsoleRequest},
 };
 
@@ -9,7 +9,7 @@ use crate::{
     host::HostServices,
 };
 
-use super::policy::evaluate_before_boundary;
+use super::{host_dispatch::HostDispatch, policy::evaluate_before_boundary};
 
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
@@ -18,6 +18,9 @@ pub(in crate::driver) async fn dispatch(
 ) -> Option<ControlSignal> {
     if let Some(value) = eval.replayed_console_result(&console) {
         return Some(eval.resume_console_signal(console, value));
+    }
+    if let Err(error) = console.request.budget.check_time() {
+        return Some(eval.console_host_error_signal(console, error));
     }
     let key = eval.console_boundary_key(&console);
     let request_id = console.request.id;
@@ -33,22 +36,24 @@ pub(in crate::driver) async fn dispatch(
     {
         return None;
     }
-    eval.record_host_request_sent(request_id);
-    match host.console(console.request.clone()).await {
-        Ok(response) => {
-            eval.record_host_response_received(response.id);
-            match eval.console_result_value(&console, response.result) {
-                Ok(value) => {
-                    eval.record_completed_host_boundary("console", key, value.clone());
-                    Some(eval.resume_console_signal(console, value))
-                }
-                Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),
+    match HostDispatch::execute(
+        eval,
+        request_id,
+        HostRequestKind::Console,
+        console.request.authority.clone(),
+        console.request.trace.clone(),
+        host.console(console.request.clone()),
+    )
+    .await
+    {
+        Ok(response) => match eval.console_result_value(&console, response.result) {
+            Ok(value) => {
+                eval.record_completed_host_boundary("console", key, value.clone());
+                Some(eval.resume_console_signal(console, value))
             }
-        }
-        Err(error) => {
-            eval.record_host_response_received(request_id);
-            Some(eval.console_host_error_signal(console, error))
-        }
+            Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),
+        },
+        Err(error) => Some(eval.console_host_error_signal(console, error)),
     }
 }
 

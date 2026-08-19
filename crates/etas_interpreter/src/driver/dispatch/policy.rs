@@ -1,7 +1,11 @@
 use etas_core::{AnalysisDiagnosticCode, Diagnostic, Span};
-use etas_host::{HostValue, PolicyDecision, PolicyEvaluationRequest, PolicySubject};
+use etas_host::{
+    HostRequestKind, HostValue, PolicyDecision, PolicyEvaluationRequest, PolicySubject,
+};
 
 use crate::{eval::EvalContext, host::HostServices};
+
+use super::host_dispatch::HostDispatch;
 
 pub(in crate::driver) fn boundary_policy_ref_for(
     eval: &EvalContext<'_>,
@@ -18,6 +22,14 @@ pub(in crate::driver) async fn evaluate_before_boundary(
     span: Span,
     boundary: &'static str,
 ) -> bool {
+    if let Err(error) = eval.host_budget().check_time() {
+        eval.diagnostics.push(Diagnostic::analysis(
+            AnalysisDiagnosticCode::UnhandledRuntimeError,
+            span,
+            format!("{boundary} policy boundary failed: {}", error.message),
+        ));
+        return false;
+    }
     let policy_ref = match policy_ref {
         Some(policy_ref) => policy_ref,
         None => {
@@ -41,56 +53,72 @@ pub(in crate::driver) async fn evaluate_before_boundary(
         authority: eval.host_authority(),
         trace,
     };
-    eval.record_host_request_sent(policy_request_id);
-    match host.policy(policy_request).await {
-        Ok(response) => {
-            eval.record_host_response_received(response.id);
-            match response.decision {
-                PolicyDecision::Allow => true,
-                PolicyDecision::Deny { reason } => {
+    let policy_authority = policy_request.authority.clone();
+    let policy_trace = policy_request.trace.clone();
+    match HostDispatch::execute(
+        eval,
+        policy_request_id,
+        HostRequestKind::Policy,
+        policy_authority,
+        policy_trace,
+        host.policy(policy_request),
+    )
+    .await
+    {
+        Ok(response) => match response.decision {
+            PolicyDecision::Allow => true,
+            PolicyDecision::Deny { reason } => {
+                eval.diagnostics.push(Diagnostic::analysis(
+                    AnalysisDiagnosticCode::UnhandledRuntimeError,
+                    span,
+                    format!("{boundary} policy denied request: {reason}"),
+                ));
+                false
+            }
+            PolicyDecision::RequireApproval { request } => {
+                if let Err(error) = eval.host_budget().check_time() {
                     eval.diagnostics.push(Diagnostic::analysis(
                         AnalysisDiagnosticCode::UnhandledRuntimeError,
                         span,
-                        format!("{boundary} policy denied request: {reason}"),
+                        format!("{boundary} approval boundary failed: {}", error.message),
                     ));
-                    false
+                    return false;
                 }
-                PolicyDecision::RequireApproval { request } => {
-                    let approval_id = request.id;
-                    eval.record_host_request_sent(approval_id);
-                    match host.approval(request).await {
-                        Ok(decision) => {
-                            eval.record_host_response_received(approval_id);
-                            match decision {
-                                etas_host::ApprovalDecision::Approved { grant } => {
-                                    eval.record_approval_grant(grant);
-                                    true
-                                }
-                                etas_host::ApprovalDecision::Denied { .. } => {
-                                    eval.diagnostics.push(Diagnostic::analysis(
-                                        AnalysisDiagnosticCode::UnhandledRuntimeError,
-                                        span,
-                                        format!("{boundary} policy approval was denied"),
-                                    ));
-                                    false
-                                }
-                            }
+                let authority = eval.host_authority();
+                match HostDispatch::execute_approval(
+                    eval,
+                    request.clone(),
+                    authority,
+                    host.approval(request),
+                )
+                .await
+                {
+                    Ok(decision) => match decision {
+                        etas_host::ApprovalDecision::Approved { grant } => {
+                            eval.record_approval_grant(grant);
+                            true
                         }
-                        Err(error) => {
-                            eval.record_host_response_received(approval_id);
+                        etas_host::ApprovalDecision::Denied { .. } => {
                             eval.diagnostics.push(Diagnostic::analysis(
                                 AnalysisDiagnosticCode::UnhandledRuntimeError,
                                 span,
-                                format!("policy approval host boundary failed: {}", error.message),
+                                format!("{boundary} policy approval was denied"),
                             ));
                             false
                         }
+                    },
+                    Err(error) => {
+                        eval.diagnostics.push(Diagnostic::analysis(
+                            AnalysisDiagnosticCode::UnhandledRuntimeError,
+                            span,
+                            format!("policy approval host boundary failed: {}", error.message),
+                        ));
+                        false
                     }
                 }
             }
-        }
+        },
         Err(error) => {
-            eval.record_host_response_received(policy_request_id);
             eval.diagnostics.push(Diagnostic::analysis(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
                 span,

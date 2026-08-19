@@ -4,13 +4,13 @@ pub fn checkpoint_artifact_json(
     sources: &[PathBuf],
     flow: &str,
     checkpoint: &InterpreterCheckpoint,
-) -> Value {
-    json!({
+) -> Result<Value, InterpreterCodecError> {
+    Ok(json!({
         "schema": crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA,
         "sources": sources,
         "flow": flow,
-        "checkpoint": checkpoint_json(checkpoint),
-    })
+        "checkpoint": checkpoint_json(checkpoint)?,
+    }))
 }
 
 pub fn checkpoint_id(checkpoint: &InterpreterCheckpoint) -> u32 {
@@ -42,13 +42,16 @@ pub fn checkpoint_from_json(
     compilation
         .validate_for_project(checked, entry_item)
         .map_err(InterpreterCodecError::new)?;
+    let host_context = host_execution_context_from_json(required_obj(checkpoint, "host_context")?)?;
+    let mut machine = machine_from_json(required_obj(checkpoint, "machine")?, checked)?;
+    rebind_machine_execution_budget(&mut machine, &host_context.budget.state());
     let checkpoint = InterpreterCheckpoint {
         id: CheckpointId(required_u32(checkpoint, "id")?),
         label: required_optional_string(checkpoint, "label")?,
         compilation,
         entry_item,
         args: values_from_array(checkpoint, "args")?,
-        machine: machine_from_json(required_obj(checkpoint, "machine")?, checked)?,
+        machine,
         handlers: HandlerSnapshot {
             handlers: required_array(checkpoint, "handlers")?
                 .iter()
@@ -73,7 +76,7 @@ pub fn checkpoint_from_json(
                 next_message: required_u32(trace, "next_message")?,
             }
         },
-        host_context: host_execution_context_from_json(required_obj(checkpoint, "host_context")?)?,
+        host_context,
         current_session: required_optional_string(checkpoint, "current_session")?,
         resource_versions: ResourceVersionSnapshot {
             versions: required_array(checkpoint, "resource_versions")?
@@ -105,6 +108,28 @@ pub fn checkpoint_from_json(
     Ok(checkpoint)
 }
 
+fn rebind_machine_execution_budget(
+    machine: &mut MachineSnapshot,
+    state: &etas_host::ExecutionBudgetState,
+) {
+    for frame in &mut machine.frames {
+        match frame {
+            MachineFrameSnapshot::ModelLoop(frame) => {
+                frame.pending.request.budget.rebind_state(state);
+            }
+            MachineFrameSnapshot::SourceToolReturn(frame) => {
+                frame.model_loop.pending.request.budget.rebind_state(state);
+            }
+            MachineFrameSnapshot::Block { .. }
+            | MachineFrameSnapshot::Expr { .. }
+            | MachineFrameSnapshot::Call { .. }
+            | MachineFrameSnapshot::Continuation { .. }
+            | MachineFrameSnapshot::Handler { .. }
+            | MachineFrameSnapshot::Retry { .. } => {}
+        }
+    }
+}
+
 pub fn sources_and_flow_from_checkpoint_json(
     value: &Value,
 ) -> Result<(Vec<PathBuf>, String), InterpreterCodecError> {
@@ -132,10 +157,7 @@ pub(super) fn event_json(event: &WorkflowEvent) -> Value {
     match event {
         WorkflowEvent::StepStarted(id) => json!({ "kind": "step_started", "id": id.0 }),
         WorkflowEvent::StepCompleted(id) => json!({ "kind": "step_completed", "id": id.0 }),
-        WorkflowEvent::HostRequestSent(id) => json!({ "kind": "host_request_sent", "id": id.0 }),
-        WorkflowEvent::HostResponseReceived(id) => {
-            json!({ "kind": "host_response_received", "id": id.0 })
-        }
+        WorkflowEvent::HostTrace(event) => host_trace_event_json(event),
         WorkflowEvent::CheckpointCreated(id) => json!({ "kind": "checkpoint_created", "id": id.0 }),
         WorkflowEvent::MessageCreated {
             id,
@@ -254,14 +276,92 @@ pub(super) fn event_json(event: &WorkflowEvent) -> Value {
     }
 }
 
-pub(super) fn checkpoint_json(checkpoint: &InterpreterCheckpoint) -> Value {
-    json!({
+fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
+    match event {
+        etas_host::TraceEvent::HostRequestStarted {
+            id,
+            kind,
+            authority,
+            trace,
+        } => json!({
+            "kind": "host_request_started",
+            "id": id.0,
+            "request_kind": host_request_kind_name(*kind),
+            "trace": {
+                "trace_id": trace.trace_id.0,
+                "parent_span": trace.parent_span.map(|span| span.0),
+            },
+            "authority": {
+                "grant_count": authority.grants.len(),
+                "approval_count": authority.approvals.len(),
+                "active_trace_specs": authority.policy.active_trace_specs,
+            },
+        }),
+        etas_host::TraceEvent::HostRequestFinished { id, outcome } => json!({
+            "kind": "host_request_finished",
+            "id": id.0,
+            "outcome": host_outcome_json(outcome),
+        }),
+        etas_host::TraceEvent::ApprovalRequested { request } => json!({
+            "kind": "approval_requested",
+            "id": request.id.0,
+            "reason": request.reason,
+            "requested_grant_count": request.requested_grants.len(),
+            "trace": {
+                "trace_id": request.trace.trace_id.0,
+                "parent_span": request.trace.parent_span.map(|span| span.0),
+            },
+        }),
+    }
+}
+
+fn host_outcome_json(outcome: &etas_host::HostOutcome) -> Value {
+    match outcome {
+        etas_host::HostOutcome::Succeeded => json!({ "kind": "succeeded" }),
+        etas_host::HostOutcome::Failed(error) => json!({
+            "kind": "failed",
+            "code": error.code.as_str(),
+            "message": error.message,
+            "details": error.details.iter().map(|detail| json!({
+                "key": detail.key,
+                "value": detail.value,
+            })).collect::<Vec<_>>(),
+        }),
+        etas_host::HostOutcome::Cancelled { reason } => {
+            json!({ "kind": "cancelled", "reason": reason })
+        }
+    }
+}
+
+fn host_request_kind_name(kind: etas_host::HostRequestKind) -> &'static str {
+    match kind {
+        etas_host::HostRequestKind::Model => "model",
+        etas_host::HostRequestKind::Tool => "tool",
+        etas_host::HostRequestKind::Approval => "approval",
+        etas_host::HostRequestKind::Memory => "memory",
+        etas_host::HostRequestKind::Session => "session",
+        etas_host::HostRequestKind::Console => "console",
+        etas_host::HostRequestKind::Tcp => "tcp",
+        etas_host::HostRequestKind::Stream => "stream",
+        etas_host::HostRequestKind::Tls => "tls",
+        etas_host::HostRequestKind::Filesystem => "filesystem",
+        etas_host::HostRequestKind::Secret => "secret",
+        etas_host::HostRequestKind::Browser => "browser",
+        etas_host::HostRequestKind::Command => "command",
+        etas_host::HostRequestKind::Policy => "policy",
+    }
+}
+
+pub(super) fn checkpoint_json(
+    checkpoint: &InterpreterCheckpoint,
+) -> Result<Value, InterpreterCodecError> {
+    Ok(json!({
         "id": checkpoint.id.0,
         "label": checkpoint.label,
         "compilation": compilation_identity_json(&checkpoint.compilation),
         "entry_item": checkpoint.entry_item.0,
         "args": checkpoint.args.iter().map(value_json).collect::<Vec<_>>(),
-        "machine": machine_json(&checkpoint.machine),
+        "machine": machine_json(&checkpoint.machine)?,
         "handlers": checkpoint.handlers.handlers.iter().map(|handler| {
             json!({
                 "id": handler.id.0,
@@ -277,7 +377,7 @@ pub(super) fn checkpoint_json(checkpoint: &InterpreterCheckpoint) -> Value {
             "events_recorded": checkpoint.trace.events_recorded,
             "next_message": checkpoint.trace.next_message,
         },
-        "host_context": host_execution_context_json(&checkpoint.host_context),
+        "host_context": host_execution_context_json(&checkpoint.host_context)?,
         "current_session": checkpoint.current_session,
         "resource_versions": checkpoint.resource_versions.versions.iter().map(|version| {
             json!({ "resource": version.resource, "version": version.version })
@@ -289,7 +389,7 @@ pub(super) fn checkpoint_json(checkpoint: &InterpreterCheckpoint) -> Value {
                 "result": completed_host_boundary_result_json(&boundary.result),
             })
         }).collect::<Vec<_>>(),
-    })
+    }))
 }
 
 fn completed_host_boundary_result_json(result: &CompletedHostBoundaryResult) -> Value {
@@ -361,53 +461,70 @@ pub(super) fn compilation_identity_from_json(
     })
 }
 
-pub(super) fn machine_json(machine: &MachineSnapshot) -> Value {
-    json!({
-        "frames": machine.frames.iter().map(|frame| match frame {
-            MachineFrameSnapshot::Block { continuation } => json!({
-                "kind": "block",
-                "continuation": machine_continuation_json(continuation),
-            }),
-            MachineFrameSnapshot::Expr { continuation } => json!({
-                "kind": "expr",
-                "continuation": machine_continuation_json(continuation),
-            }),
-            MachineFrameSnapshot::Call { continuation, span } => json!({
-                "kind": "call",
-                "continuation": machine_continuation_json(continuation),
-                "span": span_json(*span),
-            }),
-            MachineFrameSnapshot::Continuation { continuation } => json!({
-                "kind": "continuation",
-                "continuation": machine_continuation_json(continuation),
-            }),
-            MachineFrameSnapshot::Handler { continuation } => json!({
-                "kind": "handler",
-                "continuation": machine_continuation_json(continuation),
-            }),
-            MachineFrameSnapshot::Retry { continuation } => json!({
-                "kind": "retry",
-                "continuation": machine_continuation_json(continuation),
-            }),
-            MachineFrameSnapshot::ModelLoop(frame) => json!({
-                "kind": "model_loop",
-                "model": model_loop_frame_json(&frame.clone().restore().expect("captured model frame must restore")),
-            }),
-            MachineFrameSnapshot::SourceToolReturn(frame) => json!({
-                "kind": "source_tool_return",
-                "source_tool": source_tool_return_frame_json(&frame.clone().restore().expect("captured source-tool frame must restore")),
-            }),
-        }).collect::<Vec<_>>(),
-    })
+pub(super) fn machine_json(machine: &MachineSnapshot) -> Result<Value, InterpreterCodecError> {
+    let frames = machine
+        .frames
+        .iter()
+        .map(|frame| -> Result<Value, InterpreterCodecError> {
+            Ok(match frame {
+                MachineFrameSnapshot::Block { continuation } => json!({
+                    "kind": "block",
+                    "continuation": machine_continuation_json(continuation)?,
+                }),
+                MachineFrameSnapshot::Expr { continuation } => json!({
+                    "kind": "expr",
+                    "continuation": machine_continuation_json(continuation)?,
+                }),
+                MachineFrameSnapshot::Call { continuation, span } => json!({
+                    "kind": "call",
+                    "continuation": machine_continuation_json(continuation)?,
+                    "span": span_json(*span),
+                }),
+                MachineFrameSnapshot::Continuation { continuation } => json!({
+                    "kind": "continuation",
+                    "continuation": machine_continuation_json(continuation)?,
+                }),
+                MachineFrameSnapshot::Handler { continuation } => json!({
+                    "kind": "handler",
+                    "continuation": machine_continuation_json(continuation)?,
+                }),
+                MachineFrameSnapshot::Retry { continuation } => json!({
+                    "kind": "retry",
+                    "continuation": machine_continuation_json(continuation)?,
+                }),
+                MachineFrameSnapshot::ModelLoop(frame) => {
+                    let frame = frame
+                        .clone()
+                        .restore()
+                        .map_err(InterpreterCodecError::new)?;
+                    json!({
+                        "kind": "model_loop",
+                        "model": model_loop_frame_json(&frame)?,
+                    })
+                }
+                MachineFrameSnapshot::SourceToolReturn(frame) => {
+                    let frame = frame
+                        .clone()
+                        .restore()
+                        .map_err(InterpreterCodecError::new)?;
+                    json!({
+                        "kind": "source_tool_return",
+                        "source_tool": source_tool_return_frame_json(&frame)?,
+                    })
+                }
+            })
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(json!({ "frames": frames }))
 }
 
-pub(super) fn machine_continuation_json(continuation: &ContinuationSnapshot) -> Value {
-    machine::continuation_snapshot(
-        &continuation
-            .to_runtime()
-            .expect("captured machine continuation must restore"),
-    )
-    .expect("typed machine continuation must encode")
+pub(super) fn machine_continuation_json(
+    continuation: &ContinuationSnapshot,
+) -> Result<Value, InterpreterCodecError> {
+    let continuation = continuation
+        .to_runtime()
+        .map_err(InterpreterCodecError::new)?;
+    machine::continuation_snapshot(&continuation).map_err(InterpreterCodecError::new)
 }
 
 pub(super) fn machine_from_json(
@@ -488,9 +605,13 @@ pub(super) fn machine_from_json(
     Ok(MachineSnapshot { frames })
 }
 
-pub(super) fn model_loop_frame_json(frame: &crate::eval::machine::frame::ModelLoopFrame) -> Value {
-    json!({
-        "pending": pending_model_json(&frame.pending),
+pub(super) fn model_loop_frame_json(
+    frame: &crate::eval::machine::frame::ModelLoopFrame,
+) -> Result<Value, InterpreterCodecError> {
+    let outer_continuation = ContinuationSnapshot::capture(&frame.outer_continuation)
+        .map_err(InterpreterCodecError::new)?;
+    Ok(json!({
+        "pending": pending_model_json(&frame.pending)?,
         "round": frame.round,
         "repair_attempts": frame.repair.attempts,
         "repair_kind": frame.repair.last_kind,
@@ -502,11 +623,8 @@ pub(super) fn model_loop_frame_json(frame: &crate::eval::machine::frame::ModelLo
             "boundary_key": tool.boundary_key,
         })),
         "boundary_key": frame.boundary_key,
-        "outer_continuation": machine_continuation_json(
-            &ContinuationSnapshot::capture(&frame.outer_continuation)
-                .expect("typed model continuation must snapshot")
-        ),
-    })
+        "outer_continuation": machine_continuation_json(&outer_continuation)?,
+    }))
 }
 
 pub(super) fn model_loop_frame_from_json(
@@ -546,16 +664,16 @@ pub(super) fn model_loop_frame_from_json(
 
 pub(super) fn source_tool_return_frame_json(
     frame: &crate::eval::machine::frame::SourceToolReturnFrame,
-) -> Value {
-    json!({
+) -> Result<Value, InterpreterCodecError> {
+    Ok(json!({
         "tool_call_id": frame.tool_call_id,
         "tool_name": frame.tool_name,
         "binding": source_tool_binding_json(&frame.binding),
         "args": host_value_json(&frame.args),
         "boundary_key": frame.boundary_key,
         "output_schema": frame.output_schema.as_ref().map(machine::host_schema_snapshot),
-        "model_loop": model_loop_frame_json(&frame.model_loop),
-    })
+        "model_loop": model_loop_frame_json(&frame.model_loop)?,
+    }))
 }
 
 pub(super) fn source_tool_return_frame_from_json(
@@ -582,9 +700,11 @@ pub(super) fn source_tool_return_frame_from_json(
     })
 }
 
-pub(super) fn pending_model_json(pending: &crate::control::PendingModel) -> Value {
-    json!({
-        "request": model_request_json(&pending.request),
+pub(super) fn pending_model_json(
+    pending: &crate::control::PendingModel,
+) -> Result<Value, InterpreterCodecError> {
+    Ok(json!({
+        "request": model_request_json(&pending.request)?,
         "decode": match pending.decode {
             crate::control::ModelDecode::String => json!({"kind": "string"}),
             crate::control::ModelDecode::ModelResponse => json!({"kind": "model_response"}),
@@ -593,7 +713,7 @@ pub(super) fn pending_model_json(pending: &crate::control::PendingModel) -> Valu
         "max_tool_rounds": pending.max_tool_rounds,
         "source_tools": pending.source_tools.iter().map(source_tool_binding_json).collect::<Vec<_>>(),
         "span": span_json(pending.span),
-    })
+    }))
 }
 
 pub(super) fn pending_model_from_json(
@@ -641,8 +761,8 @@ pub(super) fn source_tool_binding_from_json(
     })
 }
 
-pub(super) fn model_request_json(request: &ModelRequest) -> Value {
-    json!({
+pub(super) fn model_request_json(request: &ModelRequest) -> Result<Value, InterpreterCodecError> {
+    Ok(json!({
         "id": request.id.0,
         "provider": request.provider.as_ref().map(|provider| provider.0.as_str()),
         "model": request.model.0,
@@ -654,8 +774,8 @@ pub(super) fn model_request_json(request: &ModelRequest) -> Value {
         "options": machine::model_options_snapshot(&request.options),
         "authority": authority_context_json(&request.authority),
         "trace": trace_context_json(&request.trace),
-        "budget": budget_json(&request.budget),
-    })
+        "budget": execution_budget_json(&request.budget)?,
+    }))
 }
 
 pub(super) fn model_request_from_json(
@@ -693,7 +813,7 @@ pub(super) fn model_request_from_json(
             .map_err(InterpreterCodecError::new)?,
         authority: authority_context_from_json(required_obj(value, "authority")?)?,
         trace: trace_context_from_json(required_obj(value, "trace")?)?,
-        budget: budget_from_json(required_obj(value, "budget")?)?,
+        budget: execution_budget_from_json(required_obj(value, "budget")?)?,
     })
 }
 
@@ -828,12 +948,14 @@ pub(super) fn resource_version_from_json(
     })
 }
 
-pub(super) fn host_execution_context_json(context: &HostExecutionContext) -> Value {
-    json!({
+pub(super) fn host_execution_context_json(
+    context: &HostExecutionContext,
+) -> Result<Value, InterpreterCodecError> {
+    Ok(json!({
         "authority": authority_context_json(&context.authority),
         "trace": trace_context_json(&context.trace),
-        "budget": budget_json(&context.budget),
-    })
+        "budget": execution_budget_json(&context.budget)?,
+    }))
 }
 
 pub(super) fn host_execution_context_from_json(
@@ -842,7 +964,7 @@ pub(super) fn host_execution_context_from_json(
     Ok(HostExecutionContext {
         authority: authority_context_from_json(required_obj(value, "authority")?)?,
         trace: trace_context_from_json(required_obj(value, "trace")?)?,
-        budget: budget_from_json(required_obj(value, "budget")?)?,
+        budget: execution_budget_from_json(required_obj(value, "budget")?)?,
     })
 }
 
@@ -1084,6 +1206,63 @@ pub(crate) fn budget_from_json(value: &Value) -> Result<Budget, InterpreterCodec
             }
         },
     })
+}
+
+fn execution_budget_json(budget: &ExecutionBudget) -> Result<Value, InterpreterCodecError> {
+    let snapshot = budget
+        .snapshot()
+        .map_err(|error| InterpreterCodecError::new(error.to_string()))?;
+    Ok(json!({
+        "limits": budget_json(budget.limits()),
+        "state": {
+            "deadline_unix_millis": snapshot.deadline_unix_millis.map(|value| value.to_string()),
+            "reserved_tokens": snapshot.reserved_tokens,
+            "consumed_tokens": snapshot.consumed_tokens,
+            "reserved_cost_micros": snapshot.reserved_cost_micros.to_string(),
+            "consumed_cost_micros": snapshot.consumed_cost_micros.to_string(),
+        },
+    }))
+}
+
+fn execution_budget_from_json(value: &Value) -> Result<ExecutionBudget, InterpreterCodecError> {
+    let limits = budget_from_json(required_obj(value, "limits")?)?;
+    let state = required_obj(value, "state")?;
+    let deadline_unix_millis = match state.get("deadline_unix_millis") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_str()
+                .ok_or_else(|| {
+                    InterpreterCodecError::new(
+                        "execution budget deadline must be encoded as a u128 string",
+                    )
+                })?
+                .parse::<u128>()
+                .map_err(|_| {
+                    InterpreterCodecError::new(
+                        "execution budget deadline must be encoded as a u128 string",
+                    )
+                })?,
+        ),
+    };
+    let parse_u128 = |name: &'static str| -> Result<u128, InterpreterCodecError> {
+        required_str(state, name)?.parse::<u128>().map_err(|_| {
+            InterpreterCodecError::new(format!(
+                "execution budget `{name}` must be encoded as a u128 string"
+            ))
+        })
+    };
+    ExecutionBudget::restore(
+        limits,
+        ExecutionBudgetSnapshot {
+            deadline_unix_millis,
+            reserved_tokens: required_u64(state, "reserved_tokens")?,
+            consumed_tokens: required_u64(state, "consumed_tokens")?,
+            reserved_cost_micros: parse_u128("reserved_cost_micros")?,
+            consumed_cost_micros: parse_u128("consumed_cost_micros")?,
+        },
+    )
+    .map_err(|error| InterpreterCodecError::new(error.to_string()))
 }
 
 pub(super) fn sandbox_policy_json(policy: &SandboxPolicy) -> Value {

@@ -1,11 +1,13 @@
 mod aggregate;
 pub(crate) mod codec;
+mod host_handle;
 mod numeric;
 mod primitive;
 mod resource;
 mod support;
 
 pub use aggregate::{ArrayValue, ListValue, MapValue, RecordValue, SetValue, SliceValue};
+pub use host_handle::HostHandleValue;
 pub use numeric::{NumericError, NumericValue};
 pub use primitive::InterpValue;
 pub use resource::MemorySelectionKind;

@@ -1012,18 +1012,25 @@ impl<'a> EvalContext<'a> {
                         "std.crypto.hmac_sha256 expects SecretValue and bytes",
                     );
                 };
-                let key =
-                    std_value!(self.string_support_argument(key, &["ref"], "SecretValue", span,));
+                let InterpValue::HostHandle(handle) = key else {
+                    return self.invalid_arguments_abort(
+                        span,
+                        "std.crypto.hmac_sha256 expects a sealed SecretValue host handle",
+                    );
+                };
+                let Some(key) = handle.secret_ref() else {
+                    return self.invalid_arguments_abort(
+                        span,
+                        "std.crypto.hmac_sha256 expects a sealed SecretValue host handle",
+                    );
+                };
                 let body =
                     std_value!(self.bytes_argument(body, "std.crypto.hmac_sha256 body", span,));
                 let _action = std_value!(self.require_checked_default_action("Secret.use", span));
                 ControlSignal::pending_host(PendingHostBoundary {
                     request: HostBoundaryRequest::Secret(SecretRequest {
                         id: self.next_host_request_id(),
-                        operation: SecretOperation::HmacSha256 {
-                            key: SecretRef::new(key),
-                            body,
-                        },
+                        operation: SecretOperation::HmacSha256 { key, body },
                         authority: self.host_authority(),
                         trace: self.host_trace(),
                         budget: self.host_budget(),
@@ -1077,12 +1084,7 @@ impl<'a> EvalContext<'a> {
                         "std.browser.protocol.send expects BrowserSession and BrowserMessage",
                     );
                 };
-                let session = std_value!(self.string_support_argument(
-                    session,
-                    &["id", "session"],
-                    "BrowserSession",
-                    span,
-                ));
+                let session = std_value!(self.browser_session_argument(session, span));
                 let message = std_value!(self.bytes_argument(message, "BrowserMessage", span));
                 (
                     "Browser.send",
@@ -1097,12 +1099,7 @@ impl<'a> EvalContext<'a> {
                         "std.browser.protocol.recv expects BrowserSession",
                     );
                 };
-                let session = std_value!(self.string_support_argument(
-                    session,
-                    &["id", "session"],
-                    "BrowserSession",
-                    span,
-                ));
+                let session = std_value!(self.browser_session_argument(session, span));
                 (
                     "Browser.recv",
                     BrowserProtocolOperation::Recv {
@@ -1119,12 +1116,7 @@ impl<'a> EvalContext<'a> {
                         "std.browser.protocol.screenshot expects BrowserSession",
                     );
                 };
-                let session = std_value!(self.string_support_argument(
-                    session,
-                    &["id", "session"],
-                    "BrowserSession",
-                    span,
-                ));
+                let session = std_value!(self.browser_session_argument(session, span));
                 (
                     "Browser.screenshot",
                     BrowserProtocolOperation::Screenshot {
@@ -1141,12 +1133,7 @@ impl<'a> EvalContext<'a> {
                         "std.browser.protocol.close expects BrowserSession",
                     );
                 };
-                let session = std_value!(self.string_support_argument(
-                    session,
-                    &["id", "session"],
-                    "BrowserSession",
-                    span,
-                ));
+                let session = std_value!(self.browser_session_argument(session, span));
                 (
                     "Browser.close",
                     BrowserProtocolOperation::Close { session },
@@ -1440,34 +1427,20 @@ impl<'a> EvalContext<'a> {
         value: &InterpValue,
         span: Span,
     ) -> Result<ByteStreamRef, ExecutionFault> {
-        match value {
-            InterpValue::String(id) => Ok(ByteStreamRef::opaque(id.clone())),
-            InterpValue::Record(record) => {
-                let fields = record.snapshot();
-                let Some(id) = string_field(&fields, &["id", "stream"]) else {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "ByteStream must include an `id` string field",
-                    ));
-                };
-                let origin = fields
-                    .iter()
-                    .find_map(|(name, value)| {
-                        if name == "origin" {
-                            return stream_origin_argument(value);
-                        }
-                        None
-                    })
-                    .unwrap_or(etas_host::ByteStreamOrigin::Opaque);
-                Ok(ByteStreamRef::new(id, origin))
-            }
-            _ => Err(ExecutionFault::new(
+        let InterpValue::HostHandle(handle) = value else {
+            return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
-                "ByteStream must be an opaque host handle",
-            )),
-        }
+                "ByteStream must be a sealed host handle",
+            ));
+        };
+        handle.byte_stream_ref().ok_or_else(|| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::InvalidArguments,
+                span,
+                "host handle is not a ByteStream",
+            )
+        })
     }
 
     fn tcp_stream_ref_argument(
@@ -1475,37 +1448,44 @@ impl<'a> EvalContext<'a> {
         value: &InterpValue,
         span: Span,
     ) -> Result<TcpStreamRef, ExecutionFault> {
-        match value {
-            InterpValue::String(id) => Ok(TcpStreamRef {
-                id: id.clone(),
-                origin: etas_host::ByteStreamOrigin::Opaque,
-            }),
-            InterpValue::Record(record) => {
-                let fields = record.snapshot();
-                let Some(id) = string_field(&fields, &["id", "stream"]) else {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "TcpStream must include an `id` string field",
-                    ));
-                };
-                let origin = fields
-                    .iter()
-                    .find_map(|(name, value)| {
-                        if name == "origin" {
-                            return stream_origin_argument(value);
-                        }
-                        None
-                    })
-                    .unwrap_or(etas_host::ByteStreamOrigin::Opaque);
-                Ok(TcpStreamRef { id, origin })
-            }
-            _ => Err(ExecutionFault::new(
+        let InterpValue::HostHandle(handle) = value else {
+            return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
-                "TcpStream must be an opaque host handle",
-            )),
-        }
+                "TcpStream must be a sealed host handle",
+            ));
+        };
+        handle.tcp_stream_ref().ok_or_else(|| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::InvalidArguments,
+                span,
+                "host handle is not a TcpStream",
+            )
+        })
+    }
+
+    fn browser_session_argument(
+        &self,
+        value: &InterpValue,
+        span: Span,
+    ) -> Result<String, ExecutionFault> {
+        let InterpValue::HostHandle(handle) = value else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::InvalidArguments,
+                span,
+                "BrowserSession must be a sealed host handle",
+            ));
+        };
+        handle
+            .browser_session_id()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    span,
+                    "host handle is not a BrowserSession",
+                )
+            })
     }
 
     pub(super) fn std_intrinsic(
@@ -1531,19 +1511,6 @@ impl FilesystemAccess {
     }
 }
 
-fn string_field(fields: &[(String, InterpValue)], names: &[&str]) -> Option<String> {
-    names.iter().find_map(|field_name| {
-        fields.iter().find_map(|(name, value)| {
-            if name == field_name
-                && let InterpValue::String(value) = value
-            {
-                return Some(value.clone());
-            }
-            None
-        })
-    })
-}
-
 fn int_field(fields: &[(String, InterpValue)], names: &[&str]) -> Option<i64> {
     names.iter().find_map(|field_name| {
         fields.iter().find_map(|(name, value)| {
@@ -1562,38 +1529,6 @@ fn nominal_representation_ref(mut value: &InterpValue) -> &InterpValue {
         value = inner;
     }
     value
-}
-
-fn stream_origin_argument(value: &InterpValue) -> Option<etas_host::ByteStreamOrigin> {
-    let InterpValue::Record(record) = value else {
-        return None;
-    };
-    let fields = record.snapshot();
-    let kind = string_field(&fields, &["kind"])?;
-    match kind.as_str() {
-        "tcp" => {
-            let host = string_field(&fields, &["host"])?;
-            let port = u16::try_from(int_field(&fields, &["port"])?).ok()?;
-            Some(etas_host::ByteStreamOrigin::Tcp { host, port })
-        }
-        "tls" => {
-            let host = string_field(&fields, &["host"])?;
-            let port = u16::try_from(int_field(&fields, &["port"])?).ok()?;
-            let server_name = string_field(&fields, &["server_name"]);
-            Some(etas_host::ByteStreamOrigin::Tls {
-                host,
-                port,
-                server_name,
-            })
-        }
-        "file" => {
-            string_field(&fields, &["path"]).map(|path| etas_host::ByteStreamOrigin::File { path })
-        }
-        "browser" => string_field(&fields, &["session"])
-            .map(|session| etas_host::ByteStreamOrigin::Browser { session }),
-        "opaque" => Some(etas_host::ByteStreamOrigin::Opaque),
-        _ => None,
-    }
 }
 
 fn json_ok_result(value: InterpValue) -> InterpValue {

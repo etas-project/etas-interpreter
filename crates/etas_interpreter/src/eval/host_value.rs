@@ -219,6 +219,7 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
             fact_expr,
             handlers,
         } => format!("handler:{}:{}", fact_expr.0, handlers.len()),
+        InterpValue::HostHandle(handle) => format!("host_handle:{}", handle.boundary_key()),
         InterpValue::ResourceHandle { stable_id, .. } => format!("resource:{stable_id}"),
         InterpValue::MemoryStore {
             region_stable_id,
@@ -372,6 +373,7 @@ pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, Str
         | InterpValue::CommandResult { .. }
         | InterpValue::Callable(_)
         | InterpValue::Handler { .. }
+        | InterpValue::HostHandle(_)
         | InterpValue::ResourceHandle { .. }
         | InterpValue::MemoryStore { .. }
         | InterpValue::MemorySelection { .. } => Err(format!(
@@ -394,6 +396,7 @@ fn interp_value_kind(value: &InterpValue) -> &'static str {
         InterpValue::CommandResult { .. } => "command result",
         InterpValue::Callable(_) => "callable",
         InterpValue::Handler { .. } => "handler",
+        InterpValue::HostHandle(_) => "host handle",
         InterpValue::ResourceHandle { .. } => "resource handle",
         InterpValue::MemoryStore { .. } => "memory store",
         InterpValue::MemorySelection { .. } => "memory selection",

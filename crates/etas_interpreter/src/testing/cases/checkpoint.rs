@@ -153,7 +153,8 @@ flow main() -> i32 {
         &[std::path::PathBuf::from("main.es")],
         "main",
         checkpoint,
-    );
+    )
+    .expect("deep machine checkpoint artifact should encode");
     let restored = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("deep machine checkpoint artifact must decode");
 
@@ -216,7 +217,8 @@ flow main() -> i32 ![Console, Error<IOError>] {
         &[std::path::PathBuf::from("main.es")],
         "main",
         first.checkpoints.first().expect("checkpoint record"),
-    );
+    )
+    .expect("deep host checkpoint artifact should encode");
     let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("deep host checkpoint artifact must decode");
     let resumed_host = FakeHost::new(availability(&requirements));
@@ -348,7 +350,8 @@ flow main() -> i32 {
         &[std::path::PathBuf::from("main.es")],
         "main",
         checkpoint,
-    );
+    )
+    .expect("nested handler checkpoint artifact should encode");
     let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("nested handler checkpoint artifact must decode");
     let resumed = Interpreter
@@ -414,7 +417,8 @@ flow main() -> i32 {
         &[std::path::PathBuf::from("main.es")],
         "main",
         checkpoint,
-    );
+    )
+    .expect("nested retry checkpoint artifact should encode");
     let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("nested retry checkpoint artifact must decode");
     let resumed = Interpreter
@@ -462,7 +466,8 @@ flow main() -> i32 {
         &[std::path::PathBuf::from("main.es")],
         "main",
         first.checkpoints.first().expect("checkpoint record"),
-    );
+    )
+    .expect("lambda checkpoint artifact should encode");
     let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("lambda checkpoint artifact must decode");
     let resumed = Interpreter
@@ -529,7 +534,8 @@ flow main(input: string) -> string {
         &[std::path::PathBuf::from("main.es")],
         "main",
         checkpoint,
-    );
+    )
+    .expect("handler checkpoint artifact should encode");
     let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("handler checkpoint artifact must decode");
 

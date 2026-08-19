@@ -1,14 +1,6 @@
 use super::*;
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn record_host_request_sent(&mut self, id: HostRequestId) {
-        self.events.push(WorkflowEvent::HostRequestSent(id));
-    }
-
-    pub(crate) fn record_host_response_received(&mut self, id: HostRequestId) {
-        self.events.push(WorkflowEvent::HostResponseReceived(id));
-    }
-
     pub(crate) fn record_completed_host_boundary(
         &mut self,
         kind: &str,

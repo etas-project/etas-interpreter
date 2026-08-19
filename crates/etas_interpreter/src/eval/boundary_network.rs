@@ -47,17 +47,7 @@ fn network_error_raise_action(span: Span) -> ResolvedActionRef {
 }
 
 fn typed_host_error_value(error_type: etas_types::TypeId, error: HostError) -> InterpValue {
-    let code = match error.code {
-        etas_host::HostErrorCode::ProviderRejected => "ProviderRejected",
-        etas_host::HostErrorCode::ProviderUnavailable => "ProviderUnavailable",
-        etas_host::HostErrorCode::ToolRejected => "ToolRejected",
-        etas_host::HostErrorCode::ToolUnavailable => "ToolUnavailable",
-        etas_host::HostErrorCode::InvalidRequest => "InvalidRequest",
-        etas_host::HostErrorCode::InvalidResponse => "InvalidResponse",
-        etas_host::HostErrorCode::SchemaMismatch => "SchemaMismatch",
-        etas_host::HostErrorCode::BudgetExceeded => "BudgetExceeded",
-        etas_host::HostErrorCode::AuthorityDenied => "AuthorityDenied",
-    };
+    let code = error.code.as_str();
     let details = error
         .details
         .into_iter()

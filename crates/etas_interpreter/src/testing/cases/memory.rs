@@ -551,7 +551,7 @@ flow main() -> unit ![Memory.write] {
                         policy: boundary_policy_context(policy_ref.clone()),
                     },
                     trace: TraceContext::root(TraceId(78)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -635,7 +635,7 @@ flow main() -> unit ![Memory.write] {
                         policy: boundary_policy_context(policy_ref.clone()),
                     },
                     trace: TraceContext::root(TraceId(80)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },

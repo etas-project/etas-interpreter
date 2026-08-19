@@ -35,7 +35,7 @@ flow main(input: string) -> string {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(46)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -144,7 +144,7 @@ flow main(input: string) -> string {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(66)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 model_policy: api::ModelExecutionPolicy {
                     provider_capabilities: Some(full_model_capabilities()),
@@ -250,7 +250,7 @@ flow main(input: string) -> string {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(67)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 model_policy: api::ModelExecutionPolicy {
                     provider_capabilities: Some(full_model_capabilities()),
@@ -318,7 +318,7 @@ flow main(input: string) -> string {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(63)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 model_policy: api::ModelExecutionPolicy {
                     provider_capabilities: Some(full_model_capabilities()),
@@ -400,7 +400,7 @@ flow main(input: string) -> string {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(60)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -500,7 +500,7 @@ flow main(input: string) -> string {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(61)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 model_policy: api::ModelExecutionPolicy {
                     provider_capabilities: Some(full_model_capabilities()),
@@ -588,7 +588,7 @@ flow main(input: string) -> string {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(63)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 model_policy: api::ModelExecutionPolicy {
                     provider_capabilities: Some(full_model_capabilities()),
@@ -671,7 +671,7 @@ flow main(input: string) -> Draft {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(64)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -735,7 +735,8 @@ flow main(input: string) -> Draft {
         &[std::path::PathBuf::from("main.es")],
         "main",
         checkpoint,
-    );
+    )
+    .expect("source tool checkpoint artifact should encode");
     let restored = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("source tool machine checkpoint must decode");
     let restored_source_tool_frame = restored
@@ -831,7 +832,7 @@ flow main(input: string) -> string {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(65)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -880,7 +881,8 @@ flow main(input: string) -> string {
         &[std::path::PathBuf::from("main.es")],
         "main",
         checkpoint,
-    );
+    )
+    .expect("nested source tool checkpoint artifact should encode");
     let restored = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("nested source tool checkpoint must decode");
     let resumed_host = FakeHost::new(availability(&[
@@ -955,7 +957,7 @@ flow main(input: string) -> string {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(62)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 model_policy: api::ModelExecutionPolicy {
                     provider_capabilities: Some(full_model_capabilities()),
@@ -1042,7 +1044,7 @@ flow main(input: string) -> string {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(62)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 model_policy: api::ModelExecutionPolicy {
                     provider_capabilities: Some(full_model_capabilities()),
@@ -1256,7 +1258,7 @@ flow main(input: string) -> ModelResponse {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(43)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             response_decode: api::ModelResponseDecodePolicy::ModelResponse,
@@ -1287,7 +1289,10 @@ flow main(input: string) -> ModelResponse {
                     content: vec![value::ModelContentValue::Text("draft".to_owned())],
                 },
                 tool_calls: Vec::new(),
-                usage: None,
+                usage: Some(value::ModelUsageValue {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                }),
             }
         ))
     );

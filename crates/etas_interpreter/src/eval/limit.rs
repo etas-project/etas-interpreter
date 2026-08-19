@@ -1,7 +1,7 @@
 use etas_core::{AnalysisDiagnosticCode, Span};
 use etas_hir::{HirArg, HirExpr, HirExprId, HirLiteral, ResolveResult, SymbolDef};
 use etas_host::{Budget, CostBudget, TimeBudget, TokenBudget};
-use etas_std::{RequirementSemantics, StdDecl, StdLimitKind, standard_registry};
+use etas_std::{RequirementSemantics, StdDecl, StdLimitKind};
 
 use super::EvalContext;
 use crate::control::ExecutionFault;
@@ -82,8 +82,7 @@ impl<'a> EvalContext<'a> {
                 "limit callee must resolve to a std requirement constructor",
             ));
         };
-        let registry = standard_registry();
-        let Some(std_symbol) = registry.lookup_qualified(path) else {
+        let Some(std_symbol) = self.checked.std_registry.lookup_qualified(path) else {
             return Err(invalid_limit(
                 &span,
                 "limit callee is not present in the std registry",

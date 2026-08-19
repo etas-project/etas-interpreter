@@ -31,6 +31,7 @@ fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> Value
         completed_host_boundaries: HostBoundaryLedger::default(),
     };
     checkpoint_artifact_json(&[PathBuf::from("main.es")], "main", &checkpoint)
+        .expect("minimal checkpoint artifact should encode")
 }
 
 #[test]
@@ -64,6 +65,29 @@ fn value_codec_round_trips_every_numeric_width_and_nominal_identity() {
     let encoded = value_json(&expected);
     let restored = value_from_json(&encoded).expect("numeric value codec must be lossless");
     assert_eq!(restored, expected);
+}
+
+#[test]
+fn value_codec_redacts_and_rejects_sealed_host_capabilities() {
+    let value = InterpValue::HostHandle(crate::value::HostHandleValue::tcp_stream(
+        etas_types::TypeId(42),
+        etas_host::TcpStreamRef::issued(
+            etas_host::StreamHandleRef::issued("private-stream-id", 0),
+            etas_host::ByteStreamOrigin::Tcp {
+                host: "example.test".to_owned(),
+                port: 443,
+            },
+        ),
+    ));
+
+    let encoded = value_json(&value);
+    assert_eq!(encoded["kind"], "host_handle");
+    assert_eq!(encoded["handle_kind"], "tcp_stream");
+    assert!(!encoded.to_string().contains("private-stream-id"));
+
+    let error = value_from_json(&encoded)
+        .expect_err("serialized data must not mint a live host capability");
+    assert!(error.message().contains("cannot be restored"), "{error:?}");
 }
 
 #[test]
@@ -205,14 +229,14 @@ flow main() -> unit {
                 trace_id: TraceId(55),
                 parent_span: Some(TraceSpanId(56)),
             },
-            budget: Budget {
+            budget: etas_host::ExecutionBudget::start(Budget {
                 tokens: Some(TokenBudget { max_tokens: 4096 }),
                 time: Some(TimeBudget { max_millis: 10_000 }),
                 cost: Some(CostBudget {
                     max_micros: 250,
                     currency: "USD".to_owned(),
                 }),
-            },
+            }),
         },
         current_session: Some("session-42".to_owned()),
         resource_versions: ResourceVersionSnapshot {
@@ -230,7 +254,8 @@ flow main() -> unit {
         },
     };
 
-    let artifact = checkpoint_artifact_json(&[PathBuf::from("main.es")], "main", &checkpoint);
+    let artifact = checkpoint_artifact_json(&[PathBuf::from("main.es")], "main", &checkpoint)
+        .expect("checkpoint artifact should encode");
     let restored =
         checkpoint_from_json(&artifact, &checked).expect("checkpoint codec should restore");
 
@@ -373,7 +398,7 @@ fn checkpoint_codec_rejects_legacy_artifact_without_machine_stack() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v9`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v10`")
     );
 }
 
@@ -398,7 +423,7 @@ fn checkpoint_codec_rejects_v4_artifact_after_handler_scope_schema_change() {
         .expect_err("v4 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v9`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v10`"
         ),
         "{}",
         error.message()
@@ -415,7 +440,7 @@ fn checkpoint_codec_rejects_v5_artifact_after_lossless_host_ledger_schema_change
         .expect_err("v5 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v9`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v10`"
         ),
         "{}",
         error.message()
@@ -432,7 +457,7 @@ fn checkpoint_codec_rejects_v6_artifact_after_canonical_message_schema_change() 
         .expect_err("v6 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v9`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v10`"
         ),
         "{}",
         error.message()
@@ -449,7 +474,7 @@ fn checkpoint_codec_rejects_v7_artifact_without_checked_intrinsic_abi() {
         .expect_err("v7 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v9`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v10`"
         ),
         "{}",
         error.message()
@@ -466,7 +491,24 @@ fn checkpoint_codec_rejects_v8_artifact_with_executable_std_callable_payloads() 
         .expect_err("v8 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v9`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v10`"
+        ),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v9_artifact_without_run_owned_budget_state() {
+    let artifact = json!({
+        "schema": "etas.cli.interpreter-checkpoint.v9",
+        "checkpoint": {},
+    });
+    let error = checkpoint_from_json(&artifact, &checked_project())
+        .expect_err("v9 checkpoint must be rejected by schema version");
+    assert!(
+        error.message().contains(
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v9`; expected `etas.cli.interpreter-checkpoint.v10`"
         ),
         "{}",
         error.message()
@@ -530,6 +572,41 @@ flow main() -> unit ![Console.stdout_write, Error<IOError>] {
     let error = checkpoint_from_json(&artifact, &checked)
         .expect_err("checkpoint dispatch category tampering must fail closed");
     assert!(error.message().contains("dispatch mismatch"), "{error:?}");
+}
+
+#[test]
+fn checkpoint_codec_rejects_pure_kernel_encoded_as_runtime_std_target() {
+    let checked = crate::testing::project::checked_project(
+        r#"
+module app.main;
+
+import std.option.unwrap as option_unwrap;
+
+flow main() -> i32 {
+  let value: Option<i32> = Some(7);
+  return option_unwrap(value);
+}
+"#,
+    );
+    let mut artifact = minimal_checkpoint_artifact(&checked);
+    artifact["checkpoint"]["args"] = json!([{
+        "kind": "callable",
+        "target": {
+            "kind": "std_intrinsic",
+            "intrinsic": etas_std::intrinsic::pure::OPTION_UNWRAP,
+            "dispatch": "pure_kernel",
+            "parameter_types": [],
+            "result_type": 0,
+        },
+    }]);
+    let error = checkpoint_from_json(&artifact, &checked)
+        .expect_err("pure kernels must use the checked pure intrinsic checkpoint ABI");
+    assert!(
+        error
+            .message()
+            .contains("is a pure kernel and requires checked ABI facts"),
+        "{error:?}"
+    );
 }
 
 #[test]
@@ -597,7 +674,8 @@ fn run_report_json_includes_message_session_trace_events() {
             ],
             checkpoints: Vec::new(),
         },
-    );
+    )
+    .expect("run report should encode");
     assert_eq!(
         report["events"][0],
         json!({
@@ -686,6 +764,67 @@ fn run_report_json_includes_message_session_trace_events() {
             "kind": "session_compacted",
             "session": "session-43",
             "summary_message_count": 1,
+        })
+    );
+}
+
+#[test]
+fn run_report_json_preserves_structured_host_trace_events() {
+    let report = run_report_json(
+        "run",
+        &[PathBuf::from("main.es")],
+        "main",
+        &RunResult {
+            value: None,
+            diagnostics: Vec::new(),
+            events: vec![
+                WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
+                    id: HostRequestId(7),
+                    kind: etas_host::HostRequestKind::Memory,
+                    authority: Box::new(AuthorityContext::deny_all()),
+                    trace: TraceContext {
+                        trace_id: TraceId(11),
+                        parent_span: Some(TraceSpanId(12)),
+                    },
+                }),
+                WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
+                    id: HostRequestId(7),
+                    outcome: etas_host::HostOutcome::Failed(etas_host::HostError::new(
+                        etas_host::HostErrorCode::ProviderUnavailable,
+                        "memory offline",
+                    )),
+                }),
+            ],
+            checkpoints: Vec::new(),
+        },
+    )
+    .expect("structured host trace should encode");
+
+    assert_eq!(
+        report["events"][0],
+        json!({
+            "kind": "host_request_started",
+            "id": 7,
+            "request_kind": "memory",
+            "trace": { "trace_id": 11, "parent_span": 12 },
+            "authority": {
+                "grant_count": 0,
+                "approval_count": 0,
+                "active_trace_specs": [],
+            },
+        })
+    );
+    assert_eq!(
+        report["events"][1],
+        json!({
+            "kind": "host_request_finished",
+            "id": 7,
+            "outcome": {
+                "kind": "failed",
+                "code": "ProviderUnavailable",
+                "message": "memory offline",
+                "details": [],
+            },
         })
     );
 }

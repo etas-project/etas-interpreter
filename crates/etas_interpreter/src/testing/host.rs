@@ -8,9 +8,9 @@ use etas_host::{
     MemoryRequest, MemoryResponse, MemoryResult, MemoryVersion, MemoryWriteMode, ModelContent,
     ModelMessage, ModelRequest, ModelResponse, ModelRole, ModelToolCall, PolicyDecision,
     PolicyEvaluationRequest, PolicyResponse, SecretRequest, SecretResponse, SessionClient,
-    SessionRequest, SessionResponse, StreamRequest, StreamResponse, TcpConnectRequest,
-    TcpConnectResponse, TcpStreamRef, TlsConnectRequest, TlsConnectResponse, ToolRequest,
-    ToolResponse,
+    SessionRequest, SessionResponse, StreamFailure, StreamRequest, StreamResponse,
+    TcpConnectRequest, TcpConnectResponse, TcpStreamRef, TlsConnectRequest, TlsConnectResponse,
+    ToolRequest, ToolResponse,
 };
 use etas_host::{StreamPayload, StreamRead};
 use std::collections::{HashMap, VecDeque};
@@ -49,7 +49,7 @@ pub(super) struct FakeHost {
     tcp_requests: Arc<Mutex<Vec<TcpConnectRequest>>>,
     tcp_responses: Arc<Mutex<VecDeque<Result<TcpStreamRef, HostError>>>>,
     stream_requests: Arc<Mutex<Vec<StreamRequest>>>,
-    stream_responses: Arc<Mutex<VecDeque<Result<StreamPayload, HostError>>>>,
+    stream_responses: Arc<Mutex<VecDeque<Result<StreamPayload, StreamFailure>>>>,
     console_error: Arc<Mutex<Option<HostError>>>,
     stdin: Arc<Mutex<String>>,
     stdout: Arc<Mutex<String>>,
@@ -173,6 +173,21 @@ impl FakeHost {
     }
 
     pub(super) fn seed_model_response_text(&self, text: &str) {
+        self.seed_model_response_text_with_usage(
+            text,
+            Some(etas_host::ModelUsage {
+                input_tokens: 1,
+                output_tokens: 1,
+                cost: None,
+            }),
+        );
+    }
+
+    pub(super) fn seed_model_response_text_with_usage(
+        &self,
+        text: &str,
+        usage: Option<etas_host::ModelUsage>,
+    ) {
         self.model_responses
             .lock()
             .expect("model responses lock")
@@ -185,7 +200,7 @@ impl FakeHost {
                     tool_calls: Vec::new(),
                 },
                 tool_calls: Vec::new(),
-                usage: None,
+                usage,
             });
     }
 
@@ -221,7 +236,11 @@ impl FakeHost {
                     tool: tool.to_owned(),
                     args,
                 }],
-                usage: None,
+                usage: Some(etas_host::ModelUsage {
+                    input_tokens: 1,
+                    output_tokens: 1,
+                    cost: None,
+                }),
             });
     }
 
@@ -261,13 +280,13 @@ impl FakeHost {
         self.tcp_responses
             .lock()
             .expect("tcp responses lock")
-            .push_back(Ok(TcpStreamRef {
-                id: id.to_owned(),
-                origin: ByteStreamOrigin::Tcp {
+            .push_back(Ok(TcpStreamRef::issued(
+                etas_host::StreamHandleRef::issued(id, 0),
+                ByteStreamOrigin::Tcp {
                     host: host.to_owned(),
                     port,
                 },
-            }));
+            )));
     }
 
     pub(super) fn seed_tcp_connect_error(&self, code: HostErrorCode, message: &str) {
@@ -277,11 +296,11 @@ impl FakeHost {
             .push_back(Err(HostError::new(code, message)));
     }
 
-    pub(super) fn seed_stream_read_until_limit_error(&self, code: HostErrorCode, message: &str) {
+    pub(super) fn seed_stream_read_until_limit_failure(&self, failure: StreamFailure) {
         self.stream_responses
             .lock()
             .expect("stream responses lock")
-            .push_back(Err(HostError::new(code, message)));
+            .push_back(Err(failure));
     }
 
     #[allow(dead_code)]

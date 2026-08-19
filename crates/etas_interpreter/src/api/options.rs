@@ -2,8 +2,8 @@ use std::num::{NonZeroU32, NonZeroU64};
 
 use etas_hir::HirItemId;
 use etas_host::{
-    AuthorityContext, Budget, ModelName, ModelOptions, ModelProviderCapabilities, ModelProviderId,
-    ModelToolChoice, ToolSchema, TraceContext, TraceId,
+    AuthorityContext, Budget, ExecutionBudget, ModelName, ModelOptions, ModelProviderCapabilities,
+    ModelProviderId, ModelToolChoice, ToolSchema, TraceContext, TraceId,
 };
 use etas_utils::ProfileHandle;
 
@@ -73,7 +73,7 @@ pub struct RunOptions {
 pub struct HostExecutionContext {
     pub authority: AuthorityContext,
     pub trace: TraceContext,
-    pub budget: Budget,
+    pub budget: ExecutionBudget,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -126,7 +126,7 @@ impl Default for HostExecutionContext {
         Self {
             authority: AuthorityContext::deny_all(),
             trace: TraceContext::root(TraceId(0)),
-            budget: Budget::default(),
+            budget: ExecutionBudget::default(),
         }
     }
 }

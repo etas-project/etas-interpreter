@@ -291,6 +291,7 @@ pub(super) fn prompt_data_kind(value: &InterpValue) -> &'static str {
         InterpValue::CommandResult { .. } => "command result",
         InterpValue::Callable(_) => "callable",
         InterpValue::Handler { .. } => "handler",
+        InterpValue::HostHandle(_) => "host handle",
         InterpValue::ResourceHandle { .. } => "resource handle",
         InterpValue::MemoryStore { .. } => "memory store",
         InterpValue::MemorySelection { .. } => "memory selection",

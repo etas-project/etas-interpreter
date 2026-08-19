@@ -64,6 +64,7 @@ pub enum InterpValue {
         fact_expr: etas_hir::HirExprId,
         handlers: Vec<crate::orchestration::ActiveHandlerArmRecord>,
     },
+    HostHandle(super::HostHandleValue),
     ResourceHandle {
         name: String,
         stable_id: String,

@@ -1,19 +1,26 @@
 use etas_host::{
     BrowserProtocolOperation, BrowserProtocolPayload, FilesystemEntry, FilesystemOperation,
-    HostValue, PolicySubject, SecretPayload, StreamOperation, StreamPayload, StreamRead,
+    HostError, HostRequestKind, HostValue, PolicySubject, SecretPayload, StreamFailure,
+    StreamOperation, StreamPayload, StreamRead,
 };
 
 use crate::{
     control::{ControlSignal, HostBoundaryDecode, HostBoundaryRequest, PendingHostBoundary},
     eval::{EvalContext, machine::EvalMachine},
     host::HostServices,
-    value::{InterpValue, ListValue, RecordValue},
+    value::{HostHandleValue, InterpValue, ListValue, RecordValue},
 };
 
 use super::{
     error::{format_host_error, retry_or_report},
+    host_dispatch::HostDispatch,
     policy::evaluate_before_boundary,
 };
+
+enum HostBoundaryFailure {
+    Host(HostError),
+    Stream(StreamFailure),
+}
 
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
@@ -28,7 +35,6 @@ pub(in crate::driver) async fn dispatch(
     {
         return Some(eval.resume_host_signal(boundary, value));
     }
-    let request_id = host_boundary_request_id(&boundary.request);
     if !evaluate_before_boundary(
         eval,
         host,
@@ -41,79 +47,133 @@ pub(in crate::driver) async fn dispatch(
     {
         return None;
     }
-    eval.record_host_request_sent(request_id);
+    if let Err(error) = host_boundary_budget(&boundary.request).check_time() {
+        return retry_or_report(
+            eval,
+            machine,
+            boundary.continuation,
+            boundary.span,
+            format!("{kind} host boundary failed: {}", format_host_error(&error)),
+        );
+    }
     let result = match boundary.request.clone() {
-        HostBoundaryRequest::Filesystem(request) => match host.filesystem(request).await {
-            Ok(response) => {
-                eval.record_host_response_received(response.id);
-                response
-                    .result
-                    .map(|entry| host_boundary_value_from_filesystem_entry(boundary.decode, entry))
-            }
-            Err(error) => {
-                eval.record_host_response_received(request_id);
-                Err(error)
-            }
+        HostBoundaryRequest::Filesystem(request) => match HostDispatch::execute(
+            eval,
+            request.id,
+            HostRequestKind::Filesystem,
+            request.authority.clone(),
+            request.trace.clone(),
+            host.filesystem(request),
+        )
+        .await
+        {
+            Ok(response) => response
+                .result
+                .map(|entry| host_boundary_value_from_filesystem_entry(boundary.decode, entry))
+                .map_err(HostBoundaryFailure::Host),
+            Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
-        HostBoundaryRequest::Tcp(request) => match host.tcp(request).await {
-            Ok(response) => {
-                eval.record_host_response_received(response.id);
-                response
-                    .result
-                    .map(|stream| host_boundary_value_from_tcp_stream(boundary.decode, stream))
-            }
-            Err(error) => {
-                eval.record_host_response_received(request_id);
-                Err(error)
-            }
-        },
-        HostBoundaryRequest::Stream(request) => match host.stream(request).await {
-            Ok(response) => {
-                eval.record_host_response_received(response.id);
-                response.result.map(|payload| {
-                    host_boundary_value_from_stream_payload(boundary.decode, payload)
+        HostBoundaryRequest::Tcp(request) => match HostDispatch::execute(
+            eval,
+            request.id,
+            HostRequestKind::Tcp,
+            request.authority.clone(),
+            request.trace.clone(),
+            host.tcp(request),
+        )
+        .await
+        {
+            Ok(response) => response
+                .result
+                .map(|stream| {
+                    let nominal_type = eval.known_std_types.tcp_stream.ok_or_else(|| {
+                        "TCP response requires checked std.net.tcp.TcpStream type".to_owned()
+                    })?;
+                    host_boundary_value_from_tcp_stream(boundary.decode, nominal_type, stream)
                 })
-            }
-            Err(error) => {
-                eval.record_host_response_received(request_id);
-                Err(error)
-            }
+                .map_err(HostBoundaryFailure::Host),
+            Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
-        HostBoundaryRequest::Tls(request) => match host.tls(request).await {
-            Ok(response) => {
-                eval.record_host_response_received(response.id);
-                response
-                    .result
-                    .map(|stream| host_boundary_value_from_tls_stream(boundary.decode, stream))
-            }
-            Err(error) => {
-                eval.record_host_response_received(request_id);
-                Err(error)
-            }
+        HostBoundaryRequest::Stream(request) => match HostDispatch::execute(
+            eval,
+            request.id,
+            HostRequestKind::Stream,
+            request.authority.clone(),
+            request.trace.clone(),
+            host.stream(request),
+        )
+        .await
+        {
+            Ok(response) => response
+                .result
+                .map(|payload| host_boundary_value_from_stream_payload(boundary.decode, payload))
+                .map_err(HostBoundaryFailure::Stream),
+            Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
-        HostBoundaryRequest::Secret(request) => match host.secret(request).await {
-            Ok(response) => {
-                eval.record_host_response_received(response.id);
-                response
-                    .result
-                    .map(|secret| host_boundary_value_from_secret(boundary.decode, secret))
-            }
-            Err(error) => {
-                eval.record_host_response_received(request_id);
-                Err(error)
-            }
-        },
-        HostBoundaryRequest::Browser(request) => match host.browser(request).await {
-            Ok(response) => {
-                eval.record_host_response_received(response.id);
-                response.result.map(|payload| {
-                    host_boundary_value_from_browser_payload(boundary.decode, payload)
+        HostBoundaryRequest::Tls(request) => match HostDispatch::execute(
+            eval,
+            request.id,
+            HostRequestKind::Tls,
+            request.authority.clone(),
+            request.trace.clone(),
+            host.tls(request),
+        )
+        .await
+        {
+            Ok(response) => response
+                .result
+                .map(|stream| {
+                    let nominal_type = eval.known_std_types.tls_stream.ok_or_else(|| {
+                        "TLS response requires checked std.tls.TlsStream type".to_owned()
+                    })?;
+                    host_boundary_value_from_tls_stream(boundary.decode, nominal_type, stream)
                 })
-            }
-            Err(error) => {
-                eval.record_host_response_received(request_id);
-                Err(error)
-            }
+                .map_err(HostBoundaryFailure::Host),
+            Err(error) => Err(HostBoundaryFailure::Host(error)),
+        },
+        HostBoundaryRequest::Secret(request) => match HostDispatch::execute(
+            eval,
+            request.id,
+            HostRequestKind::Secret,
+            request.authority.clone(),
+            request.trace.clone(),
+            host.secret(request),
+        )
+        .await
+        {
+            Ok(response) => response
+                .result
+                .map(|secret| {
+                    host_boundary_value_from_secret(
+                        boundary.decode,
+                        eval.known_std_types.secret_value,
+                        secret,
+                    )
+                })
+                .map_err(HostBoundaryFailure::Host),
+            Err(error) => Err(HostBoundaryFailure::Host(error)),
+        },
+        HostBoundaryRequest::Browser(request) => match HostDispatch::execute(
+            eval,
+            request.id,
+            HostRequestKind::Browser,
+            request.authority.clone(),
+            request.trace.clone(),
+            host.browser(request),
+        )
+        .await
+        {
+            Ok(response) => response
+                .result
+                .map(|payload| {
+                    host_boundary_value_from_browser_payload(
+                        boundary.decode,
+                        eval.known_std_types.browser_session,
+                        payload,
+                    )
+                })
+                .map_err(HostBoundaryFailure::Host),
+            Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
     };
     match result {
@@ -130,12 +190,15 @@ pub(in crate::driver) async fn dispatch(
             boundary.span,
             format!("{kind} host boundary failed: {message}"),
         ),
-        Err(error) => {
+        Err(HostBoundaryFailure::Stream(failure)) => {
+            Some(eval.stream_failure_signal(boundary, failure))
+        }
+        Err(HostBoundaryFailure::Host(error)) => {
             if let Some(signal) = eval.network_host_error_signal(boundary.clone(), error.clone()) {
                 return Some(signal);
             }
-            if let Some(signal) = eval.stream_host_error_signal(boundary.clone(), error.clone()) {
-                return Some(signal);
+            if matches!(&boundary.request, HostBoundaryRequest::Stream(_)) {
+                return Some(eval.stream_failure_signal(boundary, StreamFailure::Host(error)));
             }
             retry_or_report(
                 eval,
@@ -148,16 +211,14 @@ pub(in crate::driver) async fn dispatch(
     }
 }
 
-pub(in crate::driver) fn host_boundary_request_id(
-    request: &HostBoundaryRequest,
-) -> etas_host::HostRequestId {
+fn host_boundary_budget(request: &HostBoundaryRequest) -> &etas_host::ExecutionBudget {
     match request {
-        HostBoundaryRequest::Filesystem(request) => request.id,
-        HostBoundaryRequest::Tcp(request) => request.id,
-        HostBoundaryRequest::Stream(request) => request.id,
-        HostBoundaryRequest::Tls(request) => request.id,
-        HostBoundaryRequest::Secret(request) => request.id,
-        HostBoundaryRequest::Browser(request) => request.id,
+        HostBoundaryRequest::Filesystem(request) => &request.budget,
+        HostBoundaryRequest::Tcp(request) => &request.budget,
+        HostBoundaryRequest::Stream(request) => &request.budget,
+        HostBoundaryRequest::Tls(request) => &request.budget,
+        HostBoundaryRequest::Secret(request) => &request.budget,
+        HostBoundaryRequest::Browser(request) => &request.budget,
     }
 }
 
@@ -231,13 +292,14 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
 
 pub(in crate::driver) fn host_boundary_value_from_tcp_stream(
     decode: HostBoundaryDecode,
+    nominal_type: etas_types::TypeId,
     stream: etas_host::TcpStreamRef,
 ) -> Result<InterpValue, String> {
     match decode {
-        HostBoundaryDecode::TcpStream => Ok(InterpValue::Record(RecordValue::new(vec![
-            ("id".to_owned(), InterpValue::String(stream.id)),
-            ("origin".to_owned(), stream_origin_value(stream.origin)),
-        ]))),
+        HostBoundaryDecode::TcpStream => Ok(InterpValue::HostHandle(HostHandleValue::tcp_stream(
+            nominal_type,
+            stream,
+        ))),
         decode => Err(format!(
             "tcp stream response does not match decode {:?}",
             decode
@@ -278,13 +340,14 @@ pub(in crate::driver) fn host_boundary_value_from_stream_payload(
 
 pub(in crate::driver) fn host_boundary_value_from_tls_stream(
     decode: HostBoundaryDecode,
+    nominal_type: etas_types::TypeId,
     stream: etas_host::TlsStreamRef,
 ) -> Result<InterpValue, String> {
     match decode {
-        HostBoundaryDecode::TlsStream => Ok(InterpValue::Record(RecordValue::new(vec![
-            ("id".to_owned(), InterpValue::String(stream.id)),
-            ("origin".to_owned(), stream_origin_value(stream.origin)),
-        ]))),
+        HostBoundaryDecode::TlsStream => Ok(InterpValue::HostHandle(HostHandleValue::tls_stream(
+            nominal_type,
+            stream,
+        ))),
         decode => Err(format!(
             "tls stream response does not match decode {:?}",
             decode
@@ -292,63 +355,20 @@ pub(in crate::driver) fn host_boundary_value_from_tls_stream(
     }
 }
 
-pub(in crate::driver) fn stream_origin_value(origin: etas_host::ByteStreamOrigin) -> InterpValue {
-    match origin {
-        etas_host::ByteStreamOrigin::Tcp { host, port } => {
-            InterpValue::Record(RecordValue::new(vec![
-                ("kind".to_owned(), InterpValue::String("tcp".to_owned())),
-                ("host".to_owned(), InterpValue::String(host)),
-                ("port".to_owned(), InterpValue::u16(port)),
-            ]))
-        }
-        etas_host::ByteStreamOrigin::Tls {
-            host,
-            port,
-            server_name,
-        } => {
-            let mut fields = vec![
-                ("kind".to_owned(), InterpValue::String("tls".to_owned())),
-                ("host".to_owned(), InterpValue::String(host)),
-                ("port".to_owned(), InterpValue::u16(port)),
-            ];
-            if let Some(server_name) = server_name {
-                fields.push(("server_name".to_owned(), InterpValue::String(server_name)));
-            }
-            InterpValue::Record(RecordValue::new(fields))
-        }
-        etas_host::ByteStreamOrigin::File { path } => InterpValue::Record(RecordValue::new(vec![
-            ("kind".to_owned(), InterpValue::String("file".to_owned())),
-            ("path".to_owned(), InterpValue::String(path)),
-        ])),
-        etas_host::ByteStreamOrigin::Browser { session } => {
-            InterpValue::Record(RecordValue::new(vec![
-                ("kind".to_owned(), InterpValue::String("browser".to_owned())),
-                ("session".to_owned(), InterpValue::String(session)),
-            ]))
-        }
-        etas_host::ByteStreamOrigin::Opaque => InterpValue::Record(RecordValue::new(vec![(
-            "kind".to_owned(),
-            InterpValue::String("opaque".to_owned()),
-        )])),
-    }
-}
-
 pub(in crate::driver) fn host_boundary_value_from_secret(
     decode: HostBoundaryDecode,
+    nominal_type: Option<etas_types::TypeId>,
     payload: SecretPayload,
 ) -> Result<InterpValue, String> {
     match (decode, payload) {
         (HostBoundaryDecode::SecretValue, SecretPayload::Value(secret)) => {
-            Ok(InterpValue::Record(RecordValue::new(vec![
-                (
-                    "ref".to_owned(),
-                    InterpValue::String(secret.reference().id().to_owned()),
-                ),
-                (
-                    "redacted".to_owned(),
-                    InterpValue::String(secret.redacted_label().to_owned()),
-                ),
-            ])))
+            let nominal_type = nominal_type.ok_or_else(|| {
+                "secret response requires checked std.secret.SecretValue type".to_owned()
+            })?;
+            Ok(InterpValue::HostHandle(HostHandleValue::secret_value(
+                nominal_type,
+                secret,
+            )))
         }
         (HostBoundaryDecode::SecretBytes, SecretPayload::Bytes(bytes)) => {
             Ok(InterpValue::Bytes(bytes))
@@ -362,14 +382,19 @@ pub(in crate::driver) fn host_boundary_value_from_secret(
 
 pub(in crate::driver) fn host_boundary_value_from_browser_payload(
     decode: HostBoundaryDecode,
+    nominal_type: Option<etas_types::TypeId>,
     payload: BrowserProtocolPayload,
 ) -> Result<InterpValue, String> {
     match (decode, payload) {
         (HostBoundaryDecode::BrowserPayload, BrowserProtocolPayload::Session { id }) => {
-            Ok(InterpValue::Record(RecordValue::new(vec![
-                ("kind".to_owned(), InterpValue::String("Session".to_owned())),
-                ("id".to_owned(), InterpValue::String(id)),
-            ])))
+            let nominal_type = nominal_type.ok_or_else(|| {
+                "browser response requires checked std.browser.protocol.BrowserSession type"
+                    .to_owned()
+            })?;
+            Ok(InterpValue::HostHandle(HostHandleValue::browser_session(
+                nominal_type,
+                id,
+            )))
         }
         (HostBoundaryDecode::BrowserPayload, BrowserProtocolPayload::Message(bytes)) => {
             Ok(InterpValue::Record(RecordValue::new(vec![
@@ -477,31 +502,31 @@ pub(in crate::driver) fn stream_policy_subject(
         StreamOperation::Read { stream, .. } => (
             "read",
             "Stream.read",
-            stream.id.clone(),
+            stream.handle().identity_fingerprint(),
             stream_origin_label(stream),
         ),
         StreamOperation::ReadUntilLimit { stream, .. } => (
             "read_until_limit",
             "Stream.read",
-            stream.id.clone(),
+            stream.handle().identity_fingerprint(),
             stream_origin_label(stream),
         ),
         StreamOperation::WriteAll { stream, .. } => (
             "write_all",
             "Stream.write",
-            stream.id.clone(),
+            stream.handle().identity_fingerprint(),
             stream_origin_label(stream),
         ),
         StreamOperation::Flush { stream } => (
             "flush",
             "Stream.flush",
-            stream.id.clone(),
+            stream.handle().identity_fingerprint(),
             stream_origin_label(stream),
         ),
         StreamOperation::Close { stream } => (
             "close",
             "Stream.close",
-            stream.id.clone(),
+            stream.handle().identity_fingerprint(),
             stream_origin_label(stream),
         ),
     };
@@ -527,7 +552,7 @@ pub(in crate::driver) fn stream_policy_subject(
 }
 
 pub(in crate::driver) fn stream_origin_label(stream: &etas_host::ByteStreamRef) -> String {
-    match &stream.origin {
+    match stream.origin() {
         etas_host::ByteStreamOrigin::Tcp { host, port } => format!("tcp:{host}:{port}"),
         etas_host::ByteStreamOrigin::Tls {
             host,
@@ -636,12 +661,75 @@ mod tests {
     use super::*;
 
     #[test]
+    fn host_boundaries_create_sealed_capability_values() {
+        let tcp = host_boundary_value_from_tcp_stream(
+            HostBoundaryDecode::TcpStream,
+            etas_types::TypeId(101),
+            etas_host::TcpStreamRef::issued(
+                etas_host::StreamHandleRef::issued("tcp-1", 7),
+                etas_host::ByteStreamOrigin::Tcp {
+                    host: "example.test".to_owned(),
+                    port: 443,
+                },
+            ),
+        )
+        .expect("TCP response should decode");
+        let InterpValue::HostHandle(tcp) = tcp else {
+            panic!("TCP response must produce a sealed host handle");
+        };
+        assert_eq!(tcp.kind_name(), "tcp_stream");
+        assert_eq!(tcp.nominal_type(), etas_types::TypeId(101));
+        assert_eq!(
+            tcp.byte_stream_ref()
+                .expect("TCP is a byte stream")
+                .handle()
+                .generation(),
+            7
+        );
+
+        let secret = host_boundary_value_from_secret(
+            HostBoundaryDecode::SecretValue,
+            Some(etas_types::TypeId(102)),
+            etas_host::SecretPayload::Value(etas_host::SecretValue::new(
+                etas_host::SecretRef::new("secret-1"),
+                "<redacted>",
+            )),
+        )
+        .expect("secret response should decode");
+        let InterpValue::HostHandle(secret) = secret else {
+            panic!("secret response must produce a sealed host handle");
+        };
+        assert_eq!(secret.kind_name(), "secret_value");
+        assert_eq!(
+            secret
+                .secret_ref()
+                .expect("secret handle should bind a ref")
+                .id(),
+            "secret-1"
+        );
+
+        let browser = host_boundary_value_from_browser_payload(
+            HostBoundaryDecode::BrowserPayload,
+            Some(etas_types::TypeId(103)),
+            BrowserProtocolPayload::Session {
+                id: "browser-1".to_owned(),
+            },
+        )
+        .expect("browser response should decode");
+        let InterpValue::HostHandle(browser) = browser else {
+            panic!("browser response must produce a sealed host handle");
+        };
+        assert_eq!(browser.kind_name(), "browser_session");
+        assert_eq!(browser.browser_session_id(), Some("browser-1"));
+    }
+
+    #[test]
     fn stream_policy_subject_uses_canonical_action_and_origin() {
         let read_subject = stream_policy_subject(&etas_host::StreamRequest {
             id: etas_host::HostRequestId(1),
             operation: etas_host::StreamOperation::ReadUntilLimit {
-                stream: etas_host::ByteStreamRef::new(
-                    "tcp:example.test:443:1",
+                stream: etas_host::ByteStreamRef::issued(
+                    etas_host::StreamHandleRef::issued("tcp-test", 0),
                     etas_host::ByteStreamOrigin::Tcp {
                         host: "example.test".to_owned(),
                         port: 443,
@@ -660,8 +748,8 @@ mod tests {
         let write_subject = stream_policy_subject(&etas_host::StreamRequest {
             id: etas_host::HostRequestId(2),
             operation: etas_host::StreamOperation::WriteAll {
-                stream: etas_host::ByteStreamRef::new(
-                    "tls:example.test:443:example.test:2",
+                stream: etas_host::ByteStreamRef::issued(
+                    etas_host::StreamHandleRef::issued("tls-test", 1),
                     etas_host::ByteStreamOrigin::Tls {
                         host: "example.test".to_owned(),
                         port: 443,

@@ -254,6 +254,10 @@ pub fn value_json(value: &InterpValue) -> Value {
             "fact_expr": fact_expr.0,
             "handlers": handlers.iter().map(handler_arm_json).collect::<Vec<_>>()
         }),
+        InterpValue::HostHandle(handle) => json!({
+            "kind": "host_handle",
+            "handle_kind": handle.kind_name(),
+        }),
         InterpValue::ResourceHandle {
             name,
             stable_id,
@@ -957,6 +961,9 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
                 .map(handler_arm_from_json)
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
         }),
+        "host_handle" => Err(InterpreterCodecError::new(
+            "serialized host handles cannot be restored without a live host capability",
+        )),
         "resource_handle" => Ok(InterpValue::ResourceHandle {
             name: required_str(value, "name")?.to_owned(),
             stable_id: required_str(value, "stable_id")?.to_owned(),

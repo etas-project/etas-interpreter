@@ -1,7 +1,10 @@
 use std::collections::BTreeMap;
 
 use etas_core::{AnalysisDiagnosticCode, Diagnostic};
-use etas_host::{HostValue, MemoryOperation, MemoryRequest, MemoryResult, PolicySubject};
+use etas_host::{
+    HostError, HostRequestKind, HostValue, MemoryOperation, MemoryRequest, MemoryResponse,
+    MemoryResult, PolicySubject,
+};
 
 use crate::{
     control::{ControlSignal, PendingMemory},
@@ -10,7 +13,9 @@ use crate::{
     value::InterpValue,
 };
 
-use super::{error::retry_or_report, policy::evaluate_before_boundary};
+use super::{
+    error::retry_or_report, host_dispatch::HostDispatch, policy::evaluate_before_boundary,
+};
 
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
@@ -24,8 +29,16 @@ pub(in crate::driver) async fn dispatch(
         }
         return Some(eval.resume_memory_signal(memory, value));
     }
+    if let Err(error) = memory.request.budget.check_time() {
+        return retry_or_report(
+            eval,
+            machine,
+            memory.continuation,
+            memory.span,
+            format!("memory host boundary failed: {}", error.message),
+        );
+    }
     let key = eval.memory_boundary_key(&memory);
-    let request_id = memory.request.id;
     if !evaluate_before_boundary(
         eval,
         host,
@@ -38,43 +51,36 @@ pub(in crate::driver) async fn dispatch(
     {
         return None;
     }
-    eval.record_host_request_sent(request_id);
-    match host.memory(memory.request.clone()).await {
-        Ok(response) => {
-            eval.record_host_response_received(response.id);
-            match response.result {
-                Ok(etas_host::MemoryResult::Conflict(conflict)) => {
-                    Some(eval.memory_conflict_signal(memory, conflict))
-                }
-                Ok(result) => {
-                    eval.record_memory_result_versions(&memory.request, &result);
-                    match eval.memory_result_value(&memory, result) {
-                        Ok(value) => {
-                            eval.record_completed_host_boundary("memory", key, value.clone());
-                            Some(eval.resume_memory_signal(memory, value))
-                        }
-                        Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),
-                    }
-                }
-                Err(error) => retry_or_report(
-                    eval,
-                    machine,
-                    memory.continuation,
-                    memory.span,
-                    format!("memory host boundary failed: {}", error.message),
-                ),
+    match dispatch_memory_request(eval, host, memory.request.clone()).await {
+        Ok(response) => match response.result {
+            Ok(etas_host::MemoryResult::Conflict(conflict)) => {
+                Some(eval.memory_conflict_signal(memory, conflict))
             }
-        }
-        Err(error) => {
-            eval.record_host_response_received(request_id);
-            retry_or_report(
+            Ok(result) => {
+                eval.record_memory_result_versions(&memory.request, &result);
+                match eval.memory_result_value(&memory, result) {
+                    Ok(value) => {
+                        eval.record_completed_host_boundary("memory", key, value.clone());
+                        Some(eval.resume_memory_signal(memory, value))
+                    }
+                    Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),
+                }
+            }
+            Err(error) => retry_or_report(
                 eval,
                 machine,
                 memory.continuation,
                 memory.span,
                 format!("memory host boundary failed: {}", error.message),
-            )
-        }
+            ),
+        },
+        Err(error) => retry_or_report(
+            eval,
+            machine,
+            memory.continuation,
+            memory.span,
+            format!("memory host boundary failed: {}", error.message),
+        ),
     }
 }
 
@@ -159,6 +165,9 @@ pub(in crate::driver) async fn validate_replayed_memory_get_version(
     memory: &PendingMemory,
     replayed: &InterpValue,
 ) -> bool {
+    if !check_replay_budget(eval, memory) {
+        return false;
+    }
     let resources = match eval.memory_replay_resources(memory, replayed) {
         Ok(resources) => resources,
         Err(fault) => {
@@ -185,7 +194,7 @@ pub(in crate::driver) async fn validate_replayed_memory_get_version(
         ));
         return false;
     };
-    let response = match host.memory(memory.request.clone()).await {
+    let response = match dispatch_memory_request(eval, host, memory.request.clone()).await {
         Ok(response) => response,
         Err(error) => {
             eval.diagnostics.push(Diagnostic::analysis(
@@ -250,7 +259,10 @@ pub(in crate::driver) async fn validate_replayed_memory_absence(
     memory: &PendingMemory,
     resource: &str,
 ) -> bool {
-    let response = match host.memory(memory.request.clone()).await {
+    if !check_replay_budget(eval, memory) {
+        return false;
+    }
+    let response = match dispatch_memory_request(eval, host, memory.request.clone()).await {
         Ok(response) => response,
         Err(error) => {
             eval.diagnostics.push(Diagnostic::analysis(
@@ -308,6 +320,9 @@ pub(in crate::driver) async fn validate_replayed_memory_scan_versions(
     memory: &PendingMemory,
     replayed: &InterpValue,
 ) -> bool {
+    if !check_replay_budget(eval, memory) {
+        return false;
+    }
     let resources = match eval.memory_replay_resources(memory, replayed) {
         Ok(resources) => resources,
         Err(fault) => {
@@ -329,7 +344,7 @@ pub(in crate::driver) async fn validate_replayed_memory_scan_versions(
         };
         expected_versions.insert(resource, version);
     }
-    let response = match host.memory(memory.request.clone()).await {
+    let response = match dispatch_memory_request(eval, host, memory.request.clone()).await {
         Ok(response) => response,
         Err(error) => {
             eval.diagnostics.push(Diagnostic::analysis(
@@ -404,4 +419,38 @@ pub(in crate::driver) async fn validate_replayed_memory_scan_versions(
         }
     }
     true
+}
+
+fn check_replay_budget(eval: &mut EvalContext<'_>, memory: &PendingMemory) -> bool {
+    if let Err(error) = memory.request.budget.check_time() {
+        eval.diagnostics.push(Diagnostic::analysis(
+            AnalysisDiagnosticCode::UnhandledRuntimeError,
+            memory.span,
+            format!(
+                "memory replay validation exhausted the execution budget: {}",
+                error.message
+            ),
+        ));
+        return false;
+    }
+    true
+}
+
+async fn dispatch_memory_request(
+    eval: &mut EvalContext<'_>,
+    host: &dyn HostServices,
+    request: MemoryRequest,
+) -> Result<MemoryResponse, HostError> {
+    let request_id = request.id;
+    let authority = request.authority.clone();
+    let trace = request.trace.clone();
+    HostDispatch::execute(
+        eval,
+        request_id,
+        HostRequestKind::Memory,
+        authority,
+        trace,
+        host.memory(request),
+    )
+    .await
 }

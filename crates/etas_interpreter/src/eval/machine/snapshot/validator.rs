@@ -746,7 +746,7 @@ impl<'a> SnapshotValidator<'a> {
                 result_type,
             } => {
                 self.dispatch
-                    .validate_std_intrinsic(crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                    .resolve_std_callable(crate::intrinsic::dispatch::StdIntrinsicIdentity {
                         intrinsic: *intrinsic,
                         dispatch: *dispatch,
                     })

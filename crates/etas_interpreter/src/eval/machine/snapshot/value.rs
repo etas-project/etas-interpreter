@@ -92,6 +92,12 @@ impl ValueSnapshot {
                 fact_expr: *fact_expr,
                 handlers: handlers.clone(),
             },
+            InterpValue::HostHandle(handle) => {
+                return Err(format!(
+                    "live {} host handles cannot be captured in a checkpoint",
+                    handle.kind_name()
+                ));
+            }
             InterpValue::ResourceHandle {
                 name,
                 stable_id,
@@ -346,4 +352,28 @@ fn restore_pairs(
         .into_iter()
         .map(|(key, value)| Ok((key.restore()?, value.restore()?)))
         .collect()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::value::HostHandleValue;
+
+    #[test]
+    fn checkpoint_capture_rejects_live_host_capabilities() {
+        let value = InterpValue::HostHandle(HostHandleValue::tcp_stream(
+            etas_types::TypeId(1),
+            etas_host::TcpStreamRef::issued(
+                etas_host::StreamHandleRef::issued("tcp-live", 0),
+                etas_host::ByteStreamOrigin::Tcp {
+                    host: "example.test".to_owned(),
+                    port: 443,
+                },
+            ),
+        ));
+
+        let error = ValueSnapshot::capture(&value)
+            .expect_err("live stream handles must not enter checkpoint artifacts");
+        assert!(error.contains("live tcp_stream host handles"), "{error}");
+    }
 }

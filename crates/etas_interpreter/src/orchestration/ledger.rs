@@ -3,14 +3,11 @@ use super::{CheckpointId, RetryAttemptId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkflowStepId(pub u32);
 
-pub use etas_host::HostRequestId;
-
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq)]
 pub enum WorkflowEvent {
     StepStarted(WorkflowStepId),
     StepCompleted(WorkflowStepId),
-    HostRequestSent(HostRequestId),
-    HostResponseReceived(HostRequestId),
+    HostTrace(etas_host::TraceEvent),
     CheckpointCreated(CheckpointId),
     MessageCreated {
         id: String,

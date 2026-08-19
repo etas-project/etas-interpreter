@@ -107,18 +107,14 @@ flow main() -> Prompt {
         1,
         "resume should call memory only for version validation"
     );
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -309,18 +305,14 @@ flow main() -> Option<string> {
         )))
     );
     assert_eq!(replay_host.memory_call_count(), 1);
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -469,18 +461,14 @@ flow main() -> Option<string> {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(resumed.value, Some(value::InterpValue::OptionNone));
     assert_eq!(replay_host.memory_call_count(), 1);
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -674,18 +662,14 @@ flow main() -> List<string> {
         ))
     );
     assert_eq!(replay_host.memory_call_count(), 1);
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -947,16 +931,12 @@ flow main() -> MemorySelection<string> {
         Some(&value::InterpValue::String("paper".to_owned()))
     );
     assert_eq!(replay_host.memory_call_count(), 0);
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(!resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(!resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }

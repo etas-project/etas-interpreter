@@ -128,10 +128,10 @@ flow main(input: string) -> string {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(42)),
-            budget: Budget {
+            budget: etas_host::ExecutionBudget::start(Budget {
                 tokens: Some(TokenBudget { max_tokens: 128 }),
                 ..Budget::default()
-            },
+            }),
         },
         ..RunOptions::default()
     };
@@ -173,21 +173,233 @@ flow main(input: string) -> string {
     );
     assert_eq!(requests[0].trace, TraceContext::root(TraceId(42)));
     assert_eq!(
-        requests[0].budget.tokens,
+        requests[0].budget.limits().tokens,
         Some(TokenBudget { max_tokens: 128 })
     );
-    assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
+            id: HostRequestId(0),
+            kind: etas_host::HostRequestKind::Model,
+            authority,
+            trace,
+        }) if authority.grants == vec![HostActionGrant::allow("Agentic", "infer")]
+            && trace == &TraceContext::root(TraceId(42))
+    )));
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
+            id: HostRequestId(0),
+            outcome: etas_host::HostOutcome::Succeeded,
+        })
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_owned_token_budget_is_consumed_across_model_calls() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+
+agent Writer(input: string) -> string {
+  return Prompt.new().user(Public(input));
+}
+
+flow main() -> string {
+  let first = Writer.run("first");
+  return Writer.run(first);
+}
+"#,
     );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    host.seed_model_response_text("one");
+    host.seed_model_response_text("two");
+    let options = RunOptions {
+        host_context: api::HostExecutionContext {
+            authority: AuthorityContext {
+                grants: vec![HostActionGrant::allow("Agentic", "infer")],
+                approvals: Vec::new(),
+                sandbox: SandboxPolicy::deny_all(),
+                policy: Default::default(),
+            },
+            trace: TraceContext::root(TraceId(43)),
+            budget: etas_host::ExecutionBudget::start(Budget {
+                tokens: Some(TokenBudget { max_tokens: 3 }),
+                ..Budget::default()
+            }),
+        },
+        ..RunOptions::default()
+    };
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            options,
+        )
+        .await;
+
+    assert!(result.value.is_none());
+    assert_eq!(host.model_call_count(), 2);
     assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("run-owned execution token budget is exhausted")
+        }),
+        "{:?}",
+        result.diagnostics
     );
+    let snapshot = host.model_requests()[0]
+        .budget
+        .snapshot()
+        .expect("shared budget snapshot");
+    assert_eq!(snapshot.consumed_tokens, 2);
+    assert_eq!(snapshot.reserved_tokens, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn token_budget_fails_closed_when_model_omits_usage() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+
+agent Writer(input: string) -> string {
+  return Prompt.new().user(Public(input));
+}
+
+flow main() -> string {
+  return Writer.run("first");
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    host.seed_model_response_text_with_usage("one", None);
+    let options = RunOptions {
+        host_context: api::HostExecutionContext {
+            authority: AuthorityContext {
+                grants: vec![HostActionGrant::allow("Agentic", "infer")],
+                approvals: Vec::new(),
+                sandbox: SandboxPolicy::deny_all(),
+                policy: Default::default(),
+            },
+            trace: TraceContext::root(TraceId(44)),
+            budget: etas_host::ExecutionBudget::start(Budget {
+                tokens: Some(TokenBudget { max_tokens: 10 }),
+                ..Budget::default()
+            }),
+        },
+        ..RunOptions::default()
+    };
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            options,
+        )
+        .await;
+
+    assert!(result.value.is_none());
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("model response omitted usage required by the run-owned execution budget")
+        }),
+        "{:?}",
+        result.diagnostics
+    );
+    let snapshot = host.model_requests()[0]
+        .budget
+        .snapshot()
+        .expect("shared budget snapshot");
+    assert_eq!(snapshot.consumed_tokens, 0);
+    assert_eq!(snapshot.reserved_tokens, 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn model_cost_usage_is_settled_into_the_run_owned_budget() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+
+agent Writer(input: string) -> string {
+  return Prompt.new().user(Public(input));
+}
+
+flow main() -> string {
+  return Writer.run("first");
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    host.seed_model_response_text_with_usage(
+        "one",
+        Some(etas_host::ModelUsage {
+            input_tokens: 1,
+            output_tokens: 1,
+            cost: Some(etas_host::ModelCostUsage {
+                micros: 30,
+                currency: "USD".to_owned(),
+            }),
+        }),
+    );
+    let options = RunOptions {
+        host_context: api::HostExecutionContext {
+            authority: AuthorityContext {
+                grants: vec![HostActionGrant::allow("Agentic", "infer")],
+                approvals: Vec::new(),
+                sandbox: SandboxPolicy::deny_all(),
+                policy: Default::default(),
+            },
+            trace: TraceContext::root(TraceId(45)),
+            budget: etas_host::ExecutionBudget::start(Budget {
+                cost: Some(etas_host::CostBudget {
+                    max_micros: 100,
+                    currency: "USD".to_owned(),
+                }),
+                ..Budget::default()
+            }),
+        },
+        ..RunOptions::default()
+    };
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            options,
+        )
+        .await;
+
+    assert_eq!(
+        result.value,
+        Some(value::InterpValue::String("one".to_owned())),
+        "{:?}",
+        result.diagnostics
+    );
+    let snapshot = host.model_requests()[0]
+        .budget
+        .snapshot()
+        .expect("shared budget snapshot");
+    assert_eq!(snapshot.consumed_cost_micros, 30);
+    assert_eq!(snapshot.reserved_cost_micros, 0);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -233,7 +445,7 @@ flow main() -> string ![Error<IOError>] {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(52)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -300,7 +512,7 @@ flow main() -> string ![Error<IOError>] {
                         policy: Default::default(),
                     },
                     trace: TraceContext::root(TraceId(53)),
-                    budget: Budget::default(),
+                    budget: etas_host::ExecutionBudget::default(),
                 },
                 ..RunOptions::default()
             },
@@ -394,7 +606,7 @@ flow main(input: string) -> string {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(44)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -461,7 +673,7 @@ flow main(input: string) -> string {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(144)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -495,7 +707,10 @@ flow main(input: string) -> string {
     );
     assert_eq!(request.tools.len(), 1);
     assert_eq!(request.options.max_output_tokens, Some(31));
-    assert_eq!(request.budget.tokens, Some(TokenBudget { max_tokens: 31 }));
+    assert_eq!(
+        request.budget.limits().tokens,
+        Some(TokenBudget { max_tokens: 31 })
+    );
     assert!(
         request.options.metadata.is_empty(),
         "@trace must stay in interpreter trace metadata, not provider request metadata"
@@ -542,7 +757,7 @@ flow main(input: string) -> string {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(45)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             model: etas_host::ModelName("runtime-model".to_owned()),
@@ -609,7 +824,10 @@ flow main(input: string) -> string {
     let requests = host.model_requests();
     let request = requests.first().expect("model request should be sent");
     assert_eq!(request.options.max_output_tokens, Some(17));
-    assert_eq!(request.budget.tokens, Some(TokenBudget { max_tokens: 17 }));
+    assert_eq!(
+        request.budget.limits().tokens,
+        Some(TokenBudget { max_tokens: 17 })
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -648,7 +866,10 @@ flow main(input: string) -> string {
     let requests = host.model_requests();
     let request = requests.first().expect("model request should be sent");
     assert_eq!(request.options.max_output_tokens, Some(23));
-    assert_eq!(request.budget.tokens, Some(TokenBudget { max_tokens: 23 }));
+    assert_eq!(
+        request.budget.limits().tokens,
+        Some(TokenBudget { max_tokens: 23 })
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -682,7 +903,7 @@ flow main(input: string) -> Draft {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(45)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -767,7 +988,7 @@ flow main(input: string) -> Draft {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(46)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider: Some(ModelProviderId("mock-provider".to_owned())),
@@ -839,7 +1060,7 @@ flow main(input: string) -> Draft {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(47)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider: Some(ModelProviderId("mock-provider".to_owned())),
@@ -926,7 +1147,7 @@ flow main(input: string) -> i8 {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(47)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),
@@ -982,7 +1203,7 @@ flow main(input: string) -> Trusted<string> {
                 policy: Default::default(),
             },
             trace: TraceContext::root(TraceId(48)),
-            budget: Budget::default(),
+            budget: etas_host::ExecutionBudget::default(),
         },
         model_policy: api::ModelExecutionPolicy {
             provider_capabilities: Some(full_model_capabilities()),

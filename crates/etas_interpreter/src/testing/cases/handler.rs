@@ -443,18 +443,14 @@ flow main() -> bool {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
     assert_eq!(host.approval_call_count(), 1);
-    assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
     let checkpoint = result.checkpoints.first().expect("checkpoint record");
     assert_eq!(checkpoint.completed_host_boundaries.completed.len(), 1);
     assert_eq!(
@@ -499,18 +495,14 @@ flow main() -> bool {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
     assert_eq!(host.approval_call_count(), 1);
-    assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -588,18 +580,14 @@ flow main() -> bool {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
     assert_eq!(host.approval_call_count(), 1);
-    assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        result
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -857,16 +845,12 @@ flow main() -> bool {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(resumed.value, Some(value::InterpValue::Bool(true)));
     assert_eq!(replay_host.approval_call_count(), 0);
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostRequestSent(_)))
-    );
-    assert!(
-        !resumed
-            .events
-            .iter()
-            .any(|event| matches!(event, WorkflowEvent::HostResponseReceived(_)))
-    );
+    assert!(!resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
+    )));
+    assert!(!resumed.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { .. })
+    )));
 }
