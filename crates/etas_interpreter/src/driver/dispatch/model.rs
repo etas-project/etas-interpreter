@@ -1,4 +1,6 @@
-use etas_host::{HostError, HostErrorCode, HostRequestKind, HostValue, PolicySubject};
+use etas_host::{
+    HostError, HostErrorCode, HostRequestKind, HostTraceRequest, HostValue, PolicySubject,
+};
 
 use crate::{
     eval::{EvalContext, machine::EvalMachine},
@@ -17,11 +19,12 @@ pub(in crate::driver) async fn dispatch(
     machine: &mut EvalMachine,
 ) -> bool {
     let policy_ref = boundary_policy_ref_for(eval, pending.request.policy_ref.clone());
+    let trace_subject = policy_subject(&pending.request);
     if !evaluate_before_boundary(
         eval,
         host,
         policy_ref,
-        policy_subject(&pending.request),
+        trace_subject.clone(),
         pending.span,
         "model",
     )
@@ -86,10 +89,12 @@ pub(in crate::driver) async fn dispatch(
     };
 
     let request_id = pending.request.id;
+    let trace_payload = pending.request.trace_payload();
     let result = match HostDispatch::execute(
         eval,
         request_id,
         HostRequestKind::Model,
+        trace_payload,
         pending.request.authority.clone(),
         pending.request.trace.clone(),
         host.model(pending.request.clone()),
@@ -172,7 +177,7 @@ fn policy_subject(request: &etas_host::ModelRequest) -> PolicySubject {
         ),
         (
             "qualified_action".to_owned(),
-            HostValue::String("Model.invoke".to_owned()),
+            HostValue::String("Agentic.infer".to_owned()),
         ),
         (
             "model".to_owned(),

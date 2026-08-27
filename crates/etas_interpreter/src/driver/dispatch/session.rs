@@ -4,7 +4,7 @@ use crate::{
     host::HostServices,
 };
 
-use etas_host::HostRequestKind;
+use etas_host::{HostRequestKind, HostTraceRequest};
 
 use super::host_dispatch::HostDispatch;
 
@@ -25,6 +25,7 @@ pub(in crate::driver) async fn dispatch(
         eval,
         request_id,
         HostRequestKind::Session,
+        session.request.trace_payload(),
         session.request.authority.clone(),
         session.request.trace.clone(),
         host.session(session.request.clone()),

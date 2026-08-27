@@ -1,5 +1,5 @@
 use etas_host::{
-    HostRequestKind, HostValue, PolicySubject,
+    HostRequestKind, HostTraceRequest, HostValue, PolicySubject,
     console::{ConsoleOperation, ConsoleRequest},
 };
 
@@ -24,11 +24,12 @@ pub(in crate::driver) async fn dispatch(
     }
     let key = eval.console_boundary_key(&console);
     let request_id = console.request.id;
+    let trace_subject = policy_subject(&console.request);
     if !evaluate_before_boundary(
         eval,
         host,
         eval.boundary_policy_ref(),
-        policy_subject(&console.request),
+        trace_subject.clone(),
         console.span,
         "console",
     )
@@ -40,6 +41,7 @@ pub(in crate::driver) async fn dispatch(
         eval,
         request_id,
         HostRequestKind::Console,
+        console.request.trace_payload(),
         console.request.authority.clone(),
         console.request.trace.clone(),
         host.console(console.request.clone()),

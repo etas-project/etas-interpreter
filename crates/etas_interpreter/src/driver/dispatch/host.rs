@@ -1,7 +1,7 @@
 use etas_host::{
     BrowserProtocolOperation, BrowserProtocolPayload, FilesystemEntry, FilesystemOperation,
-    HostError, HostRequestKind, HostValue, PolicySubject, SecretPayload, StreamFailure,
-    StreamOperation, StreamPayload, StreamRead,
+    HostError, HostRequestKind, HostTraceRequest, HostValue, PolicySubject, SecretPayload,
+    StreamFailure, StreamOperation, StreamPayload, StreamRead,
 };
 
 use crate::{
@@ -30,6 +30,7 @@ pub(in crate::driver) async fn dispatch(
 ) -> Option<ControlSignal> {
     let kind = host_boundary_kind(&boundary.request);
     let key = host_boundary_key(&boundary);
+    let trace_subject = host_boundary_policy_subject(&boundary.request);
     if host_boundary_is_replayable(&boundary.request)
         && let Some(value) = eval.completed_host_boundary_result(kind, &key)
     {
@@ -39,7 +40,7 @@ pub(in crate::driver) async fn dispatch(
         eval,
         host,
         eval.boundary_policy_ref(),
-        host_boundary_policy_subject(&boundary.request),
+        trace_subject.clone(),
         boundary.span,
         kind,
     )
@@ -61,6 +62,7 @@ pub(in crate::driver) async fn dispatch(
             eval,
             request.id,
             HostRequestKind::Filesystem,
+            request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
             host.filesystem(request),
@@ -77,6 +79,7 @@ pub(in crate::driver) async fn dispatch(
             eval,
             request.id,
             HostRequestKind::Tcp,
+            request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
             host.tcp(request),
@@ -98,6 +101,7 @@ pub(in crate::driver) async fn dispatch(
             eval,
             request.id,
             HostRequestKind::Stream,
+            request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
             host.stream(request),
@@ -114,6 +118,7 @@ pub(in crate::driver) async fn dispatch(
             eval,
             request.id,
             HostRequestKind::Tls,
+            request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
             host.tls(request),
@@ -135,6 +140,7 @@ pub(in crate::driver) async fn dispatch(
             eval,
             request.id,
             HostRequestKind::Secret,
+            request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
             host.secret(request),
@@ -157,6 +163,7 @@ pub(in crate::driver) async fn dispatch(
             eval,
             request.id,
             HostRequestKind::Browser,
+            request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
             host.browser(request),

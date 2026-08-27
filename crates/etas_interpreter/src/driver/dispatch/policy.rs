@@ -1,6 +1,7 @@
 use etas_core::{AnalysisDiagnosticCode, Diagnostic, Span};
 use etas_host::{
-    HostRequestKind, HostValue, PolicyDecision, PolicyEvaluationRequest, PolicySubject,
+    HostRequestKind, HostTraceRequest, HostValue, PolicyDecision, PolicyEvaluationRequest,
+    PolicySubject,
 };
 
 use crate::{eval::EvalContext, host::HostServices};
@@ -55,10 +56,12 @@ pub(in crate::driver) async fn evaluate_before_boundary(
     };
     let policy_authority = policy_request.authority.clone();
     let policy_trace = policy_request.trace.clone();
+    let trace_payload = policy_request.trace_payload();
     match HostDispatch::execute(
         eval,
         policy_request_id,
         HostRequestKind::Policy,
+        trace_payload,
         policy_authority,
         policy_trace,
         host.policy(policy_request),
@@ -93,7 +96,7 @@ pub(in crate::driver) async fn evaluate_before_boundary(
                 )
                 .await
                 {
-                    Ok(decision) => match decision {
+                    Ok(response) => match response.decision {
                         etas_host::ApprovalDecision::Approved { grant } => {
                             eval.record_approval_grant(grant);
                             true

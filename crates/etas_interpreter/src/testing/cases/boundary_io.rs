@@ -95,10 +95,147 @@ flow main() -> unit ![Console, Error<IOError>]
     assert_eq!(requests[0].subject.kind, "console");
     assert!(result.events.iter().any(|event| matches!(
         event,
-        WorkflowEvent::HostTrace(etas_host::TraceEvent::ApprovalRequested { request })
-            if request.id == HostRequestId(900)
-                && request.trace == TraceContext::root(TraceId(77))
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::ApprovalRequested { id, trace, .. })
+            if *id == HostRequestId(900)
+                && *trace == TraceContext::root(TraceId(77))
     )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn policy_approval_rejects_mismatched_response_id() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.effects.Console;
+import std.io.println;
+
+flow main() -> unit ![Console, Error<IOError>] {
+    println("blocked");
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    let requested = HostActionGrant::allow("Console", "stdout_write");
+    host.seed_policy_decision(PolicyDecision::RequireApproval {
+        request: ApprovalRequest {
+            id: HostRequestId(903),
+            reason: "sensitive approval reason".to_owned(),
+            requested_grants: vec![requested.clone()],
+            trace: TraceContext::root(TraceId(91)),
+        },
+    });
+    host.seed_approval_response(ApprovalResponse {
+        id: HostRequestId(904),
+        decision: ApprovalDecision::Approved {
+            grant: etas_host::ApprovalGrant {
+                id: HostRequestId(903),
+                grants: vec![requested],
+            },
+        },
+    });
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: AuthorityContext {
+                        policy: boundary_policy_context(HostValue::String(
+                            "console-policy".to_owned(),
+                        )),
+                        ..AuthorityContext::deny_all()
+                    },
+                    ..api::HostExecutionContext::default()
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await;
+
+    assert_eq!(host.console_call_count(), 0);
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("approval response id does not match")
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn policy_approval_rejects_grants_outside_requested_authority() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.effects.Console;
+import std.io.println;
+
+flow main() -> unit ![Console, Error<IOError>] {
+    println("blocked");
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    let requested = HostActionGrant::allow("Console", "stdout_write");
+    host.seed_policy_decision(PolicyDecision::RequireApproval {
+        request: ApprovalRequest {
+            id: HostRequestId(905),
+            reason: "console requires approval".to_owned(),
+            requested_grants: vec![requested.clone()],
+            trace: TraceContext::root(TraceId(92)),
+        },
+    });
+    host.seed_approval_response(ApprovalResponse {
+        id: HostRequestId(905),
+        decision: ApprovalDecision::Approved {
+            grant: etas_host::ApprovalGrant {
+                id: HostRequestId(905),
+                grants: vec![
+                    requested,
+                    HostActionGrant::allow("Filesystem", "read_bytes"),
+                ],
+            },
+        },
+    });
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: AuthorityContext {
+                        policy: boundary_policy_context(HostValue::String(
+                            "console-policy".to_owned(),
+                        )),
+                        ..AuthorityContext::deny_all()
+                    },
+                    ..api::HostExecutionContext::default()
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await;
+
+    assert_eq!(host.console_call_count(), 0);
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("grants authority outside the request")
+    }));
 }
 
 #[tokio::test(flavor = "current_thread")]

@@ -1,4 +1,4 @@
-use etas_host::{CommandRequest, HostRequestKind, HostValue, PolicySubject};
+use etas_host::{CommandRequest, HostRequestKind, HostTraceRequest, HostValue, PolicySubject};
 
 use crate::{
     control::{ControlSignal, PendingCommand},
@@ -30,11 +30,12 @@ pub(in crate::driver) async fn dispatch(
     }
     let key = eval.command_boundary_key(&command);
     let request_id = command.request.id;
+    let trace_subject = policy_subject(&command.request);
     if !evaluate_before_boundary(
         eval,
         host,
         eval.boundary_policy_ref(),
-        policy_subject(&command.request),
+        trace_subject.clone(),
         command.span,
         "command",
     )
@@ -46,6 +47,7 @@ pub(in crate::driver) async fn dispatch(
         eval,
         request_id,
         HostRequestKind::Command,
+        command.request.trace_payload(),
         command.request.authority.clone(),
         command.request.trace.clone(),
         host.command(command.request.clone()),

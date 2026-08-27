@@ -48,8 +48,8 @@ pub(in crate::driver) async fn dispatch(
     match HostDispatch::execute_approval(eval, request.clone(), authority, host.approval(request))
         .await
     {
-        Ok(decision) => {
-            let value = match decision {
+        Ok(response) => {
+            let value = match response.decision {
                 etas_host::ApprovalDecision::Approved { .. } => InterpValue::Bool(true),
                 etas_host::ApprovalDecision::Denied { .. } => InterpValue::Bool(false),
             };

@@ -441,13 +441,17 @@ async fn dispatch_memory_request(
     host: &dyn HostServices,
     request: MemoryRequest,
 ) -> Result<MemoryResponse, HostError> {
+    use etas_host::HostTraceRequest;
+
     let request_id = request.id;
+    let trace_payload = request.trace_payload();
     let authority = request.authority.clone();
     let trace = request.trace.clone();
     HostDispatch::execute(
         eval,
         request_id,
         HostRequestKind::Memory,
+        trace_payload,
         authority,
         trace,
         host.memory(request),

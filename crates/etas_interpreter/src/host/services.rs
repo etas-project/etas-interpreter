@@ -2,7 +2,7 @@ use std::{future::Future, pin::Pin};
 
 use etas_host::console::{ConsoleRequest, ConsoleResponse};
 use etas_host::{
-    ApprovalDecision, ApprovalRequest, BrowserProtocolRequest, BrowserProtocolResponse,
+    ApprovalRequest, ApprovalResponse, BrowserProtocolRequest, BrowserProtocolResponse,
     CommandRequest, CommandResponse, FilesystemRequest, FilesystemResponse, MemoryRequest,
     MemoryResponse, ModelRequest, ModelResponse, PolicyEvaluationRequest, PolicyResponse,
     SecretRequest, SecretResponse, SessionRequest, SessionResponse, StreamRequest, StreamResponse,
@@ -80,7 +80,7 @@ pub trait HostServices {
     fn approval<'a>(
         &'a self,
         request: ApprovalRequest,
-    ) -> HostFuture<'a, Result<ApprovalDecision, etas_host::HostError>>;
+    ) -> HostFuture<'a, Result<ApprovalResponse, etas_host::HostError>>;
 
     fn policy<'a>(
         &'a self,

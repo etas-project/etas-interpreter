@@ -1,5 +1,5 @@
 use etas_effects::HostRequirementKind;
-use etas_host::HostRequestKind;
+use etas_host::{HostRequestKind, HostTraceRequest};
 
 use crate::{
     eval::{
@@ -56,12 +56,14 @@ pub(in crate::driver) async fn dispatch(
                 return true;
             }
             let request_id = request.id;
+            let trace_payload = request.trace_payload();
             let authority = request.authority.clone();
             let trace = request.trace.clone();
             let result = HostDispatch::execute(
                 eval,
                 request_id,
                 HostRequestKind::Tool,
+                trace_payload,
                 authority,
                 trace,
                 host.tool(request),

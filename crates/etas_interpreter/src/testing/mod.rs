@@ -20,10 +20,10 @@ use etas_hir::{
 };
 use etas_host::HostErrorCode;
 use etas_host::{
-    ApprovalDecision, ApprovalRequest, AuthorityContext, Budget, HostActionGrant, HostFieldSchema,
-    HostRequestId, HostSchema, HostValue, ModelContent, ModelName, ModelProviderCapabilities,
-    ModelProviderId, ModelRole, PolicyDecision, SandboxPolicy, TokenBudget, ToolRef, ToolSchema,
-    TraceContext, TraceId,
+    ApprovalDecision, ApprovalRequest, ApprovalResponse, AuthorityContext, Budget, HostActionGrant,
+    HostFieldSchema, HostRequestId, HostSchema, HostValue, ModelContent, ModelName,
+    ModelProviderCapabilities, ModelProviderId, ModelRole, PolicyDecision, SandboxPolicy,
+    TokenBudget, ToolRef, ToolSchema, TraceContext, TraceId,
 };
 use etas_types::{NamedTypeRef, NominalTypeRef, Type};
 
@@ -79,6 +79,7 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
             flows: Vec::new(),
             agents: Vec::new(),
             tools: vec![ProjectExternalToolSignatureInput {
+                generic_params: Vec::new(),
                 path: tool_path.clone(),
                 param_names: vec!["input".to_owned()],
                 input: vec![ProjectExternalTypeInput::Record {

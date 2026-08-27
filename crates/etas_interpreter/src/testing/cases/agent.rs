@@ -181,17 +181,94 @@ flow main(input: string) -> string {
         WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
             id: HostRequestId(0),
             kind: etas_host::HostRequestKind::Model,
+            metadata,
             authority,
             trace,
+            started_at_unix_micros,
         }) if authority.grants == vec![HostActionGrant::allow("Agentic", "infer")]
             && trace == &TraceContext::root(TraceId(42))
+            && metadata.qualified_action == "Agentic.infer"
+            && metadata.payload_digest.len() == 64
+            && *started_at_unix_micros > 0
     )));
     assert!(result.events.iter().any(|event| matches!(
         event,
         WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
             id: HostRequestId(0),
             outcome: etas_host::HostOutcome::Succeeded,
+            finished_at_unix_micros,
+            ..
+        }) if *finished_at_unix_micros > 0
+    )));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn model_response_id_mismatch_fails_closed_and_preserves_trace_pairing() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+
+agent Writer(input: string) -> string {
+  return Prompt.new().user(Public(input));
+}
+
+flow main() -> string {
+  return Writer.run("hello");
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    host.seed_model_response_text("draft");
+    host.force_next_model_response_id(HostRequestId(99));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: AuthorityContext {
+                        grants: vec![HostActionGrant::allow("Agentic", "infer")],
+                        approvals: Vec::new(),
+                        sandbox: SandboxPolicy::deny_all(),
+                        policy: Default::default(),
+                    },
+                    trace: TraceContext::root(TraceId(91)),
+                    budget: etas_host::ExecutionBudget::start(Budget::default()),
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await;
+
+    assert!(result.value.is_none());
+    assert!(result.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("host response id does not match the originating request id")
+    }));
+    let trace_ids = result
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { id, .. })
+            | WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { id, .. }) => {
+                Some(*id)
+            }
+            _ => None,
         })
+        .collect::<Vec<_>>();
+    assert_eq!(trace_ids, vec![HostRequestId(0), HostRequestId(0)]);
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
+            outcome: etas_host::HostOutcome::Failed(error),
+            ..
+        }) if error.code == HostErrorCode::InvalidResponse
     )));
 }
 

@@ -2,13 +2,13 @@ use crate::host::{HostFuture, HostServiceAvailability, HostServices};
 use etas_effects::HostRequirementKind;
 use etas_host::console::{ConsoleOperation, ConsoleRequest, ConsoleResponse, ConsoleResult};
 use etas_host::{
-    ApprovalDecision, ApprovalRequest, BrowserProtocolRequest, BrowserProtocolResponse,
-    ByteStreamOrigin, CommandOutput, CommandRequest, CommandResponse, FilesystemRequest,
-    FilesystemResponse, HostError, HostErrorCode, HostValue, MemoryConflict, MemoryOperation,
-    MemoryRequest, MemoryResponse, MemoryResult, MemoryVersion, MemoryWriteMode, ModelContent,
-    ModelMessage, ModelRequest, ModelResponse, ModelRole, ModelToolCall, PolicyDecision,
-    PolicyEvaluationRequest, PolicyResponse, SecretRequest, SecretResponse, SessionClient,
-    SessionRequest, SessionResponse, StreamFailure, StreamRequest, StreamResponse,
+    ApprovalDecision, ApprovalRequest, ApprovalResponse, BrowserProtocolRequest,
+    BrowserProtocolResponse, ByteStreamOrigin, CommandOutput, CommandRequest, CommandResponse,
+    FilesystemRequest, FilesystemResponse, HostError, HostErrorCode, HostValue, MemoryConflict,
+    MemoryOperation, MemoryRequest, MemoryResponse, MemoryResult, MemoryVersion, MemoryWriteMode,
+    ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole, ModelToolCall,
+    PolicyDecision, PolicyEvaluationRequest, PolicyResponse, SecretRequest, SecretResponse,
+    SessionClient, SessionRequest, SessionResponse, StreamFailure, StreamRequest, StreamResponse,
     TcpConnectRequest, TcpConnectResponse, TcpStreamRef, TlsConnectRequest, TlsConnectResponse,
     ToolRequest, ToolResponse,
 };
@@ -16,7 +16,7 @@ use etas_host::{StreamPayload, StreamRead};
 use std::collections::{HashMap, VecDeque};
 use std::sync::{
     Arc, Mutex,
-    atomic::{AtomicUsize, Ordering},
+    atomic::{AtomicBool, AtomicUsize, Ordering},
 };
 
 #[derive(Clone, Debug)]
@@ -29,6 +29,7 @@ pub(super) struct FakeHost {
     availability: HostServiceAvailability,
     approval_calls: Arc<AtomicUsize>,
     approval_decisions: Arc<Mutex<VecDeque<ApprovalDecision>>>,
+    approval_responses: Arc<Mutex<VecDeque<ApprovalResponse>>>,
     command_calls: Arc<AtomicUsize>,
     console_calls: Arc<AtomicUsize>,
     memory_calls: Arc<AtomicUsize>,
@@ -40,6 +41,7 @@ pub(super) struct FakeHost {
     model_requests: Arc<Mutex<Vec<ModelRequest>>>,
     model_errors: Arc<Mutex<VecDeque<HostError>>>,
     model_responses: Arc<Mutex<VecDeque<ModelResponse>>>,
+    preserve_model_response_id: Arc<AtomicBool>,
     policy_requests: Arc<Mutex<Vec<PolicyEvaluationRequest>>>,
     policy_decisions: Arc<Mutex<VecDeque<PolicyDecision>>>,
     policy_decision: Arc<Mutex<PolicyDecision>>,
@@ -65,6 +67,7 @@ impl FakeHost {
             availability,
             approval_calls: Arc::new(AtomicUsize::new(0)),
             approval_decisions: Arc::new(Mutex::new(VecDeque::new())),
+            approval_responses: Arc::new(Mutex::new(VecDeque::new())),
             command_calls: Arc::new(AtomicUsize::new(0)),
             console_calls: Arc::new(AtomicUsize::new(0)),
             memory_calls: Arc::new(AtomicUsize::new(0)),
@@ -76,6 +79,7 @@ impl FakeHost {
             model_requests: Arc::new(Mutex::new(Vec::new())),
             model_errors: Arc::new(Mutex::new(VecDeque::new())),
             model_responses: Arc::new(Mutex::new(VecDeque::new())),
+            preserve_model_response_id: Arc::new(AtomicBool::new(false)),
             policy_requests: Arc::new(Mutex::new(Vec::new())),
             policy_decisions: Arc::new(Mutex::new(VecDeque::new())),
             policy_decision: Arc::new(Mutex::new(PolicyDecision::Allow)),
@@ -105,6 +109,13 @@ impl FakeHost {
             .lock()
             .expect("approval decisions lock")
             .push_back(decision);
+    }
+
+    pub(super) fn seed_approval_response(&self, response: ApprovalResponse) {
+        self.approval_responses
+            .lock()
+            .expect("approval responses lock")
+            .push_back(response);
     }
 
     pub(super) fn memory_call_count(&self) -> usize {
@@ -209,6 +220,17 @@ impl FakeHost {
             .lock()
             .expect("model errors lock")
             .push_back(HostError::new(code, message));
+    }
+
+    pub(super) fn force_next_model_response_id(&self, id: etas_host::HostRequestId) {
+        self.model_responses
+            .lock()
+            .expect("model responses lock")
+            .front_mut()
+            .expect("next model response")
+            .id = id;
+        self.preserve_model_response_id
+            .store(true, Ordering::SeqCst);
     }
 
     pub(super) fn seed_model_response_tool_call(&self, tool: &str) {
@@ -397,6 +419,7 @@ impl HostServices for FakeHost {
             .lock()
             .expect("model responses lock")
             .pop_front();
+        let preserve_response_id = self.preserve_model_response_id.load(Ordering::SeqCst);
         Box::pin(async move {
             let Some(mut response) = response else {
                 return Err(HostError::new(
@@ -404,7 +427,9 @@ impl HostServices for FakeHost {
                     "test model response is not configured",
                 ));
             };
-            response.id = request.id;
+            if !preserve_response_id {
+                response.id = request.id;
+            }
             Ok(response)
         })
     }
@@ -883,22 +908,35 @@ impl HostServices for FakeHost {
     fn approval<'a>(
         &'a self,
         request: ApprovalRequest,
-    ) -> HostFuture<'a, Result<ApprovalDecision, HostError>> {
+    ) -> HostFuture<'a, Result<ApprovalResponse, HostError>> {
         self.approval_calls.fetch_add(1, Ordering::SeqCst);
+        let response = self
+            .approval_responses
+            .lock()
+            .expect("approval responses lock")
+            .pop_front();
         let queued = self
             .approval_decisions
             .lock()
             .expect("approval decisions lock")
             .pop_front();
         Box::pin(async move {
-            if let Some(decision) = queued {
-                return Ok(decision);
+            if let Some(response) = response {
+                return Ok(response);
             }
-            Ok(ApprovalDecision::Approved {
-                grant: etas_host::ApprovalGrant {
+            if let Some(decision) = queued {
+                return Ok(ApprovalResponse {
                     id: request.id,
-                    grants: request.requested_grants,
-                    reason: request.reason,
+                    decision,
+                });
+            }
+            Ok(ApprovalResponse {
+                id: request.id,
+                decision: ApprovalDecision::Approved {
+                    grant: etas_host::ApprovalGrant {
+                        id: request.id,
+                        grants: request.requested_grants,
+                    },
                 },
             })
         })
