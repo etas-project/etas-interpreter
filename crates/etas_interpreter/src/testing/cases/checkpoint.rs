@@ -48,6 +48,72 @@ flow main() -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn resume_checkpoint_preserves_consumed_execution_fuel_and_cannot_widen_limits() {
+    let mut source = String::from(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+
+flow main() -> i32 {
+    checkpoint("fuel");
+"#,
+    );
+    for index in 0..200 {
+        source.push_str(&format!("    let value_{index} = {index};\n"));
+    }
+    source.push_str("    return 7;\n}\n");
+    let checked = checked_project(&source);
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let original_limits = crate::api::ExecutionLimits::new(
+        std::num::NonZeroU32::new(128).expect("non-zero test call depth"),
+        Some(std::num::NonZeroU64::new(100).expect("non-zero test fuel")),
+    )
+    .expect("valid test execution limits");
+    let first = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            RunOptions {
+                execution_limits: original_limits,
+                ..RunOptions::default()
+            },
+        )
+        .await;
+    let checkpoint = first
+        .checkpoints
+        .first()
+        .expect("execution should create a checkpoint before exhausting fuel");
+    assert!(checkpoint.execution_progress.consumed_steps > 0);
+    assert_eq!(
+        checkpoint.execution_progress.original_limits,
+        original_limits
+    );
+
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &checked,
+            checkpoint,
+            &host,
+            RunOptions {
+                execution_limits: crate::api::ExecutionLimits::default(),
+                ..RunOptions::default()
+            },
+        )
+        .await;
+
+    assert!(resumed.value.is_none());
+    assert!(resumed.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("maximum interpreter execution steps (100) exceeded")
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn public_resume_rejects_injected_std_intrinsic_outside_checked_plan() {
     let checked = checked_project(
         r#"

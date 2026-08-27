@@ -39,6 +39,19 @@ impl<'a> SnapshotValidator<'a> {
         &self,
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<(), String> {
+        checkpoint
+            .execution_progress
+            .original_limits
+            .validate()
+            .map_err(|message| format!("checkpoint execution limits are invalid: {message}"))?;
+        if let Some(max_steps) = checkpoint.execution_progress.original_limits.max_steps
+            && checkpoint.execution_progress.consumed_steps > max_steps.get()
+        {
+            return Err(format!(
+                "checkpoint consumed {} execution steps beyond its original limit {max_steps}",
+                checkpoint.execution_progress.consumed_steps
+            ));
+        }
         self.item(checkpoint.entry_item, "checkpoint entry item")?;
         for value in &checkpoint.args {
             self.snapshot_value(&ValueSnapshot::capture(value)?)?;

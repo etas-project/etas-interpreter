@@ -1,4 +1,5 @@
 use super::*;
+use std::num::{NonZeroU32, NonZeroU64};
 
 pub fn checkpoint_artifact_json(
     sources: &[PathBuf],
@@ -76,6 +77,10 @@ pub fn checkpoint_from_json(
                 next_message: required_u32(trace, "next_message")?,
             }
         },
+        execution_progress: execution_progress_from_json(required_obj(
+            checkpoint,
+            "execution_progress",
+        )?)?,
         host_context,
         current_session: required_optional_string(checkpoint, "current_session")?,
         resource_versions: ResourceVersionSnapshot {
@@ -281,12 +286,23 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
         etas_host::TraceEvent::HostRequestStarted {
             id,
             kind,
+            metadata,
             authority,
             trace,
+            started_at_unix_micros,
         } => json!({
             "kind": "host_request_started",
             "id": id.0,
             "request_kind": host_request_kind_name(*kind),
+            "qualified_action": metadata.qualified_action,
+            "subject_kind": metadata.subject_kind,
+            "payload": metadata.fields.iter().map(|field| json!({
+                "name": field.name,
+                "sensitivity": host_trace_field_sensitivity_name(field.sensitivity),
+                "value": field.value.as_ref().map(host_value_json),
+            })).collect::<Vec<_>>(),
+            "payload_digest": metadata.payload_digest,
+            "started_at_unix_micros": started_at_unix_micros,
             "trace": {
                 "trace_id": trace.trace_id.0,
                 "parent_span": trace.parent_span.map(|span| span.0),
@@ -297,21 +313,48 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
                 "active_trace_specs": authority.policy.active_trace_specs,
             },
         }),
-        etas_host::TraceEvent::HostRequestFinished { id, outcome } => json!({
+        etas_host::TraceEvent::HostRequestFinished {
+            id,
+            outcome,
+            finished_at_unix_micros,
+            duration_micros,
+        } => json!({
             "kind": "host_request_finished",
             "id": id.0,
             "outcome": host_outcome_json(outcome),
+            "finished_at_unix_micros": finished_at_unix_micros,
+            "duration_micros": duration_micros,
         }),
-        etas_host::TraceEvent::ApprovalRequested { request } => json!({
+        etas_host::TraceEvent::ApprovalRequested {
+            id,
+            metadata,
+            trace,
+        } => json!({
             "kind": "approval_requested",
-            "id": request.id.0,
-            "reason": request.reason,
-            "requested_grant_count": request.requested_grants.len(),
+            "id": id.0,
+            "qualified_action": metadata.qualified_action,
+            "subject_kind": metadata.subject_kind,
+            "payload": metadata.fields.iter().map(|field| json!({
+                "name": field.name,
+                "sensitivity": host_trace_field_sensitivity_name(field.sensitivity),
+                "value": field.value.as_ref().map(host_value_json),
+            })).collect::<Vec<_>>(),
+            "payload_digest": metadata.payload_digest,
             "trace": {
-                "trace_id": request.trace.trace_id.0,
-                "parent_span": request.trace.parent_span.map(|span| span.0),
+                "trace_id": trace.trace_id.0,
+                "parent_span": trace.parent_span.map(|span| span.0),
             },
         }),
+    }
+}
+
+fn host_trace_field_sensitivity_name(
+    sensitivity: etas_host::HostTraceFieldSensitivity,
+) -> &'static str {
+    match sensitivity {
+        etas_host::HostTraceFieldSensitivity::Public => "public",
+        etas_host::HostTraceFieldSensitivity::Sensitive => "sensitive",
+        etas_host::HostTraceFieldSensitivity::Secret => "secret",
     }
 }
 
@@ -377,6 +420,7 @@ pub(super) fn checkpoint_json(
             "events_recorded": checkpoint.trace.events_recorded,
             "next_message": checkpoint.trace.next_message,
         },
+        "execution_progress": execution_progress_json(checkpoint.execution_progress),
         "host_context": host_execution_context_json(&checkpoint.host_context)?,
         "current_session": checkpoint.current_session,
         "resource_versions": checkpoint.resource_versions.versions.iter().map(|version| {
@@ -390,6 +434,36 @@ pub(super) fn checkpoint_json(
             })
         }).collect::<Vec<_>>(),
     }))
+}
+
+fn execution_progress_json(progress: ExecutionProgressSnapshot) -> Value {
+    json!({
+        "consumed_steps": progress.consumed_steps,
+        "original_limits": {
+            "max_call_depth": progress.original_limits.max_call_depth.get(),
+            "max_steps": progress.original_limits.max_steps.map(NonZeroU64::get),
+        },
+    })
+}
+
+fn execution_progress_from_json(
+    value: &Value,
+) -> Result<ExecutionProgressSnapshot, InterpreterCodecError> {
+    let limits = required_obj(value, "original_limits")?;
+    let max_call_depth = NonZeroU32::new(required_u32(limits, "max_call_depth")?)
+        .ok_or_else(|| InterpreterCodecError::new("checkpoint max_call_depth must be non-zero"))?;
+    let max_steps = match limits.get("max_steps") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(value.as_u64().and_then(NonZeroU64::new).ok_or_else(|| {
+            InterpreterCodecError::new("checkpoint max_steps must be a non-zero u64")
+        })?),
+    };
+    let original_limits = crate::api::ExecutionLimits::new(max_call_depth, max_steps)
+        .map_err(InterpreterCodecError::new)?;
+    Ok(ExecutionProgressSnapshot {
+        consumed_steps: required_u64(value, "consumed_steps")?,
+        original_limits,
+    })
 }
 
 fn completed_host_boundary_result_json(result: &CompletedHostBoundaryResult) -> Value {
@@ -998,7 +1072,6 @@ pub(super) fn approval_grant_json(grant: &ApprovalGrant) -> Value {
     json!({
         "id": grant.id.0,
         "grants": grant.grants.iter().map(host_action_grant_json).collect::<Vec<_>>(),
-        "reason": grant.reason,
     })
 }
 
@@ -1011,7 +1084,6 @@ pub(super) fn approval_grant_from_json(
             .iter()
             .map(host_action_grant_from_json)
             .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
-        reason: required_str(value, "reason")?.to_owned(),
     })
 }
 

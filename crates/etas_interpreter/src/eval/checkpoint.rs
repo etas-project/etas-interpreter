@@ -65,6 +65,10 @@ impl<'a> EvalContext<'a> {
                 events_recorded: self.events.len(),
                 next_message: self.next_message,
             },
+            execution_progress: ExecutionProgressSnapshot {
+                consumed_steps: self.safe_points.consumed_steps(),
+                original_limits: self.execution_limits,
+            },
             host_context: self.host_context.clone(),
             current_session: self.current_session.clone(),
             resource_versions: ResourceVersionSnapshot {

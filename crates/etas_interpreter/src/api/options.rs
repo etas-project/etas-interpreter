@@ -47,6 +47,18 @@ impl ExecutionLimits {
         }
         Ok(())
     }
+
+    pub(crate) fn stricter(self, other: Self) -> Self {
+        let max_steps = match (self.max_steps, other.max_steps) {
+            (Some(left), Some(right)) => Some(left.min(right)),
+            (Some(limit), None) | (None, Some(limit)) => Some(limit),
+            (None, None) => None,
+        };
+        Self {
+            max_call_depth: self.max_call_depth.min(other.max_call_depth),
+            max_steps,
+        }
+    }
 }
 
 impl Default for ExecutionLimits {

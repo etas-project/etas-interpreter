@@ -34,6 +34,10 @@ impl EvalMachine {
             },
         };
         loop {
+            let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
+            if let Err(fault) = ctx.consume_execution_step(step_span) {
+                return MachinePoll::Fault(fault);
+            }
             signal = match signal {
                 ControlSignal::Apply(pending) => {
                     let pending = *pending;

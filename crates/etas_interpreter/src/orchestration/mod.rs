@@ -4,9 +4,10 @@ mod ledger;
 
 pub use checkpoint::{
     ActiveHandlerArmRecord, ActiveHandlerRecord, CheckpointCompilationIdentity, CheckpointId,
-    CompletedHostBoundary, CompletedHostBoundaryResult, HandlerScopeId, HandlerSnapshot,
-    HostBoundaryLedger, InterpreterCheckpoint, MachineSnapshot, ResourceVersionRecord,
-    ResourceVersionSnapshot, RetryAttemptId, RetryAttemptRecord, RetrySnapshot, TraceSnapshot,
+    CompletedHostBoundary, CompletedHostBoundaryResult, ExecutionProgressSnapshot, HandlerScopeId,
+    HandlerSnapshot, HostBoundaryLedger, InterpreterCheckpoint, MachineSnapshot,
+    ResourceVersionRecord, ResourceVersionSnapshot, RetryAttemptId, RetryAttemptRecord,
+    RetrySnapshot, TraceSnapshot,
 };
 pub(crate) use checkpoint::{
     AggregateKindSnapshot, CallTargetSnapshot, ContinuationSnapshot, ConversationSnapshot,

@@ -104,6 +104,7 @@ impl Interpreter {
             host_context: options.host_context,
             model_policy: options.model_policy,
             execution_limits: options.execution_limits,
+            consumed_steps: 0,
             current_session: options.current_session,
             entry_item: entry.item,
             entry_args: &args,
@@ -209,13 +210,18 @@ impl Interpreter {
                 checkpoints,
             };
         }
+        let execution_limits = checkpoint
+            .execution_progress
+            .original_limits
+            .stricter(options.execution_limits);
         let prepare_span = profile.span("interpreter.prepare", "interpreter");
         let mut eval = eval::EvalContext::new(eval::EvalContextInput {
             checked: project,
             plan: &plan,
             host_context: options.host_context,
             model_policy: options.model_policy,
-            execution_limits: options.execution_limits,
+            execution_limits,
+            consumed_steps: checkpoint.execution_progress.consumed_steps,
             current_session: checkpoint
                 .current_session
                 .clone()

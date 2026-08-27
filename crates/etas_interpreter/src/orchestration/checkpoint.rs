@@ -6,7 +6,7 @@ use etas_hir::{
 };
 use etas_types::TypeId;
 
-use crate::api::HostExecutionContext;
+use crate::api::{ExecutionLimits, HostExecutionContext};
 use crate::value::{
     HostJsonSupportValue, InterpValue, MemorySelectionKind, MessageRoleValue, ModelResponseValue,
     PromptMessage, ProvenanceValue, RangeBounds, SessionSummaryValue,
@@ -32,10 +32,17 @@ pub struct InterpreterCheckpoint {
     pub handlers: HandlerSnapshot,
     pub retry_state: RetrySnapshot,
     pub trace: TraceSnapshot,
+    pub execution_progress: ExecutionProgressSnapshot,
     pub host_context: HostExecutionContext,
     pub current_session: Option<String>,
     pub resource_versions: ResourceVersionSnapshot,
     pub completed_host_boundaries: HostBoundaryLedger,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub struct ExecutionProgressSnapshot {
+    pub consumed_steps: u64,
+    pub original_limits: ExecutionLimits,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]

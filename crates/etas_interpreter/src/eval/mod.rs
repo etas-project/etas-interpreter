@@ -37,6 +37,7 @@ mod operator_expr;
 mod pattern;
 mod perform;
 mod pipeline;
+mod safe_point;
 mod slice_access;
 mod spec_method;
 mod std_call;
@@ -73,10 +74,10 @@ use crate::{
         SecretCallable, StdCallable, StreamCallable, TcpCallable, TlsCallable,
     },
     orchestration::{
-        ActiveHandlerArmRecord, ActiveHandlerRecord, CheckpointId, HandlerScopeId, HandlerSnapshot,
-        HostBoundaryLedger, InterpreterCheckpoint, ResourceVersionRecord, ResourceVersionSnapshot,
-        RetryAttemptId, RetryAttemptRecord, RetrySnapshot, TraceSnapshot, WorkflowEvent,
-        WorkflowStepId,
+        ActiveHandlerArmRecord, ActiveHandlerRecord, CheckpointId, ExecutionProgressSnapshot,
+        HandlerScopeId, HandlerSnapshot, HostBoundaryLedger, InterpreterCheckpoint,
+        ResourceVersionRecord, ResourceVersionSnapshot, RetryAttemptId, RetryAttemptRecord,
+        RetrySnapshot, TraceSnapshot, WorkflowEvent, WorkflowStepId,
     },
     plan::{BraceLiteralShape, InterpreterPlan},
     value::{ArrayValue, InterpValue, ListValue, MapValue, RecordValue, SliceValue},
@@ -119,7 +120,8 @@ pub struct EvalContext<'a> {
     next_handler_scope: u32,
     next_host_request: u32,
     next_message: u32,
-    execution_steps: u64,
+    safe_points: safe_point::ExecutionSafePointScheduler,
+    host_trace_digest_key: Result<etas_host::HostTraceDigestKey, etas_host::HostError>,
     retry_stack: Vec<RetryAttemptRecord>,
     handler_stack: Vec<ActiveHandlerRecord>,
     completed_host_boundaries: Vec<crate::orchestration::CompletedHostBoundary>,
@@ -146,6 +148,7 @@ pub struct EvalContextInput<'a> {
     pub host_context: HostExecutionContext,
     pub model_policy: ModelExecutionPolicy,
     pub execution_limits: ExecutionLimits,
+    pub consumed_steps: u64,
     pub current_session: Option<String>,
     pub entry_item: HirItemId,
     pub entry_args: &'a [InterpValue],
@@ -159,6 +162,7 @@ impl<'a> EvalContext<'a> {
             host_context,
             model_policy,
             execution_limits,
+            consumed_steps,
             current_session,
             entry_item,
             entry_args,
@@ -183,7 +187,8 @@ impl<'a> EvalContext<'a> {
             next_handler_scope: 0,
             next_host_request: 0,
             next_message: 0,
-            execution_steps: 0,
+            safe_points: safe_point::ExecutionSafePointScheduler::new(consumed_steps),
+            host_trace_digest_key: etas_host::HostTraceDigestKey::generate(),
             retry_stack: Vec::new(),
             handler_stack: Vec::new(),
             completed_host_boundaries: Vec::new(),
@@ -195,20 +200,8 @@ impl<'a> EvalContext<'a> {
         &mut self,
         span: Span,
     ) -> Result<(), crate::control::ExecutionFault> {
-        if let Some(max_steps) = self.execution_limits.max_steps
-            && self.execution_steps >= max_steps.get()
-        {
-            let message = format!(
-                "maximum interpreter execution steps ({max_steps}) exceeded; this usually indicates unbounded computation"
-            );
-            return Err(crate::control::ExecutionFault::new(
-                AnalysisDiagnosticCode::UnhandledRuntimeError,
-                span,
-                message,
-            ));
-        }
-        self.execution_steps = self.execution_steps.saturating_add(1);
-        Ok(())
+        self.safe_points
+            .consume(self.execution_limits, &self.host_context.budget, span)
     }
 
     pub(crate) fn host_authority(&self) -> AuthorityContext {
@@ -225,6 +218,12 @@ impl<'a> EvalContext<'a> {
 
     pub(crate) fn host_trace(&self) -> TraceContext {
         self.host_context.trace.clone()
+    }
+
+    pub(crate) fn host_trace_digest_key(
+        &self,
+    ) -> Result<&etas_host::HostTraceDigestKey, etas_host::HostError> {
+        self.host_trace_digest_key.as_ref().map_err(Clone::clone)
     }
 
     pub(crate) fn host_budget(&self) -> etas_host::ExecutionBudget {

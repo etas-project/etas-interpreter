@@ -25,6 +25,10 @@ fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> Value
         handlers: HandlerSnapshot::default(),
         retry_state: RetrySnapshot::default(),
         trace: TraceSnapshot::default(),
+        execution_progress: ExecutionProgressSnapshot {
+            consumed_steps: 0,
+            original_limits: crate::api::ExecutionLimits::default(),
+        },
         host_context: HostExecutionContext::default(),
         current_session: None,
         resource_versions: ResourceVersionSnapshot::default(),
@@ -32,6 +36,39 @@ fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> Value
     };
     checkpoint_artifact_json(&[PathBuf::from("main.es")], "main", &checkpoint)
         .expect("minimal checkpoint artifact should encode")
+}
+
+#[test]
+fn approval_trace_json_redacts_sensitive_request_fields() {
+    let request = etas_host::ApprovalRequest {
+        id: etas_host::HostRequestId(41),
+        reason: "do not persist this approval reason".to_owned(),
+        requested_grants: vec![HostActionGrant::allow("Console", "stdout_write")],
+        trace: TraceContext::root(TraceId(42)),
+    };
+    let payload = etas_host::HostTraceRequest::trace_payload(&request);
+    let metadata = etas_host::HostTraceMetadata::from_payload(
+        &payload,
+        &etas_host::HostTraceDigestKey::from_bytes([7; 32]),
+    )
+    .expect("approval trace metadata should materialize");
+    let event = WorkflowEvent::HostTrace(etas_host::TraceEvent::ApprovalRequested {
+        id: request.id,
+        metadata,
+        trace: request.trace,
+    });
+
+    let encoded = event_json(&event);
+    let encoded_text = encoded.to_string();
+    assert!(!encoded_text.contains("do not persist this approval reason"));
+    assert_eq!(encoded["payload"][0]["name"], "reason");
+    assert_eq!(encoded["payload"][0]["sensitivity"], "sensitive");
+    assert!(encoded["payload"][0]["value"].is_null());
+    assert!(
+        encoded["payload_digest"]
+            .as_str()
+            .is_some_and(|value| !value.is_empty())
+    );
 }
 
 #[test]
@@ -169,6 +206,14 @@ flow main() -> unit {
             events_recorded: 4,
             next_message: 2,
         },
+        execution_progress: ExecutionProgressSnapshot {
+            consumed_steps: 123,
+            original_limits: crate::api::ExecutionLimits::new(
+                std::num::NonZeroU32::new(64).expect("non-zero test call depth"),
+                Some(std::num::NonZeroU64::new(900).expect("non-zero test step limit")),
+            )
+            .expect("valid test execution limits"),
+        },
         host_context: HostExecutionContext {
             authority: AuthorityContext {
                 grants: vec![HostActionGrant::allow_with_args(
@@ -188,7 +233,6 @@ flow main() -> unit {
                             vec![HostValue::String("lookup".to_owned())],
                         ),
                     ))],
-                    reason: "approved tool lookup".to_owned(),
                 }],
                 sandbox: SandboxPolicy::allow_listed(
                     FilesystemPolicy {
@@ -263,6 +307,7 @@ flow main() -> unit {
     assert_eq!(restored.host_context, checkpoint.host_context);
     assert_eq!(restored.current_session, checkpoint.current_session);
     assert_eq!(restored.trace, checkpoint.trace);
+    assert_eq!(restored.execution_progress, checkpoint.execution_progress);
     assert_eq!(restored.resource_versions, checkpoint.resource_versions);
     assert_eq!(
         restored.completed_host_boundaries,
@@ -398,7 +443,7 @@ fn checkpoint_codec_rejects_legacy_artifact_without_machine_stack() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v10`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v11`")
     );
 }
 
@@ -423,7 +468,7 @@ fn checkpoint_codec_rejects_v4_artifact_after_handler_scope_schema_change() {
         .expect_err("v4 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v10`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v11`"
         ),
         "{}",
         error.message()
@@ -440,7 +485,7 @@ fn checkpoint_codec_rejects_v5_artifact_after_lossless_host_ledger_schema_change
         .expect_err("v5 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v10`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v11`"
         ),
         "{}",
         error.message()
@@ -457,7 +502,7 @@ fn checkpoint_codec_rejects_v6_artifact_after_canonical_message_schema_change() 
         .expect_err("v6 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v10`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v11`"
         ),
         "{}",
         error.message()
@@ -474,7 +519,7 @@ fn checkpoint_codec_rejects_v7_artifact_without_checked_intrinsic_abi() {
         .expect_err("v7 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v10`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v11`"
         ),
         "{}",
         error.message()
@@ -491,7 +536,7 @@ fn checkpoint_codec_rejects_v8_artifact_with_executable_std_callable_payloads() 
         .expect_err("v8 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v10`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v11`"
         ),
         "{}",
         error.message()
@@ -508,7 +553,24 @@ fn checkpoint_codec_rejects_v9_artifact_without_run_owned_budget_state() {
         .expect_err("v9 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v9`; expected `etas.cli.interpreter-checkpoint.v10`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v9`; expected `etas.cli.interpreter-checkpoint.v11`"
+        ),
+        "{}",
+        error.message()
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v10_artifact_without_execution_progress() {
+    let artifact = json!({
+        "schema": "etas.cli.interpreter-checkpoint.v10",
+        "checkpoint": {},
+    });
+    let error = checkpoint_from_json(&artifact, &checked_project())
+        .expect_err("v10 checkpoint must be rejected by schema version");
+    assert!(
+        error.message().contains(
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v10`; expected `etas.cli.interpreter-checkpoint.v11`"
         ),
         "{}",
         error.message()
@@ -770,6 +832,13 @@ fn run_report_json_includes_message_session_trace_events() {
 
 #[test]
 fn run_report_json_preserves_structured_host_trace_events() {
+    let metadata = etas_host::HostTraceMetadata::for_action(
+        "memory",
+        "Memory.get",
+        &etas_host::HostTraceDigestKey::from_bytes([7; 32]),
+    )
+    .expect("trace metadata should be valid");
+    let payload_digest = metadata.payload_digest.clone();
     let report = run_report_json(
         "run",
         &[PathBuf::from("main.es")],
@@ -781,11 +850,13 @@ fn run_report_json_preserves_structured_host_trace_events() {
                 WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
                     id: HostRequestId(7),
                     kind: etas_host::HostRequestKind::Memory,
+                    metadata,
                     authority: Box::new(AuthorityContext::deny_all()),
                     trace: TraceContext {
                         trace_id: TraceId(11),
                         parent_span: Some(TraceSpanId(12)),
                     },
+                    started_at_unix_micros: 100,
                 }),
                 WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
                     id: HostRequestId(7),
@@ -793,6 +864,8 @@ fn run_report_json_preserves_structured_host_trace_events() {
                         etas_host::HostErrorCode::ProviderUnavailable,
                         "memory offline",
                     )),
+                    finished_at_unix_micros: 125,
+                    duration_micros: 25,
                 }),
             ],
             checkpoints: Vec::new(),
@@ -806,6 +879,11 @@ fn run_report_json_preserves_structured_host_trace_events() {
             "kind": "host_request_started",
             "id": 7,
             "request_kind": "memory",
+            "qualified_action": "Memory.get",
+            "subject_kind": "memory",
+            "payload": [],
+            "payload_digest": payload_digest,
+            "started_at_unix_micros": 100,
             "trace": { "trace_id": 11, "parent_span": 12 },
             "authority": {
                 "grant_count": 0,
@@ -819,6 +897,8 @@ fn run_report_json_preserves_structured_host_trace_events() {
         json!({
             "kind": "host_request_finished",
             "id": 7,
+            "finished_at_unix_micros": 125,
+            "duration_micros": 25,
             "outcome": {
                 "kind": "failed",
                 "code": "ProviderUnavailable",
