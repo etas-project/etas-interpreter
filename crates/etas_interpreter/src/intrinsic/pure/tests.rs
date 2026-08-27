@@ -57,7 +57,7 @@ fn result_and_option_constructors_preserve_nominal_payloads() {
     });
     let option_type = interner.intern(Type::Option(payload_type));
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store);
+    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
     let payload = InterpValue::Nominal {
         ty: payload_type,
         value: Box::new(InterpValue::Record(RecordValue::new(vec![(
@@ -125,7 +125,7 @@ fn option_and_result_unwrap_use_distinct_checked_abis() {
         err: string_type,
     });
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store);
+    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
 
     let option_call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(intrinsic::pure::OPTION_UNWRAP),
@@ -238,7 +238,7 @@ fn pure_builtin_arguments_project_nominal_representations_recursively() {
         err: error_type,
     });
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store);
+    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
     let header = InterpValue::Nominal {
         ty: header_type,
         value: Box::new(InterpValue::Record(RecordValue::new(vec![
@@ -340,7 +340,7 @@ fn pure_builtin_result_restores_nested_nominal_identity() {
         err: error_type,
     });
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store);
+    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
 
     let decoded = execute_pure_intrinsic(
         &CheckedPureIntrinsicCall {

@@ -44,13 +44,13 @@ pub struct PureAbiProjector {
 }
 
 impl PureAbiProjector {
-    pub fn build(store: &TypeStore) -> Self {
+    pub fn build(store: &TypeStore) -> Result<Self, etas_types::TypeSubstitutionError> {
         let mut interner = TypeInterner::from_store(store.clone());
         let mut representations = HashMap::new();
         let mut cursor = 0_u32;
         while let Some(ty) = interner.store().get(TypeId(cursor)).cloned() {
             if matches!(ty, Type::Nominal(_) | Type::Applied { .. }) {
-                if let Some(representation) = applied_representation(&mut interner, TypeId(cursor))
+                if let Some(representation) = applied_representation(&mut interner, TypeId(cursor))?
                 {
                     representations.insert(TypeId(cursor), representation);
                 }
@@ -78,6 +78,11 @@ impl PureAbiProjector {
                     Type::Record(record) => AbiShape::Record(record.fields.clone()),
                     Type::Tuple(elements) => AbiShape::Tuple(elements.clone()),
                     Type::Enum(_) => AbiShape::Enum,
+                    Type::Applied { constructor, .. }
+                        if matches!(store.get(TypeId(constructor.0)), Some(Type::Enum(_))) =>
+                    {
+                        AbiShape::Enum
+                    }
                     Type::Nominal(_) | Type::Applied { .. } => representations
                         .get(&id)
                         .copied()
@@ -97,7 +102,7 @@ impl PureAbiProjector {
                 (id, shape)
             })
             .collect();
-        Self { shapes }
+        Ok(Self { shapes })
     }
 
     pub fn shape(&self, ty: TypeId) -> Option<&AbiShape> {

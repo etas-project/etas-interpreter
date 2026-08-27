@@ -94,9 +94,15 @@ impl IntrinsicDispatchTable {
             }
         }
 
+        let pure_abi = PureAbiProjector::build(&project.type_store).map_err(|error| {
+            vec![format!(
+                "checked pure intrinsic ABI projection failed: {error}"
+            )]
+        })?;
+
         Ok(Self {
             pure_registry: PureIntrinsicRegistry,
-            pure_abi: PureAbiProjector::build(&project.type_store),
+            pure_abi,
             handlers,
             std_intrinsics,
             imported_intrinsics,

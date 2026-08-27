@@ -197,20 +197,31 @@ impl<'a> EvalContext<'a> {
             Ok(config) => config,
             Err(message) => return ControlSignal::invalid_arguments(message, span),
         };
-        let Some(payload_type) = conversation_payload_type(self.checked, expr) else {
-            let checked_type = self
-                .checked
-                .types
-                .expr_types
-                .get(&expr)
-                .map(|ty| etas_types::ty::display_type(&self.checked.type_store, *ty))
-                .unwrap_or_else(|| "<missing>".to_owned());
-            return ControlSignal::missing_checked_fact(
-                format!(
-                    "Conversation operation requires a checked Message<T> payload type; checked result type is `{checked_type}`"
-                ),
-                span,
-            );
+        let payload_type = match conversation_payload_type(self.checked, expr) {
+            Ok(Some(payload_type)) => payload_type,
+            Ok(None) => {
+                let checked_type = self
+                    .checked
+                    .types
+                    .expr_types
+                    .get(&expr)
+                    .map(|ty| etas_types::ty::display_type(&self.checked.type_store, *ty))
+                    .unwrap_or_else(|| "<missing>".to_owned());
+                return ControlSignal::missing_checked_fact(
+                    format!(
+                        "Conversation operation requires a checked Message<T> payload type; checked result type is `{checked_type}`"
+                    ),
+                    span,
+                );
+            }
+            Err(error) => {
+                return ControlSignal::missing_checked_fact(
+                    format!(
+                        "Conversation operation could not project its checked nominal representation: {error}"
+                    ),
+                    span,
+                );
+            }
         };
         let decode = match method {
             "load" => SessionDecode::ResolveThenLoadConversation {
@@ -243,18 +254,30 @@ impl<'a> EvalContext<'a> {
 fn conversation_payload_type(
     checked: &etas_frontend::CheckedProject,
     expr: HirExprId,
-) -> Option<etas_types::TypeId> {
-    let conversation = *checked.types.expr_types.get(&expr)?;
-    let fields = etas_types::record_fields_with_applied_params(&checked.type_store, conversation)?;
-    let messages = fields
-        .fields
-        .iter()
-        .find(|field| field.name == "messages")?;
-    let etas_types::Type::Array(message) = checked.type_store.get(messages.ty)? else {
-        return None;
+) -> Result<Option<etas_types::TypeId>, etas_types::TypeSubstitutionError> {
+    let Some(conversation) = checked.types.expr_types.get(&expr).copied() else {
+        return Ok(None);
     };
-    let etas_types::Type::Message(payload) = checked.type_store.get(*message)? else {
-        return None;
+    let Some(fields) =
+        etas_types::record_fields_with_applied_params(&checked.type_store, conversation)?
+    else {
+        return Ok(None);
     };
-    Some(*payload)
+    let messages = fields.fields.iter().find(|field| field.name == "messages");
+    let Some(messages) = messages else {
+        return Ok(None);
+    };
+    let Some(message_type) = checked.type_store.get(messages.ty) else {
+        return Err(etas_types::TypeSubstitutionError::MissingType(messages.ty));
+    };
+    let etas_types::Type::Array(message) = message_type else {
+        return Ok(None);
+    };
+    let Some(message_type) = checked.type_store.get(*message) else {
+        return Err(etas_types::TypeSubstitutionError::MissingType(*message));
+    };
+    let etas_types::Type::Message(payload) = message_type else {
+        return Ok(None);
+    };
+    Ok(Some(*payload))
 }
