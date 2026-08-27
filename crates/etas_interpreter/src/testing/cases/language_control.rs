@@ -393,6 +393,137 @@ flow main() -> bool {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn run_checked_exposes_incremental_http_decode_states_without_host() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.codec.text.utf8_encode;
+import std.http.codec.{Complete, Malformed, NeedMore, decode_response_incremental};
+
+flow main() -> bool {
+  let incomplete = decode_response_incremental(
+    utf8_encode("HTTP/1.1 200 OK\r\ncontent-length: 5\r\n\r\nhell"),
+    false
+  );
+  let complete = decode_response_incremental(
+    utf8_encode("HTTP/1.1 204 No Content\r\n\r\nNEXT"),
+    false
+  );
+  let malformed = decode_response_incremental(
+    utf8_encode("HTTP/1.1 200 OK\n\n"),
+    false
+  );
+  return match incomplete {
+    NeedMore => match complete {
+      Complete(_, consumed) => match malformed {
+        Malformed(_) => consumed > 0,
+        _ => false
+      },
+      _ => false
+    },
+    _ => false
+  };
+}
+"#,
+    );
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await;
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+}
+
+struct AdvancingMonotonicClock {
+    origin: std::time::Instant,
+    reads: std::sync::atomic::AtomicU64,
+}
+
+impl AdvancingMonotonicClock {
+    fn new() -> Self {
+        Self {
+            origin: std::time::Instant::now(),
+            reads: std::sync::atomic::AtomicU64::new(0),
+        }
+    }
+
+    fn reads(&self) -> u64 {
+        self.reads.load(std::sync::atomic::Ordering::SeqCst)
+    }
+}
+
+impl etas_host::MonotonicClock for AdvancingMonotonicClock {
+    fn now(&self) -> std::time::Instant {
+        let millis = self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        self.origin + std::time::Duration::from_millis(millis)
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_checked_expires_wall_time_budget_during_pure_execution() {
+    let checked = checked_project(
+        r#"
+module app.main;
+
+flow main() -> i32 {
+  var i = 0;
+  while i < 1000 limit Iterations(2048) {
+    i = i + 1;
+  }
+  return i;
+}
+"#,
+    );
+    let clock = std::sync::Arc::new(AdvancingMonotonicClock::new());
+    let limits = etas_host::Budget {
+        time: Some(etas_host::TimeBudget { max_millis: 3 }),
+        ..etas_host::Budget::default()
+    };
+    let budget = etas_host::ExecutionBudget::start_with_clock(limits, clock.clone());
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    budget,
+                    ..api::HostExecutionContext::default()
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await;
+
+    assert_eq!(result.value, None);
+    assert!(
+        clock.reads() >= 4,
+        "budget must begin live and expire only after multiple execution safe points"
+    );
+    assert!(
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("run-owned wall-time budget")),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_utf8_decode_with_malformed_input_value_without_host() {
     let checked = checked_project(
         r#"
