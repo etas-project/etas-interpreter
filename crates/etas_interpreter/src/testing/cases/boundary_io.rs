@@ -1,4 +1,5 @@
 use super::super::*;
+use etas_host::ApprovalGrant;
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_checked_reports_missing_console_host_handler_for_std_io_entry() {
@@ -306,7 +307,7 @@ flow main() -> unit ![Console, Error<IOError>]
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resume_checkpoint_restores_policy_approval_grants() {
+async fn resume_checkpoint_revalidates_approval_under_current_authority() {
     let checked = checked_project(
         r#"
 module app.main;
@@ -367,13 +368,10 @@ flow main() -> unit ![Console, Error<IOError>]
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first.checkpoints.len(), 2);
-    assert!(
-        first.checkpoints[1]
-            .host_context
-            .authority
-            .grants
-            .contains(&approved_grant),
-        "checkpoint should persist approval grants accepted before it"
+    assert_eq!(
+        first.checkpoints[1].host_state.trace.trace_id,
+        TraceId(89),
+        "checkpoint should persist only durable trace and budget host state"
     );
 
     let replay_host = FakeHost::new(availability(&[
@@ -381,7 +379,23 @@ flow main() -> unit ![Console, Error<IOError>]
         HostRequirementKind::Approval,
         HostRequirementKind::Checkpoint,
     ]));
-    replay_host.seed_policy_decision(PolicyDecision::Allow);
+    replay_host.seed_policy_decision(PolicyDecision::RequireApproval {
+        request: ApprovalRequest {
+            id: HostRequestId(903),
+            reason: "console requires approval after resume".to_owned(),
+            requested_grants: vec![approved_grant.clone()],
+            trace: TraceContext::root(TraceId(90)),
+        },
+    });
+    replay_host.seed_approval_response(ApprovalResponse {
+        id: HostRequestId(903),
+        decision: ApprovalDecision::Approved {
+            grant: ApprovalGrant {
+                id: HostRequestId(903),
+                grants: vec![approved_grant.clone()],
+            },
+        },
+    });
     let resumed = Interpreter
         .resume_checkpoint(
             &checked,
@@ -406,13 +420,16 @@ flow main() -> unit ![Console, Error<IOError>]
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     let replay_requests = replay_host.policy_requests();
     assert_eq!(replay_requests.len(), 1);
+    assert_ne!(replay_requests[0].trace.trace_id, TraceId(89));
+    assert_eq!(replay_requests[0].trace.parent_trace, Some(TraceId(89)));
     assert!(
-        replay_requests[0]
+        !replay_requests[0]
             .authority
             .grants
             .contains(&approved_grant),
-        "resumed policy evaluation must receive grants restored from the checkpoint: {replay_requests:#?}"
+        "checkpoint grants must not expand the resume invocation authority: {replay_requests:#?}"
     );
+    assert_eq!(replay_host.approval_call_count(), 1);
     assert_eq!(replay_host.stdout_text(), "second\n");
 }
 

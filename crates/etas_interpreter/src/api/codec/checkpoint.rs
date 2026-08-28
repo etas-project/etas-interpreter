@@ -43,9 +43,9 @@ pub fn checkpoint_from_json(
     compilation
         .validate_for_project(checked, entry_item)
         .map_err(InterpreterCodecError::new)?;
-    let host_context = host_execution_context_from_json(required_obj(checkpoint, "host_context")?)?;
+    let host_state = checkpoint_host_state_from_json(required_obj(checkpoint, "host_state")?)?;
     let mut machine = machine_from_json(required_obj(checkpoint, "machine")?, checked)?;
-    rebind_machine_execution_budget(&mut machine, &host_context.budget.state());
+    rebind_machine_execution_budget(&mut machine, &host_state.budget.state());
     let checkpoint = InterpreterCheckpoint {
         id: CheckpointId(required_u32(checkpoint, "id")?),
         label: required_optional_string(checkpoint, "label")?,
@@ -81,7 +81,7 @@ pub fn checkpoint_from_json(
             checkpoint,
             "execution_progress",
         )?)?,
-        host_context,
+        host_state,
         current_session: required_optional_string(checkpoint, "current_session")?,
         resource_versions: ResourceVersionSnapshot {
             versions: required_array(checkpoint, "resource_versions")?
@@ -304,7 +304,8 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
             "payload_digest": metadata.payload_digest,
             "started_at_unix_micros": started_at_unix_micros,
             "trace": {
-                "trace_id": trace.trace_id.0,
+                "trace_id": trace.trace_id.to_hex(),
+                "parent_trace": trace.parent_trace.map(TraceId::to_hex),
                 "parent_span": trace.parent_span.map(|span| span.0),
             },
             "authority": {
@@ -341,7 +342,8 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
             })).collect::<Vec<_>>(),
             "payload_digest": metadata.payload_digest,
             "trace": {
-                "trace_id": trace.trace_id.0,
+                "trace_id": trace.trace_id.to_hex(),
+                "parent_trace": trace.parent_trace.map(TraceId::to_hex),
                 "parent_span": trace.parent_span.map(|span| span.0),
             },
         }),
@@ -421,7 +423,7 @@ pub(super) fn checkpoint_json(
             "next_message": checkpoint.trace.next_message,
         },
         "execution_progress": execution_progress_json(checkpoint.execution_progress),
-        "host_context": host_execution_context_json(&checkpoint.host_context)?,
+        "host_state": checkpoint_host_state_json(&checkpoint.host_state)?,
         "current_session": checkpoint.current_session,
         "resource_versions": checkpoint.resource_versions.versions.iter().map(|version| {
             json!({ "resource": version.resource, "version": version.version })
@@ -1022,21 +1024,17 @@ pub(super) fn resource_version_from_json(
     })
 }
 
-pub(super) fn host_execution_context_json(
-    context: &HostExecutionContext,
-) -> Result<Value, InterpreterCodecError> {
+fn checkpoint_host_state_json(state: &CheckpointHostState) -> Result<Value, InterpreterCodecError> {
     Ok(json!({
-        "authority": authority_context_json(&context.authority),
-        "trace": trace_context_json(&context.trace),
-        "budget": execution_budget_json(&context.budget)?,
+        "trace": trace_context_json(&state.trace),
+        "budget": execution_budget_json(&state.budget)?,
     }))
 }
 
-pub(super) fn host_execution_context_from_json(
+fn checkpoint_host_state_from_json(
     value: &Value,
-) -> Result<HostExecutionContext, InterpreterCodecError> {
-    Ok(HostExecutionContext {
-        authority: authority_context_from_json(required_obj(value, "authority")?)?,
+) -> Result<CheckpointHostState, InterpreterCodecError> {
+    Ok(CheckpointHostState {
         trace: trace_context_from_json(required_obj(value, "trace")?)?,
         budget: execution_budget_from_json(required_obj(value, "budget")?)?,
     })
@@ -1228,7 +1226,8 @@ pub(super) fn policy_context_from_json(
 
 pub(super) fn trace_context_json(trace: &TraceContext) -> Value {
     json!({
-        "trace_id": trace.trace_id.0,
+        "trace_id": trace.trace_id.to_hex(),
+        "parent_trace": trace.parent_trace.map(TraceId::to_hex),
         "parent_span": trace.parent_span.map(|span| span.0),
     })
 }
@@ -1237,9 +1236,34 @@ pub(super) fn trace_context_from_json(
     value: &Value,
 ) -> Result<TraceContext, InterpreterCodecError> {
     Ok(TraceContext {
-        trace_id: TraceId(required_u32(value, "trace_id")?),
+        trace_id: trace_id_from_json(value, "trace_id")?,
+        parent_trace: optional_trace_id_from_json(value, "parent_trace")?,
         parent_span: optional_u32(value, "parent_span")?.map(TraceSpanId),
     })
+}
+
+fn trace_id_from_json(
+    value: &Value,
+    field: &'static str,
+) -> Result<TraceId, InterpreterCodecError> {
+    let encoded = required_str(value, field)?;
+    TraceId::from_hex(encoded)
+        .map_err(|reason| InterpreterCodecError::new(format!("invalid `{field}`: {reason}")))
+}
+
+fn optional_trace_id_from_json(
+    value: &Value,
+    field: &'static str,
+) -> Result<Option<TraceId>, InterpreterCodecError> {
+    match value.get(field) {
+        Some(Value::Null) | None => Ok(None),
+        Some(Value::String(encoded)) => TraceId::from_hex(encoded)
+            .map(Some)
+            .map_err(|reason| InterpreterCodecError::new(format!("invalid `{field}`: {reason}"))),
+        Some(_) => Err(InterpreterCodecError::new(format!(
+            "invalid `{field}`: expected a string or null"
+        ))),
+    }
 }
 
 pub(crate) fn budget_json(budget: &Budget) -> Value {

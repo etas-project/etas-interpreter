@@ -14,14 +14,15 @@ use etas_types::TypeId;
 use serde_json::{Value, json};
 
 use crate::{
-    api::{HostExecutionContext, RunResult},
+    api::RunResult,
     orchestration::{
-        ActiveHandlerArmRecord, ActiveHandlerRecord, CheckpointCompilationIdentity, CheckpointId,
-        CompletedHostBoundary, CompletedHostBoundaryResult, ContinuationSnapshot,
-        ExecutionProgressSnapshot, HandlerScopeId, HandlerSnapshot, HostBoundaryLedger,
-        InterpreterCheckpoint, MachineFrameSnapshot, MachineSnapshot, ModelLoopFrameSnapshot,
-        ResourceVersionRecord, ResourceVersionSnapshot, RetryAttemptId, RetryAttemptRecord,
-        RetrySnapshot, SourceToolReturnFrameSnapshot, TraceSnapshot, WorkflowEvent,
+        ActiveHandlerArmRecord, ActiveHandlerRecord, CheckpointCompilationIdentity,
+        CheckpointHostState, CheckpointId, CompletedHostBoundary, CompletedHostBoundaryResult,
+        ContinuationSnapshot, ExecutionProgressSnapshot, HandlerScopeId, HandlerSnapshot,
+        HostBoundaryLedger, InterpreterCheckpoint, MachineFrameSnapshot, MachineSnapshot,
+        ModelLoopFrameSnapshot, ResourceVersionRecord, ResourceVersionSnapshot, RetryAttemptId,
+        RetryAttemptRecord, RetrySnapshot, SourceToolReturnFrameSnapshot, TraceSnapshot,
+        WorkflowEvent,
     },
     value::{InterpValue, codec as value_codec},
 };

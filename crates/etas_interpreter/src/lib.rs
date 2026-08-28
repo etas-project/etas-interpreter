@@ -214,11 +214,58 @@ impl Interpreter {
             .execution_progress
             .original_limits
             .stricter(options.execution_limits);
+        let mut host_context = options.host_context;
+        host_context.budget = match checkpoint
+            .host_state
+            .budget
+            .resume_under(&host_context.budget)
+        {
+            Ok(budget) => budget,
+            Err(error) => {
+                diagnostics.push(diagnostics::invalid_arguments(
+                    item_span(project, checkpoint.entry_item),
+                    format!("checkpoint budget cannot be resumed: {error}"),
+                ));
+                return RunResult {
+                    value: None,
+                    diagnostics,
+                    events,
+                    checkpoints,
+                };
+            }
+        };
+        let parent_trace = checkpoint.host_state.trace.trace_id;
+        let resumed_trace = match (|| {
+            loop {
+                let trace_id = etas_host::TraceId::generate()?;
+                if trace_id != parent_trace {
+                    return Ok::<_, etas_host::HostError>(etas_host::TraceContext::resumed(
+                        trace_id,
+                        parent_trace,
+                    ));
+                }
+            }
+        })() {
+            Ok(trace) => trace,
+            Err(error) => {
+                diagnostics.push(diagnostics::invalid_arguments(
+                    item_span(project, checkpoint.entry_item),
+                    error.to_string(),
+                ));
+                return RunResult {
+                    value: None,
+                    diagnostics,
+                    events,
+                    checkpoints,
+                };
+            }
+        };
+        host_context.trace = resumed_trace;
         let prepare_span = profile.span("interpreter.prepare", "interpreter");
         let mut eval = eval::EvalContext::new(eval::EvalContextInput {
             checked: project,
             plan: &plan,
-            host_context: options.host_context,
+            host_context,
             model_policy: options.model_policy,
             execution_limits,
             consumed_steps: checkpoint.execution_progress.consumed_steps,

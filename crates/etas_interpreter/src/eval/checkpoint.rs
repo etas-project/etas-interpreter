@@ -5,7 +5,6 @@ impl<'a> EvalContext<'a> {
         &mut self,
         checkpoint: &InterpreterCheckpoint,
     ) -> ControlSignal {
-        self.host_context = checkpoint.host_context.clone();
         self.handler_stack = checkpoint.handlers.handlers.clone();
         self.retry_stack = checkpoint.retry_state.attempts.clone();
         self.completed_host_boundaries = checkpoint.completed_host_boundaries.completed.clone();
@@ -69,7 +68,10 @@ impl<'a> EvalContext<'a> {
                 consumed_steps: self.safe_points.consumed_steps(),
                 original_limits: self.execution_limits,
             },
-            host_context: self.host_context.clone(),
+            host_state: crate::orchestration::CheckpointHostState {
+                trace: self.host_context.trace.clone(),
+                budget: self.host_context.budget.clone(),
+            },
             current_session: self.current_session.clone(),
             resource_versions: ResourceVersionSnapshot {
                 versions: self.resource_versions.clone(),
