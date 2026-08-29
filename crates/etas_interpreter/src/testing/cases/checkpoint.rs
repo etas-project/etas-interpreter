@@ -48,6 +48,87 @@ flow main() -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn checkpoint_budget_snapshot_does_not_change_after_later_token_consumption() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+import std.runtime.checkpoint;
+
+agent Writer(input: string) -> string {
+  return Prompt.new().user(Public(input));
+}
+
+flow main() -> string {
+  checkpoint("before-model");
+  let value = Writer.run("hello");
+  checkpoint("after-model");
+  return value;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Agentic,
+        HostRequirementKind::Checkpoint,
+    ]));
+    host.seed_model_response_text("done");
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: AuthorityContext {
+                        grants: vec![HostActionGrant::allow("Agentic", "infer")],
+                        approvals: Vec::new(),
+                        sandbox: SandboxPolicy::deny_all(),
+                        policy: Default::default(),
+                    },
+                    trace: TraceContext::root(TraceId(97)),
+                    budget: etas_host::ExecutionBudget::start(Budget {
+                        tokens: Some(TokenBudget { max_tokens: 10 }),
+                        ..Budget::default()
+                    }),
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await;
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.checkpoints.len(), 2);
+    assert_eq!(
+        result.checkpoints[0]
+            .host_state
+            .budget
+            .state
+            .consumed_tokens,
+        0
+    );
+    assert!(
+        result.checkpoints[1]
+            .host_state
+            .budget
+            .state
+            .consumed_tokens
+            > 0
+    );
+    assert_eq!(
+        result.checkpoints[0]
+            .host_state
+            .budget
+            .state
+            .consumed_tokens,
+        0,
+        "later model usage must not mutate an earlier checkpoint snapshot"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn resume_checkpoint_preserves_consumed_execution_fuel_and_cannot_widen_limits() {
     let mut source = String::from(
         r#"

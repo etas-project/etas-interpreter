@@ -45,7 +45,11 @@ pub fn checkpoint_from_json(
         .map_err(InterpreterCodecError::new)?;
     let host_state = checkpoint_host_state_from_json(required_obj(checkpoint, "host_state")?)?;
     let mut machine = machine_from_json(required_obj(checkpoint, "machine")?, checked)?;
-    rebind_machine_execution_budget(&mut machine, &host_state.budget.state());
+    let restored_budget = host_state
+        .budget
+        .restore()
+        .map_err(|error| InterpreterCodecError::new(error.to_string()))?;
+    rebind_machine_execution_budget(&mut machine, &restored_budget.state());
     let checkpoint = InterpreterCheckpoint {
         id: CheckpointId(required_u32(checkpoint, "id")?),
         label: required_optional_string(checkpoint, "label")?,
@@ -1027,7 +1031,7 @@ pub(super) fn resource_version_from_json(
 fn checkpoint_host_state_json(state: &CheckpointHostState) -> Result<Value, InterpreterCodecError> {
     Ok(json!({
         "trace": trace_context_json(&state.trace),
-        "budget": execution_budget_json(&state.budget)?,
+        "budget": checkpoint_budget_snapshot_json(&state.budget),
     }))
 }
 
@@ -1036,7 +1040,7 @@ fn checkpoint_host_state_from_json(
 ) -> Result<CheckpointHostState, InterpreterCodecError> {
     Ok(CheckpointHostState {
         trace: trace_context_from_json(required_obj(value, "trace")?)?,
-        budget: execution_budget_from_json(required_obj(value, "budget")?)?,
+        budget: checkpoint_budget_snapshot_from_json(required_obj(value, "budget")?)?,
     })
 }
 
@@ -1305,22 +1309,33 @@ pub(crate) fn budget_from_json(value: &Value) -> Result<Budget, InterpreterCodec
 }
 
 fn execution_budget_json(budget: &ExecutionBudget) -> Result<Value, InterpreterCodecError> {
-    let snapshot = budget
-        .snapshot()
+    let snapshot = CheckpointBudgetSnapshot::capture(budget)
         .map_err(|error| InterpreterCodecError::new(error.to_string()))?;
-    Ok(json!({
-        "limits": budget_json(budget.limits()),
+    Ok(checkpoint_budget_snapshot_json(&snapshot))
+}
+
+fn checkpoint_budget_snapshot_json(snapshot: &CheckpointBudgetSnapshot) -> Value {
+    json!({
+        "limits": budget_json(&snapshot.limits),
         "state": {
-            "deadline_unix_millis": snapshot.deadline_unix_millis.map(|value| value.to_string()),
-            "reserved_tokens": snapshot.reserved_tokens,
-            "consumed_tokens": snapshot.consumed_tokens,
-            "reserved_cost_micros": snapshot.reserved_cost_micros.to_string(),
-            "consumed_cost_micros": snapshot.consumed_cost_micros.to_string(),
+            "deadline_unix_millis": snapshot.state.deadline_unix_millis.map(|value| value.to_string()),
+            "reserved_tokens": snapshot.state.reserved_tokens,
+            "consumed_tokens": snapshot.state.consumed_tokens,
+            "reserved_cost_micros": snapshot.state.reserved_cost_micros.to_string(),
+            "consumed_cost_micros": snapshot.state.consumed_cost_micros.to_string(),
         },
-    }))
+    })
 }
 
 fn execution_budget_from_json(value: &Value) -> Result<ExecutionBudget, InterpreterCodecError> {
+    checkpoint_budget_snapshot_from_json(value)?
+        .restore()
+        .map_err(|error| InterpreterCodecError::new(error.to_string()))
+}
+
+fn checkpoint_budget_snapshot_from_json(
+    value: &Value,
+) -> Result<CheckpointBudgetSnapshot, InterpreterCodecError> {
     let limits = budget_from_json(required_obj(value, "limits")?)?;
     let state = required_obj(value, "state")?;
     let deadline_unix_millis = match state.get("deadline_unix_millis") {
@@ -1348,17 +1363,16 @@ fn execution_budget_from_json(value: &Value) -> Result<ExecutionBudget, Interpre
             ))
         })
     };
-    ExecutionBudget::restore(
+    Ok(CheckpointBudgetSnapshot {
         limits,
-        ExecutionBudgetSnapshot {
+        state: ExecutionBudgetSnapshot {
             deadline_unix_millis,
             reserved_tokens: required_u64(state, "reserved_tokens")?,
             consumed_tokens: required_u64(state, "consumed_tokens")?,
             reserved_cost_micros: parse_u128("reserved_cost_micros")?,
             consumed_cost_micros: parse_u128("consumed_cost_micros")?,
         },
-    )
-    .map_err(|error| InterpreterCodecError::new(error.to_string()))
+    })
 }
 
 pub(super) fn sandbox_policy_json(policy: &SandboxPolicy) -> Value {

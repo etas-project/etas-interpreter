@@ -42,7 +42,33 @@ pub struct InterpreterCheckpoint {
 #[derive(Clone, Debug, PartialEq)]
 pub struct CheckpointHostState {
     pub trace: etas_host::TraceContext,
-    pub budget: etas_host::ExecutionBudget,
+    pub budget: CheckpointBudgetSnapshot,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub struct CheckpointBudgetSnapshot {
+    pub limits: etas_host::Budget,
+    pub state: etas_host::ExecutionBudgetSnapshot,
+}
+
+impl CheckpointBudgetSnapshot {
+    pub fn capture(budget: &etas_host::ExecutionBudget) -> Result<Self, etas_host::HostError> {
+        Ok(Self {
+            limits: budget.limits().clone(),
+            state: budget.snapshot()?,
+        })
+    }
+
+    pub fn restore(&self) -> Result<etas_host::ExecutionBudget, etas_host::HostError> {
+        etas_host::ExecutionBudget::restore(self.limits.clone(), self.state.clone())
+    }
+
+    pub fn resume_under(
+        &self,
+        invocation: &etas_host::ExecutionBudget,
+    ) -> Result<etas_host::ExecutionBudget, etas_host::HostError> {
+        self.restore()?.resume_under(invocation)
+    }
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

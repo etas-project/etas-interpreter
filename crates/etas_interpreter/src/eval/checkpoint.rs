@@ -45,6 +45,15 @@ impl<'a> EvalContext<'a> {
                 format!("checkpoint compilation identity is unavailable: {message}"),
             )
         })?;
+        let budget =
+            crate::orchestration::CheckpointBudgetSnapshot::capture(&self.host_context.budget)
+                .map_err(|error| {
+                    crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::UnhandledRuntimeError,
+                        item_span(self.checked, self.entry_item),
+                        format!("checkpoint budget snapshot failed: {error}"),
+                    )
+                })?;
         self.next_checkpoint += 1;
         self.events.push(WorkflowEvent::CheckpointCreated(id));
         self.checkpoints.push(InterpreterCheckpoint {
@@ -70,7 +79,7 @@ impl<'a> EvalContext<'a> {
             },
             host_state: crate::orchestration::CheckpointHostState {
                 trace: self.host_context.trace.clone(),
-                budget: self.host_context.budget.clone(),
+                budget,
             },
             current_session: self.current_session.clone(),
             resource_versions: ResourceVersionSnapshot {
