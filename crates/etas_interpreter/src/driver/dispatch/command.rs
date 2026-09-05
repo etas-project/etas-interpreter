@@ -57,7 +57,12 @@ pub(in crate::driver) async fn dispatch(
         Ok(response) => match response.result {
             Ok(output) => {
                 let value = eval.command_result_value(&command, output)?;
-                eval.record_completed_host_boundary("command", key, value.clone());
+                eval.record_completed_host_boundary(
+                    crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
+                    "command",
+                    key,
+                    value.clone(),
+                );
                 Some(eval.resume_command_signal(command, value))
             }
             Err(error) => retry_or_report(

@@ -4,7 +4,11 @@ use etas_host::CommandOutput;
 impl<'a> EvalContext<'a> {
     pub(crate) fn replayed_command_result(&self, command: &PendingCommand) -> Option<InterpValue> {
         let key = self.command_boundary_key(command);
-        self.completed_host_boundary_result("command", &key)
+        self.completed_host_boundary_result(
+            &crate::orchestration::BoundaryOccurrenceId::HostRequest(command.request.id),
+            "command",
+            &key,
+        )
     }
 
     pub(crate) fn command_result_value(

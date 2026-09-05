@@ -15,9 +15,6 @@ pub(in crate::driver) async fn dispatch(
     perform: PendingPerform,
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
-    if let Some(value) = eval.replayed_approval_result(&perform) {
-        return Some(eval.resume_perform_signal(perform, value));
-    }
     if perform.error_type.is_some() {
         let diagnostic = crate::diagnostics::unhandled_error_perform(eval.checked, &perform);
         if let Some(signal) = machine.retry_boundary_failure(
@@ -36,6 +33,10 @@ pub(in crate::driver) async fn dispatch(
             .push(crate::diagnostics::unhandled_effect_action(&perform));
         return None;
     };
+    if let Some(value) = eval.replayed_approval_result(&perform, request.id) {
+        return Some(eval.resume_perform_signal(perform, value));
+    }
+    let request_id = request.id;
     if let Err(error) = eval.host_budget().check_time() {
         eval.diagnostics.push(Diagnostic::analysis(
             AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -53,7 +54,12 @@ pub(in crate::driver) async fn dispatch(
                 etas_host::ApprovalDecision::Approved { .. } => InterpValue::Bool(true),
                 etas_host::ApprovalDecision::Denied { .. } => InterpValue::Bool(false),
             };
-            eval.record_completed_host_boundary("approval", key, value.clone());
+            eval.record_completed_host_boundary(
+                crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
+                "approval",
+                key,
+                value.clone(),
+            );
             Some(eval.resume_perform_signal(perform, value))
         }
         Err(error) => {

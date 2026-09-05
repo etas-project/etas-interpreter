@@ -794,6 +794,9 @@ flow main() -> string {
         .completed_host_boundaries
         .completed
         .push(CompletedHostBoundary {
+            occurrence: crate::orchestration::BoundaryOccurrenceId::HostRequest(
+                etas_host::HostRequestId(checkpoint.trace.next_host_request),
+            ),
             kind: "approval".to_owned(),
             key: "req-1".to_owned(),
             result: crate::orchestration::CompletedHostBoundaryResult::Runtime(

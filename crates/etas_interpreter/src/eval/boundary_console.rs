@@ -6,7 +6,11 @@ use etas_host::{HostError, HostErrorCode};
 impl<'a> EvalContext<'a> {
     pub(crate) fn replayed_console_result(&self, console: &PendingConsole) -> Option<InterpValue> {
         let key = self.console_boundary_key(console);
-        self.completed_host_boundary_result("console", &key)
+        self.completed_host_boundary_result(
+            &crate::orchestration::BoundaryOccurrenceId::HostRequest(console.request.id),
+            "console",
+            &key,
+        )
     }
 
     pub(crate) fn console_result_value(

@@ -3,7 +3,7 @@ mod identity;
 mod ledger;
 
 pub use checkpoint::{
-    ActiveHandlerArmRecord, ActiveHandlerRecord, CheckpointBudgetSnapshot,
+    ActiveHandlerArmRecord, ActiveHandlerRecord, BoundaryOccurrenceId, CheckpointBudgetSnapshot,
     CheckpointCompilationIdentity, CheckpointHostState, CheckpointId, CompletedHostBoundary,
     CompletedHostBoundaryResult, ExecutionProgressSnapshot, HandlerScopeId, HandlerSnapshot,
     HostBoundaryLedger, InterpreterCheckpoint, MachineSnapshot, ResourceVersionRecord,

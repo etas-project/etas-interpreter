@@ -870,15 +870,12 @@ impl HostServices for FakeHost {
         Box::pin(async move {
             let result = match request.operation {
                 ConsoleOperation::ReadAllStdin => {
-                    ConsoleResult::Input(stdin.lock().expect("stdin lock").clone())
+                    ConsoleResult::Input(std::mem::take(&mut *stdin.lock().expect("stdin lock")))
                 }
                 ConsoleOperation::ReadLineStdin => {
-                    let text = stdin.lock().expect("stdin lock").clone();
-                    let line = text
-                        .split_inclusive('\n')
-                        .next()
-                        .unwrap_or(text.as_str())
-                        .to_owned();
+                    let mut input = stdin.lock().expect("stdin lock");
+                    let end = input.find('\n').map_or(input.len(), |index| index + 1);
+                    let line = input.drain(..end).collect();
                     ConsoleResult::Input(line)
                 }
                 ConsoleOperation::WriteStdout { text, newline } => {

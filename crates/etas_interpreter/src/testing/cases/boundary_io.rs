@@ -2,6 +2,51 @@ use super::super::*;
 use etas_host::ApprovalGrant;
 
 #[tokio::test(flavor = "current_thread")]
+async fn repeated_read_line_and_identical_writes_are_distinct_boundary_occurrences() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.effects.Console;
+import std.io.{eprintln, print, println, read_line};
+
+flow main() -> i32 ![Console, Error<IOError>] {
+    println("READY");
+    let first = read_line();
+    print("VALUE<");
+    print(first);
+    println(">");
+    let second = read_line();
+    print("VALUE<");
+    print(second);
+    println(">");
+    eprintln("DONE");
+    return 0;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    host.seed_stdin("alpha\nbeta");
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await;
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(host.stdout_text(), "READY\nVALUE<alpha\n>\nVALUE<beta>\n");
+    assert_eq!(host.stderr_text(), "DONE\n");
+    assert_eq!(host.console_call_count(), 10);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_reports_missing_console_host_handler_for_std_io_entry() {
     let checked = checked_project(
         r#"
@@ -536,10 +581,11 @@ async fn run_checked_executes_std_command_through_command_host_service() {
     let checked = checked_project(
         r#"
 module app.main;
-import std.host.command.{Command, CommandResult, run};
+import std.host.command.{CommandResult, command, run};
 
-flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
+flow main() -> CommandResult ![Command.run<DefaultCommandSandbox>]
 {
+    let cmd = command("echo", ["done"]);
     return run(cmd, DefaultCommandSandbox);
 }
 "#,
@@ -560,19 +606,13 @@ flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
         },
         ..RunOptions::default()
     };
-    let command = value::InterpValue::Command {
-        argv: vec!["echo".to_owned(), "done".to_owned()],
-        env: vec![("LANG".to_owned(), "C".to_owned())],
-        cwd: None,
-        stdin: Some(b"input".to_vec()),
-    };
     let result = Interpreter
         .run_checked(
             &checked,
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![command],
+            Vec::new(),
             &host,
             options,
         )
@@ -591,13 +631,70 @@ flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
     let requests = host.command_requests();
     assert_eq!(requests.len(), 1);
     assert_eq!(requests[0].argv, vec!["echo", "done"]);
-    assert_eq!(requests[0].env, vec![("LANG".to_owned(), "C".to_owned())]);
-    assert_eq!(requests[0].stdin, Some(b"input".to_vec()));
+    assert!(requests[0].env.is_empty());
+    assert_eq!(requests[0].stdin, None);
     assert_eq!(
         requests[0].authority.grants,
         vec![HostActionGrant::allow("Command", "run")]
     );
     assert_eq!(requests[0].trace, TraceContext::root(TraceId(77)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_checked_constructs_and_configures_opaque_command_values() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.fs.{Region, WorkspacePath};
+import std.host.command.{Command, command, with_cwd, with_env, with_stdin};
+
+type ProjectRoot;
+impl ProjectRoot ~ Region;
+
+flow main(
+    cwd: WorkspacePath<ProjectRoot>,
+    env: Map<string, string>,
+    input: bytes,
+) -> Command {
+    let base = command("tool", ["run"]);
+    return with_stdin(with_env(with_cwd(base, cwd), env), input);
+}
+"#,
+    );
+    let cwd = etas_host::WorkspacePathRef::new(
+        etas_host::WorkspaceRegionId::new("app.main.ProjectRoot").expect("valid region"),
+        "tools",
+    )
+    .expect("valid path");
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            vec![
+                value::InterpValue::WorkspacePath(cwd.clone()),
+                value::InterpValue::Map(value::MapValue::new(vec![(
+                    value::InterpValue::String("LANG".into()),
+                    value::InterpValue::String("C".into()),
+                )])),
+                value::InterpValue::Bytes(b"input".to_vec()),
+            ],
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await;
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.value,
+        Some(value::InterpValue::Command {
+            argv: vec!["tool".into(), "run".into()],
+            env: vec![("LANG".into(), "C".into())],
+            cwd: Some(cwd),
+            stdin: Some(b"input".to_vec()),
+        })
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]

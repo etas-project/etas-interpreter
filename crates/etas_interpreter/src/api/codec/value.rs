@@ -153,7 +153,10 @@ pub fn value_json(value: &InterpValue) -> Value {
             "env": env.iter().map(|(key, value)| {
                 json!({ "key": key, "value": value })
             }).collect::<Vec<_>>(),
-            "cwd": cwd,
+            "cwd": cwd.as_ref().map(|path| json!({
+                "region": path.region.as_str(),
+                "relative": path.relative.to_string_lossy(),
+            })),
             "stdin": stdin,
         }),
         InterpValue::CommandResult {
@@ -856,7 +859,17 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
                     ))
                 })
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
-            cwd: optional_string(value, "cwd")?,
+            cwd: match value.get("cwd") {
+                Some(Value::Null) | None => None,
+                Some(cwd) => Some(
+                    etas_host::WorkspacePathRef::new(
+                        etas_host::WorkspaceRegionId::new(required_str(cwd, "region")?.to_owned())
+                            .map_err(|error| InterpreterCodecError::new(error.message))?,
+                        required_str(cwd, "relative")?,
+                    )
+                    .map_err(|error| InterpreterCodecError::new(error.message))?,
+                ),
+            },
             stdin: match value.get("stdin") {
                 Some(Value::Null) | None => None,
                 Some(_) => Some(byte_array(value, "stdin")?),

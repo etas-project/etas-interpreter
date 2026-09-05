@@ -23,7 +23,7 @@ impl<'a> EvalContext<'a> {
             .max()
             .unwrap_or(0);
         self.next_step = checkpoint.trace.events_recorded as u32;
-        self.next_host_request = self.completed_host_boundaries.len() as u32;
+        self.next_host_request = checkpoint.trace.next_host_request;
         self.next_message = checkpoint.trace.next_message;
         ControlSignal::Value(InterpValue::Unit)
     }
@@ -72,6 +72,7 @@ impl<'a> EvalContext<'a> {
             trace: TraceSnapshot {
                 events_recorded: self.events.len(),
                 next_message: self.next_message,
+                next_host_request: self.next_host_request,
             },
             execution_progress: ExecutionProgressSnapshot {
                 consumed_steps: self.safe_points.consumed_steps(),

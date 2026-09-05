@@ -156,7 +156,7 @@ pub(crate) enum ValueSnapshot {
     Command {
         argv: Vec<String>,
         env: Vec<(String, String)>,
-        cwd: Option<String>,
+        cwd: Option<etas_host::WorkspacePathRef>,
         stdin: Option<Vec<u8>>,
     },
     CommandResult {
@@ -788,6 +788,7 @@ pub struct RetryAttemptRecord {
 pub struct TraceSnapshot {
     pub events_recorded: usize,
     pub next_message: u32,
+    pub next_host_request: u32,
 }
 
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
@@ -808,9 +809,19 @@ pub struct HostBoundaryLedger {
 
 #[derive(Clone, Debug, PartialEq)]
 pub struct CompletedHostBoundary {
+    pub occurrence: BoundaryOccurrenceId,
     pub kind: String,
     pub key: String,
     pub result: CompletedHostBoundaryResult,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+pub enum BoundaryOccurrenceId {
+    HostRequest(etas_host::HostRequestId),
+    SourceToolCall {
+        model_request: etas_host::HostRequestId,
+        call_id: String,
+    },
 }
 
 #[derive(Clone, Debug, PartialEq)]

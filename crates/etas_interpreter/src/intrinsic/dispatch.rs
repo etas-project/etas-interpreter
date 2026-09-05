@@ -32,6 +32,10 @@ pub enum ConsoleCallable {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum CommandCallable {
+    New,
+    WithEnv,
+    WithCwd,
+    WithStdin,
     Run,
 }
 
@@ -197,6 +201,10 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
             StdCallable::MemoryStore(MemoryStoreCallable::RelatedTo)
         }
         intrinsic::runtime::MEMORY_UPSERT => StdCallable::MemoryStore(MemoryStoreCallable::Upsert),
+        intrinsic::runtime::COMMAND_NEW => StdCallable::Command(CommandCallable::New),
+        intrinsic::runtime::COMMAND_WITH_ENV => StdCallable::Command(CommandCallable::WithEnv),
+        intrinsic::runtime::COMMAND_WITH_CWD => StdCallable::Command(CommandCallable::WithCwd),
+        intrinsic::runtime::COMMAND_WITH_STDIN => StdCallable::Command(CommandCallable::WithStdin),
         intrinsic::runtime::COMMAND_RUN => StdCallable::Command(CommandCallable::Run),
         intrinsic::runtime::FS_PATH => StdCallable::Filesystem(FilesystemCallable::Path),
         intrinsic::runtime::FS_READ_BYTES => StdCallable::Filesystem(FilesystemCallable::ReadBytes),

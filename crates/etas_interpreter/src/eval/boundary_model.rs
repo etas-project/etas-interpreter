@@ -5,7 +5,11 @@ use etas_types::{PrimitiveType, Type, TypeId, TypeStore};
 impl<'a> EvalContext<'a> {
     pub(crate) fn replayed_model_result(&self, model: &PendingModel) -> Option<InterpValue> {
         let key = self.model_boundary_key(model);
-        self.completed_host_boundary_result("model", &key)
+        self.completed_host_boundary_result(
+            &crate::orchestration::BoundaryOccurrenceId::HostRequest(model.request.id),
+            "model",
+            &key,
+        )
     }
 
     pub(crate) fn try_model_result_value(

@@ -30,9 +30,12 @@ pub(in crate::driver) async fn dispatch(
 ) -> Option<ControlSignal> {
     let kind = host_boundary_kind(&boundary.request);
     let key = host_boundary_key(&boundary);
+    let occurrence = crate::orchestration::BoundaryOccurrenceId::HostRequest(
+        host_boundary_request_id(&boundary.request),
+    );
     let trace_subject = host_boundary_policy_subject(&boundary.request);
     if host_boundary_is_replayable(&boundary.request)
-        && let Some(value) = eval.completed_host_boundary_result(kind, &key)
+        && let Some(value) = eval.completed_host_boundary_result(&occurrence, kind, &key)
     {
         return Some(eval.resume_host_signal(boundary, value));
     }
@@ -186,7 +189,7 @@ pub(in crate::driver) async fn dispatch(
     match result {
         Ok(Ok(value)) => {
             if host_boundary_is_replayable(&boundary.request) {
-                eval.record_completed_host_boundary(kind, key, value.clone());
+                eval.record_completed_host_boundary(occurrence, kind, key, value.clone());
             }
             Some(eval.resume_host_signal(boundary, value))
         }
@@ -215,6 +218,17 @@ pub(in crate::driver) async fn dispatch(
                 format!("{kind} host boundary failed: {}", format_host_error(&error)),
             )
         }
+    }
+}
+
+fn host_boundary_request_id(request: &HostBoundaryRequest) -> etas_host::HostRequestId {
+    match request {
+        HostBoundaryRequest::Filesystem(request) => request.id,
+        HostBoundaryRequest::Tcp(request) => request.id,
+        HostBoundaryRequest::Stream(request) => request.id,
+        HostBoundaryRequest::Tls(request) => request.id,
+        HostBoundaryRequest::Secret(request) => request.id,
+        HostBoundaryRequest::Browser(request) => request.id,
     }
 }
 

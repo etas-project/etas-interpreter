@@ -2,9 +2,17 @@ use super::host_value::boundary_key_fragment;
 use super::*;
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn replayed_approval_result(&self, perform: &PendingPerform) -> Option<InterpValue> {
+    pub(crate) fn replayed_approval_result(
+        &self,
+        perform: &PendingPerform,
+        request_id: HostRequestId,
+    ) -> Option<InterpValue> {
         let key = self.approval_boundary_key(perform)?;
-        self.completed_host_boundary_result("approval", &key)
+        self.completed_host_boundary_result(
+            &crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
+            "approval",
+            &key,
+        )
     }
 
     pub(crate) fn approval_request_for(
