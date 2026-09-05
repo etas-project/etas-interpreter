@@ -60,7 +60,8 @@ pub(super) fn frame_from_snapshot(
     let locals = required(value, "locals")?
         .as_array()
         .ok_or_else(|| "machine frame `locals` must be an array".to_owned())?;
-    let mut frame = Frame::new(slots);
+    let type_bindings = type_bindings_from_snapshot(value)?;
+    let mut frame = Frame::with_type_bindings(slots, type_bindings);
     for local in locals {
         let symbol = SymbolId(required_u32(local, "symbol")?);
         if frame.get(symbol).is_some() {
@@ -88,7 +89,26 @@ pub(super) fn frame_from_artifact_snapshot(value: &Value) -> Result<Frame, Strin
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;
-    Frame::from_snapshot(locals)
+    Frame::from_snapshot_with_type_bindings(locals, type_bindings_from_snapshot(value)?)
+}
+
+fn type_bindings_from_snapshot(
+    value: &Value,
+) -> Result<std::collections::HashMap<String, etas_types::TypeId>, String> {
+    required(value, "type_bindings")?
+        .as_array()
+        .ok_or_else(|| "machine frame `type_bindings` must be an array".to_owned())?
+        .iter()
+        .map(|binding| {
+            Ok((
+                required(binding, "name")?
+                    .as_str()
+                    .ok_or_else(|| "machine frame type binding name must be a string".to_owned())?
+                    .to_owned(),
+                etas_types::TypeId(required_u32(binding, "type")?),
+            ))
+        })
+        .collect()
 }
 
 pub(super) fn span_snapshot(span: Span) -> Value {

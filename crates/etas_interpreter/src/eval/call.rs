@@ -104,6 +104,10 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         };
+        let target = match self.specialize_call_target_for_call(call, target, frame, span) {
+            Ok(target) => target,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
         self.resume_call_args(target, args.to_vec(), 0, Vec::new(), span, frame)
     }
 
@@ -382,10 +386,56 @@ impl<'a> EvalContext<'a> {
                     Err(message) => ControlSignal::missing_checked_fact(message, span),
                 }
             }
+            CallTarget::Specialized {
+                target,
+                type_bindings,
+            } => self.execute_specialized_call_target(*target, type_bindings, call_args, span),
             CallTarget::Limited { target, limits } => {
                 self.execute_limited_call_target(*target, limits, call_args, span)
             }
             CallTarget::Composed(stages) => self.execute_composed_call(stages, call_args, span),
+        }
+    }
+
+    fn execute_specialized_call_target(
+        &mut self,
+        target: CallTarget,
+        type_bindings: Vec<(String, etas_types::TypeId)>,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let bindings = type_bindings
+            .into_iter()
+            .collect::<std::collections::HashMap<_, _>>();
+        match target {
+            CallTarget::FlowItem(item) => match self.checked.hir.items.get(item) {
+                Some(HirItem::Flow(flow)) => {
+                    let (signal, _) =
+                        self.execute_flow_with_type_bindings(item, flow, &call_args, bindings);
+                    match signal {
+                        ControlSignal::Value(value) | ControlSignal::Return(value) => {
+                            ControlSignal::Value(value)
+                        }
+                        other => other,
+                    }
+                }
+                _ => ControlSignal::missing_checked_fact(
+                    "specialized flow target is missing from checked HIR",
+                    span,
+                ),
+            },
+            CallTarget::PureIntrinsic(call) => {
+                self.execute_call_target_frame(CallTarget::PureIntrinsic(call), call_args, span)
+            }
+            CallTarget::StdIntrinsic(call) => {
+                match self.plan.dispatch.resolve_std_callable(call.identity) {
+                    Ok(kind) => self.execute_std_callable_with_type_bindings(
+                        kind, &call, call_args, span, &bindings,
+                    ),
+                    Err(message) => ControlSignal::missing_checked_fact(message, span),
+                }
+            }
+            other => self.execute_call_target_frame(other, call_args, span),
         }
     }
 

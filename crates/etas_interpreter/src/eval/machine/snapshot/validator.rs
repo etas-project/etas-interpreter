@@ -769,6 +769,22 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 self.type_id(*result_type, context)
             }
+            CallTargetSnapshot::Specialized {
+                target,
+                type_bindings,
+            } => {
+                self.call_target(target, context)?;
+                let mut names = std::collections::BTreeSet::new();
+                for (name, ty) in type_bindings {
+                    if name.is_empty() || !names.insert(name) {
+                        return Err(format!(
+                            "{context}: specialized call target contains an invalid or duplicate type parameter"
+                        ));
+                    }
+                    self.type_id(*ty, context)?;
+                }
+                Ok(())
+            }
             CallTargetSnapshot::Limited { target, .. } => self.call_target(target, context),
             CallTargetSnapshot::Composed(targets) => {
                 for target in targets {
@@ -780,6 +796,15 @@ impl<'a> SnapshotValidator<'a> {
     }
 
     fn frame(&self, frame: &LocalsSnapshot, context: &str) -> Result<(), String> {
+        let mut type_params = std::collections::BTreeSet::new();
+        for (name, ty) in &frame.type_bindings {
+            if name.is_empty() || !type_params.insert(name) {
+                return Err(format!(
+                    "{context} frame contains an invalid or duplicate type parameter binding"
+                ));
+            }
+            self.type_id(*ty, &format!("{context} frame type binding"))?;
+        }
         for (symbol, value) in &frame.locals {
             self.symbol(*symbol, &format!("{context} frame local"))?;
             if self.slots.resolve(*symbol).is_none() {
@@ -1184,7 +1209,10 @@ flow main() -> unit {
     }
 
     fn empty_locals() -> LocalsSnapshot {
-        LocalsSnapshot { locals: Vec::new() }
+        LocalsSnapshot {
+            locals: Vec::new(),
+            type_bindings: Vec::new(),
+        }
     }
 
     fn validate_continuation(

@@ -25,6 +25,10 @@ pub enum CallTarget {
     NominalConstructor(etas_types::TypeId),
     PureIntrinsic(CheckedPureIntrinsicCall),
     StdIntrinsic(CheckedStdIntrinsicCall),
+    Specialized {
+        target: Box<CallTarget>,
+        type_bindings: Vec<(String, etas_types::TypeId)>,
+    },
     Limited {
         target: Box<CallTarget>,
         limits: Vec<crate::eval::limit::RuntimeLimit>,

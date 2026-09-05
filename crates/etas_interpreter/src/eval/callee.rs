@@ -2,6 +2,43 @@ use super::*;
 use etas_frontend::AstItemRef;
 
 impl<'a> EvalContext<'a> {
+    pub(super) fn specialize_call_target_for_call(
+        &self,
+        call: HirExprId,
+        target: CallTarget,
+        frame: &Frame,
+        span: Span,
+    ) -> Result<CallTarget, crate::control::ExecutionFault> {
+        let Some(fact) = self.checked.types.generic_instantiations.get(&call) else {
+            return Ok(target);
+        };
+        let mut bindings = Vec::with_capacity(fact.type_bindings.len());
+        for (name, ty) in &fact.type_bindings {
+            let resolved = etas_types::substitute_named_params_in_store(
+                &self.checked.type_store,
+                *ty,
+                frame.type_bindings(),
+            )
+            .map_err(|error| {
+                crate::control::ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    format!(
+                        "checked generic call type binding `{name}` cannot be materialized at runtime: {error}"
+                    ),
+                )
+            })?;
+            bindings.push((name.clone(), resolved));
+        }
+        if bindings.is_empty() {
+            return Ok(target);
+        }
+        Ok(CallTarget::Specialized {
+            target: Box::new(target),
+            type_bindings: bindings,
+        })
+    }
+
     pub(super) fn resolve_nominal_constructor_call_target(
         &self,
         call: HirExprId,

@@ -37,6 +37,7 @@ pub enum CommandCallable {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilesystemCallable {
+    Path,
     ReadBytes,
     WriteBytes,
     List,
@@ -197,6 +198,7 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         }
         intrinsic::runtime::MEMORY_UPSERT => StdCallable::MemoryStore(MemoryStoreCallable::Upsert),
         intrinsic::runtime::COMMAND_RUN => StdCallable::Command(CommandCallable::Run),
+        intrinsic::runtime::FS_PATH => StdCallable::Filesystem(FilesystemCallable::Path),
         intrinsic::runtime::FS_READ_BYTES => StdCallable::Filesystem(FilesystemCallable::ReadBytes),
         intrinsic::runtime::FS_WRITE_BYTES => {
             StdCallable::Filesystem(FilesystemCallable::WriteBytes)

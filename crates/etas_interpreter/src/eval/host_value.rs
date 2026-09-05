@@ -17,6 +17,11 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
         InterpValue::Nominal { ty, value } => {
             format!("nominal:{}:{}", ty.0, boundary_key_fragment(value))
         }
+        InterpValue::WorkspacePath(path) => format!(
+            "workspace-path:{}:{}",
+            path.region.as_str(),
+            path.relative.to_string_lossy()
+        ),
         InterpValue::Trust { wrapper, value } => {
             format!("trust:{wrapper}:{}", boundary_key_fragment(value))
         }
@@ -375,6 +380,7 @@ pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, Str
         | InterpValue::Handler { .. }
         | InterpValue::HostHandle(_)
         | InterpValue::ResourceHandle { .. }
+        | InterpValue::WorkspacePath(_)
         | InterpValue::MemoryStore { .. }
         | InterpValue::MemorySelection { .. } => Err(format!(
             "{} is not host-encodable",
@@ -385,6 +391,7 @@ pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, Str
 
 fn interp_value_kind(value: &InterpValue) -> &'static str {
     match value {
+        InterpValue::WorkspacePath(_) => "workspace path",
         InterpValue::Slice(_) => "slice",
         InterpValue::Set(_) => "set",
         InterpValue::OrderedSet(_) => "ordered set",

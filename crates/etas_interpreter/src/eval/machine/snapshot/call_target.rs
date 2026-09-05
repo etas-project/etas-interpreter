@@ -24,6 +24,13 @@ pub(super) fn capture_call_target(target: &CallTarget) -> Result<CallTargetSnaps
             parameter_types: call.parameter_types.clone(),
             result_type: call.result_type,
         },
+        CallTarget::Specialized {
+            target,
+            type_bindings,
+        } => CallTargetSnapshot::Specialized {
+            target: Box::new(capture_call_target(target)?),
+            type_bindings: type_bindings.clone(),
+        },
         CallTarget::Limited { target, limits } => CallTargetSnapshot::Limited {
             target: Box::new(capture_call_target(target)?),
             limits: limits.clone(),
@@ -71,6 +78,13 @@ pub(super) fn restore_call_target(snapshot: CallTargetSnapshot) -> Result<CallTa
             parameter_types,
             result_type,
         }),
+        CallTargetSnapshot::Specialized {
+            target,
+            type_bindings,
+        } => CallTarget::Specialized {
+            target: Box::new(restore_call_target(*target)?),
+            type_bindings,
+        },
         CallTargetSnapshot::Limited { target, limits } => CallTarget::Limited {
             target: Box::new(restore_call_target(*target)?),
             limits,

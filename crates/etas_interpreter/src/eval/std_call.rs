@@ -1,5 +1,3 @@
-use std::path::Path;
-
 use etas_builtin::BuiltinError;
 use etas_effects::{
     ActionRef, COMMAND_RUN_ACTION, COMMAND_TAG, CONSOLE_STDERR_WRITE_ACTION,
@@ -27,6 +25,23 @@ impl<'a> EvalContext<'a> {
         checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
+    ) -> ControlSignal {
+        self.execute_std_callable_with_type_bindings(
+            kind,
+            checked_call,
+            call_args,
+            span,
+            &Default::default(),
+        )
+    }
+
+    pub(super) fn execute_std_callable_with_type_bindings(
+        &mut self,
+        kind: StdCallable,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        span: Span,
+        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
         match kind {
             StdCallable::Approval => self.execute_approval_callable(call_args, span),
@@ -62,9 +77,13 @@ impl<'a> EvalContext<'a> {
             StdCallable::Command(callable) => {
                 self.execute_command_callable(callable, call_args, span)
             }
-            StdCallable::Filesystem(callable) => {
-                self.execute_filesystem_callable(callable, call_args, span)
-            }
+            StdCallable::Filesystem(callable) => self.execute_filesystem_callable(
+                callable,
+                checked_call,
+                call_args,
+                span,
+                type_bindings,
+            ),
             StdCallable::Tcp(callable) => self.execute_tcp_callable(callable, call_args, span),
             StdCallable::Stream(callable) => {
                 self.execute_stream_callable(callable, call_args, span)
@@ -684,23 +703,32 @@ impl<'a> EvalContext<'a> {
     fn execute_filesystem_callable(
         &mut self,
         callable: FilesystemCallable,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
+        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
         let result = match callable {
+            FilesystemCallable::Path => {
+                return self.execute_workspace_path_constructor(
+                    checked_call.result_type,
+                    type_bindings,
+                    call_args,
+                    span,
+                );
+            }
             FilesystemCallable::ReadBytes => {
                 let [path] = call_args.as_slice() else {
                     return self
                         .invalid_arguments_abort(span, "std.fs.read_bytes expects WorkspacePath");
                 };
-                self.workspace_path(path, FilesystemAccess::Read, span)
-                    .map(|path| {
-                        (
-                            "Fs.read",
-                            FilesystemOperation::Read { path },
-                            HostBoundaryDecode::Bytes,
-                        )
-                    })
+                self.workspace_path(path, span).map(|path| {
+                    (
+                        "Fs.read",
+                        FilesystemOperation::Read { path },
+                        HostBoundaryDecode::Bytes,
+                    )
+                })
             }
             FilesystemCallable::WriteBytes => {
                 let [path, body] = call_args.as_slice() else {
@@ -709,7 +737,7 @@ impl<'a> EvalContext<'a> {
                         "std.fs.write_bytes expects WorkspacePath and bytes",
                     );
                 };
-                let path = std_value!(self.workspace_path(path, FilesystemAccess::Write, span));
+                let path = std_value!(self.workspace_path(path, span));
                 let contents =
                     std_value!(self.bytes_argument(body, "std.fs.write_bytes body", span,));
                 Ok((
@@ -726,27 +754,25 @@ impl<'a> EvalContext<'a> {
                 let [path] = call_args.as_slice() else {
                     return self.invalid_arguments_abort(span, "std.fs.list expects WorkspacePath");
                 };
-                self.workspace_path(path, FilesystemAccess::Read, span)
-                    .map(|path| {
-                        (
-                            "Fs.list",
-                            FilesystemOperation::ReadDir { path },
-                            HostBoundaryDecode::PathList,
-                        )
-                    })
+                self.workspace_path(path, span).map(|path| {
+                    (
+                        "Fs.list",
+                        FilesystemOperation::ReadDir { path },
+                        HostBoundaryDecode::PathList,
+                    )
+                })
             }
             FilesystemCallable::Stat => {
                 let [path] = call_args.as_slice() else {
                     return self.invalid_arguments_abort(span, "std.fs.stat expects WorkspacePath");
                 };
-                self.workspace_path(path, FilesystemAccess::Read, span)
-                    .map(|path| {
-                        (
-                            "Fs.stat",
-                            FilesystemOperation::Stat { path },
-                            HostBoundaryDecode::FilesystemStat,
-                        )
-                    })
+                self.workspace_path(path, span).map(|path| {
+                    (
+                        "Fs.stat",
+                        FilesystemOperation::Stat { path },
+                        HostBoundaryDecode::FilesystemStat,
+                    )
+                })
             }
             FilesystemCallable::AtomicReplace => {
                 let [path, body] = call_args.as_slice() else {
@@ -755,7 +781,7 @@ impl<'a> EvalContext<'a> {
                         "std.fs.atomic_replace expects WorkspacePath and bytes",
                     );
                 };
-                let path = std_value!(self.workspace_path(path, FilesystemAccess::Write, span));
+                let path = std_value!(self.workspace_path(path, span));
                 let contents =
                     std_value!(self.bytes_argument(body, "std.fs.atomic_replace body", span,));
                 Ok((
@@ -1193,45 +1219,153 @@ impl<'a> EvalContext<'a> {
     fn workspace_path(
         &self,
         value: &InterpValue,
-        access: FilesystemAccess,
         span: Span,
-    ) -> Result<WorkspacePath, ExecutionFault> {
-        let relative = self.path_string_argument(value, span)?;
-        let roots = match access {
-            FilesystemAccess::Read => &self.host_context.authority.sandbox.filesystem.read_roots,
-            FilesystemAccess::Write => &self.host_context.authority.sandbox.filesystem.write_roots,
-        };
-        let [root] = roots.as_slice() else {
-            return Err(ExecutionFault::new(
+    ) -> Result<etas_host::WorkspacePathRef, ExecutionFault> {
+        match value {
+            InterpValue::WorkspacePath(path) => Ok(path.clone()),
+            _ => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
-                format!(
-                    "std.fs requires exactly one configured {} workspace root",
-                    access.name()
-                ),
-            ));
-        };
-        let path = Path::new(&relative);
-        let workspace_path = match access {
-            FilesystemAccess::Read => root.resolve_existing(path),
-            FilesystemAccess::Write => root.resolve_for_create(path),
-        };
-        match workspace_path {
-            Ok(path) => Ok(path),
-            Err(error) => Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                format!("invalid workspace path: {}", error.message),
+                "std.fs requires an opaque WorkspacePath<R> created by std.fs.path",
             )),
         }
     }
 
-    fn path_string_argument(
+    fn execute_workspace_path_constructor(
         &self,
-        value: &InterpValue,
+        result_type: etas_types::TypeId,
+        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [InterpValue::String(relative)]: [InterpValue; 1] = (match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!(
+                        "std.fs.path expects exactly one string argument, got {}",
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+        }) else {
+            return ControlSignal::invalid_arguments(
+                "std.fs.path expects a string relative path",
+                span,
+            );
+        };
+        let (error_type, region) =
+            match self.workspace_path_result_type(result_type, type_bindings, span) {
+                Ok(parts) => parts,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+        let region = match etas_host::WorkspaceRegionId::new(region) {
+            Ok(region) => region,
+            Err(error) => {
+                return ControlSignal::missing_checked_fact(
+                    format!(
+                        "checked workspace region identity is invalid: {}",
+                        error.message
+                    ),
+                    span,
+                );
+            }
+        };
+        match etas_host::WorkspacePathRef::new(region, relative) {
+            Ok(path) => ControlSignal::Value(InterpValue::Variant {
+                name: "Ok".to_owned(),
+                fields: vec![InterpValue::WorkspacePath(path)],
+            }),
+            Err(error) => ControlSignal::Value(InterpValue::Variant {
+                name: "Err".to_owned(),
+                fields: vec![InterpValue::Nominal {
+                    ty: error_type,
+                    value: Box::new(InterpValue::String(error.message)),
+                }],
+            }),
+        }
+    }
+
+    fn workspace_path_result_type(
+        &self,
+        result_type: etas_types::TypeId,
+        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
+        span: Span,
+    ) -> Result<(etas_types::TypeId, String), ExecutionFault> {
+        let Some(etas_types::Type::Result { ok, err }) = self.checked.type_store.get(result_type)
+        else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "std.fs.path checked result is not Result<WorkspacePath<R>, IOError>",
+            ));
+        };
+        let Some(etas_types::Type::Applied { constructor, args }) =
+            self.checked.type_store.get(*ok)
+        else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "std.fs.path checked success type is not WorkspacePath<R>",
+            ));
+        };
+        let constructor_type = etas_types::TypeId(constructor.0);
+        let constructor_name = match self.checked.type_store.get(constructor_type) {
+            Some(etas_types::Type::Named(named)) => named.name.as_str(),
+            Some(etas_types::Type::Nominal(nominal)) => nominal.name.as_str(),
+            _ => "",
+        };
+        if constructor_name != "std.fs.WorkspacePath" || args.len() != 1 {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "std.fs.path checked success type has inconsistent WorkspacePath identity",
+            ));
+        }
+        let region = self.canonical_region_identity(args[0], type_bindings, span)?;
+        Ok((*err, region))
+    }
+
+    fn canonical_region_identity(
+        &self,
+        mut ty: etas_types::TypeId,
+        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
         span: Span,
     ) -> Result<String, ExecutionFault> {
-        self.string_support_argument(value, &["value", "path"], "WorkspacePath", span)
+        let mut visited = std::collections::BTreeSet::new();
+        loop {
+            if !visited.insert(ty) {
+                return Err(ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    "workspace region type binding contains a cycle",
+                ));
+            }
+            match self.checked.type_store.get(ty) {
+                Some(etas_types::Type::Nominal(nominal)) => return Ok(nominal.name.clone()),
+                Some(etas_types::Type::Named(named)) => {
+                    let Some(bound) = type_bindings.get(&named.name).copied() else {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            format!(
+                                "workspace region type parameter `{}` has no runtime checked binding",
+                                named.name
+                            ),
+                        ));
+                    };
+                    ty = bound;
+                }
+                _ => {
+                    return Err(ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        "WorkspacePath<R> region argument is not a canonical nominal type",
+                    ));
+                }
+            }
+        }
     }
 
     fn string_support_argument(
@@ -1493,21 +1627,6 @@ impl<'a> EvalContext<'a> {
         symbol: SymbolId,
     ) -> Option<crate::intrinsic::dispatch::StdIntrinsicIdentity> {
         self.plan.dispatch.std_intrinsic(symbol)
-    }
-}
-
-#[derive(Clone, Copy)]
-enum FilesystemAccess {
-    Read,
-    Write,
-}
-
-impl FilesystemAccess {
-    fn name(self) -> &'static str {
-        match self {
-            FilesystemAccess::Read => "read",
-            FilesystemAccess::Write => "write",
-        }
     }
 }
 

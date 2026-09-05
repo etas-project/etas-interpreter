@@ -44,6 +44,16 @@ pub(crate) fn call_target_snapshot(target: &CallTarget) -> Value {
             "parameter_types": call.parameter_types.iter().map(|ty| ty.0).collect::<Vec<_>>(),
             "result_type": call.result_type.0,
         }),
+        CallTarget::Specialized {
+            target,
+            type_bindings,
+        } => json!({
+            "kind": "specialized",
+            "target": call_target_snapshot(target),
+            "type_bindings": type_bindings.iter().map(|(name, ty)| {
+                json!({ "name": name, "type": ty.0 })
+            }).collect::<Vec<_>>(),
+        }),
         CallTarget::Limited { target, limits } => json!({
             "kind": "limited",
             "target": call_target_snapshot(target),
@@ -144,6 +154,23 @@ fn call_target_from_snapshot_with_layout(
                 result_type: etas_types::TypeId(required_u32(value, "result_type")?),
             },
         )),
+        "specialized" => Ok(CallTarget::Specialized {
+            target: Box::new(call_target_from_snapshot_with_layout(
+                required(value, "target")?,
+                slots,
+            )?),
+            type_bindings: required(value, "type_bindings")?
+                .as_array()
+                .ok_or_else(|| "specialized call target type_bindings must be an array".to_owned())?
+                .iter()
+                .map(|binding| {
+                    Ok((
+                        required_str(binding, "name")?.to_owned(),
+                        etas_types::TypeId(required_u32(binding, "type")?),
+                    ))
+                })
+                .collect::<Result<Vec<_>, String>>()?,
+        }),
         "limited" => Ok(CallTarget::Limited {
             target: Box::new(call_target_from_snapshot_with_layout(
                 required(value, "target")?,

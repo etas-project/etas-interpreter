@@ -107,6 +107,10 @@ impl ValueSnapshot {
                 stable_id: stable_id.clone(),
                 ty: *ty,
             },
+            InterpValue::WorkspacePath(path) => Self::WorkspacePath {
+                region: path.region.as_str().to_owned(),
+                relative: path.relative.to_string_lossy().into_owned(),
+            },
             InterpValue::MemoryStore {
                 region_stable_id,
                 path,
@@ -237,6 +241,13 @@ impl ValueSnapshot {
                 stable_id,
                 ty,
             },
+            Self::WorkspacePath { region, relative } => InterpValue::WorkspacePath(
+                etas_host::WorkspacePathRef::new(
+                    etas_host::WorkspaceRegionId::new(region).map_err(|error| error.message)?,
+                    relative,
+                )
+                .map_err(|error| error.message)?,
+            ),
             Self::MemoryStore {
                 region_stable_id,
                 path,

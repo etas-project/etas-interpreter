@@ -4,6 +4,9 @@ pub(in crate::api::codec::machine) fn frame_snapshot(frame: &Frame) -> Value {
     json!({
         "locals": frame.sorted_locals().iter().map(|(symbol, value)| {
             json!({ "symbol": symbol.0, "value": value_json(value) })
+        }).collect::<Vec<_>>(),
+        "type_bindings": frame.sorted_type_bindings().iter().map(|(name, ty)| {
+            json!({ "name": name, "type": ty.0 })
         }).collect::<Vec<_>>()
     })
 }

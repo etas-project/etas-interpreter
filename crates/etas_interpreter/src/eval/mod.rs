@@ -97,7 +97,7 @@ use etas_host::{
     MemoryWriteMode, ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole,
     SecretOperation, SecretRequest, StoreRef, StreamOperation, StreamRequest, TcpConnectOperation,
     TcpConnectRequest, TcpEndpoint, TcpStreamRef, TlsConnectOperation, TlsConnectRequest,
-    TraceContext, WorkspacePath,
+    TraceContext,
 };
 
 pub struct EvalContext<'a> {

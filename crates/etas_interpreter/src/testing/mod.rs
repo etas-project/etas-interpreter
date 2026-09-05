@@ -10,9 +10,11 @@ use etas_core::{AnalysisDiagnosticCode, DiagnosticCode, SourceId};
 use etas_effects::{EffectRow, ErrorConversionFact, HostRequirementKind, InterpreterSupport};
 use etas_frontend::{
     ExternalModuleId, ExternalPackageId, ExternalSymbolId, ModulePath, ProjectEnvironmentInput,
-    ProjectExternalExportInput, ProjectExternalModuleInput, ProjectExternalPackageInput,
-    ProjectExternalPublicMetadataInput, ProjectExternalRecordFieldInput,
-    ProjectExternalToolSchemaInput, ProjectExternalToolSignatureInput, ProjectExternalTypeInput,
+    ProjectExternalActionTraceInput, ProjectExternalEffectRowInput,
+    ProjectExternalEffectSummaryInput, ProjectExternalExportInput, ProjectExternalModuleInput,
+    ProjectExternalPackageInput, ProjectExternalPublicMetadataInput,
+    ProjectExternalRecordFieldInput, ProjectExternalToolSchemaInput,
+    ProjectExternalToolSignatureInput, ProjectExternalTypeInput,
 };
 use etas_hir::{
     HirArg, HirBlock, HirExpr, HirItem, HirStmt, PartialResolution, PartialResolutionReason,
@@ -94,7 +96,7 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
             }],
             tool_schemas: if include_schema {
                 vec![ProjectExternalToolSchemaInput {
-                    path: tool_path,
+                    path: tool_path.clone(),
                     schema_json: r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}"#
                         .to_owned(),
                 }]
@@ -109,7 +111,14 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
             type_spec_satisfactions: Vec::new(),
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
-            effect_summaries: Vec::new(),
+            effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                item: tool_path,
+                public_effects: ProjectExternalEffectRowInput::default(),
+                requested_actions: ProjectExternalEffectRowInput::default(),
+                handled_requested_actions: ProjectExternalEffectRowInput::default(),
+                latent_flows: Vec::new(),
+                action_trace: ProjectExternalActionTraceInput::Empty,
+            }],
             action_summaries: Vec::new(),
             trace_spec_summaries: Vec::new(),
             re_exports: Vec::new(),

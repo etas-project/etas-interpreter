@@ -33,7 +33,17 @@ impl<'a> EvalContext<'a> {
         flow: &HirFlowDecl,
         args: &[InterpValue],
     ) -> (ControlSignal, Frame) {
-        let mut frame = Frame::new(self.plan.slots.clone());
+        self.execute_flow_with_type_bindings(item, flow, args, Default::default())
+    }
+
+    pub(super) fn execute_flow_with_type_bindings(
+        &mut self,
+        item: HirItemId,
+        flow: &HirFlowDecl,
+        args: &[InterpValue],
+        type_bindings: std::collections::HashMap<String, etas_types::TypeId>,
+    ) -> (ControlSignal, Frame) {
+        let mut frame = Frame::with_type_bindings(self.plan.slots.clone(), type_bindings);
         for (symbol, arg) in flow.params.iter().zip(args.iter().cloned()) {
             frame.insert(*symbol, arg);
         }

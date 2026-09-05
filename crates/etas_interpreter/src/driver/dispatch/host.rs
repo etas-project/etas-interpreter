@@ -276,9 +276,14 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
 ) -> Result<InterpValue, String> {
     match (decode, entry) {
         (HostBoundaryDecode::Bytes, FilesystemEntry::Bytes(bytes)) => Ok(InterpValue::Bytes(bytes)),
-        (HostBoundaryDecode::PathList, FilesystemEntry::Entries(entries)) => Ok(InterpValue::List(
-            ListValue::new(entries.into_iter().map(InterpValue::String).collect()),
-        )),
+        (HostBoundaryDecode::PathList, FilesystemEntry::Entries(entries)) => {
+            Ok(InterpValue::List(ListValue::new(
+                entries
+                    .into_iter()
+                    .map(InterpValue::WorkspacePath)
+                    .collect(),
+            )))
+        }
         (HostBoundaryDecode::Unit, FilesystemEntry::Unit) => Ok(InterpValue::Unit),
         (HostBoundaryDecode::FilesystemStat, FilesystemEntry::Stat(stat)) => {
             Ok(InterpValue::Record(RecordValue::new(vec![

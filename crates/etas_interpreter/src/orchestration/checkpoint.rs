@@ -115,6 +115,10 @@ pub(crate) enum CallTargetSnapshot {
         parameter_types: Vec<etas_types::TypeId>,
         result_type: etas_types::TypeId,
     },
+    Specialized {
+        target: Box<CallTargetSnapshot>,
+        type_bindings: Vec<(String, etas_types::TypeId)>,
+    },
     Limited {
         target: Box<CallTargetSnapshot>,
         limits: Vec<crate::eval::limit::RuntimeLimit>,
@@ -125,6 +129,7 @@ pub(crate) enum CallTargetSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
     pub(crate) locals: Vec<(SymbolId, ValueSnapshot)>,
+    pub(crate) type_bindings: Vec<(String, etas_types::TypeId)>,
 }
 
 #[derive(Clone, Debug)]
@@ -192,6 +197,10 @@ pub(crate) enum ValueSnapshot {
         name: String,
         stable_id: String,
         ty: TypeId,
+    },
+    WorkspacePath {
+        region: String,
+        relative: String,
     },
     MemoryStore {
         region_stable_id: String,

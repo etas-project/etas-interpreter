@@ -13,16 +13,18 @@ pub(super) fn capture_frame(frame: &Frame) -> Result<LocalsSnapshot, String> {
                 ))
             })
             .collect::<Result<Vec<_>, String>>()?,
+        type_bindings: frame.sorted_type_bindings(),
     })
 }
 
 pub(super) fn restore_frame(snapshot: LocalsSnapshot) -> Result<Frame, String> {
-    Frame::from_snapshot(
+    Frame::from_snapshot_with_type_bindings(
         snapshot
             .locals
             .into_iter()
             .map(|(symbol, value)| Ok((symbol, value.restore()?)))
             .collect::<Result<Vec<_>, String>>()?,
+        snapshot.type_bindings.into_iter().collect(),
     )
 }
 

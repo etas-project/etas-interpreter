@@ -265,6 +265,11 @@ pub fn value_json(value: &InterpValue) -> Value {
         } => {
             json!({ "kind": "resource_handle", "name": name, "stable_id": stable_id, "ty": ty.0 })
         }
+        InterpValue::WorkspacePath(path) => json!({
+            "kind": "workspace_path",
+            "region": path.region.as_str(),
+            "relative": path.relative.to_string_lossy(),
+        }),
         InterpValue::MemoryStore {
             region_stable_id,
             path,
@@ -969,6 +974,14 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
             stable_id: required_str(value, "stable_id")?.to_owned(),
             ty: etas_types::TypeId(required_u32(value, "ty")?),
         }),
+        "workspace_path" => Ok(InterpValue::WorkspacePath(
+            etas_host::WorkspacePathRef::new(
+                etas_host::WorkspaceRegionId::new(required_str(value, "region")?.to_owned())
+                    .map_err(|error| InterpreterCodecError::new(error.message))?,
+                required_str(value, "relative")?,
+            )
+            .map_err(|error| InterpreterCodecError::new(error.message))?,
+        )),
         "memory_store" => Ok(InterpValue::MemoryStore {
             region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
             path: string_array(value, "path")?,

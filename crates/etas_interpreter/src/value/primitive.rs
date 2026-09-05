@@ -70,6 +70,7 @@ pub enum InterpValue {
         stable_id: String,
         ty: etas_types::TypeId,
     },
+    WorkspacePath(etas_host::WorkspacePathRef),
     MemoryStore {
         region_stable_id: String,
         path: Vec<String>,

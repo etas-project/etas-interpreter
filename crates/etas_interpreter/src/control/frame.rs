@@ -14,6 +14,7 @@ pub struct Frame {
     layout: Arc<SlotLayoutTable>,
     slots: Rc<RefCell<Vec<Option<InterpValue>>>>,
     restored: Option<Rc<RefCell<HashMap<SymbolId, InterpValue>>>>,
+    type_bindings: Arc<HashMap<String, etas_types::TypeId>>,
 }
 
 impl Frame {
@@ -23,7 +24,17 @@ impl Frame {
             layout,
             slots: Rc::new(RefCell::new(vec![None; slot_count])),
             restored: None,
+            type_bindings: Arc::new(HashMap::new()),
         }
+    }
+
+    pub fn with_type_bindings(
+        layout: Arc<SlotLayoutTable>,
+        type_bindings: HashMap<String, etas_types::TypeId>,
+    ) -> Self {
+        let mut frame = Self::new(layout);
+        frame.type_bindings = Arc::new(type_bindings);
+        frame
     }
 
     pub(crate) fn from_snapshot(locals: Vec<(SymbolId, InterpValue)>) -> Result<Self, String> {
@@ -40,7 +51,31 @@ impl Frame {
             layout: Arc::new(SlotLayoutTable::default()),
             slots: Rc::new(RefCell::new(Vec::new())),
             restored: Some(Rc::new(RefCell::new(restored))),
+            type_bindings: Arc::new(HashMap::new()),
         })
+    }
+
+    pub(crate) fn from_snapshot_with_type_bindings(
+        locals: Vec<(SymbolId, InterpValue)>,
+        type_bindings: HashMap<String, etas_types::TypeId>,
+    ) -> Result<Self, String> {
+        let mut frame = Self::from_snapshot(locals)?;
+        frame.type_bindings = Arc::new(type_bindings);
+        Ok(frame)
+    }
+
+    pub fn type_bindings(&self) -> &HashMap<String, etas_types::TypeId> {
+        &self.type_bindings
+    }
+
+    pub fn sorted_type_bindings(&self) -> Vec<(String, etas_types::TypeId)> {
+        let mut bindings = self
+            .type_bindings
+            .iter()
+            .map(|(name, ty)| (name.clone(), *ty))
+            .collect::<Vec<_>>();
+        bindings.sort_by(|lhs, rhs| lhs.0.cmp(&rhs.0));
+        bindings
     }
 
     pub fn get(&self, symbol: SymbolId) -> Option<InterpValue> {
