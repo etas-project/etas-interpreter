@@ -97,8 +97,9 @@ impl HostDispatch {
                 trace: trace.clone(),
             }));
         let expected = request;
+        let budget = eval.host_budget();
         let checked_call = async move {
-            let response = call.await?;
+            let response = await_approval_response(call, budget).await?;
             validate_approval_response(&expected, &response)?;
             Ok(response)
         };
@@ -112,6 +113,24 @@ impl HostDispatch {
             checked_call,
         )
         .await
+    }
+}
+
+async fn await_approval_response(
+    call: impl Future<Output = Result<ApprovalResponse, HostError>>,
+    budget: etas_host::ExecutionBudget,
+) -> Result<ApprovalResponse, HostError> {
+    budget.check_time()?;
+    match budget.deadline()? {
+        Some(deadline) => tokio::select! {
+            biased;
+            _ = tokio::time::sleep_until(deadline) => Err(HostError::new(
+                HostErrorCode::BudgetExceeded,
+                "approval input exceeded the run-owned time budget",
+            )),
+            response = call => response,
+        },
+        None => call.await,
     }
 }
 
@@ -283,6 +302,21 @@ fn validate_approval_response(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[tokio::test(flavor = "current_thread")]
+    async fn pending_approval_obeys_the_run_owned_deadline() {
+        let budget = etas_host::ExecutionBudget::start(etas_host::Budget {
+            time: Some(etas_host::TimeBudget { max_millis: 20 }),
+            ..Default::default()
+        });
+        let result = tokio::time::timeout(
+            std::time::Duration::from_secs(1),
+            await_approval_response(std::future::pending(), budget),
+        )
+        .await
+        .expect("approval future must not outlive its budget");
+        assert_eq!(result.unwrap_err().code, HostErrorCode::BudgetExceeded);
+    }
 
     #[test]
     fn approval_validation_rejects_replayed_grant_id() {
