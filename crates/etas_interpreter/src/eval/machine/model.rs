@@ -94,7 +94,12 @@ impl EvalMachine {
                 );
             }
         };
-        ctx.record_completed_host_value_boundary("tool", progress.boundary_key, tool_value.clone());
+        ctx.record_completed_host_value_boundary(
+            crate::orchestration::BoundaryOccurrenceId::HostRequest(response.id),
+            "tool",
+            progress.boundary_key,
+            tool_value.clone(),
+        );
         append_tool_result(&mut frame, progress.call.id, tool_value);
         self.advance_tool_calls(ctx, frame)
     }
@@ -138,7 +143,11 @@ impl EvalMachine {
                 )
             })?;
         }
-        ctx.record_completed_host_boundary("tool", frame.boundary_key, value);
+        let occurrence = crate::orchestration::BoundaryOccurrenceId::SourceToolCall {
+            model_request: frame.model_loop.pending.request.id,
+            call_id: frame.tool_call_id.clone(),
+        };
+        ctx.record_completed_host_boundary(occurrence, "tool", frame.boundary_key, value);
         let mut model_loop = *frame.model_loop;
         append_tool_result(&mut model_loop, frame.tool_call_id, host_value);
         self.advance_tool_calls(ctx, model_loop)
@@ -182,7 +191,14 @@ impl EvalMachine {
             let response_for_repair = response.clone();
             match ctx.try_model_result_value(&frame.pending, response) {
                 Ok(value) => {
-                    ctx.record_completed_host_boundary("model", frame.boundary_key, value.clone());
+                    ctx.record_completed_host_boundary(
+                        crate::orchestration::BoundaryOccurrenceId::HostRequest(
+                            frame.pending.request.id,
+                        ),
+                        "model",
+                        frame.boundary_key,
+                        value.clone(),
+                    );
                     return Ok(ctx.apply_continuation(frame.outer_continuation, value));
                 }
                 Err(error) if error.retryable_typed_output => {
@@ -294,7 +310,13 @@ impl EvalMachine {
                 .cloned()
             {
                 let key = source_tool_boundary_key(&binding, &call.args);
-                if let Some(replayed) = ctx.completed_host_boundary_result("tool", &key) {
+                let occurrence = crate::orchestration::BoundaryOccurrenceId::SourceToolCall {
+                    model_request: frame.pending.request.id,
+                    call_id: call.id.clone(),
+                };
+                if let Some(replayed) =
+                    ctx.completed_host_boundary_result(&occurrence, "tool", &key)
+                {
                     let value = interp_to_host_value(&replayed).map_err(|error| {
                         machine_abort(
                             format!(
@@ -335,7 +357,11 @@ impl EvalMachine {
                 budget: frame.pending.request.budget.clone(),
             };
             let key = tool_boundary_key(&request);
-            if let Some(value) = ctx.completed_host_boundary_host_result("tool", &key) {
+            if let Some(value) = ctx.completed_host_boundary_host_result(
+                &crate::orchestration::BoundaryOccurrenceId::HostRequest(request.id),
+                "tool",
+                &key,
+            ) {
                 append_tool_result(&mut frame, call.id, value);
                 continue;
             }

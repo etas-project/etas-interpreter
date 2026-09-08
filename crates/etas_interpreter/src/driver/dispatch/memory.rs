@@ -39,6 +39,7 @@ pub(in crate::driver) async fn dispatch(
         );
     }
     let key = eval.memory_boundary_key(&memory);
+    let request_id = memory.request.id;
     if !evaluate_before_boundary(
         eval,
         host,
@@ -60,7 +61,12 @@ pub(in crate::driver) async fn dispatch(
                 eval.record_memory_result_versions(&memory.request, &result);
                 match eval.memory_result_value(&memory, result) {
                     Ok(value) => {
-                        eval.record_completed_host_boundary("memory", key, value.clone());
+                        eval.record_completed_host_boundary(
+                            crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
+                            "memory",
+                            key,
+                            value.clone(),
+                        );
                         Some(eval.resume_memory_signal(memory, value))
                     }
                     Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),

@@ -37,7 +37,12 @@ pub(in crate::driver) async fn dispatch(
                 eval.record_session_result_event(&result);
                 match eval.session_boundary_result_value(&session, &result) {
                     Ok(Some(value)) => {
-                        eval.record_completed_host_boundary("session", key, value);
+                        eval.record_completed_host_boundary(
+                            crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
+                            "session",
+                            key,
+                            value,
+                        );
                     }
                     Ok(None) => {}
                     Err(error) => {

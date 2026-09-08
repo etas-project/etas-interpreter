@@ -619,8 +619,124 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> ControlSignal {
         match callable {
+            CommandCallable::New => self.execute_command_new(call_args, span),
+            CommandCallable::WithEnv => self.execute_command_with_env(call_args, span),
+            CommandCallable::WithCwd => self.execute_command_with_cwd(call_args, span),
+            CommandCallable::WithStdin => self.execute_command_with_stdin(call_args, span),
             CommandCallable::Run => self.execute_command_run(call_args, span),
         }
+    }
+
+    fn execute_command_new(&self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+        let [InterpValue::String(program), InterpValue::Array(args)] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.command expects a program string and Array<string>",
+                span,
+            );
+        };
+        if program.is_empty() {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.command program must not be empty",
+                span,
+            );
+        }
+        let mut argv = Vec::with_capacity(args.borrow().len() + 1);
+        argv.push(program.clone());
+        for arg in args.borrow().iter() {
+            let InterpValue::String(arg) = arg else {
+                return ControlSignal::missing_checked_fact(
+                    "checked command argument array contains a non-string value",
+                    span,
+                );
+            };
+            argv.push(arg.clone());
+        }
+        ControlSignal::Value(InterpValue::Command {
+            argv,
+            env: Vec::new(),
+            cwd: None,
+            stdin: None,
+        })
+    }
+
+    fn execute_command_with_env(&self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+        let [
+            command @ InterpValue::Command { .. },
+            InterpValue::Map(entries),
+        ] = call_args.as_slice()
+        else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.with_env expects Command and Map<string, string>",
+                span,
+            );
+        };
+        let mut env = Vec::with_capacity(entries.borrow().len());
+        for (key, value) in entries.borrow().iter() {
+            let (InterpValue::String(key), InterpValue::String(value)) = (key, value) else {
+                return ControlSignal::missing_checked_fact(
+                    "checked command environment contains a non-string entry",
+                    span,
+                );
+            };
+            env.push((key.clone(), value.clone()));
+        }
+        self.command_with(command, Some(env), None, None, span)
+    }
+
+    fn execute_command_with_cwd(&self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+        let [
+            command @ InterpValue::Command { .. },
+            InterpValue::WorkspacePath(path),
+        ] = call_args.as_slice()
+        else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.with_cwd expects Command and WorkspacePath<R>",
+                span,
+            );
+        };
+        self.command_with(command, None, Some(path.clone()), None, span)
+    }
+
+    fn execute_command_with_stdin(&self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+        let [
+            command @ InterpValue::Command { .. },
+            InterpValue::Bytes(stdin),
+        ] = call_args.as_slice()
+        else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.with_stdin expects Command and bytes",
+                span,
+            );
+        };
+        self.command_with(command, None, None, Some(stdin.clone()), span)
+    }
+
+    fn command_with(
+        &self,
+        command: &InterpValue,
+        replacement_env: Option<Vec<(String, String)>>,
+        replacement_cwd: Option<etas_host::WorkspacePathRef>,
+        replacement_stdin: Option<Vec<u8>>,
+        span: Span,
+    ) -> ControlSignal {
+        let InterpValue::Command {
+            argv,
+            env,
+            cwd,
+            stdin,
+        } = command
+        else {
+            return ControlSignal::missing_checked_fact(
+                "checked command builder received a non-command value",
+                span,
+            );
+        };
+        ControlSignal::Value(InterpValue::Command {
+            argv: argv.clone(),
+            env: replacement_env.unwrap_or_else(|| env.clone()),
+            cwd: replacement_cwd.or_else(|| cwd.clone()),
+            stdin: replacement_stdin.or_else(|| stdin.clone()),
+        })
     }
 
     fn execute_command_run(&mut self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
@@ -662,13 +778,6 @@ impl<'a> EvalContext<'a> {
                 "std.host.command.run requires a non-empty argv",
             );
         }
-        if cwd.is_some() {
-            return ControlSignal::fault(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                "std.host.command.run Command.cwd requires workspace-root materialization before execution",
-            );
-        }
         let action = ActionRef {
             tag: COMMAND_TAG,
             action: COMMAND_RUN_ACTION,
@@ -688,7 +797,7 @@ impl<'a> EvalContext<'a> {
                 id: request_id,
                 argv: argv.clone(),
                 env: env.clone(),
-                cwd: None,
+                cwd: cwd.clone(),
                 stdin: stdin.clone(),
                 authority: self.host_authority(),
                 trace: self.host_trace(),

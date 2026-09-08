@@ -1,4 +1,5 @@
 use super::*;
+use crate::orchestration::BoundaryOccurrenceId;
 use std::num::{NonZeroU32, NonZeroU64};
 
 pub fn checkpoint_artifact_json(
@@ -79,6 +80,7 @@ pub fn checkpoint_from_json(
             TraceSnapshot {
                 events_recorded: required_usize(trace, "events_recorded")?,
                 next_message: required_u32(trace, "next_message")?,
+                next_host_request: required_u32(trace, "next_host_request")?,
             }
         },
         execution_progress: execution_progress_from_json(required_obj(
@@ -98,6 +100,10 @@ pub fn checkpoint_from_json(
                 .iter()
                 .map(|boundary| {
                     Ok(CompletedHostBoundary {
+                        occurrence: boundary_occurrence_from_json(required_obj(
+                            boundary,
+                            "occurrence",
+                        )?)?,
                         kind: required_str(boundary, "kind")?.to_owned(),
                         key: required_str(boundary, "key")?.to_owned(),
                         result: completed_host_boundary_result_from_json(required_obj(
@@ -425,6 +431,7 @@ pub(super) fn checkpoint_json(
         "trace": {
             "events_recorded": checkpoint.trace.events_recorded,
             "next_message": checkpoint.trace.next_message,
+            "next_host_request": checkpoint.trace.next_host_request,
         },
         "execution_progress": execution_progress_json(checkpoint.execution_progress),
         "host_state": checkpoint_host_state_json(&checkpoint.host_state)?,
@@ -434,12 +441,47 @@ pub(super) fn checkpoint_json(
         }).collect::<Vec<_>>(),
         "completed_host_boundaries": checkpoint.completed_host_boundaries.completed.iter().map(|boundary| {
             json!({
+                "occurrence": boundary_occurrence_json(&boundary.occurrence),
                 "kind": boundary.kind,
                 "key": boundary.key,
                 "result": completed_host_boundary_result_json(&boundary.result),
             })
         }).collect::<Vec<_>>(),
     }))
+}
+
+fn boundary_occurrence_json(occurrence: &BoundaryOccurrenceId) -> Value {
+    match occurrence {
+        BoundaryOccurrenceId::HostRequest(id) => json!({
+            "kind": "host_request",
+            "request_id": id.0,
+        }),
+        BoundaryOccurrenceId::SourceToolCall {
+            model_request,
+            call_id,
+        } => json!({
+            "kind": "source_tool_call",
+            "model_request_id": model_request.0,
+            "call_id": call_id,
+        }),
+    }
+}
+
+fn boundary_occurrence_from_json(
+    value: &Value,
+) -> Result<BoundaryOccurrenceId, InterpreterCodecError> {
+    match required_str(value, "kind")? {
+        "host_request" => Ok(BoundaryOccurrenceId::HostRequest(etas_host::HostRequestId(
+            required_u32(value, "request_id")?,
+        ))),
+        "source_tool_call" => Ok(BoundaryOccurrenceId::SourceToolCall {
+            model_request: etas_host::HostRequestId(required_u32(value, "model_request_id")?),
+            call_id: required_str(value, "call_id")?.to_owned(),
+        }),
+        other => Err(InterpreterCodecError::new(format!(
+            "unknown completed host boundary occurrence kind `{other}`"
+        ))),
+    }
 }
 
 fn execution_progress_json(progress: ExecutionProgressSnapshot) -> Value {

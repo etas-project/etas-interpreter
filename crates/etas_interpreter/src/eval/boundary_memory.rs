@@ -17,7 +17,11 @@ impl<'a> EvalContext<'a> {
             return None;
         }
         let key = self.memory_boundary_key(memory);
-        self.completed_host_boundary_result("memory", &key)
+        self.completed_host_boundary_result(
+            &crate::orchestration::BoundaryOccurrenceId::HostRequest(memory.request.id),
+            "memory",
+            &key,
+        )
     }
 
     pub(crate) fn memory_replay_resources(

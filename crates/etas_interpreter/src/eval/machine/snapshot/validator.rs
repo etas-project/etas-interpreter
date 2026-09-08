@@ -9,10 +9,11 @@ use etas_hir::{
 use etas_types::TypeId;
 
 use crate::orchestration::{
-    ActiveHandlerArmRecord, CallTargetSnapshot, ContinuationSnapshot, HandlerScopeId,
-    HandlerSnapshot, InterpreterCheckpoint, LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot,
-    LocalsSnapshot, MachineFrameSnapshot, MachineSnapshot, ModelDecodeSnapshot,
-    ModelLoopFrameSnapshot, SliceExprEvalSnapshot, SourceToolReturnFrameSnapshot, ValueSnapshot,
+    ActiveHandlerArmRecord, BoundaryOccurrenceId, CallTargetSnapshot, ContinuationSnapshot,
+    HandlerScopeId, HandlerSnapshot, InterpreterCheckpoint, LocalPlaceComponentSnapshot,
+    LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot, MachineSnapshot,
+    ModelDecodeSnapshot, ModelLoopFrameSnapshot, SliceExprEvalSnapshot,
+    SourceToolReturnFrameSnapshot, ValueSnapshot,
 };
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
@@ -67,7 +68,31 @@ impl<'a> SnapshotValidator<'a> {
                 expected_boundaries, boundary_unwind_order
             ));
         }
+        let mut completed_occurrences = BTreeSet::new();
         for completed in &checkpoint.completed_host_boundaries.completed {
+            if completed.kind.is_empty() || completed.key.is_empty() {
+                return Err("checkpoint completed host boundary has an empty identity".into());
+            }
+            if !completed_occurrences.insert(completed.occurrence.clone()) {
+                return Err(format!(
+                    "checkpoint completed host boundary occurrence {:?} is duplicated",
+                    completed.occurrence
+                ));
+            }
+            match &completed.occurrence {
+                BoundaryOccurrenceId::HostRequest(_) => {}
+                BoundaryOccurrenceId::SourceToolCall {
+                    call_id,
+                    model_request: _,
+                } => {
+                    if call_id.is_empty() {
+                        return Err(
+                            "checkpoint completed source tool occurrence has an empty call id"
+                                .into(),
+                        );
+                    }
+                }
+            }
             if let crate::orchestration::CompletedHostBoundaryResult::Runtime(value) =
                 &completed.result
             {

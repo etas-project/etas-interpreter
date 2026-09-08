@@ -31,7 +31,7 @@ pub enum InterpValue {
     Command {
         argv: Vec<String>,
         env: Vec<(String, String)>,
-        cwd: Option<String>,
+        cwd: Option<etas_host::WorkspacePathRef>,
         stdin: Option<Vec<u8>>,
     },
     CommandResult {

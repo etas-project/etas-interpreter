@@ -50,7 +50,12 @@ pub(in crate::driver) async fn dispatch(
     {
         Ok(response) => match eval.console_result_value(&console, response.result) {
             Ok(value) => {
-                eval.record_completed_host_boundary("console", key, value.clone());
+                eval.record_completed_host_boundary(
+                    crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
+                    "console",
+                    key,
+                    value.clone(),
+                );
                 Some(eval.resume_console_signal(console, value))
             }
             Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),

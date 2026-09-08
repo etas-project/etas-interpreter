@@ -9,7 +9,11 @@ impl<'a> EvalContext<'a> {
         ) {
             return None;
         }
-        self.completed_host_boundary_result("session", &self.session_boundary_key(session))
+        self.completed_host_boundary_result(
+            &crate::orchestration::BoundaryOccurrenceId::HostRequest(session.request.id),
+            "session",
+            &self.session_boundary_key(session),
+        )
     }
 
     pub(crate) fn replay_session_signal(
