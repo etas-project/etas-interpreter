@@ -1485,9 +1485,8 @@ pub(super) fn workspace_root_json(root: &WorkspaceRoot) -> Value {
 pub(super) fn workspace_root_from_json(
     value: &Value,
 ) -> Result<WorkspaceRoot, InterpreterCodecError> {
-    Ok(WorkspaceRoot {
-        canonical_root: PathBuf::from(required_str(value, "canonical_root")?),
-    })
+    WorkspaceRoot::new(required_str(value, "canonical_root")?)
+        .map_err(|error| InterpreterCodecError::new(format!("invalid workspace root: {error:?}")))
 }
 
 pub(super) fn workspace_roots_from_array(

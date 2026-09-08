@@ -2,6 +2,7 @@ mod agent;
 mod boundary_io;
 mod checkpoint;
 mod handler;
+mod http_framing;
 mod language_control;
 mod memory;
 mod memory_checkpoint;
