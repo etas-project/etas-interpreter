@@ -374,6 +374,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Return(value) => ControlSignal::Return(value),
             ControlSignal::Break => ControlSignal::Break,
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             ControlSignal::Continue => ControlSignal::Continue,
             ControlSignal::Block(mut nested) => {
                 nested.continuation = compose_continuation(

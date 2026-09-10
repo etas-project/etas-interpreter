@@ -268,6 +268,7 @@ pub enum Continuation {
         path: Vec<String>,
         key_type: etas_types::TypeId,
         value_type: etas_types::TypeId,
+        result_type: etas_types::TypeId,
         method: String,
         args: Vec<HirArg>,
         next_arg_index: usize,

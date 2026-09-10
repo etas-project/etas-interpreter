@@ -4,10 +4,6 @@ use crate::{
     host::HostServices,
 };
 
-use etas_host::{HostRequestKind, HostTraceRequest};
-
-use super::host_dispatch::HostDispatch;
-
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
@@ -21,22 +17,23 @@ pub(in crate::driver) async fn dispatch(
     }
     let key = eval.session_boundary_key(&session);
     let request_id = session.request.id;
-    match HostDispatch::execute(
-        eval,
-        request_id,
-        HostRequestKind::Session,
-        session.request.trace_payload(),
-        session.request.authority.clone(),
-        session.request.trace.clone(),
-        host.session(session.request.clone()),
-    )
-    .await
-    {
+    let response = if matches!(
+        session.request.operation,
+        etas_host::SessionOperation::Append { .. } | etas_host::SessionOperation::Resolve { .. }
+    ) {
+        super::session_write::dispatch(eval, host, session.request.clone()).await
+    } else {
+        super::session_pages::execute(eval, host, session.request.clone()).await
+    };
+    if let Some(signal) = eval.cancellation_signal(session.span) {
+        return signal;
+    }
+    match response {
         Ok(response) => match response.result {
             Ok(result) => {
-                eval.record_session_result_event(&result);
                 match eval.session_boundary_result_value(&session, &result) {
                     Ok(Some(value)) => {
+                        eval.record_session_result_event(&result, Some(&value));
                         eval.record_completed_host_boundary(
                             crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                             "session",
@@ -44,7 +41,7 @@ pub(in crate::driver) async fn dispatch(
                             value,
                         );
                     }
-                    Ok(None) => {}
+                    Ok(None) => eval.record_session_result_event(&result, None),
                     Err(error) => {
                         return ControlSignal::runtime_fault(error, session.span);
                     }

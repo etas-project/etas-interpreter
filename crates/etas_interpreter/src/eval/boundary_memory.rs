@@ -11,6 +11,7 @@ impl<'a> EvalContext<'a> {
             (&memory.request.operation, memory.decode),
             (MemoryOperation::Get { .. }, _)
                 | (MemoryOperation::Scan { .. }, MemoryDecode::KeyList { .. })
+                | (MemoryOperation::Scan { .. }, MemoryDecode::Page { .. })
                 | (MemoryOperation::Scan { .. }, MemoryDecode::JsonEntries)
                 | (MemoryOperation::Query { .. }, MemoryDecode::JsonEntries)
         ) {
@@ -117,12 +118,12 @@ impl<'a> EvalContext<'a> {
             .iter_mut()
             .find(|record| record.resource == resource)
         {
-            record.version = version.opaque.clone();
+            record.version = version.as_token().to_owned();
             return;
         }
         self.resource_versions.push(ResourceVersionRecord {
             resource,
-            version: version.opaque.clone(),
+            version: version.as_token().to_owned(),
         });
         self.resource_versions
             .sort_by(|left, right| left.resource.cmp(&right.resource));
@@ -134,6 +135,36 @@ impl<'a> EvalContext<'a> {
         result: MemoryResult,
     ) -> Result<InterpValue, ExecutionFault> {
         match (memory.decode, result) {
+            (MemoryDecode::Page { result_type }, MemoryResult::Entries { entries, cursor }) => self
+                .decode_memory_record(
+                    super::memory_page::page_value(entries, cursor),
+                    result_type,
+                    memory.span,
+                ),
+            (MemoryDecode::Entry { result_type }, MemoryResult::None) => self.decode_memory_record(
+                super::memory_page::option_value(None),
+                result_type,
+                memory.span,
+            ),
+            (MemoryDecode::Entry { result_type }, MemoryResult::Value { value, version }) => {
+                let MemoryOperation::Get { key } = &memory.request.operation else {
+                    return Err(ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        memory.span,
+                        "entry decode requires a checked get operation",
+                    ));
+                };
+                let entry = super::memory_page::entry_value(MemoryEntry {
+                    key: key.clone(),
+                    value,
+                    version,
+                });
+                self.decode_memory_record(
+                    super::memory_page::option_value(Some(entry)),
+                    result_type,
+                    memory.span,
+                )
+            }
             (MemoryDecode::OptionValue { .. }, MemoryResult::None) => Ok(InterpValue::OptionNone),
             (MemoryDecode::OptionValue { value_type }, MemoryResult::Value { value, .. }) => {
                 host_to_typed_interp_value(value, value_type, &self.checked.type_store)
@@ -150,7 +181,13 @@ impl<'a> EvalContext<'a> {
             }
             (MemoryDecode::BoolContains, MemoryResult::None) => Ok(InterpValue::Bool(false)),
             (MemoryDecode::BoolContains, MemoryResult::Value { .. }) => Ok(InterpValue::Bool(true)),
-            (MemoryDecode::KeyList { key_type }, MemoryResult::Entries { entries, .. }) => entries
+            (
+                MemoryDecode::KeyList { key_type },
+                MemoryResult::Entries {
+                    entries,
+                    cursor: None,
+                },
+            ) => entries
                 .into_iter()
                 .map(|entry| {
                     host_to_typed_interp_value(entry.key, key_type, &self.checked.type_store)
@@ -174,6 +211,7 @@ impl<'a> EvalContext<'a> {
                 })
             }
             (MemoryDecode::Unit, MemoryResult::Written { .. })
+            | (MemoryDecode::Unit, MemoryResult::Unchanged)
             | (MemoryDecode::Unit, MemoryResult::Deleted { .. }) => Ok(InterpValue::Unit),
             (_, MemoryResult::Conflict(conflict)) => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -194,17 +232,53 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    fn decode_memory_record(
+        &self,
+        value: HostValue,
+        result_type: etas_types::TypeId,
+        span: Span,
+    ) -> Result<InterpValue, ExecutionFault> {
+        host_to_typed_interp_value(value, result_type, &self.checked.type_store).map_err(|error| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::UnhandledRuntimeError,
+                span,
+                format!("memory result does not match its checked ABI: {error}"),
+            )
+        })
+    }
+
     pub(crate) fn memory_boundary_key(&self, memory: &PendingMemory) -> String {
         let op = match &memory.request.operation {
             MemoryOperation::Get { key } => format!("get:{key:?}"),
             MemoryOperation::Put {
                 key,
                 value,
-                expected,
-                mode,
-            } => format!("put:{key:?}:{value:?}:expected={expected:?}:mode={mode:?}"),
-            MemoryOperation::Delete { key, expected } => {
-                format!("delete:{key:?}:expected={expected:?}")
+                condition,
+            } => format!(
+                "put:{key:?}:{value:?}:condition={}:expected={}",
+                match condition {
+                    etas_host::WriteCondition::Any => "any",
+                    etas_host::WriteCondition::Missing => "missing",
+                    etas_host::WriteCondition::Exists => "exists",
+                    etas_host::WriteCondition::Match(_) => "match",
+                },
+                condition
+                    .expected_version()
+                    .map_or("", |version| version.as_token())
+            ),
+            MemoryOperation::Delete { key, condition } => {
+                format!(
+                    "delete:{key:?}:condition={}:expected={}",
+                    match condition {
+                        etas_host::WriteCondition::Any => "any",
+                        etas_host::WriteCondition::Missing => "missing",
+                        etas_host::WriteCondition::Exists => "exists",
+                        etas_host::WriteCondition::Match(_) => "match",
+                    },
+                    condition
+                        .expected_version()
+                        .map_or("", |version| version.as_token())
+                )
             }
             other => format!("{other:?}"),
         };
@@ -259,7 +333,7 @@ impl<'a> EvalContext<'a> {
     }
 }
 
-fn memory_resource_key(store: &StoreRef, key: &HostValue) -> String {
+pub(super) fn memory_resource_key(store: &StoreRef, key: &HostValue) -> String {
     format!(
         "memory:{}:{}:{}",
         store.region.stable_id,
@@ -408,7 +482,7 @@ fn memory_entries_json_value(entries: Vec<etas_host::MemoryEntry>) -> Option<Int
                 ("value".to_owned(), entry.value),
                 (
                     "version".to_owned(),
-                    HostValue::String(entry.version.opaque),
+                    HostValue::String(entry.version.as_token().to_owned()),
                 ),
             ])
         })
@@ -440,7 +514,11 @@ fn memory_version_value(
     InterpValue::Nominal {
         ty: version_type,
         value: Box::new(InterpValue::Record(
-            vec![("opaque".to_owned(), InterpValue::String(version.opaque))].into(),
+            vec![(
+                "opaque".to_owned(),
+                InterpValue::String(version.as_token().to_owned()),
+            )]
+            .into(),
         )),
     }
 }

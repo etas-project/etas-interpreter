@@ -1,4 +1,5 @@
 use super::*;
+mod session;
 
 fn numeric_value_json(value: crate::value::NumericValue) -> Value {
     use crate::value::NumericValue;
@@ -72,6 +73,10 @@ fn primitive_type_from_abi_name(name: &str) -> Option<etas_types::PrimitiveType>
 
 pub fn value_json(value: &InterpValue) -> Value {
     match value {
+        InterpValue::MemoryWriteIntent(value) => {
+            json!({"kind":"memory_write_intent", "ty":value.ty.0,
+            "key_type":value.key_type.0, "value_type":value.value_type.0, "intent":value.encoded()})
+        }
         InterpValue::Unit => json!({ "kind": "unit" }),
         InterpValue::Bool(value) => json!({ "kind": "bool", "value": value }),
         InterpValue::Number(value) => numeric_value_json(*value),
@@ -114,16 +119,12 @@ pub fn value_json(value: &InterpValue) -> Value {
         }),
         InterpValue::Conversation(conversation) => json!({
             "kind": "conversation",
+            "selected_context": conversation.selected_context.as_deref().map(session::selected_context_json),
+            "history_fence": conversation.history_fence.as_ref().map(|fence| fence.as_token()),
             "session": conversation.session,
             "messages": conversation.messages.iter().map(|message| {
                 value_json(&InterpValue::Message(message.clone()))
             }).collect::<Vec<_>>(),
-            "summary": conversation.summary.as_ref().map(|summary| {
-                json!({
-                    "text": summary.text,
-                    "message_count": summary.message_count,
-                })
-            }),
             "cursor": conversation.cursor,
         }),
         InterpValue::Provenance(provenance) => json!({
@@ -490,7 +491,6 @@ pub(super) fn session_config_json(session: &crate::value::SessionConfigValue) ->
         "id": session.id,
         "context": session.context.as_deref().map(value_json),
         "retention": session.retention.as_deref().map(value_json),
-        "compaction": session.compaction.as_deref().map(value_json),
     })
 }
 
@@ -765,16 +765,20 @@ pub(super) fn host_json_support_value_from_json(
 }
 
 pub(super) fn values_from_array(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     field: &'static str,
 ) -> Result<Vec<InterpValue>, InterpreterCodecError> {
     required_array(value, field)?
         .iter()
-        .map(value_from_json)
+        .map(|value| value_from_json_with_limits(limits, value))
         .collect()
 }
 
-pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterCodecError> {
+pub(crate) fn value_from_json_with_limits(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<InterpValue, InterpreterCodecError> {
     match required_str(value, "kind")? {
         "unit" => Ok(InterpValue::Unit),
         "bool" => Ok(InterpValue::Bool(required_bool(value, "value")?)),
@@ -789,7 +793,10 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
         "trust" => Ok(InterpValue::Trust {
             wrapper: value_codec::trust_wrapper_from_json(required_str(value, "wrapper")?)
                 .map_err(InterpreterCodecError::new)?,
-            value: Box::new(value_from_json(required_obj(value, "value")?)?),
+            value: Box::new(value_from_json_with_limits(
+                limits,
+                required_obj(value, "value")?,
+            )?),
         }),
         "prompt" => Ok(InterpValue::Prompt(
             required_array(value, "messages")?
@@ -836,13 +843,19 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
                     .map_err(InterpreterCodecError::new)?,
                 session: required_optional_string(value, "session")?,
                 created_at: required_str(value, "created_at")?.to_owned(),
-                payload: Box::new(value_from_json(required_obj(value, "payload")?)?),
+                payload: Box::new(value_from_json_with_limits(
+                    limits,
+                    required_obj(value, "payload")?,
+                )?),
                 provenance: if provenance.is_null() {
                     None
                 } else {
                     Some(provenance_from_json(provenance)?)
                 },
             }))
+        }
+        "conversation" => {
+            session::conversation_from_json(limits, value).map(InterpValue::Conversation)
         }
         "provenance" => Ok(InterpValue::Provenance(provenance_from_json(
             required_obj(value, "value")?,
@@ -883,45 +896,49 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
             stdout: byte_array(value, "stdout")?,
             stderr: byte_array(value, "stderr")?,
         }),
-        "tuple" => Ok(InterpValue::Tuple(values_from_array(value, "values")?)),
+        "tuple" => Ok(InterpValue::Tuple(values_from_array(
+            limits, value, "values",
+        )?)),
         "array" => Ok(InterpValue::Array(
-            values_from_array(value, "values")?.into(),
+            values_from_array(limits, value, "values")?.into(),
         )),
         "list" => Ok(InterpValue::List(
-            values_from_array(value, "values")?.into(),
+            values_from_array(limits, value, "values")?.into(),
         )),
         "slice" => Ok(InterpValue::Slice(
-            values_from_array(value, "values")?.into(),
+            values_from_array(limits, value, "values")?.into(),
         )),
         "map" => Ok(InterpValue::Map(
             required_array(value, "entries")?
                 .iter()
                 .map(|entry| {
                     Ok((
-                        value_from_json(required_obj(entry, "key")?)?,
-                        value_from_json(required_obj(entry, "value")?)?,
+                        value_from_json_with_limits(limits, required_obj(entry, "key")?)?,
+                        value_from_json_with_limits(limits, required_obj(entry, "value")?)?,
                     ))
                 })
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?
                 .into(),
         )),
-        "set" => Ok(InterpValue::Set(values_from_array(value, "values")?.into())),
+        "set" => Ok(InterpValue::Set(
+            values_from_array(limits, value, "values")?.into(),
+        )),
         "deque" => Ok(InterpValue::Deque(
-            values_from_array(value, "values")?.into(),
+            values_from_array(limits, value, "values")?.into(),
         )),
         "queue" => Ok(InterpValue::Queue(
-            values_from_array(value, "values")?.into(),
+            values_from_array(limits, value, "values")?.into(),
         )),
         "stack" => Ok(InterpValue::Stack(
-            values_from_array(value, "values")?.into(),
+            values_from_array(limits, value, "values")?.into(),
         )),
         "priority_queue" => Ok(InterpValue::PriorityQueue(
             required_array(value, "entries")?
                 .iter()
                 .map(|entry| {
                     Ok((
-                        value_from_json(required_obj(entry, "priority")?)?,
-                        value_from_json(required_obj(entry, "value")?)?,
+                        value_from_json_with_limits(limits, required_obj(entry, "priority")?)?,
+                        value_from_json_with_limits(limits, required_obj(entry, "value")?)?,
                     ))
                 })
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?
@@ -932,19 +949,25 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
                 .iter()
                 .map(|entry| {
                     Ok((
-                        value_from_json(required_obj(entry, "key")?)?,
-                        value_from_json(required_obj(entry, "value")?)?,
+                        value_from_json_with_limits(limits, required_obj(entry, "key")?)?,
+                        value_from_json_with_limits(limits, required_obj(entry, "value")?)?,
                     ))
                 })
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?
                 .into(),
         )),
         "ordered_set" => Ok(InterpValue::OrderedSet(
-            values_from_array(value, "values")?.into(),
+            values_from_array(limits, value, "values")?.into(),
         )),
         "range" => Ok(InterpValue::Range(crate::value::RangeValue {
-            start: Box::new(value_from_json(required_obj(value, "start")?)?),
-            end: Box::new(value_from_json(required_obj(value, "end")?)?),
+            start: Box::new(value_from_json_with_limits(
+                limits,
+                required_obj(value, "start")?,
+            )?),
+            end: Box::new(value_from_json_with_limits(
+                limits,
+                required_obj(value, "end")?,
+            )?),
             bounds: value_codec::range_bounds_from_json(required_str(value, "bounds")?)
                 .map_err(InterpreterCodecError::new)?,
         })),
@@ -954,24 +977,44 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
                 .map(|field| {
                     Ok((
                         required_str(field, "name")?.to_owned(),
-                        value_from_json(required_obj(field, "value")?)?,
+                        value_from_json_with_limits(limits, required_obj(field, "value")?)?,
                     ))
                 })
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?
                 .into(),
         )),
+        "memory_write_intent" => {
+            reject_unknown_fields(
+                value,
+                &["kind", "ty", "key_type", "value_type", "intent"],
+                "memory write intent",
+            )?;
+            Ok(InterpValue::MemoryWriteIntent(Box::new(
+                crate::value::MemoryWriteIntentValue::restore(
+                    etas_types::TypeId(required_u32(value, "ty")?),
+                    etas_types::TypeId(required_u32(value, "key_type")?),
+                    etas_types::TypeId(required_u32(value, "value_type")?),
+                    required_str(value, "intent")?,
+                    limits,
+                )
+                .map_err(InterpreterCodecError::new)?,
+            )))
+        }
         "nominal" => Ok(InterpValue::Nominal {
             ty: etas_types::TypeId(required_u32(value, "ty")?),
-            value: Box::new(value_from_json(required_obj(value, "value")?)?),
+            value: Box::new(value_from_json_with_limits(
+                limits,
+                required_obj(value, "value")?,
+            )?),
         }),
         "variant" => Ok(InterpValue::Variant {
             name: required_str(value, "name")?.to_owned(),
-            fields: values_from_array(value, "fields")?,
+            fields: values_from_array(limits, value, "fields")?,
         }),
         "option_none" => Ok(InterpValue::OptionNone),
-        "option_some" => Ok(InterpValue::OptionSome(Box::new(value_from_json(
-            required_obj(value, "value")?,
-        )?))),
+        "option_some" => Ok(InterpValue::OptionSome(Box::new(
+            value_from_json_with_limits(limits, required_obj(value, "value")?)?,
+        ))),
         "handler" => Ok(InterpValue::Handler {
             fact_expr: HirExprId(required_u32(value, "fact_expr")?),
             handlers: required_array(value, "handlers")?
@@ -1010,12 +1053,12 @@ pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterC
                 .map_err(InterpreterCodecError::new)?,
             predicate: match value.get("predicate") {
                 Some(Value::Null) | None => None,
-                Some(value) => Some(Box::new(value_from_json(value)?)),
+                Some(value) => Some(Box::new(value_from_json_with_limits(limits, value)?)),
             },
             limit: optional_u32(value, "limit")?,
         }),
         "callable" => Ok(InterpValue::Callable(
-            machine::call_target_from_artifact_snapshot(required_obj(value, "target")?)
+            machine::call_target_from_artifact_snapshot(limits, required_obj(value, "target")?)
                 .map_err(InterpreterCodecError::new)?,
         )),
         other => Err(InterpreterCodecError::new(format!(
@@ -1041,4 +1084,9 @@ fn reject_unknown_fields(
         )));
     }
     Ok(())
+}
+
+#[cfg(test)]
+pub(crate) fn value_from_json(value: &Value) -> Result<InterpValue, InterpreterCodecError> {
+    value_from_json_with_limits(&etas_host::StorageLimits::default(), value)
 }

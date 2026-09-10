@@ -4,7 +4,7 @@ Status: `Draft`
 
 Owner: `Architect`
 
-Last updated: `2026-07-02`
+Last updated: `2026-09-10`
 
 ## 1. Purpose
 
@@ -28,21 +28,34 @@ distributed workflow execution, and AIR-level recovery.
 The design rule is:
 
 ```text
-share protocols and vocabulary;
-do not share execution state or execution IR.
+share host protocols and engine-neutral execution lifecycle mechanisms;
+keep language evaluation state and execution IR engine-owned.
 ```
 
 `etas-core` may define engine-neutral host values, request ids, model/tool/
 memory protocols, sandbox/workspace primitives, retry/checkpoint vocabulary,
-and trace ids. `etas-interpreter` owns `InterpValue`, frames, continuations,
+trace ids, and live scope/cancellation/operation ownership in `etas_host`.
+`etas-interpreter` owns `InterpValue`, frames, continuations,
 handler stacks, HIR evaluation, and HIR-to-host lowering. The future AIR
 runtime owns its own `AirValue`, scheduler, AIR instruction dispatch, and
 AIR-to-host lowering.
+
+The shared lifecycle contract is [Shared Execution Lifecycle](../../../etas-core/docs/architect/etas-execution-design.md).
+It defines infrastructure state, not shared HIR/AIR evaluation state. The
+integration below implements that contract over the checked-HIR machine.
+The invocation/lifecycle design below is the accepted architecture target;
+implementation acceptance requires the tests in Section 17. It is not a claim
+that the current code already implements every listed interface.
 
 ## 2. Repository And Crate Shape
 
 Phase 1 should keep `etas-interpreter` maintainable by starting with one main
 crate and layered modules instead of many tiny crates.
+This is a target layout, not an inventory of existing files. `api/` is the
+existing public Rust interface, not an HTTP API or a separate server.
+`api/lifecycle/control.rs` already exists; `invocation.rs` and the scheduler
+organization below are target additions. File responsibilities, rather than
+renaming alone, define this migration.
 
 ```text
 etas-interpreter/
@@ -55,6 +68,13 @@ etas-interpreter/
           mod.rs
           options.rs
           result.rs
+          blocking.rs
+          entry_args.rs
+          codec/
+          lifecycle/
+            mod.rs
+            invocation.rs
+            control.rs
 
         plan/
           mod.rs
@@ -84,6 +104,7 @@ etas-interpreter/
           call.rs
           pattern.rs
           assign.rs
+          safe_point.rs
           machine/
             mod.rs
             state.rs
@@ -97,6 +118,21 @@ etas-interpreter/
               call_target.rs
               frame.rs
               model.rs
+
+        driver/
+          mod.rs
+          drive.rs
+          lifecycle/
+            mod.rs
+            run.rs
+            shutdown.rs
+          scheduler/
+            mod.rs
+            ready.rs
+            group.rs
+          dispatch/
+            mod.rs
+            host_dispatch.rs
 
         control/
           mod.rs
@@ -127,10 +163,19 @@ etas-interpreter/
 
         orchestration/
           mod.rs
-          checkpoint.rs
-          resume.rs
-          workflow.rs
-          trace.rs
+          checkpoint/
+            mod.rs
+            snapshot.rs
+            restore.rs
+            validate.rs
+          retry/
+            mod.rs
+            attempt.rs
+            replay.rs
+          trace/
+            mod.rs
+            events.rs
+            correlation.rs
           ledger.rs
 
         diagnostics/
@@ -153,6 +198,8 @@ depend only on this facade, not on evaluator internals.
 Recommended facade shape:
 
 ```rust
+use std::future::Future;
+
 pub struct Interpreter;
 
 impl Interpreter {
@@ -160,16 +207,33 @@ impl Interpreter {
         &self,
         project: &CheckedProject,
         options: PlanOptions,
-    ) -> PlanResult<InterpreterPlan>;
+    ) -> PlanResult;
 
-    pub async fn run_checked(
+    pub fn create_run<'a>(
         &self,
-        project: &CheckedProject,
+        project: &'a CheckedProject,
         entry: EntryPoint,
         args: Vec<InterpValue>,
-        host: &dyn HostServices,
+        host: &'a dyn HostServices,
         options: RunOptions,
-    ) -> RunResult;
+    ) -> RunInvocation<'a>;
+
+    pub fn create_resume<'a>(
+        &self,
+        project: &'a CheckedProject,
+        checkpoint: &'a InterpreterCheckpoint,
+        host: &'a dyn HostServices,
+        options: RunOptions,
+    ) -> RunInvocation<'a>;
+
+    pub fn run_checked<'a>(
+        &self,
+        project: &'a CheckedProject,
+        entry: EntryPoint,
+        args: Vec<InterpValue>,
+        host: &'a dyn HostServices,
+        options: RunOptions,
+    ) -> impl Future<Output = RunResult> + 'a;
 }
 ```
 
@@ -184,7 +248,8 @@ Responsibilities:
 - validate the user entry ABI, including `main(args: Array[string]) -> i32`;
 - validate supplied host services and authority grants;
 - execute the entry flow;
-- return structured results and diagnostics without CLI rendering.
+- return explicit execution outcome, operation evidence, cleanup report and
+  diagnostics without CLI rendering.
 
 The interpreter must not parse source, lower HIR, resolve names, infer types,
 solve spec constraints, instantiate effect-row polymorphism, or infer effects.
@@ -205,6 +270,132 @@ the time execution reaches the interpreter:
 The interpreter uses those facts to select std intrinsic descriptors, host
 requests, handlers, and dispatch entries. It must not fall back to string-name
 matching such as "if the value looks like a stream, allow it".
+
+### 3.1 Controlled Invocation API
+
+`RunInvocation<'a>` owns one invocation and its single-use execution right. It
+borrows the checked project and Host services, and owns entry arguments/options
+or the resume input reference. It is neither cloneable nor a second evaluator.
+Construction establishes ownership but does not plan, evaluate source, dispatch
+Host work, or spawn a background task. `execute(self)` drives planning/readiness
+or restore validation and then the same checked-HIR execution machinery.
+
+```rust
+let run = interpreter.create_run(project, entry, args, host, options);
+let control = run.control();
+// The caller arranges a signal/UI task that can use control while this awaits.
+let result = run.execute().await;
+```
+
+Allocate a fresh invocation scope for every run and resume. If attached to a
+parent execution scope, use the shared child-admission contract rather than
+reusing the parent's scope as the invocation. `RunOptions` carries execution
+configuration, not a reusable mutable root or an independently supplied control
+handle. Replace the raw invocation-scope injection in `RunOptions::execution`;
+the returned control must always address the scope owned by this invocation.
+
+| Public operation | Contract |
+|---|---|
+| `RunInvocation::control()` | Clone a control/observation handle for this invocation only |
+| `RunInvocation::execute(self)` | Consume execution ownership; return one final `RunResult` after local termination |
+| `RunControl::stop(reason)` | Idempotently request stop; neither block for cleanup nor announce completion |
+| `RunControl::status()` | Read a shared lifecycle snapshot; it is observational, not an admission permit |
+| `RunControl::join()` | Observe the immutable shared `TerminationReport`; do not start or repeat evaluation |
+| `RunControl::wait_stopped(deadline)` | Bound observation and return shared `StopWait`; timeout retains ownership and control |
+
+`RunControl` contains only engine-neutral, thread-safe control/observation state,
+not `InterpValue`, HIR frames, or the result value. Do not expose a mutable root
+`ExecutionScope` through it. All observers may await termination; only the
+execution future produces the language value. Preserve structured Host
+lifecycle errors if observation/control infrastructure fails.
+
+The embedding caller must drive the execution future and keep the Host
+supervisor alive. A control handle does not poll either. Dropping a control or
+a join waiter does not stop the invocation. Dropping the invocation or its
+execution future requests stop and relinquishes the engine body, including
+when dropped before the first poll. Create the ownership guard in construction,
+not only inside the first poll of an async function. Host supervisors retain
+registered in-flight work and outcome evidence independently of borrowed HIR
+state; dropping an evaluator must not detach or forget such work.
+Stopping an unpolled invocation records the request; its owner must still be
+driven or dropped to relinquish the body. A pre-stopped invocation skips source
+execution when driven. Waiting alone cannot release its execution ownership.
+
+Keep `run_checked`, `resume_checkpoint`, and blocking entry points as convenience
+facades over this same owner and driver. Their ownership guard must also exist
+before first poll; the future-returning facade above preserves `.await` usage
+while permitting eager ownership construction. No second
+planning/evaluation path, hidden `'static` spawn, whole-project clone, or private
+blocking timeout evaluator is allowed.
+
+### 3.2 Terminal Results And Arbitration
+
+Final result shape:
+
+```rust
+pub enum RunOutcome {
+    Completed(InterpValue),
+    Failed(RunFailure),
+    Cancelled(CancellationCause),
+}
+
+pub struct RunResult {
+    pub outcome: RunOutcome,
+    pub termination: TerminationReport,
+    pub diagnostics: Vec<Diagnostic>,
+    pub events: Vec<WorkflowEvent>,
+    pub checkpoints: Vec<InterpreterCheckpoint>,
+}
+```
+
+`RunFailure` distinguishes language failure, preparation/restore rejection and
+execution faults, with typed causes and real source origins. Do not encode these
+as a provider-error string. Internal evaluation/preparation outcomes are not
+public `RunResult` objects with `termination: None`. Even a readiness failure
+settles its invocation, without dispatching Host work, before producing a final
+result. Remove the old independent `value: Option<InterpValue>` field so a
+cancelled/failed result cannot simultaneously claim a completed value.
+
+Use the one shared scope lifecycle: `Running -> Draining -> Terminated`,
+`Running -> Stopping -> Terminated`, and `Draining -> Stopping`. Body completion
+enters drain, not immediate termination. Stopping prohibits new business work;
+only cleanup of already-owned resources is admitted. Interpreter control state
+must not become a duplicate of this shared state machine.
+
+The engine selects the language outcome; core records cancellation and local
+completion evidence. A language failure that initiates sibling cancellation
+remains the primary failure, not a generic cancelled result. Concurrent causes
+are retained, and completion/stop arbitration uses the shared synchronized
+commit contract, not `select!` polling order. Once terminal publication wins,
+later stop cannot rewrite it. Body success during draining is not yet terminal.
+
+`TerminationReport` separates operation evidence and local cleanup from the
+language result: confirmed work, partial progress, or an unknown remote outcome
+must survive cancellation. Cleanup failures remain secondary evidence and must
+not overwrite the original language failure. A successful language value alone
+does not prove successful cleanup. Unknown remote completion can coexist with
+settled local resources.
+
+A shutdown wait timeout is `StopWait::TimedOut(pending)`, never a final
+`RunResult`. The owner remains live and observable, including for repeated
+waits. Normal final results require local termination; they must not contain
+pending local work disguised as completed cleanup.
+
+### 3.3 Lifecycle File Responsibilities
+
+| Location | Responsibility |
+|---|---|
+| `lib.rs` | Narrow facade construction/delegation, not orchestration loops |
+| `api/lifecycle/invocation.rs` | Borrowed input lifetime, single-use owner/guard, public execute/control methods |
+| `api/lifecycle/control.rs` | Restricted public stop/status/wait interface over shared lifecycle primitives |
+| `api/result.rs` | Final outcome/failure/report contract; codec mirrors it without guessing missing fields |
+| `driver/lifecycle/run.rs` | Drive fresh/restore inputs through the common preparation and evaluator path |
+| `driver/lifecycle/shutdown.rs` | Coordinate engine body settlement, cleanup observation and final result assembly |
+| `driver/scheduler/` | Checked-HIR branch readiness and SPEC combinator decisions, not Host lifetime machinery |
+
+There is no separate `api/lifecycle/completion.rs` state machine or copied
+termination-report type. Reuse `etas_host::execution`. Signal handling and
+process-exit policy stay in the CLI/application.
 
 ## 4. Planning Pipeline
 
@@ -260,8 +451,8 @@ configuration diagnostics, not static frontend correctness diagnostics.
 
 ### 4.1 Call-Stack Safety Boundary
 
-Source evaluation must run on one heap-backed `EvalMachine` for the complete
-execution lifetime. Rust calls may implement one bounded machine transition,
+Each sequential execution branch runs on one heap-backed `EvalMachine` for its
+complete lifetime. Rust calls may implement one bounded machine transition,
 but Etas flow, lambda, spec-method, agent, and source-tool calls must never form
 a recursively nested Rust evaluator call chain.
 
@@ -299,9 +490,11 @@ truncate, and snapshot restore goes through stack-management methods that keep
 `active_call_depth` synchronized. A pass that scans the full stack before every
 call is prohibited because it turns depth-N recursion into O(N^2) execution.
 
-There is exactly one active `EvalMachine` per `run_checked` or resume operation.
-Host boundaries yield the machine without discarding its stack, and the driver
-resumes that same machine with a typed response. In particular:
+There is one machine for the entry branch of `run_checked` or resume. Only
+explicit structured concurrent branches introduce separately owned machines;
+ordinary calls, model rounds and handlers do not. Host boundaries yield a
+machine without discarding its stack, and the driver resumes that same machine
+with a typed response. In particular:
 
 ```text
 Etas call
@@ -323,6 +516,75 @@ A pending-tail-call global, a special case for `return f(...)`, or a nested
 machine used only for source tools is not an acceptable substitute for this
 evaluator-wide model.
 
+### 4.2 Cooperative Scheduling And Cancellation
+
+`eval/safe_point.rs` observes the current scope's cancellation signal along with
+step and time budgets. `ExecutionSafePointScheduler` also owns quantum accounting
+and decides whether to continue, yield, cancel, or report the prescribed limit
+failure. Machine/driver/intrinsic code consumes that decision instead of keeping
+independent polling intervals, cancellation flags and quantum counters.
+`eval/machine/state.rs` distinguishes completed value,
+pending Host boundary, execution fault, cancellation, and `YieldToScheduler`.
+Cancellation is a control outcome, not a fabricated provider or handler error.
+
+`eval/machine/step.rs` runs a bounded quantum of transitions. On quantum expiry,
+retain the current signal and stack and return `YieldToScheduler`.
+`driver/drive.rs` gives the async executor a scheduling opportunity and resumes
+the same machine without supplying a fake `Unit` or resetting step/call limits.
+The single-thread executor must be able to run the task that requests stop or
+advances a deadline while Etas evaluates a CPU-only loop.
+
+Use O(1) safe-point checks; do not scan scopes, frames or active requests on
+every expression. Long-running builtin kernels need a verified per-operation
+work bound or a chunked computation interface driven by the evaluator. Check
+between chunks; checking every fixed number of machine transitions is not a
+bound on a single unbounded transition. Pure kernels do not depend on Host
+scopes or acquire host effects. The quantum is an implementation parameter,
+not a new source limit or a guaranteed wall-clock bound for uninterruptible
+host code. Share monotonic-clock infrastructure with budget checks so quantum
+and deadline tests do not rely on sleeps or machine speed.
+
+Execution scopes follow structured branch/deadline ownership. Ordinary flow
+calls and handler applications inherit the current scope. Dynamic handler
+frames remain engine-owned; scope cancellation propagates into handler-produced
+actions without inventing a second handler selection algorithm.
+
+### 4.3 Structured Branch Scheduling
+
+`driver/scheduler/ready.rs` owns the ready-branch queue and completion wakeups;
+`group.rs` owns branch membership, result slots and the selected std combinator's
+completion policy. Reuse Tokio wakeups and asynchronous waiting primitives; do
+not build another thread pool or spawn a Rust task per expression/action.
+Scheduling HIR machines is Interpreter work, not a shared Host operation.
+
+Each active branch has its own machine, local control state and child scope.
+Checked project/plan/facts are shared read-only. Budgets are the parent's shared
+ledger with any stricter child limits, not cloned allowances. Branch-local value
+state preserves Etas value semantics, while inherited handler environments do
+not share mutable continuations or one-shot resume ownership across branches.
+Do not hold a whole-`EvalContext` mutex while polling another branch or awaiting
+Host work. Bound active branches and pending work according to the checked
+combinator/limit contract; yield fairly between runnable branches and back to
+the embedding executor.
+
+The [Concurrency SPEC](../../../etas/docs/design/16-concurrency.md) defines the
+group behavior, independently of the cancellation-token implementation:
+
+| Construct | Group decision |
+|---|---|
+| `join` / `try_join` | On an unhandled branch error, preserve the triggering error, cancel unfinished siblings and await their local settlement; honor an explicitly result-collecting std variant |
+| `collect` | Collect branch results; an ordinary branch error does not stop its siblings |
+| `race` | Select the first successful branch, not the first completed error; cancel unfinished losers and await settlement before returning |
+| `map_concurrent` | Enforce `Concurrency(n)` and the declared fail-fast/collecting variant; keep stable result association |
+
+An all-failed race follows its declared std variant; the engine must not invent
+an empty successful value. External parent cancellation applies to every group
+variant and is not converted to collected ordinary errors. A branch failure
+that is already captured by `?` is a returned value, not an unhandled failure.
+Dynamic handler inheritance and checked effect/resource/trace-order constraints
+remain in force. Cancellation of a losing branch neither rolls back its
+confirmed effects nor erases attempted actions from trace.
+
 ## 5. Evaluation Context
 
 Evaluation state belongs to the interpreter.
@@ -331,17 +593,21 @@ Evaluation state belongs to the interpreter.
 pub struct EvalContext<'a> {
     pub checked: &'a CheckedProject,
     pub plan: &'a InterpreterPlan,
-    pub handlers: HandlerStack,
-    pub retries: RetryStack,
     pub host: &'a dyn HostServices,
+    pub execution: ExecutionScope,
+    pub budget: ExecutionBudget,
     pub trace: TraceSink,
-    pub fuel: Fuel,
+    pub safe_points: ExecutionSafePointScheduler,
 }
 ```
 
-`EvalContext` owns project-derived and run-wide services. `EvalMachine` owns
-control state. The driver owns asynchronous host dispatch but not source-level
-control flow or model/tool orchestration state.
+This excerpt describes a branch's access to immutable project data and explicitly
+shared run services. `EvalMachine` owns its frames, local slots, handler/retry
+control state and resumable model/tool state; do not introduce a second stack in
+`EvalContext`. Host services, trace correlation and budget accounting are shared
+through their defined interfaces, not by sharing a mutable evaluator between
+branches. The driver schedules machines and asynchronous Host dispatch; it does
+not duplicate source-level evaluation or handler/model-loop transitions.
 
 Frame layout must be derived during planning from checked HIR bindings. Runtime
 lookup should use HIR ids, local slots, and plan tables, not source strings.
@@ -526,8 +792,21 @@ pub enum ControlSignal {
     Perform(PerformedAction),
     Resume(InterpValue),
     Abort(InterpreterDiagnostic),
+    Cancelled(CancellationCause),
 }
 ```
+
+`Cancelled` represents external execution cancellation, distinct from
+source-level `abort`/`finish` and typed service errors. It propagates through
+ordinary error handlers and `?` without being captured and never triggers retry.
+A local service cancellation may still produce the checked `StreamError.Cancelled`
+when the surrounding execution scope is healthy. Budget failure keeps its SPEC
+error semantics; the exhausted scope cancels unfinished work before reporting
+that error to an eligible enclosing handler. A stopped scope cannot resume
+ordinary computation by catching a cleanup or I/O error.
+Source `finish`/`abort` retain their checked handler/control meaning; neither is
+a general-purpose shutdown finalizer. Runtime cleanup releases owned resources
+without evaluating arbitrary business handler arms after cancellation.
 
 Effect handler execution:
 
@@ -611,7 +890,9 @@ pub trait HostServices {
 }
 ```
 
-The exact Rust names may evolve, but the boundary must stay explicit.
+The exact Rust names may evolve, but the boundary must stay explicit. Each
+request also carries the shared live `OperationContext`; it is not transmitted
+as provider payload or reconstructed from static effect rows.
 
 `etas_host` owns reusable provider/tool/memory/sandbox adapters:
 
@@ -631,6 +912,36 @@ InterpValue <-> HostValue
 authority/readiness checks for this execution
 mapping HostError -> interpreter diagnostic
 ```
+
+Action dispatch registers dynamic occurrences under the execution scope before
+mediation; registration does not bypass checked authority. Pure handlers may
+produce no Host request, while one action may produce several correlated Host
+operations. Reuse the existing boundary occurrence ledger and request IDs,
+preserving parent/attempt relationships. Two equal action names are not the same
+operation, and retry is not another execution of the same occurrence identity.
+
+`driver/dispatch/host_dispatch.rs` is the common Host lifecycle integration
+point. Service-specific dispatch retains typed request/result conversion.
+There must be no raw service path that omits registration, scope cancellation,
+completion evidence or trace accounting. Do not blindly race every Host future
+against a token and drop the loser: the adapter must provide its documented
+cancellation-safe or managed-completion contract.
+
+Record a confirmed external result before abandoning a continuation due to
+cancellation. Preserve partial or unknown results even when a normal value
+cannot be delivered. Do not use `escaping_effects` to identify active work:
+handler elimination and `?` leave real requested actions and their operations
+subject to scope ownership, cancellation, authority and trace.
+
+`driver/lifecycle/shutdown.rs` settles the engine body and coordinates the
+shared cleanup mechanism. Concrete interruption, transaction observation,
+process reap and resource release stay in Host adapters/supervisors. Cleanup
+has its own monotonic bound, protected from the already-triggered business
+signal, but admits only release of owned resources with existing authority.
+It must not replenish business budgets or launch new model/tool work. If the
+bound expires, retain pending ownership; do not pretend an uninterruptible
+thread or remote request was killed. The embedding caller must keep the Host
+supervisor alive while pending operations are being observed.
 
 Deny-by-default behavior is required. If a reachable host boundary lacks a
 checked action fact, active explicit handler, standard host service, action
@@ -729,7 +1040,9 @@ Interpreter responsibilities:
 - preserve region/store identity in trace and checkpoint records;
 - include memory versions in checkpoint records when the host returns them;
 - report missing backend, denied authority, or version conflicts as structured
-  diagnostics.
+  diagnostics;
+- preserve confirmed commit/version, partial results and unknown commit
+  evidence even when the enclosing run is cancelled.
 
 Host responsibilities:
 
@@ -745,7 +1058,16 @@ memory support.
 ## 14. Retry, Checkpoint, Resume, And Workflow Ledger
 
 Phase 1 needs real checked-HIR execution support for retry, checkpoint, resume,
-and workflow orchestration, but it should not create an AIR-like scheduler.
+and workflow orchestration. Its branch scheduler drives HIR machines; it must
+not construct AIR instructions or a second workflow execution IR.
+
+Within `orchestration/`, `checkpoint/` owns typed snapshot construction, restore
+validation and restoration; `retry/` owns attempt/replay decisions; `trace/`
+owns event/correlation models; `ledger.rs` owns occurrence completion evidence.
+These modules consume shared Host operation evidence, not a second cancellation
+registry. Artifact encoding remains in `api/codec/`, and active model/retry
+control stays in the machine frames. Split the existing flat checkpoint and
+event models by these responsibilities, not into renamed duplicate pathways.
 
 Use an execution ledger instead of a second IR:
 
@@ -815,9 +1137,115 @@ Retry behavior:
 - record attempt numbers and boundary events;
 - do not retry missing action grants, denied trace-spec/admission checks, or
   sandbox violations;
+- never automatically retry external run cancellation;
+- retry a write with unknown completion only when a verified
+  reconciliation/idempotency contract resolves the risk;
 - do not duplicate non-idempotent host side effects unless a completed boundary
   ledger proves the result can be reused or the handler explicitly supports
   deduplication.
+
+Backoff waits observe the current cancellation signal. Each permitted retry
+retains the parent budget and authority, checks admission again before dispatch,
+and records a distinct attempt. Do not map cancellation to a generic retryable
+Host error or restart a cancelled scope with a fresh token inside the retry
+loop.
+
+### 14.1 Cancellation And Durable Boundaries
+
+Scope IDs and cancellation reasons may appear in trace correlation, but active
+tokens, registrations, supervisor handles, sockets and cleanup guards are not
+checkpoint state. Resume creates a new invocation scope with fresh cancellation
+state while preserving durable occurrence identities and consumed budgets.
+Capture budget state as an immutable snapshot at checkpoint creation, not a
+clone of the live budget ledger. Later consumption must not mutate the saved
+checkpoint. Resume preserves the trace-parent relationship without restoring
+the old invocation's live control context.
+
+The completed-boundary ledger stores confirmed outcomes, not a guessed result
+for a cancelled wait. If a checkpoint must describe pending/uncertain work,
+encode it as separate typed evidence and validate it during restore. A boundary
+whose completion cannot be safely represented or reconciled prevents automatic
+resume with a precise diagnostic. Never silently omit it or replay an unknown
+write. Evolve the checkpoint schema explicitly when adding durable fields and
+reject incompatible artifacts without defaulting missing execution evidence.
+
+Run cancellation does not automatically create a resumable checkpoint. The
+application chooses recovery policy; the interpreter guarantees that a reported
+checkpoint and completion ledger truthfully describe supported recovery.
+
+### 14.2 Storage Intents And Receipts
+
+Consume the accepted [public storage contract](../../../etas-core/docs/architect/etas-storage-design.md#8-standard-library-and-engine-integration).
+The Session API quartet is now specified; the general Memory intent API still
+needs its complete source declarations synchronized separately. StdRegistry owns
+the declarations; the interpreter's intrinsic/value/codec layers adapt them to the existing
+`MemoryClient`/`SessionClient`, without implementing SQL or a second receipt store.
+
+- Preparation creates an immutable typed intent and runtime-issued operation
+  reference before dispatch. It does not mutate the backend and is not evaluated
+  as a deterministic pure builtin. Identity allocation failure is explicit.
+- Checkpoint codecs preserve target, typed payload, condition and operation
+  identity, with existing byte/depth/node bounds and secret handling. They do not
+  serialize live connections or grants. Restore validates identity and current
+  authority without generating a replacement reference.
+- Commit checks the approved write action and invokes the managed Host boundary.
+  Convert every confirmed/unknown outcome into its declared nominal/ADT shape;
+  never map unknown completion to `unit`, a generic retryable I/O error or a fresh
+  write attempt. Update ledger evidence even if the run is concurrently cancelled.
+- Reconcile checks read authority and only queries evidence. Unresolved/expired
+  results remain distinct from confirmed non-commit. A matching recorded outcome
+  is reused rather than re-evaluating the original condition as a new mutation.
+- `?` handles Error effects, not `WriteOutcome.Unknown`. Convenience-write errors
+  must retain operation references when their API cannot return an outcome.
+  Cancellation remains run control, independent of commit certainty.
+
+Persisting an intent/reference before dispatch is an explicit caller/checkpoint
+decision. An in-memory intent alone is not a cross-crash recovery guarantee.
+Session context publication reuses these lifecycle rules: `history_page` returns
+history/fence/context; `prepare_context` binds content and fence to an operation
+reference; `publish_context` verifies that binding and publishes conditionally;
+`reconcile_context` only queries evidence. Preserve the prepared content/fence
+and reference across supported recovery. Reconciliation does not resume
+cancelled execution or grant authority to a restored session.
+
+Source-level acceptance must cover prepare-without-write, intent persistence and
+restore, CAS conflicts, lost acknowledgements, same-identity replay after a
+successful write changes the version, receipt expiry and cancellation during
+commit. Tests use a real persistent adapter and independently observe the stored
+result; a stubbed response codec test is insufficient.
+
+### 14.3 Application-Owned Context Processing
+
+The interpreter executes summary/tokenization flows as ordinary checked source
+code. EDK/applications select providers, models, tokenizer implementations,
+prompts, output validation and retry policy. Existing safe points, budgets,
+Host authority and trace apply to these flows without a special compactor path.
+
+Host Session supplies bounded history and conditional publication of already
+produced content. The publication fence detects concurrent history/context
+changes and returns a conflict; the interpreter does not silently reread,
+re-summarize, merge or delete messages. A selection helper may use existing
+published context but must not trigger an implicit model call. Per the SPEC,
+`SummaryPlusRecent` without a summary selects recent turns and exposes absence;
+it does not fabricate an empty summary or claim to return full history.
+Exhausted `ContextTokens` follows ordinary limit failure semantics, not an
+automatic call to reduce the context size.
+
+Keep source-history/producer provenance and trust intact through publication,
+codec roundtrips, context selection and prompt construction. A publication
+receipt proves the backend outcome/version/durability, not summary accuracy or
+permission to inject it into a trusted instruction channel. Failure/cancellation
+while generating content leaves published context unchanged; uncertain
+publication still needs reconciliation.
+
+Remove reliance on Host `SessionCompactor` model/tokenizer callbacks and implicit
+`SummarizeWhen` behavior now that the SPEC removes `SessionConfig.compaction`.
+Do not replace them with interpreter-local providers, Debug concatenation or a
+test summarizer.
+A production summarizer configuration is not an interpreter completion gate.
+Do not remove configured retention, archival, deletion or physical storage
+compaction; these remain separate runtime/storage operations with bounded work
+and explicit effects on replay availability.
 
 ## 15. Diagnostics
 
@@ -829,6 +1257,11 @@ budget checks return a typed fault or abort signal; they do not both append a
 diagnostic and ask the driver to append another one. The public run boundary
 materializes exactly one primary diagnostic for one terminal fault, with notes
 or causes attached to that diagnostic when needed.
+
+Cancellation and cleanup reports have the same single diagnostic owner. The
+driver must not turn scope cancellation into missing-handler, empty-value, or
+generic retryable Host diagnostics. Pending cleanup is reported separately from
+the run's language error and never converted to successful termination.
 
 Recommended codes:
 
@@ -915,5 +1348,44 @@ Interpreter tests should cover:
 - unsupported AIR/runtime feature diagnostics;
 - deterministic `run_checked` output.
 
+### 17.1 Lifecycle Acceptance
+
+Tests exercise `create_run`/`create_resume` and the convenience facades, not just
+a cancellation flag. Use barriers/channels, injected monotonic clocks and
+watchdogs; retain real adapter coverage alongside deterministic unit tests.
+
+| Scenario | Required evidence |
+|---|---|
+| Stop before first poll followed by drive, or owner drop before first poll | No source/Host execution; body ownership is released and termination becomes observable; waiting alone does not drive an unpolled owner |
+| Waiter/control drop and repeated/late waits | Run is unaffected by observer drop; no lost wakeup, rerun or duplicate terminal publication |
+| Execution-future drop with pending I/O | Host supervisor still owns the operation; evidence survives loss of borrowed evaluator state |
+| CPU loop/deep recursion/large builtin on a current-thread executor | Another task can request stop and make progress; frames/limits survive yielding; chunked work is actually bounded |
+| Body success followed by drain | Parent cannot report termination while a child or owned cleanup is still active |
+| Register/complete/stop races | Each request is rejected or registered; confirmed/partial/unknown evidence is not overwritten by generic cancellation |
+| Repeated action names and sibling cancellation | Distinct occurrence identities; stopping one child does not directly stop a healthy sibling/parent |
+| `join`/`collect`/`race`/bounded map | Correct SPEC result policy; race ignores early errors until success/all-failed; no return with unsettled children |
+| Nested handlers, `?`, budget failure and retry | External stop is not captured/retried; ordinary typed errors retain their semantics; child limits never refresh the parent budget |
+| Cleanup timeout | `StopWait::TimedOut` retains observable pending work, not a false final `RunResult`; locks are not held across waits |
+| Checkpoint/resume | Fresh live scope, immutable consumed-budget evidence, no duplicate confirmed writes and explicit rejection of unreconciled unknown writes |
+| Public report/codec | Outcome and value cannot contradict; final report is required; cancellation and cleanup do not create duplicate primary diagnostics |
+
+Real loopback network, command supervision, pending input and SQLite completion
+tests must demonstrate interruption or documented non-interruption, not simply
+return a mocked cancelled error. See the shared
+[acceptance matrix](../../../etas-core/docs/architect/etas-execution-design.md#8-implementation-and-acceptance).
+
 Live model tests are optional and must use local opt-in host adapters from
 `etas_host`; they must not be required for ordinary offline test runs.
+
+### 17.2 Migration Boundary
+
+Implement ownership and result invariants first, then unify scheduler/safe-point
+decisions and Host settlement, then migrate run/resume/CLI and recovery tests.
+This is an implementation order, not reduced feature scope. Remove the raw
+root-scope injection/control escape hatch, independent optional result value,
+intermediate `RunResult` construction, duplicated evaluator polling policies,
+and any private evaluator or unowned Host dispatch retained by old call sites.
+Preserve mandatory admission/cancellation checks at irreversible Host dispatch
+points. Preserve supported public convenience facades by delegating to the one
+owner/driver.
+Renaming an old evaluator or moving it behind `RunInvocation` is not acceptance.

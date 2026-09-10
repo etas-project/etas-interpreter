@@ -37,13 +37,15 @@ impl<'a> EvalContext<'a> {
             (
                 SessionDecode::ReturnConversation { payload_type },
                 etas_host::SessionResult::History { .. },
+            ) => conversation_from_session_result(
+                result,
+                &session.request.operation,
+                *payload_type,
+                &self.checked.type_store,
+                &self.storage_limits,
             )
-            | (
-                SessionDecode::ReturnConversation { payload_type },
-                etas_host::SessionResult::Compacted { .. },
-            ) => conversation_from_session_result(result, *payload_type, &self.checked.type_store)
-                .map(InterpValue::Conversation)
-                .map(Some),
+            .map(InterpValue::Conversation)
+            .map(Some),
             _ => Ok(None),
         }
     }
@@ -58,9 +60,6 @@ impl<'a> EvalContext<'a> {
             }
             etas_host::SessionOperation::Load { session, .. } => {
                 format!("session:load:{}", session.id)
-            }
-            etas_host::SessionOperation::Compact { session, .. } => {
-                format!("session:compact:{}", session.id)
             }
         }
     }
@@ -137,53 +136,18 @@ impl<'a> EvalContext<'a> {
                 })
             }
             (
-                SessionDecode::ResolveThenCompactConversation {
-                    config,
-                    payload_type,
-                },
-                etas_host::SessionResult::Resolved {
-                    session: resolved_session,
-                    ..
-                },
-            ) => {
-                let request_id = self.next_host_request_id();
-                let host_config = match session_config_to_host(&config) {
-                    Ok(config) => config,
-                    Err(message) => {
-                        return ControlSignal::invalid_arguments(message, session.span);
-                    }
-                };
-                ControlSignal::pending_session(PendingSession {
-                    request: etas_host::SessionRequest {
-                        id: request_id,
-                        operation: etas_host::SessionOperation::Compact {
-                            session: resolved_session,
-                            policy: host_config.compaction,
-                        },
-                        authority: self.host_authority(),
-                        trace: self.host_trace(),
-                        budget: self.host_budget(),
-                    },
-                    decode: SessionDecode::ReturnConversation { payload_type },
-                    span: session.span,
-                    continuation: session.continuation,
-                })
-            }
-            (
                 SessionDecode::ReturnMessage { message },
                 etas_host::SessionResult::Appended { .. },
             ) => self.apply_continuation(session.continuation, InterpValue::Message(message)),
             (
                 SessionDecode::ReturnConversation { payload_type },
                 result @ etas_host::SessionResult::History { .. },
-            )
-            | (
-                SessionDecode::ReturnConversation { payload_type },
-                result @ etas_host::SessionResult::Compacted { .. },
             ) => match conversation_from_session_result(
                 &result,
+                &session.request.operation,
                 payload_type,
                 &self.checked.type_store,
+                &self.storage_limits,
             ) {
                 Ok(conversation) => self.apply_continuation(
                     session.continuation,
@@ -198,7 +162,11 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(crate) fn record_session_result_event(&mut self, result: &etas_host::SessionResult) {
+    pub(crate) fn record_session_result_event(
+        &mut self,
+        result: &etas_host::SessionResult,
+        value: Option<&InterpValue>,
+    ) {
         match result {
             etas_host::SessionResult::Resolved { session, created } => {
                 self.events.push(WorkflowEvent::SessionResolved {
@@ -219,20 +187,14 @@ impl<'a> EvalContext<'a> {
             etas_host::SessionResult::History {
                 session,
                 messages,
-                summary,
                 cursor,
+                ..
             } => {
                 self.events.push(WorkflowEvent::SessionHistoryLoaded {
                     session: session.id.clone(),
                     message_count: messages.len(),
-                    has_summary: summary.is_some(),
+                    has_summary: matches!(value, Some(InterpValue::Conversation(view)) if view.selected_context.is_some()),
                     cursor: cursor.as_ref().map(|cursor| cursor.opaque.clone()),
-                });
-            }
-            etas_host::SessionResult::Compacted { session, summary } => {
-                self.events.push(WorkflowEvent::SessionCompacted {
-                    session: session.id.clone(),
-                    summary_message_count: summary.message_count,
                 });
             }
         }
@@ -244,40 +206,61 @@ impl<'a> EvalContext<'a> {
         error: etas_host::HostError,
     ) -> ControlSignal {
         let message = format!("session host boundary failed: {}", error.message);
+        if let Some(signal) = self.cancellation_signal(session.span) {
+            return signal;
+        }
         ControlSignal::runtime_fault(message, session.span)
     }
 }
 
 fn conversation_from_session_result(
     result: &etas_host::SessionResult,
+    operation: &etas_host::SessionOperation,
     payload_type: etas_types::TypeId,
     store: &etas_types::TypeStore,
+    limits: &etas_host::StorageLimits,
 ) -> Result<crate::value::ConversationValue, String> {
+    let etas_host::SessionOperation::Load {
+        context: policy, ..
+    } = operation
+    else {
+        return Err("conversation requires a checked history selection request".into());
+    };
     match result {
         etas_host::SessionResult::History {
             session,
             messages,
-            summary,
+            summary: _,
             cursor,
+            fence,
+            published_context,
         } => {
+            if fence.session_id() != session.id {
+                return Err("session history fence belongs to another session".into());
+            }
+            if let Some(context) = published_context {
+                if context.fence.session_id() != session.id {
+                    return Err("published context fence belongs to another session".into());
+                }
+            }
             let messages = messages
                 .iter()
                 .map(|message| message_value_from_session_message(message, payload_type, store))
                 .collect::<Result<Vec<_>, _>>()?;
-            Ok(crate::value::ConversationValue {
+            let conversation = crate::value::ConversationValue {
+                selected_context: match policy {
+                    etas_host::ContextPolicy::SummaryPlusRecent { .. } => {
+                        published_context.clone().map(Box::new)
+                    }
+                    _ => None,
+                },
                 session: session.id.clone(),
+                history_fence: Some(fence.clone()),
                 messages,
-                summary: summary.as_ref().map(session_summary_value),
                 cursor: cursor.as_ref().map(|cursor| cursor.opaque.clone()),
-            })
-        }
-        etas_host::SessionResult::Compacted { session, summary } => {
-            Ok(crate::value::ConversationValue {
-                session: session.id.clone(),
-                messages: Vec::new(),
-                summary: Some(session_summary_value(summary)),
-                cursor: None,
-            })
+            };
+            crate::value::conversation::validate(&conversation, limits)?;
+            Ok(conversation)
         }
         _ => Err(format!(
             "unexpected session host result for conversation: {result:?}"
@@ -300,17 +283,10 @@ pub(crate) fn session_config_to_host(
             "SessionConfig.retention is not a checked RetentionPolicy value".to_owned()
         })?,
     };
-    let compaction = match config.compaction.as_deref() {
-        None => etas_host::CompactionPolicy::None,
-        Some(value) => compaction_policy_from_value(value).ok_or_else(|| {
-            "SessionConfig.compaction is not a checked CompactionPolicy value".to_owned()
-        })?,
-    };
     Ok(etas_host::SessionConfig {
         id: config.id.clone(),
         context,
         retention,
-        compaction,
     })
 }
 
@@ -462,13 +438,6 @@ fn host_record_optional_string_field(
     }
 }
 
-fn session_summary_value(summary: &etas_host::SessionSummary) -> crate::value::SessionSummaryValue {
-    crate::value::SessionSummaryValue {
-        text: summary.text.clone(),
-        message_count: summary.message_count,
-    }
-}
-
 fn context_policy_from_value(value: &InterpValue) -> Option<etas_host::ContextPolicy> {
     match value {
         InterpValue::Variant { name, fields } if name == "All" && fields.is_empty() => {
@@ -496,31 +465,6 @@ fn retention_policy_from_value(value: &InterpValue) -> Option<etas_host::Retenti
             u64_from_value(&fields[0]).map(etas_host::RetentionPolicy::Days)
         }
         _ => None,
-    }
-}
-
-fn compaction_policy_from_value(value: &InterpValue) -> Option<etas_host::CompactionPolicy> {
-    match value {
-        InterpValue::Variant { name, fields } if name == "None" && fields.is_empty() => {
-            Some(etas_host::CompactionPolicy::None)
-        }
-        InterpValue::Variant { name, fields } if name == "SummarizeWhen" && fields.len() == 1 => {
-            limit_tokens_from_value(&fields[0]).map(|max_context_tokens| {
-                etas_host::CompactionPolicy::SummarizeWhen { max_context_tokens }
-            })
-        }
-        _ => None,
-    }
-}
-
-fn limit_tokens_from_value(value: &InterpValue) -> Option<u64> {
-    match value {
-        InterpValue::Variant { name, fields }
-            if matches!(name.as_str(), "ContextTokens" | "Tokens") && fields.len() == 1 =>
-        {
-            u64_from_value(&fields[0])
-        }
-        value => u64_from_value(value),
     }
 }
 

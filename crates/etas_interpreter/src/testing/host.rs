@@ -5,12 +5,12 @@ use etas_host::{
     ApprovalDecision, ApprovalRequest, ApprovalResponse, BrowserProtocolRequest,
     BrowserProtocolResponse, ByteStreamOrigin, CommandOutput, CommandRequest, CommandResponse,
     FilesystemRequest, FilesystemResponse, HostError, HostErrorCode, HostValue, MemoryConflict,
-    MemoryOperation, MemoryRequest, MemoryResponse, MemoryResult, MemoryVersion, MemoryWriteMode,
-    ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole, ModelToolCall,
-    PolicyDecision, PolicyEvaluationRequest, PolicyResponse, SecretRequest, SecretResponse,
-    SessionClient, SessionRequest, SessionResponse, StreamFailure, StreamRequest, StreamResponse,
-    TcpConnectRequest, TcpConnectResponse, TcpStreamRef, TlsConnectRequest, TlsConnectResponse,
-    ToolRequest, ToolResponse,
+    MemoryOperation, MemoryRequest, MemoryResponse, MemoryResult, MemoryVersion, ModelContent,
+    ModelMessage, ModelRequest, ModelResponse, ModelRole, ModelToolCall, PolicyDecision,
+    PolicyEvaluationRequest, PolicyResponse, SecretRequest, SecretResponse, SessionRequest,
+    SessionResponse, StreamFailure, StreamRequest, StreamResponse, TcpConnectRequest,
+    TcpConnectResponse, TcpStreamRef, TlsConnectRequest, TlsConnectResponse, ToolRequest,
+    ToolResponse, WriteCondition,
 };
 use etas_host::{StreamPayload, StreamRead};
 use std::collections::{HashMap, VecDeque};
@@ -25,7 +25,30 @@ struct FakeMemoryEntry {
     value: HostValue,
 }
 
+pub(super) enum TestMemoryBackend {
+    Volatile(etas_host::InMemoryMemoryClient),
+    Sqlite(etas_host::SqliteMemoryClient),
+    ReplaceBeforeDelete(etas_host::InMemoryMemoryClient),
+    LostWriteResponse {
+        client: etas_host::InMemoryMemoryClient,
+        inner_error: bool,
+    },
+    WrongWriteTarget {
+        client: etas_host::InMemoryMemoryClient,
+        other_store: bool,
+    },
+}
+
+#[derive(Clone, Copy)]
+pub(super) enum SessionContextFault {
+    LostResponse,
+    ForeignReceipt,
+}
+
 pub(super) struct FakeHost {
+    pub(super) session_context_fault: Option<SessionContextFault>,
+    pub(super) storage: Option<TestMemoryBackend>,
+    console_gate: Option<Arc<ConsoleGate>>,
     availability: HostServiceAvailability,
     approval_calls: Arc<AtomicUsize>,
     approval_decisions: Arc<Mutex<VecDeque<ApprovalDecision>>>,
@@ -58,12 +81,17 @@ pub(super) struct FakeHost {
     stderr: Arc<Mutex<String>>,
     memory: Arc<Mutex<HashMap<String, FakeMemoryEntry>>>,
     memory_conflicts: Arc<Mutex<VecDeque<MemoryConflict>>>,
-    session: etas_host::InMemorySessionClient,
+    pub(super) session: etas_host::InMemorySessionClient,
+    pub(super) persistent_session: Option<etas_host::SqliteSessionClient>,
+    pub(super) lose_session_append_response: bool,
+    pub(super) lose_session_resolve_response: bool,
 }
 
 impl FakeHost {
     pub(super) fn new(availability: HostServiceAvailability) -> Self {
         Self {
+            storage: None,
+            console_gate: None,
             availability,
             approval_calls: Arc::new(AtomicUsize::new(0)),
             approval_decisions: Arc::new(Mutex::new(VecDeque::new())),
@@ -72,6 +100,7 @@ impl FakeHost {
             console_calls: Arc::new(AtomicUsize::new(0)),
             memory_calls: Arc::new(AtomicUsize::new(0)),
             session_calls: Arc::new(AtomicUsize::new(0)),
+            session_context_fault: None,
             model_calls: Arc::new(AtomicUsize::new(0)),
             policy_calls: Arc::new(AtomicUsize::new(0)),
             command_requests: Arc::new(Mutex::new(Vec::new())),
@@ -97,11 +126,23 @@ impl FakeHost {
             memory: Arc::new(Mutex::new(HashMap::new())),
             memory_conflicts: Arc::new(Mutex::new(VecDeque::new())),
             session: etas_host::InMemorySessionClient::new(),
+            persistent_session: None,
+            lose_session_append_response: false,
+            lose_session_resolve_response: false,
         }
     }
 
     pub(super) fn approval_call_count(&self) -> usize {
         self.approval_calls.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn pause_console_completion(&mut self) -> Arc<ConsoleGate> {
+        let gate = Arc::new(ConsoleGate {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+        });
+        self.console_gate = Some(gate.clone());
+        gate
     }
 
     pub(super) fn seed_approval_decision(&self, decision: ApprovalDecision) {
@@ -335,6 +376,7 @@ impl FakeHost {
 
     pub(super) fn seed_command_output(&self, exit_code: i32, stdout: &[u8], stderr: &[u8]) {
         *self.command_response.lock().expect("command response lock") = Some(CommandOutput {
+            isolation: etas_host::CommandIsolationReport::trusted_unconfined(),
             exit_code,
             stdout: stdout.to_vec(),
             stderr: stderr.to_vec(),
@@ -399,6 +441,7 @@ impl HostServices for FakeHost {
 
     fn model<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: ModelRequest,
     ) -> HostFuture<'a, Result<ModelResponse, HostError>> {
         self.model_calls.fetch_add(1, Ordering::SeqCst);
@@ -434,7 +477,11 @@ impl HostServices for FakeHost {
         })
     }
 
-    fn tool<'a>(&'a self, request: ToolRequest) -> HostFuture<'a, Result<ToolResponse, HostError>> {
+    fn tool<'a>(
+        &'a self,
+        _operation: etas_host::execution::OperationContext,
+        request: ToolRequest,
+    ) -> HostFuture<'a, Result<ToolResponse, HostError>> {
         self.tool_requests
             .lock()
             .expect("tool requests lock")
@@ -471,9 +518,64 @@ impl HostServices for FakeHost {
 
     fn memory<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: MemoryRequest,
     ) -> HostFuture<'a, Result<MemoryResponse, HostError>> {
         self.memory_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(storage) = &self.storage {
+            return Box::pin(async move {
+                match storage {
+                    TestMemoryBackend::Volatile(client)
+                    | TestMemoryBackend::WrongWriteTarget { client, .. } => {
+                        client.execute_scoped(request, &_operation).await
+                    }
+                    TestMemoryBackend::Sqlite(client) => {
+                        client.execute_scoped(request, &_operation).await
+                    }
+                    TestMemoryBackend::ReplaceBeforeDelete(client) => {
+                        if let MemoryOperation::Delete { key, .. } = &request.operation {
+                            let mut replacement = request.clone();
+                            replacement.operation = MemoryOperation::Put {
+                                key: key.clone(),
+                                value: HostValue::String("concurrent replacement".to_owned()),
+                                condition: WriteCondition::Any,
+                            };
+                            client
+                                .execute_scoped(replacement, &_operation)
+                                .await?
+                                .result?;
+                        }
+                        client.execute_scoped(request, &_operation).await
+                    }
+                    TestMemoryBackend::LostWriteResponse {
+                        client,
+                        inner_error,
+                    } => {
+                        let write = matches!(
+                            request.operation,
+                            MemoryOperation::Put { .. } | MemoryOperation::Delete { .. }
+                        );
+                        let response = client.execute_scoped(request, &_operation).await?;
+                        if write && response.result.is_ok() {
+                            let error = HostError::new(
+                                HostErrorCode::ProviderUnavailable,
+                                "lost write acknowledgement",
+                            );
+                            if *inner_error {
+                                Ok(MemoryResponse {
+                                    id: response.id,
+                                    result: Err(error),
+                                })
+                            } else {
+                                Err(error)
+                            }
+                        } else {
+                            Ok(response)
+                        }
+                    }
+                }
+            });
+        }
         let memory = Arc::clone(&self.memory);
         let conflict = self
             .memory_conflicts
@@ -504,16 +606,13 @@ impl HostServices for FakeHost {
                     .map(|entry| entry.value.clone())
                     .map(|value| MemoryResult::Value {
                         value,
-                        version: MemoryVersion {
-                            opaque: "v1".to_owned(),
-                        },
+                        version: fake_memory_version("v1"),
                     })
                     .unwrap_or(MemoryResult::None),
                 MemoryOperation::Put {
                     key,
                     value,
-                    expected,
-                    mode,
+                    condition,
                 } => {
                     let key_string = memory_key(
                         &request.store.region.stable_id,
@@ -527,7 +626,7 @@ impl HostServices for FakeHost {
                     );
                     let mut memory = memory.lock().expect("memory lock");
                     if let Some(conflict) =
-                        fake_memory_write_conflict(memory.get(&key_string), expected.as_ref(), mode)
+                        fake_memory_write_conflict(memory.get(&key_string), &condition)
                     {
                         return Ok(MemoryResponse {
                             id: request.id,
@@ -536,12 +635,10 @@ impl HostServices for FakeHost {
                     }
                     memory.insert(key_string, FakeMemoryEntry { key, value });
                     MemoryResult::Written {
-                        version: MemoryVersion {
-                            opaque: "v1".to_owned(),
-                        },
+                        version: fake_memory_version("v1"),
                     }
                 }
-                MemoryOperation::Delete { key, expected } => {
+                MemoryOperation::Delete { key, condition } => {
                     let key_string = memory_key(
                         &request.store.region.stable_id,
                         &request
@@ -554,7 +651,7 @@ impl HostServices for FakeHost {
                     );
                     let mut memory = memory.lock().expect("memory lock");
                     if let Some(conflict) =
-                        fake_memory_conflict(memory.get(&key_string), expected.as_ref())
+                        fake_memory_write_conflict(memory.get(&key_string), &condition)
                     {
                         return Ok(MemoryResponse {
                             id: request.id,
@@ -563,9 +660,7 @@ impl HostServices for FakeHost {
                     }
                     memory.remove(&key_string);
                     MemoryResult::Deleted {
-                        version: MemoryVersion {
-                            opaque: "v1".to_owned(),
-                        },
+                        version: fake_memory_version("v1"),
                     }
                 }
                 MemoryOperation::Scan { limit, .. } => {
@@ -596,9 +691,7 @@ impl HostServices for FakeHost {
                         .map(|(key, value)| etas_host::MemoryEntry {
                             key,
                             value,
-                            version: MemoryVersion {
-                                opaque: "v1".to_owned(),
-                            },
+                            version: fake_memory_version("v1"),
                         })
                         .collect();
                     MemoryResult::Entries {
@@ -629,9 +722,7 @@ impl HostServices for FakeHost {
                             Some(etas_host::MemoryEntry {
                                 key: entry.key.clone(),
                                 value: entry.value.clone(),
-                                version: MemoryVersion {
-                                    opaque: "v1".to_owned(),
-                                },
+                                version: fake_memory_version("v1"),
                             })
                         })
                         .collect::<Vec<_>>();
@@ -677,9 +768,7 @@ impl HostServices for FakeHost {
                                 etas_host::MemoryEntry {
                                     key: entry.key.clone(),
                                     value: entry.value.clone(),
-                                    version: MemoryVersion {
-                                        opaque: "v1".to_owned(),
-                                    },
+                                    version: fake_memory_version("v1"),
                                 },
                             ))
                         })
@@ -707,16 +796,249 @@ impl HostServices for FakeHost {
         })
     }
 
+    fn memory_write<'a>(
+        &'a self,
+        operation: etas_host::execution::OperationContext,
+        request: etas_host::memory::MemoryWriteRequest,
+    ) -> HostFuture<'a, Result<etas_host::memory::MemoryWriteResponse, HostError>> {
+        use etas_host::memory::*;
+        use etas_host::{ReceiptLookup, StorageDurability, WriteOutcome};
+        Box::pin(async move {
+            if let Some(storage) = &self.storage {
+                self.memory_calls.fetch_add(1, Ordering::SeqCst);
+                return match storage {
+                    TestMemoryBackend::Volatile(client) => {
+                        client.write_scoped(request, &operation).await
+                    }
+                    TestMemoryBackend::Sqlite(client) => {
+                        client.write_scoped(request, &operation).await
+                    }
+                    TestMemoryBackend::WrongWriteTarget {
+                        client,
+                        other_store,
+                    } => {
+                        let mut response = client.write_scoped(request, &operation).await?;
+                        let Ok(MemoryWriteResult::Outcome(WriteOutcome::Committed(receipt))) =
+                            &mut response.result
+                        else {
+                            panic!("test write must commit before acknowledgement is corrupted")
+                        };
+                        if *other_store {
+                            receipt.target.store.path.push("other-store".into());
+                        } else {
+                            receipt.target.key = HostValue::String("other-key".into());
+                        }
+                        Ok(response)
+                    }
+                    TestMemoryBackend::ReplaceBeforeDelete(client) => {
+                        if let MemoryWriteOperation::Mutate {
+                            mutation: MemoryMutation::Delete { key, .. },
+                            ..
+                        } = &request.operation
+                        {
+                            client
+                                .execute_scoped(
+                                    MemoryRequest {
+                                        id: request.id,
+                                        store: request.store.clone(),
+                                        operation: MemoryOperation::Put {
+                                            key: key.clone(),
+                                            value: HostValue::String(
+                                                "concurrent replacement".into(),
+                                            ),
+                                            condition: WriteCondition::Any,
+                                        },
+                                        authority: request.authority.clone(),
+                                        trace: request.trace.clone(),
+                                        budget: request.budget.clone(),
+                                    },
+                                    &operation,
+                                )
+                                .await?
+                                .result?;
+                        }
+                        client.write_scoped(request, &operation).await
+                    }
+                    TestMemoryBackend::LostWriteResponse {
+                        client,
+                        inner_error,
+                    } => {
+                        let write =
+                            matches!(request.operation, MemoryWriteOperation::Mutate { .. });
+                        let response = client.write_scoped(request, &operation).await?;
+                        if !write {
+                            return Ok(response);
+                        }
+                        let error = HostError::new(
+                            HostErrorCode::ProviderUnavailable,
+                            "lost write acknowledgement",
+                        );
+                        if *inner_error {
+                            Ok(MemoryWriteResponse {
+                                id: response.id,
+                                result: Err(error),
+                            })
+                        } else {
+                            Err(error)
+                        }
+                    }
+                };
+            }
+            let MemoryWriteOperation::Mutate { key, mutation } = request.operation else {
+                return Ok(MemoryWriteResponse {
+                    id: request.id,
+                    result: Ok(MemoryWriteResult::Receipt(ReceiptLookup::Unresolved)),
+                });
+            };
+            let reference = mutation.operation_ref(
+                &request.store,
+                key,
+                &etas_host::StorageLimits::default(),
+            )?;
+            let target = mutation.target(&request.store);
+            let (kind, legacy) = match mutation {
+                MemoryMutation::Put {
+                    key,
+                    value,
+                    condition,
+                } => (
+                    MemoryMutationKind::Put,
+                    MemoryOperation::Put {
+                        key,
+                        value,
+                        condition,
+                    },
+                ),
+                MemoryMutation::Delete { key, condition } => (
+                    MemoryMutationKind::Delete,
+                    MemoryOperation::Delete { key, condition },
+                ),
+            };
+            let response = self
+                .memory(
+                    operation,
+                    MemoryRequest {
+                        id: request.id,
+                        store: request.store,
+                        operation: legacy,
+                        authority: request.authority,
+                        trace: request.trace,
+                        budget: request.budget,
+                    },
+                )
+                .await?;
+            let result = response.result.map(|result| {
+                MemoryWriteResult::Outcome(match result {
+                    MemoryResult::Written { version } | MemoryResult::Deleted { version } => {
+                        WriteOutcome::Committed(MemoryWriteReceipt {
+                            operation: reference,
+                            target,
+                            change: match kind {
+                                MemoryMutationKind::Put => {
+                                    etas_host::memory::MemoryWriteChange::Written { version }
+                                }
+                                MemoryMutationKind::Delete => {
+                                    etas_host::memory::MemoryWriteChange::Deleted {
+                                        tombstone: version,
+                                    }
+                                }
+                            },
+                            durability: StorageDurability::Volatile,
+                        })
+                    }
+                    MemoryResult::Unchanged => WriteOutcome::NotCommitted {
+                        operation: reference,
+                        reason: MemoryNotCommitted::Unchanged,
+                    },
+                    MemoryResult::Conflict(conflict) => WriteOutcome::NotCommitted {
+                        operation: reference,
+                        reason: MemoryNotCommitted::Conflict {
+                            expected: conflict.expected,
+                            actual: conflict.actual,
+                            current_value: conflict.current_value,
+                        },
+                    },
+                    _ => panic!("fake mutation returned read result"),
+                })
+            });
+            Ok(MemoryWriteResponse {
+                id: response.id,
+                result,
+            })
+        })
+    }
+
     fn session<'a>(
         &'a self,
+        operation: etas_host::execution::OperationContext,
         request: SessionRequest,
     ) -> HostFuture<'a, Result<SessionResponse, HostError>> {
         self.session_calls.fetch_add(1, Ordering::SeqCst);
-        Box::pin(async move { self.session.execute(request).await })
+        Box::pin(async move {
+            let response = match &self.persistent_session {
+                Some(client) => client.execute_scoped(request, &operation).await,
+                None => self.session.execute_scoped(request, &operation).await,
+            }?;
+            Ok(response)
+        })
+    }
+
+    fn session_write<'a>(
+        &'a self,
+        operation: etas_host::execution::OperationContext,
+        request: etas_host::session::SessionWriteRequest,
+    ) -> HostFuture<'a, Result<etas_host::session::SessionWriteResponse, HostError>> {
+        self.session_calls.fetch_add(1, Ordering::SeqCst);
+        Box::pin(async move {
+            let publication = matches!(
+                request.operation,
+                etas_host::session::SessionWriteOperation::PublishContext(_)
+            );
+            let lose_response = match &request.operation {
+                etas_host::session::SessionWriteOperation::Append { .. } => {
+                    self.lose_session_append_response
+                }
+                etas_host::session::SessionWriteOperation::Resolve { .. } => {
+                    self.lose_session_resolve_response
+                }
+                _ => false,
+            };
+            let mut response = match &self.persistent_session {
+                Some(client) => client.write_scoped(request, &operation).await,
+                None => self.session.write_scoped(request, &operation).await,
+            }?;
+            if publication {
+                match self.session_context_fault {
+                    Some(SessionContextFault::LostResponse) => {
+                        return Err(HostError::new(
+                            HostErrorCode::ProviderUnavailable,
+                            "injected lost publication response",
+                        ));
+                    }
+                    Some(SessionContextFault::ForeignReceipt) => {
+                        if let Ok(etas_host::session::SessionWriteResult::Context(
+                            etas_host::WriteOutcome::Committed(receipt),
+                        )) = &mut response.result
+                        {
+                            receipt.session.id = "foreign-session".into();
+                        }
+                    }
+                    None => {}
+                }
+            }
+            if lose_response {
+                return Err(HostError::new(
+                    etas_host::HostErrorCode::ProviderUnavailable,
+                    "injected lost session mutation acknowledgement",
+                ));
+            }
+            Ok(response)
+        })
     }
 
     fn filesystem<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: FilesystemRequest,
     ) -> HostFuture<'a, Result<FilesystemResponse, HostError>> {
         Box::pin(async move {
@@ -730,6 +1052,7 @@ impl HostServices for FakeHost {
 
     fn command<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: CommandRequest,
     ) -> HostFuture<'a, Result<CommandResponse, HostError>> {
         self.command_calls.fetch_add(1, Ordering::SeqCst);
@@ -758,6 +1081,7 @@ impl HostServices for FakeHost {
 
     fn tcp<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: TcpConnectRequest,
     ) -> HostFuture<'a, Result<TcpConnectResponse, HostError>> {
         self.tcp_requests
@@ -786,6 +1110,7 @@ impl HostServices for FakeHost {
 
     fn stream<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: StreamRequest,
     ) -> HostFuture<'a, Result<StreamResponse, HostError>> {
         self.stream_requests
@@ -814,6 +1139,7 @@ impl HostServices for FakeHost {
 
     fn tls<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: TlsConnectRequest,
     ) -> HostFuture<'a, Result<TlsConnectResponse, HostError>> {
         Box::pin(async move {
@@ -827,6 +1153,7 @@ impl HostServices for FakeHost {
 
     fn secret<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: SecretRequest,
     ) -> HostFuture<'a, Result<SecretResponse, HostError>> {
         Box::pin(async move {
@@ -840,6 +1167,7 @@ impl HostServices for FakeHost {
 
     fn browser<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: BrowserProtocolRequest,
     ) -> HostFuture<'a, Result<BrowserProtocolResponse, HostError>> {
         Box::pin(async move {
@@ -853,6 +1181,7 @@ impl HostServices for FakeHost {
 
     fn console<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: ConsoleRequest,
     ) -> HostFuture<'a, Result<ConsoleResponse, HostError>> {
         self.console_calls.fetch_add(1, Ordering::SeqCst);
@@ -867,6 +1196,7 @@ impl HostServices for FakeHost {
         let stdin = Arc::clone(&self.stdin);
         let stdout = Arc::clone(&self.stdout);
         let stderr = Arc::clone(&self.stderr);
+        let gate = self.console_gate.clone();
         Box::pin(async move {
             let result = match request.operation {
                 ConsoleOperation::ReadAllStdin => {
@@ -895,6 +1225,14 @@ impl HostServices for FakeHost {
                     ConsoleResult::Written
                 }
             };
+            if let Some(gate) = gate {
+                gate.started.notify_one();
+                gate.release
+                    .acquire()
+                    .await
+                    .expect("test gate open")
+                    .forget();
+            }
             Ok(ConsoleResponse {
                 id: request.id,
                 result,
@@ -904,6 +1242,7 @@ impl HostServices for FakeHost {
 
     fn approval<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: ApprovalRequest,
     ) -> HostFuture<'a, Result<ApprovalResponse, HostError>> {
         self.approval_calls.fetch_add(1, Ordering::SeqCst);
@@ -941,6 +1280,7 @@ impl HostServices for FakeHost {
 
     fn policy<'a>(
         &'a self,
+        _operation: etas_host::execution::OperationContext,
         request: PolicyEvaluationRequest,
     ) -> HostFuture<'a, Result<PolicyResponse, HostError>> {
         self.policy_calls.fetch_add(1, Ordering::SeqCst);
@@ -968,6 +1308,11 @@ impl HostServices for FakeHost {
     }
 }
 
+pub(super) struct ConsoleGate {
+    pub started: tokio::sync::Notify,
+    pub release: tokio::sync::Semaphore,
+}
+
 pub(super) fn availability(kinds: &[HostRequirementKind]) -> HostServiceAvailability {
     let mut availability = HostServiceAvailability::default();
     for kind in kinds {
@@ -980,47 +1325,30 @@ fn memory_key(region: &str, path: &[&str], key: &HostValue) -> String {
     format!("{region}:{}:{key:?}", path.join("."))
 }
 
-fn fake_memory_conflict(
-    actual: Option<&FakeMemoryEntry>,
-    expected: Option<&MemoryVersion>,
-) -> Option<MemoryConflict> {
-    let expected = expected?;
-    let actual_version = actual.map(|_| MemoryVersion {
-        opaque: "v1".to_owned(),
-    });
-    if actual_version.as_ref() == Some(expected) {
-        return None;
-    }
-    Some(MemoryConflict {
-        expected: Some(expected.clone()),
-        actual: actual_version,
-        current_value: actual.map(|entry| entry.value.clone()),
-    })
+pub(super) fn fake_memory_version(label: &str) -> MemoryVersion {
+    let digest = blake3::hash(label.as_bytes());
+    let revision = match label {
+        "v1" => 1,
+        "v2" => 2,
+        _ => 3,
+    };
+    MemoryVersion::parse(&format!(
+        "mv1:{}:{}:{revision:016x}",
+        digest.to_hex(),
+        "0".repeat(32)
+    ))
+    .expect("valid test version")
 }
-
 fn fake_memory_write_conflict(
     actual: Option<&FakeMemoryEntry>,
-    expected: Option<&MemoryVersion>,
-    mode: MemoryWriteMode,
+    condition: &WriteCondition,
 ) -> Option<MemoryConflict> {
-    if let Some(conflict) = fake_memory_conflict(actual, expected) {
-        return Some(conflict);
-    }
-    match (mode, actual) {
-        (MemoryWriteMode::Insert, Some(entry)) => Some(MemoryConflict {
-            expected: None,
-            actual: Some(MemoryVersion {
-                opaque: "v1".to_owned(),
-            }),
-            current_value: Some(entry.value.clone()),
-        }),
-        (MemoryWriteMode::Update, None) => Some(MemoryConflict {
-            expected: None,
-            actual: None,
-            current_value: None,
-        }),
-        _ => None,
-    }
+    let actual = actual.map(|_| fake_memory_version("v1"));
+    (!condition.is_satisfied_by(actual.as_ref())).then(|| MemoryConflict {
+        expected: condition.expected_version().cloned(),
+        actual,
+        current_value: None,
+    })
 }
 
 fn memory_prefix(region: &str, path: &[&str]) -> String {

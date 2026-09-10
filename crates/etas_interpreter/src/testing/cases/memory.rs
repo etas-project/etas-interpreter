@@ -34,10 +34,11 @@ flow main() -> unit {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Unit));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::Unit));
     assert_eq!(host.memory_call_count(), 1);
 }
 
@@ -72,12 +73,8 @@ flow main() -> string ![Memory.write] {
 
     let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     host.seed_memory_conflict(etas_host::MemoryConflict {
-        expected: Some(etas_host::MemoryVersion {
-            opaque: "v1".to_owned(),
-        }),
-        actual: Some(etas_host::MemoryVersion {
-            opaque: "v2".to_owned(),
-        }),
+        expected: Some(crate::testing::host::fake_memory_version("v1")),
+        actual: Some(crate::testing::host::fake_memory_version("v2")),
         current_value: Some(HostValue::String("existing".to_owned())),
     });
 
@@ -91,11 +88,12 @@ flow main() -> string ![Memory.write] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("conflict".to_owned()))
     );
     assert_eq!(host.memory_call_count(), 1);
@@ -134,12 +132,8 @@ flow main() -> bool ![Memory.write] {
 
     let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     host.seed_memory_conflict(etas_host::MemoryConflict {
-        expected: Some(etas_host::MemoryVersion {
-            opaque: "v1".to_owned(),
-        }),
-        actual: Some(etas_host::MemoryVersion {
-            opaque: "v2".to_owned(),
-        }),
+        expected: Some(crate::testing::host::fake_memory_version("v1")),
+        actual: Some(crate::testing::host::fake_memory_version("v2")),
         current_value: Some(HostValue::String("existing".to_owned())),
     });
 
@@ -153,10 +147,14 @@ flow main() -> bool ![Memory.write] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -197,12 +195,8 @@ flow main() -> bool ![Memory.write] {
 
     let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     host.seed_memory_conflict(etas_host::MemoryConflict {
-        expected: Some(etas_host::MemoryVersion {
-            opaque: "v1".to_owned(),
-        }),
-        actual: Some(etas_host::MemoryVersion {
-            opaque: "v2".to_owned(),
-        }),
+        expected: Some(crate::testing::host::fake_memory_version("v1")),
+        actual: Some(crate::testing::host::fake_memory_version("v2")),
         current_value: Some(HostValue::String("existing".to_owned())),
     });
 
@@ -216,10 +210,14 @@ flow main() -> bool ![Memory.write] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -321,9 +319,10 @@ flow main() -> unit {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert_eq!(host.memory_call_count(), 0);
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
@@ -432,9 +431,10 @@ flow main() -> unit {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert_eq!(host.memory_call_count(), 0);
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
@@ -478,12 +478,8 @@ flow main() -> string ![Memory.write] {
 
     let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     host.seed_memory_conflict(etas_host::MemoryConflict {
-        expected: Some(etas_host::MemoryVersion {
-            opaque: "v1".to_owned(),
-        }),
-        actual: Some(etas_host::MemoryVersion {
-            opaque: "v2".to_owned(),
-        }),
+        expected: Some(crate::testing::host::fake_memory_version("v1")),
+        actual: Some(crate::testing::host::fake_memory_version("v2")),
         current_value: Some(HostValue::String("existing".to_owned())),
     });
 
@@ -497,12 +493,17 @@ flow main() -> string ![Memory.write] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
-        Some(value::InterpValue::String("v2".to_owned()))
+        result.value().cloned(),
+        Some(value::InterpValue::String(
+            crate::testing::host::fake_memory_version("v2")
+                .as_token()
+                .to_owned()
+        ))
     );
 }
 
@@ -556,9 +557,10 @@ flow main() -> unit ![Memory.write] {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert_eq!(host.policy_call_count(), 1);
     assert_eq!(host.memory_call_count(), 0);
     let requests = host.policy_requests();
@@ -640,9 +642,10 @@ flow main() -> unit ![Memory.write] {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert_eq!(host.policy_call_count(), 1);
     assert_eq!(host.approval_call_count(), 1);
     assert_eq!(host.memory_call_count(), 0);
@@ -677,7 +680,7 @@ let ProjectMemory =
 flow main() -> string ![Memory.write] {
   return handle {
     ProjectMemory.Papers.put("paper-1", "existing");
-    let stale = version("stale");
+    let stale = version("mv1:1111111111111111111111111111111111111111111111111111111111111111:00000000000000000000000000000000:0000000000000003");
     ProjectMemory.Papers.put_versioned("paper-1", "draft", stale);
     "written"
   } with {
@@ -700,11 +703,12 @@ flow main() -> string ![Memory.write] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("conflict".to_owned()))
     );
     assert_eq!(host.memory_call_count(), 2);
@@ -731,7 +735,7 @@ let ProjectMemory =
 flow main() -> string ![Memory] {
   ProjectMemory.Papers.put("paper-1", "existing");
   let handled = handle {
-    let stale = version("stale");
+    let stale = version("mv1:1111111111111111111111111111111111111111111111111111111111111111:00000000000000000000000000000000:0000000000000003");
     ProjectMemory.Papers.put_versioned("paper-1", "draft", stale);
     "written"
   } with {
@@ -756,11 +760,12 @@ flow main() -> string ![Memory] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("conflict-continued".to_owned()))
     );
     assert_eq!(host.memory_call_count(), 3);
@@ -800,10 +805,11 @@ flow main() -> unit {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Unit));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::Unit));
     assert_eq!(host.memory_call_count(), 1);
     assert_eq!(
         host.memory_value(
@@ -861,11 +867,12 @@ flow main() -> string ![Memory.write] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("conflict".to_owned()))
     );
     assert_eq!(
@@ -918,11 +925,12 @@ flow main() -> string ![Memory.write] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("conflict".to_owned()))
     );
     assert_eq!(
@@ -974,11 +982,12 @@ flow main() -> Option<string> {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::OptionSome(Box::new(
             value::InterpValue::String("draft".to_owned()),
         )))
@@ -1028,10 +1037,11 @@ flow main() -> u8 {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::u8(42)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::u8(42)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1076,11 +1086,12 @@ flow main() -> Option<Array<string>> {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::OptionSome(Box::new(
             value::InterpValue::Array(value::ArrayValue::new(vec![
                 value::InterpValue::String("a".to_owned()),
@@ -1132,11 +1143,12 @@ flow main() -> Option<List<string>> {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::OptionSome(Box::new(
             value::InterpValue::List(
                 vec![
@@ -1188,10 +1200,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.memory_call_count(), 1);
 }
 
@@ -1240,11 +1256,12 @@ flow main() -> List<string> {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::List(
             vec![
                 value::InterpValue::String("paper-1".to_owned()),
@@ -1296,10 +1313,11 @@ flow main() -> unit {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Unit));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::Unit));
     assert_eq!(host.memory_call_count(), 1);
     assert_eq!(
         host.memory_value(
@@ -1345,10 +1363,11 @@ flow main() -> MemorySelection<string> {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    let (region_stable_id, path, kind, predicate, limit) = match result.value {
+    let (region_stable_id, path, kind, predicate, limit) = match result.value().cloned() {
         Some(value::InterpValue::MemorySelection {
             region_stable_id,
             path,
@@ -1418,18 +1437,23 @@ flow main() -> Prompt {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    let Some(value::InterpValue::Prompt(messages)) = result.value else {
-        panic!("expected prompt value, got {:?}", result.value);
+    let Some(value::InterpValue::Prompt(messages)) = result.value().cloned() else {
+        panic!("expected prompt value, got {:?}", result.value().cloned());
     };
     assert_eq!(host.memory_call_count(), 1);
     assert_eq!(messages.len(), 1);
     assert_eq!(messages[0].role, value::PromptRole::Data);
     assert!(messages[0].text.contains(r#""key":"paper-1""#));
     assert!(messages[0].text.contains(r#""value":"first""#));
-    assert!(messages[0].text.contains(r#""version":"v1""#));
+    assert!(
+        messages[0]
+            .text
+            .contains(crate::testing::host::fake_memory_version("v1").as_token())
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1497,11 +1521,12 @@ flow main() -> Prompt {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    let Some(value::InterpValue::Prompt(messages)) = result.value else {
-        panic!("expected prompt value, got {:?}", result.value);
+    let Some(value::InterpValue::Prompt(messages)) = result.value().cloned() else {
+        panic!("expected prompt value, got {:?}", result.value().cloned());
     };
     assert_eq!(host.memory_call_count(), 1);
     assert_eq!(messages.len(), 1);

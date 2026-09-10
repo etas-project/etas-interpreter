@@ -147,6 +147,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Resume(value) => self.propagate_resume_to_continuation(value, outer),
             ControlSignal::Finish(value) => self.propagate_finish_to_continuation(value, outer),
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             signal @ (ControlSignal::Break | ControlSignal::Continue) => {
                 if let Continuation::RetryAttempt { retry, .. } = &outer {
                     self.finish_retry_attempt_success(retry);
@@ -719,6 +720,8 @@ impl<'a> EvalContext<'a> {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,
@@ -733,6 +736,8 @@ impl<'a> EvalContext<'a> {
                         path,
                         key_type,
                         value_type,
+
+                        result_type,
                         method,
                         args,
                         start_arg_index: next_arg_index,

@@ -54,6 +54,7 @@ pub(super) fn local_place_segment_snapshot(segment: &crate::eval::LocalPlaceSegm
 }
 
 pub(super) fn local_place_segments_from_snapshot(
+    limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<Vec<crate::eval::LocalPlaceSegment>, String> {
     value
@@ -68,7 +69,8 @@ pub(super) fn local_place_segments_from_snapshot(
                 segment, "index",
             )?)),
             "map_key" => Ok(crate::eval::LocalPlaceSegment::MapKey(Box::new(
-                value_from_json(required(segment, "key")?).map_err(|error| error.to_string())?,
+                value_from_json_with_limits(limits, required(segment, "key")?)
+                    .map_err(|error| error.to_string())?,
             ))),
             other => Err(format!("unknown machine local place segment `{other}`")),
         })
@@ -166,6 +168,7 @@ pub(super) fn map_values_snapshot(
 }
 
 pub(super) fn map_values_from_snapshot(
+    limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<Vec<(crate::value::InterpValue, crate::value::InterpValue)>, String> {
     value
@@ -174,14 +177,17 @@ pub(super) fn map_values_from_snapshot(
         .iter()
         .map(|entry| {
             Ok((
-                value_from_json(required(entry, "key")?).map_err(|error| error.to_string())?,
-                value_from_json(required(entry, "value")?).map_err(|error| error.to_string())?,
+                value_from_json_with_limits(limits, required(entry, "key")?)
+                    .map_err(|error| error.to_string())?,
+                value_from_json_with_limits(limits, required(entry, "value")?)
+                    .map_err(|error| error.to_string())?,
             ))
         })
         .collect()
 }
 
 pub(super) fn record_values_from_snapshot(
+    limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<Vec<(String, crate::value::InterpValue)>, String> {
     value
@@ -191,7 +197,8 @@ pub(super) fn record_values_from_snapshot(
         .map(|entry| {
             Ok((
                 required_str(entry, "name")?.to_owned(),
-                value_from_json(required(entry, "value")?).map_err(|error| error.to_string())?,
+                value_from_json_with_limits(limits, required(entry, "value")?)
+                    .map_err(|error| error.to_string())?,
             ))
         })
         .collect()

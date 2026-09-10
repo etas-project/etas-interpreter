@@ -93,6 +93,8 @@ pub enum BrowserCallable {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum MemoryStoreCallable {
+    Page,
+    GetEntry,
     Get,
     Put,
     PutVersioned,
@@ -110,12 +112,31 @@ pub enum MemoryStoreCallable {
     Upsert,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum MemoryIntentCallable {
+    Commit,
+    Reconcile,
+    PreparePut,
+    PrepareDelete,
+    OperationRef,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum SessionContextCallable {
+    Prepare,
+    Publish,
+    Reconcile,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StdCallable {
+    SessionHistoryPage,
+    SessionContext(SessionContextCallable),
     Approval,
     Checkpoint,
     MemoryRegion,
     MemoryStore(MemoryStoreCallable),
+    MemoryIntent(MemoryIntentCallable),
     MemoryVersionConstructor,
     MoneyUsdConstructor,
     StreamErrorHostConstructor,
@@ -144,9 +165,6 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
             StdCallable::SessionPolicyConstructor("SummaryPlusRecent")
         }
         intrinsic::pure::SESSION_DAYS => StdCallable::SessionPolicyConstructor("Days"),
-        intrinsic::pure::SESSION_SUMMARIZE_WHEN => {
-            StdCallable::SessionPolicyConstructor("SummarizeWhen")
-        }
         intrinsic::pure::MEMORY_VERSION => StdCallable::MemoryVersionConstructor,
         intrinsic::pure::STREAM_ERROR_HOST => StdCallable::StreamErrorHostConstructor,
         intrinsic::pure::TRUST_TRUSTED => StdCallable::TrustWrapper(TrustWrapper::Trusted),
@@ -171,6 +189,16 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         intrinsic::runtime::APPROVE => StdCallable::Approval,
         intrinsic::runtime::CHECKPOINT => StdCallable::Checkpoint,
         intrinsic::runtime::CURRENT_SESSION => StdCallable::CurrentSession,
+        intrinsic::runtime::SESSION_HISTORY_PAGE => StdCallable::SessionHistoryPage,
+        intrinsic::runtime::SESSION_PREPARE_CONTEXT => {
+            StdCallable::SessionContext(SessionContextCallable::Prepare)
+        }
+        intrinsic::runtime::SESSION_PUBLISH_CONTEXT => {
+            StdCallable::SessionContext(SessionContextCallable::Publish)
+        }
+        intrinsic::runtime::SESSION_RECONCILE_CONTEXT => {
+            StdCallable::SessionContext(SessionContextCallable::Reconcile)
+        }
         intrinsic::runtime::USD => StdCallable::MoneyUsdConstructor,
         intrinsic::runtime::IO_READ_ALL => StdCallable::Console(ConsoleCallable::ReadAll),
         intrinsic::runtime::IO_READ_LINE => StdCallable::Console(ConsoleCallable::ReadLine),
@@ -178,6 +206,25 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         intrinsic::runtime::IO_PRINTLN => StdCallable::Console(ConsoleCallable::PrintLn),
         intrinsic::runtime::IO_EPRINTLN => StdCallable::Console(ConsoleCallable::EPrintLn),
         intrinsic::runtime::MEMORY_REGION => StdCallable::MemoryRegion,
+        intrinsic::runtime::MEMORY_PREPARE_PUT => {
+            StdCallable::MemoryIntent(MemoryIntentCallable::PreparePut)
+        }
+        intrinsic::runtime::MEMORY_PREPARE_DELETE => {
+            StdCallable::MemoryIntent(MemoryIntentCallable::PrepareDelete)
+        }
+        intrinsic::runtime::MEMORY_OPERATION_REF => {
+            StdCallable::MemoryIntent(MemoryIntentCallable::OperationRef)
+        }
+        intrinsic::runtime::MEMORY_COMMIT => {
+            StdCallable::MemoryIntent(MemoryIntentCallable::Commit)
+        }
+        intrinsic::runtime::MEMORY_RECONCILE => {
+            StdCallable::MemoryIntent(MemoryIntentCallable::Reconcile)
+        }
+        intrinsic::runtime::MEMORY_PAGE => StdCallable::MemoryStore(MemoryStoreCallable::Page),
+        intrinsic::runtime::MEMORY_GET_ENTRY => {
+            StdCallable::MemoryStore(MemoryStoreCallable::GetEntry)
+        }
         intrinsic::runtime::MEMORY_GET => StdCallable::MemoryStore(MemoryStoreCallable::Get),
         intrinsic::runtime::MEMORY_PUT => StdCallable::MemoryStore(MemoryStoreCallable::Put),
         intrinsic::runtime::MEMORY_PUT_VERSIONED => {

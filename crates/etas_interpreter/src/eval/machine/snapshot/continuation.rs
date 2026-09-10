@@ -369,6 +369,8 @@ impl ContinuationSnapshot {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,
@@ -380,6 +382,7 @@ impl ContinuationSnapshot {
                 path: path.clone(),
                 key_type: *key_type,
                 value_type: *value_type,
+                result_type: *result_type,
                 method: method.clone(),
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
@@ -986,6 +989,8 @@ impl ContinuationSnapshot {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,
@@ -997,6 +1002,8 @@ impl ContinuationSnapshot {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,

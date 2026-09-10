@@ -50,7 +50,7 @@ pub(in crate::driver) async fn dispatch(
         command.request.trace_payload(),
         command.request.authority.clone(),
         command.request.trace.clone(),
-        host.command(command.request.clone()),
+        |operation| host.command(operation, command.request.clone()),
     )
     .await
     {

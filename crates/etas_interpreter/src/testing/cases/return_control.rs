@@ -47,10 +47,11 @@ flow main(args: Array<string>) -> i32 ![Console, Error<IOError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
     assert_eq!(host.stdout_text(), "success\n");
     assert_eq!(host.console_call_count(), 1);
 }
@@ -80,10 +81,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -121,10 +123,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -162,10 +165,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -207,10 +211,11 @@ flow main(args: Array<string>) -> i32 ![Console, Error<IOError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(1)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(1)));
     assert_eq!(host.stdout_text(), "usage\n");
     assert_eq!(host.console_call_count(), 1);
 }
@@ -257,10 +262,11 @@ flow main(command: string) -> i32 ![Console, Error<IOError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
     assert_eq!(host.stdout_text(), "success\n");
     assert_eq!(host.console_call_count(), 1);
 }
@@ -294,10 +300,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -339,10 +346,11 @@ flow main() -> i32 ![Console, Error<IOError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
     assert_eq!(host.stdout_text(), "success\n");
     assert_eq!(host.console_call_count(), 1);
 }
@@ -390,17 +398,19 @@ flow main() -> i32 ![Console, Error<IOError>] {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let checkpoint = first.checkpoints.first().expect("checkpoint record");
     let resumed_host = FakeHost::new(availability(&requirements));
     let resumed = Interpreter
         .resume_checkpoint(&checked, checkpoint, &resumed_host, RunOptions::default())
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::i32(0)));
     assert_eq!(resumed_host.stdout_text(), "success\n");
     assert_eq!(resumed_host.console_call_count(), 1);
 }
@@ -438,10 +448,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(8)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(8)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -497,10 +508,11 @@ flow main() -> i32 ![Console, Error<IOError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
     assert_eq!(host.stdout_text(), "success\n");
     let checkpoint = result.checkpoints.first().expect("checkpoint record");
     assert!(

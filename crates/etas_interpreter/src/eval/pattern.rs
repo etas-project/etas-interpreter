@@ -143,6 +143,11 @@ impl<'a> EvalContext<'a> {
         path: &etas_hir::ResolvedPath,
         span: Span,
     ) -> Result<String, ExecutionFault> {
+        if let ResolveResult::Resolved(symbol) = path.resolution
+            && let Some(constructor) = self.plan.dispatch.enum_constructor(symbol)
+        {
+            return Ok(constructor.name.clone());
+        }
         match path.resolution {
             ResolveResult::Resolved(symbol) => self.checked.symbols.get(symbol).map_or_else(
                 || {

@@ -24,12 +24,18 @@ mod expr;
 mod field_access;
 mod flow;
 mod handler;
+mod host_enum;
+mod host_type_environment;
 mod host_value;
+pub(crate) use host_value::host_to_typed_interp_value;
 mod index_access;
 pub(crate) mod limit;
 mod loop_control;
 pub(crate) mod machine;
 mod memory_args;
+mod memory_commit;
+mod memory_intent;
+mod memory_page;
 mod memory_selection;
 mod memory_store;
 mod method;
@@ -38,6 +44,9 @@ mod pattern;
 mod perform;
 mod pipeline;
 mod safe_point;
+mod session_context;
+mod session_history;
+mod session_value;
 mod slice_access;
 mod spec_method;
 mod std_call;
@@ -47,6 +56,7 @@ mod stmt_bind;
 mod stmt_branch;
 mod stmt_retry;
 mod stmt_value;
+mod storage;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
@@ -94,13 +104,15 @@ use etas_host::{
     ApprovalGrant, ApprovalRequest, AuthorityContext, BrowserProtocolOperation,
     BrowserProtocolRequest, ByteStreamRef, CommandRequest, FilesystemOperation, FilesystemRequest,
     HostRequestId, HostValue, MemoryOperation, MemoryRegionRef, MemoryRequest, MemoryResult,
-    MemoryWriteMode, ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole,
-    SecretOperation, SecretRequest, StoreRef, StreamOperation, StreamRequest, TcpConnectOperation,
+    ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole, SecretOperation,
+    SecretRequest, StoreRef, StreamOperation, StreamRequest, TcpConnectOperation,
     TcpConnectRequest, TcpEndpoint, TcpStreamRef, TlsConnectOperation, TlsConnectRequest,
-    TraceContext,
+    TraceContext, WriteCondition,
 };
 
 pub struct EvalContext<'a> {
+    pub storage_limits: etas_host::StorageLimits,
+    pub execution: etas_host::execution::ExecutionScope,
     pub checked: &'a CheckedProject,
     pub view: HirTreeView<'a>,
     pub plan: &'a InterpreterPlan,
@@ -112,7 +124,7 @@ pub struct EvalContext<'a> {
     pub entry_item: HirItemId,
     pub entry_args: &'a [InterpValue],
     pub diagnostics: Vec<Diagnostic>,
-    pub events: Vec<WorkflowEvent>,
+    pub events: crate::api::lifecycle::EventLog,
     pub checkpoints: Vec<InterpreterCheckpoint>,
     next_step: u32,
     next_checkpoint: u32,
@@ -126,14 +138,19 @@ pub struct EvalContext<'a> {
     handler_stack: Vec<ActiveHandlerRecord>,
     completed_host_boundaries: Vec<crate::orchestration::CompletedHostBoundary>,
     resource_versions: Vec<ResourceVersionRecord>,
+    pub(crate) storage_identity: Result<etas_host::StorageOperationKey, etas_host::HostError>,
+    pub(crate) storage_writes: Vec<crate::orchestration::StorageWriteRecord>,
+    pub(crate) storage_operations: std::collections::BTreeMap<u32, etas_host::StorageOperationRef>,
 }
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KnownStdTypes {
+    pub storage_error: Option<etas_types::TypeId>,
     pub browser_session: Option<etas_types::TypeId>,
     pub io_error: Option<etas_types::TypeId>,
     pub memory_conflict: Option<etas_types::TypeId>,
     pub memory_version: Option<etas_types::TypeId>,
+    pub memory_cursor: Option<etas_types::TypeId>,
     pub network_error: Option<etas_types::TypeId>,
     pub secret_value: Option<etas_types::TypeId>,
     pub stream_error: Option<etas_types::TypeId>,
@@ -143,6 +160,9 @@ pub struct KnownStdTypes {
 }
 
 pub struct EvalContextInput<'a> {
+    pub storage_limits: etas_host::StorageLimits,
+    pub event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
+    pub execution: etas_host::execution::ExecutionScope,
     pub checked: &'a CheckedProject,
     pub plan: &'a InterpreterPlan,
     pub host_context: HostExecutionContext,
@@ -155,8 +175,32 @@ pub struct EvalContextInput<'a> {
 }
 
 impl<'a> EvalContext<'a> {
+    pub(crate) fn scheduling_decision(&mut self, span: Span) -> safe_point::SafePointDecision {
+        match self.execution.signal() {
+            Ok(signal) => self
+                .safe_points
+                .observe(&signal, &self.host_context.budget, span),
+            Err(error) => {
+                safe_point::SafePointDecision::Fault(crate::control::ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    error.to_string(),
+                ))
+            }
+        }
+    }
+    pub(crate) fn cancellation_signal(&self, span: etas_core::Span) -> Option<ControlSignal> {
+        match self.execution.signal().and_then(|signal| signal.cause()) {
+            Ok(Some(cause)) => Some(ControlSignal::Cancelled(cause)),
+            Ok(None) => None,
+            Err(error) => Some(ControlSignal::missing_checked_fact(error.to_string(), span)),
+        }
+    }
     pub fn new(input: EvalContextInput<'a>) -> Self {
         let EvalContextInput {
+            storage_limits,
+            event_observer,
+            execution,
             checked,
             plan,
             host_context,
@@ -168,6 +212,7 @@ impl<'a> EvalContext<'a> {
             entry_args,
         } = input;
         Self {
+            execution,
             checked,
             view: HirTreeView::new(&checked.hir),
             plan,
@@ -179,7 +224,7 @@ impl<'a> EvalContext<'a> {
             entry_item,
             entry_args,
             diagnostics: Vec::new(),
-            events: Vec::new(),
+            events: crate::api::lifecycle::EventLog::new(event_observer),
             checkpoints: Vec::new(),
             next_step: 0,
             next_checkpoint: 0,
@@ -193,6 +238,12 @@ impl<'a> EvalContext<'a> {
             handler_stack: Vec::new(),
             completed_host_boundaries: Vec::new(),
             resource_versions: Vec::new(),
+            storage_identity: etas_host::StorageOperationKey::new(std::time::Duration::from_secs(
+                storage_limits.max_receipt_retention_seconds,
+            )),
+            storage_writes: Vec::new(),
+            storage_operations: Default::default(),
+            storage_limits,
         }
     }
 
@@ -265,8 +316,10 @@ impl KnownStdTypes {
                 &["std", "browser", "protocol", "BrowserSession"],
             ),
             io_error: resolve_std_type(checked, &["std", "io", "IOError"]),
+            storage_error: resolve_std_type(checked, &["std", "memory", "StorageError"]),
             memory_conflict: resolve_std_type(checked, &["std", "memory", "MemoryConflict"]),
             memory_version: resolve_std_type(checked, &["std", "memory", "MemoryVersion"]),
+            memory_cursor: resolve_std_type(checked, &["std", "memory", "MemoryCursor"]),
             network_error: resolve_std_type(checked, &["std", "net", "tcp", "NetworkError"]),
             secret_value: resolve_std_type(checked, &["std", "secret", "SecretValue"]),
             stream_error: resolve_std_type(checked, &["std", "stream", "StreamError"]),

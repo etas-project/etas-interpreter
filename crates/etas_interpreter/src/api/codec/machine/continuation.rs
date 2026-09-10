@@ -8,7 +8,7 @@ use etas_hir::{
 use serde_json::{Value, json};
 
 use crate::{
-    api::codec::{value_from_json, value_json},
+    api::codec::{value_from_json_with_limits, value_json},
     control::{Continuation, Frame, StaticMethodKind},
     orchestration::{RetryAttemptId, RetryAttemptRecord},
     plan::SlotLayoutTable,

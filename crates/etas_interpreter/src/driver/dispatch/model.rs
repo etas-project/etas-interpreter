@@ -97,7 +97,7 @@ pub(in crate::driver) async fn dispatch(
         trace_payload,
         pending.request.authority.clone(),
         pending.request.trace.clone(),
-        host.model(pending.request.clone()),
+        |operation| host.model(operation, pending.request.clone()),
     )
     .await
     {

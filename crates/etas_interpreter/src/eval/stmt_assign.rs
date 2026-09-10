@@ -11,6 +11,7 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> Option<ControlSignal> {
         let value = match self.eval_expr(value, frame) {
+            ControlSignal::Cancelled(cause) => return Some(ControlSignal::Cancelled(cause)),
             ControlSignal::Value(value) => value,
             signal @ (ControlSignal::Apply(_)
             | ControlSignal::Checkpoint(_)

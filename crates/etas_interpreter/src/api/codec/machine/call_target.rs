@@ -67,17 +67,22 @@ pub(crate) fn call_target_snapshot(target: &CallTarget) -> Value {
 }
 
 pub(super) fn call_target_from_snapshot(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     slots: Arc<SlotLayoutTable>,
 ) -> Result<CallTarget, String> {
-    call_target_from_snapshot_with_layout(value, Some(slots))
+    call_target_from_snapshot_with_layout(limits, value, Some(slots))
 }
 
-pub(crate) fn call_target_from_artifact_snapshot(value: &Value) -> Result<CallTarget, String> {
-    call_target_from_snapshot_with_layout(value, None)
+pub(crate) fn call_target_from_artifact_snapshot(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<CallTarget, String> {
+    call_target_from_snapshot_with_layout(limits, value, None)
 }
 
 fn call_target_from_snapshot_with_layout(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     slots: Option<Arc<SlotLayoutTable>>,
 ) -> Result<CallTarget, String> {
@@ -97,8 +102,10 @@ fn call_target_from_snapshot_with_layout(
         "lambda" => Ok(CallTarget::Lambda {
             expr: HirExprId(required_u32(value, "expr")?),
             captured: match &slots {
-                Some(slots) => frame_from_snapshot(required(value, "captured")?, slots.clone())?,
-                None => frame_from_artifact_snapshot(required(value, "captured")?)?,
+                Some(slots) => {
+                    frame_from_snapshot(limits, required(value, "captured")?, slots.clone())?
+                }
+                None => frame_from_artifact_snapshot(limits, required(value, "captured")?)?,
             },
         }),
         "enum_variant" => Ok(CallTarget::EnumVariant(SymbolId(required_u32(
@@ -156,6 +163,7 @@ fn call_target_from_snapshot_with_layout(
         )),
         "specialized" => Ok(CallTarget::Specialized {
             target: Box::new(call_target_from_snapshot_with_layout(
+                limits,
                 required(value, "target")?,
                 slots,
             )?),
@@ -173,19 +181,21 @@ fn call_target_from_snapshot_with_layout(
         }),
         "limited" => Ok(CallTarget::Limited {
             target: Box::new(call_target_from_snapshot_with_layout(
+                limits,
                 required(value, "target")?,
                 slots,
             )?),
             limits: runtime_limits_from_snapshot(required(value, "limits")?)?,
         }),
         "composed" => Ok(CallTarget::Composed(
-            call_targets_from_snapshot_with_layout(required(value, "targets")?, slots)?,
+            call_targets_from_snapshot_with_layout(limits, required(value, "targets")?, slots)?,
         )),
         other => Err(format!("unknown machine call target `{other}`")),
     }
 }
 
 pub(super) fn call_targets_from_snapshot(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     slots: Arc<SlotLayoutTable>,
 ) -> Result<Vec<CallTarget>, String> {
@@ -193,11 +203,12 @@ pub(super) fn call_targets_from_snapshot(
         .as_array()
         .ok_or_else(|| "machine snapshot call targets must be an array".to_owned())?
         .iter()
-        .map(|value| call_target_from_snapshot(value, slots.clone()))
+        .map(|value| call_target_from_snapshot(limits, value, slots.clone()))
         .collect()
 }
 
 fn call_targets_from_snapshot_with_layout(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     slots: Option<Arc<SlotLayoutTable>>,
 ) -> Result<Vec<CallTarget>, String> {
@@ -205,6 +216,6 @@ fn call_targets_from_snapshot_with_layout(
         .as_array()
         .ok_or_else(|| "machine snapshot call targets must be an array".to_owned())?
         .iter()
-        .map(|value| call_target_from_snapshot_with_layout(value, slots.clone()))
+        .map(|value| call_target_from_snapshot_with_layout(limits, value, slots.clone()))
         .collect()
 }

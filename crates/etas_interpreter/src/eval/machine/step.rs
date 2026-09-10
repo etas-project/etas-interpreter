@@ -12,6 +12,16 @@ use crate::{
 
 impl EvalMachine {
     pub(crate) fn run_until_yield(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
+        let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
+        // A previously produced fault remains primary if stop races its delivery.
+        if let Some(MachineInput::Signal(ControlSignal::Fault(_))) = &self.input {
+            if let Some(MachineInput::Signal(ControlSignal::Fault(fault))) = self.input.take() {
+                return MachinePoll::Fault(*fault);
+            }
+        }
+        if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
+            return poll;
+        }
         let Some(input) = self.input.take() else {
             return machine_fault(
                 "evaluation machine was polled without a start or resume input".to_owned(),
@@ -34,7 +44,13 @@ impl EvalMachine {
             },
         };
         loop {
-            let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
+            if let ControlSignal::Fault(fault) = signal {
+                return MachinePoll::Fault(*fault);
+            }
+            if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
+                self.input = Some(MachineInput::Signal(signal));
+                return poll;
+            }
             if let Err(fault) = ctx.consume_execution_step(step_span) {
                 return MachinePoll::Fault(fault);
             }
@@ -233,6 +249,7 @@ impl EvalMachine {
                     return MachinePoll::Yield(PendingBoundary::Host(pending));
                 }
                 ControlSignal::Fault(fault) => return MachinePoll::Fault(*fault),
+                ControlSignal::Cancelled(cause) => return MachinePoll::Cancelled(cause),
                 ControlSignal::Resume(value) => {
                     let Some(frame) = self.pop_frame() else {
                         return MachinePoll::Complete(Box::new(value));
@@ -378,4 +395,14 @@ fn flatten_continuation(continuation: Continuation) -> std::vec::IntoIter<Contin
         }
     }
     flattened.into_iter()
+}
+
+fn scheduling_poll(decision: crate::eval::safe_point::SafePointDecision) -> Option<MachinePoll> {
+    use crate::eval::safe_point::SafePointDecision;
+    match decision {
+        SafePointDecision::Continue => None,
+        SafePointDecision::Yield => Some(MachinePoll::CooperativeYield),
+        SafePointDecision::Cancelled(cause) => Some(MachinePoll::Cancelled(cause)),
+        SafePointDecision::Fault(fault) => Some(MachinePoll::Fault(fault)),
+    }
 }

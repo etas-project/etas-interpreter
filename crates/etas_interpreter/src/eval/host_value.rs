@@ -4,6 +4,11 @@ use etas_types::{PrimitiveType, Type, TypeId};
 
 pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
     match value {
+        InterpValue::MemoryWriteIntent(value) => format!(
+            "memory-intent:{}:{}",
+            value.ty.0,
+            blake3::hash(value.encoded().as_bytes()).to_hex()
+        ),
         InterpValue::Unit => "unit".to_owned(),
         InterpValue::Bool(value) => format!("bool:{value}"),
         InterpValue::Number(value) => format!(
@@ -185,7 +190,7 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
             message.provenance
         ),
         InterpValue::Conversation(conversation) => format!(
-            "conversation:{}:[{}]:{:?}:{:?}",
+            "conversation:{}:[{}]:{:?}:{:?}:{:?}",
             conversation.session,
             conversation
                 .messages
@@ -193,8 +198,17 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
                 .map(|message| boundary_key_fragment(&InterpValue::Message(message.clone())))
                 .collect::<Vec<_>>()
                 .join(","),
-            conversation.summary,
             conversation.cursor,
+            conversation
+                .history_fence
+                .as_ref()
+                .map(|fence| fence.as_token()),
+            conversation.selected_context.as_ref().map(|c| (
+                &c.content.text,
+                &c.content.provenance,
+                c.fence.as_token(),
+                c.version
+            )),
         ),
         InterpValue::Provenance(provenance) => format!(
             "provenance:{}:{}",
@@ -254,6 +268,9 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
 
 pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, String> {
     match value {
+        InterpValue::MemoryWriteIntent(_) => {
+            Err("write intents require the explicit storage/checkpoint codec".into())
+        }
         InterpValue::Unit => Ok(HostValue::Unit),
         InterpValue::Bool(value) => Ok(HostValue::Bool(*value)),
         InterpValue::Number(value) => numeric_to_host_value(*value)
@@ -341,26 +358,45 @@ pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, Str
                 .collect::<Result<Vec<_>, _>>()?;
             Ok(HostValue::Record(vec![
                 (
-                    "session".to_owned(),
-                    HostValue::String(conversation.session.clone()),
-                ),
-                ("messages".to_owned(), HostValue::List(messages)),
-                (
-                    "summary".to_owned(),
+                    "selected_context".into(),
                     conversation
-                        .summary
+                        .selected_context
                         .as_ref()
-                        .map(|summary| {
+                        .map(|c| {
                             HostValue::Record(vec![
-                                ("text".to_owned(), HostValue::String(summary.text.clone())),
+                                ("text".into(), HostValue::String(c.content.text.clone())),
                                 (
-                                    "message_count".to_owned(),
-                                    HostValue::UInt(summary.message_count as u128),
+                                    "provenance".into(),
+                                    HostValue::Record(
+                                        c.content
+                                            .provenance
+                                            .iter()
+                                            .map(|(k, v)| (k.clone(), HostValue::String(v.clone())))
+                                            .collect(),
+                                    ),
                                 ),
+                                (
+                                    "fence".into(),
+                                    HostValue::String(c.fence.as_token().to_owned()),
+                                ),
+                                ("version".into(), HostValue::UInt(c.version as u128)),
                             ])
                         })
                         .unwrap_or(HostValue::Unit),
                 ),
+                (
+                    "history_fence".to_owned(),
+                    conversation
+                        .history_fence
+                        .as_ref()
+                        .map(|fence| HostValue::String(fence.as_token().to_owned()))
+                        .unwrap_or(HostValue::Unit),
+                ),
+                (
+                    "session".to_owned(),
+                    HostValue::String(conversation.session.clone()),
+                ),
+                ("messages".to_owned(), HostValue::List(messages)),
                 (
                     "cursor".to_owned(),
                     conversation
@@ -437,18 +473,38 @@ pub(crate) fn host_to_typed_interp_value(
         value,
         expected,
         store,
-        &std::collections::HashMap::new(),
+        &super::host_type_environment::HostTypeEnvironment::default(),
     )
 }
 
-fn host_to_typed_interp_value_with_substitutions(
+pub(crate) fn host_to_checked_interp_value(
+    value: HostValue,
+    expected: TypeId,
+    checked: &etas_frontend::CheckedProject,
+    limits: &etas_host::StorageLimits,
+) -> Result<InterpValue, String> {
+    limits.validate().map_err(|error| error.message)?;
+    limits
+        .result_value_size(&value)
+        .map_err(|error| error.message)?;
+    host_to_typed_interp_value_with_substitutions(
+        value,
+        expected,
+        &checked.type_store,
+        &super::host_type_environment::HostTypeEnvironment::with_enum_layouts(
+            &checked.types.std_enum_layouts,
+        ),
+    )
+}
+
+pub(super) fn host_to_typed_interp_value_with_substitutions(
     value: HostValue,
     expected: TypeId,
     store: &etas_types::TypeStore,
-    substitutions: &std::collections::HashMap<String, TypeId>,
+    substitutions: &super::host_type_environment::HostTypeEnvironment<'_>,
 ) -> Result<InterpValue, String> {
     if let Some(Type::Named(named)) = store.get(expected)
-        && let Some(expected) = substitutions.get(&named.name).copied()
+        && let Some((expected, substitutions)) = substitutions.lookup(&named.name)
     {
         return host_to_typed_interp_value_with_substitutions(
             value,
@@ -558,6 +614,12 @@ fn host_to_typed_interp_value_with_substitutions(
         },
         Type::Record(record) => match value {
             HostValue::Record(fields) => {
+                let mut names = std::collections::HashSet::new();
+                for (name, _) in &fields {
+                    if !names.insert(name) {
+                        return Err(format!("host record contains duplicate field `{name}`"));
+                    }
+                }
                 if let Some((name, _)) = fields
                     .iter()
                     .find(|(name, _)| !record.fields.iter().any(|field| field.name == *name))
@@ -612,7 +674,14 @@ fn host_to_typed_interp_value_with_substitutions(
                 value: Box::new(value),
             })
         }
+        Type::Enum(_) => super::host_enum::decode(value, expected, &[], store, substitutions),
+        Type::Applied { constructor, args }
+            if matches!(store.get(TypeId(constructor.0)), Some(Type::Enum(_))) =>
+        {
+            super::host_enum::decode(value, TypeId(constructor.0), args, store, substitutions)
+        }
         Type::Applied { constructor, args } => {
+            let concrete_type = substitutions.concrete_type(expected, store)?;
             let Some(Type::Nominal(nominal)) = store.get(TypeId(constructor.0)) else {
                 return Err(
                     "applied host decode constructor is not a checked nominal type".to_owned(),
@@ -626,8 +695,11 @@ fn host_to_typed_interp_value_with_substitutions(
                     args.len()
                 ));
             }
-            let mut applied_substitutions = substitutions.clone();
-            applied_substitutions.extend(nominal.params.iter().cloned().zip(args.iter().copied()));
+            let applied_substitutions = super::host_type_environment::HostTypeEnvironment::applied(
+                substitutions,
+                &nominal.params,
+                args,
+            );
             let representation = nominal.representation.ok_or_else(|| {
                 format!(
                     "applied nominal type `{}` has no checked representation",
@@ -641,7 +713,7 @@ fn host_to_typed_interp_value_with_substitutions(
                 &applied_substitutions,
             )
             .map(|value| InterpValue::Nominal {
-                ty: expected,
+                ty: concrete_type,
                 value: Box::new(value),
             })
         }
@@ -940,7 +1012,7 @@ fn decode_host_list(
     value: HostValue,
     elem_type: TypeId,
     store: &etas_types::TypeStore,
-    substitutions: &std::collections::HashMap<String, TypeId>,
+    substitutions: &super::host_type_environment::HostTypeEnvironment<'_>,
 ) -> Result<Vec<InterpValue>, String> {
     let HostValue::List(values) = value else {
         return Err(format!(
@@ -1086,6 +1158,54 @@ mod tests {
                 value: Box::new(InterpValue::String("u1".to_owned())),
             })
         );
+    }
+
+    #[test]
+    fn typed_host_codec_scopes_nested_generic_arguments_and_preserves_applied_identity() {
+        let mut types = etas_types::TypeInterner::new();
+        let boolean = types.primitive(PrimitiveType::Bool);
+        let param = types.intern(Type::Named(etas_types::NamedTypeRef { name: "T".into() }));
+        let inner = types.intern(Type::Nominal(NominalTypeRef {
+            name: "app.Inner".into(),
+            params: vec!["T".into()],
+            representation: Some(param),
+        }));
+        let list_param = types.intern(Type::List(param));
+        let applied_inner = types.intern(Type::Applied {
+            constructor: etas_types::TypeConstructorId(inner.0),
+            args: vec![list_param],
+        });
+        let outer = types.intern(Type::Nominal(NominalTypeRef {
+            name: "app.Outer".into(),
+            params: vec!["T".into()],
+            representation: Some(applied_inner),
+        }));
+        let applied_outer = types.intern(Type::Applied {
+            constructor: etas_types::TypeConstructorId(outer.0),
+            args: vec![boolean],
+        });
+        let list_bool = types.intern(Type::List(boolean));
+        let concrete_inner = types.intern(Type::Applied {
+            constructor: etas_types::TypeConstructorId(inner.0),
+            args: vec![list_bool],
+        });
+        let host = HostValue::List(vec![HostValue::Bool(true)]);
+        let value = host_to_typed_interp_value(host.clone(), applied_outer, types.store()).unwrap();
+        assert_eq!(
+            value,
+            InterpValue::Nominal {
+                ty: applied_outer,
+                value: Box::new(InterpValue::Nominal {
+                    ty: concrete_inner,
+                    value: Box::new(InterpValue::List(vec![InterpValue::Bool(true)].into())),
+                })
+            }
+        );
+        let unresolved = types.intern(Type::Applied {
+            constructor: etas_types::TypeConstructorId(outer.0),
+            args: vec![param],
+        });
+        assert!(host_to_typed_interp_value(host, unresolved, types.store()).is_err());
     }
 
     #[test]

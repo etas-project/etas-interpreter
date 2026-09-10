@@ -27,11 +27,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("ok".to_owned()))
     );
     assert!(!result.events.is_empty());
@@ -60,11 +61,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("yes".to_owned()))
     );
 }
@@ -99,11 +101,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("ok".to_owned()))
     );
 }
@@ -133,11 +136,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("ok".to_owned()))
     );
 }
@@ -172,11 +176,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("one".to_owned()))
     );
 }
@@ -209,10 +214,14 @@ flow main() -> bool {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -241,10 +250,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(18)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(18)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -271,9 +281,10 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert!(
         result
             .diagnostics
@@ -308,9 +319,10 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert!(
         result
             .diagnostics
@@ -349,11 +361,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("malformed".to_owned()))
     );
 }
@@ -386,10 +399,14 @@ flow main() -> bool {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -437,10 +454,14 @@ flow main() -> bool {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
 }
 
 struct AdvancingMonotonicClock {
@@ -506,9 +527,10 @@ flow main() -> i32 {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert!(
         clock.reads() >= 4,
         "budget must begin live and expire only after multiple execution safe points"
@@ -549,11 +571,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("hello".to_owned()))
     );
 }
@@ -605,11 +628,12 @@ flow main() -> string ![Error<NetworkError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("limit".to_owned()))
     );
     let tcp_requests = host.tcp_requests();
@@ -664,11 +688,12 @@ flow main() -> string {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("network".to_owned()))
     );
     assert_eq!(host.tcp_requests().len(), 1);
@@ -714,11 +739,15 @@ flow main() -> NetworkError {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    let Some(value::InterpValue::Nominal { ty, value }) = result.value else {
-        panic!("expected typed network error value, got {:?}", result.value);
+    let Some(value::InterpValue::Nominal { ty, value }) = result.value().cloned() else {
+        panic!(
+            "expected typed network error value, got {:?}",
+            result.value().cloned()
+        );
     };
     assert_eq!(ty, expected_type);
     let value::InterpValue::Record(fields) = value.as_ref() else {
@@ -776,11 +805,12 @@ flow main() -> string ![Error<NetworkError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("limit".to_owned()))
     );
 }
@@ -846,11 +876,12 @@ flow main() -> string ![Error<NetworkError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("limit".to_owned()))
     );
 }
@@ -923,11 +954,12 @@ flow main() -> string ![Error<NetworkError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("limit".to_owned()))
     );
 }
@@ -960,11 +992,12 @@ flow main() -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("ok".to_owned()))
     );
 }
@@ -999,10 +1032,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(6)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(6)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1044,10 +1078,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(4)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(4)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1080,10 +1115,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(12)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(12)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1110,7 +1146,8 @@ flow main(args: Array<string>) -> string ![Error<IndexError>] {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
@@ -1173,7 +1210,8 @@ flow main() -> string ![Network.search] {
             &FakeHost::new(availability(&[HostRequirementKind::Network])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(
         result.diagnostics.iter().any(|diagnostic| {

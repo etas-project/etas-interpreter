@@ -17,6 +17,7 @@ pub enum ControlSignal {
     Return(InterpValue),
     Break,
     Continue,
+    Cancelled(etas_host::execution::CancellationCause),
     Apply(Box<PendingContinuation>),
     Checkpoint(Box<PendingCheckpoint>),
     Block(Box<PendingBlock>),
@@ -233,6 +234,9 @@ pub struct PendingHostBoundary {
 
 #[derive(Clone, Debug)]
 pub enum HostBoundaryRequest {
+    SessionHistory(SessionRequest),
+    SessionContext(etas_host::session::SessionWriteRequest),
+    MemoryWrite(etas_host::memory::MemoryWriteRequest),
     Filesystem(FilesystemRequest),
     Tcp(TcpConnectRequest),
     Stream(StreamRequest),
@@ -250,6 +254,8 @@ pub struct SourceToolBinding {
 
 #[derive(Clone, Copy, Debug)]
 pub enum MemoryDecode {
+    Page { result_type: etas_types::TypeId },
+    Entry { result_type: etas_types::TypeId },
     OptionValue { value_type: etas_types::TypeId },
     BoolContains,
     KeyList { key_type: etas_types::TypeId },
@@ -263,10 +269,6 @@ pub enum SessionDecode {
         message: crate::value::MessageValue,
     },
     ResolveThenLoadConversation {
-        config: crate::value::SessionConfigValue,
-        payload_type: etas_types::TypeId,
-    },
-    ResolveThenCompactConversation {
         config: crate::value::SessionConfigValue,
         payload_type: etas_types::TypeId,
     },
@@ -291,6 +293,9 @@ pub enum CommandDecode {
 
 #[derive(Clone, Copy, Debug)]
 pub enum HostBoundaryDecode {
+    SessionHistory { result_type: etas_types::TypeId },
+    SessionContext { result_type: etas_types::TypeId },
+    Storage { result_type: etas_types::TypeId },
     Bytes,
     Unit,
     PathList,

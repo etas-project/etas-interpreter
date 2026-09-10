@@ -8,6 +8,24 @@ impl<'a> EvalContext<'a> {
         fields: Vec<InterpValue>,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
+        if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
+            if fields.len() != constructor.arity {
+                return Err(ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    span,
+                    format!(
+                        "enum constructor `{}` expects {} arguments, got {}",
+                        constructor.name,
+                        constructor.arity,
+                        fields.len()
+                    ),
+                ));
+            }
+            return Ok(InterpValue::Variant {
+                name: constructor.name.clone(),
+                fields,
+            });
+        }
         let Some(symbol_data) = self.checked.symbols.get(symbol) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -107,6 +125,7 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Finish(value) => return ControlSignal::Finish(value),
                 ControlSignal::Break => return ControlSignal::Break,
                 ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
+                ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }

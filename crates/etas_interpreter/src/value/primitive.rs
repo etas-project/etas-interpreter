@@ -65,6 +65,7 @@ pub enum InterpValue {
         handlers: Vec<crate::orchestration::ActiveHandlerArmRecord>,
     },
     HostHandle(super::HostHandleValue),
+    MemoryWriteIntent(Box<super::MemoryWriteIntentValue>),
     ResourceHandle {
         name: String,
         stable_id: String,

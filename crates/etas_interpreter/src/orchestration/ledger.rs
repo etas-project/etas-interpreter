@@ -8,6 +8,10 @@ pub enum WorkflowEvent {
     StepStarted(WorkflowStepId),
     StepCompleted(WorkflowStepId),
     HostTrace(etas_host::TraceEvent),
+    StorageWrite {
+        request: etas_host::HostRequestId,
+        evidence: etas_host::StorageWriteEvidence,
+    },
     CheckpointCreated(CheckpointId),
     MessageCreated {
         id: String,
@@ -49,10 +53,6 @@ pub enum WorkflowEvent {
         message_count: usize,
         has_summary: bool,
         cursor: Option<String>,
-    },
-    SessionCompacted {
-        session: String,
-        summary_message_count: usize,
     },
     RetryAttemptStarted(RetryAttemptId),
     RetryAttemptSucceeded(RetryAttemptId),

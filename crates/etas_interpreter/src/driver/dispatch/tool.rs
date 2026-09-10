@@ -66,7 +66,7 @@ pub(in crate::driver) async fn dispatch(
                 trace_payload,
                 authority,
                 trace,
-                host.tool(request),
+                |operation| host.tool(operation, request),
             )
             .await;
             machine.resume_tool_result(result);

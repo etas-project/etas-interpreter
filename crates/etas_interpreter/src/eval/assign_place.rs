@@ -156,6 +156,9 @@ impl<'a> EvalContext<'a> {
                         ControlSignal::Fault(fault) => {
                             return Err(Box::new(ControlSignal::Fault(fault)));
                         }
+                        ControlSignal::Cancelled(cause) => {
+                            return Err(Box::new(ControlSignal::Cancelled(cause)));
+                        }
                         ControlSignal::Continue => return Err(Box::new(ControlSignal::Continue)),
                     };
                     if self.expr_type_is_map(base) {

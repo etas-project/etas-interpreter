@@ -1,4 +1,5 @@
 mod checkpoint;
+pub use checkpoint::{StorageSnapshot, StorageWriteRecord};
 mod identity;
 mod ledger;
 
@@ -20,3 +21,5 @@ pub(crate) use checkpoint::{
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{WorkflowEvent, WorkflowStepId};
+mod model_request;
+pub(crate) use model_request::ModelRequestSnapshot;

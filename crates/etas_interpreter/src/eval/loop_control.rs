@@ -72,6 +72,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => return ControlSignal::Finish(value),
             ControlSignal::Break => return ControlSignal::Break,
             ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
             ControlSignal::Continue => return ControlSignal::Continue,
         };
         self.resume_for_loop(
@@ -131,6 +132,7 @@ impl<'a> EvalContext<'a> {
                 return ControlSignal::Fault(Box::new(fault));
             }
             match self.execute_block(body, frame) {
+                ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 ControlSignal::Value(_) => {}
                 ControlSignal::Break => {
                     frame.cleanup_to(&loop_scope);
@@ -330,6 +332,7 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Resume(value) => return ControlSignal::Resume(value),
                 ControlSignal::Finish(value) => return ControlSignal::Finish(value),
                 ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
+                ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 ControlSignal::Break => return ControlSignal::Break,
                 ControlSignal::Continue => return ControlSignal::Continue,
             };
@@ -348,6 +351,7 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Resume(value) => return ControlSignal::Resume(value),
                 ControlSignal::Finish(value) => return ControlSignal::Finish(value),
                 ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
+                ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 signal @ (ControlSignal::Apply(_)
                 | ControlSignal::Memory(_)
                 | ControlSignal::Session(_)
@@ -414,6 +418,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Resume(value) => ControlSignal::Resume(value),
             ControlSignal::Finish(value) => ControlSignal::Finish(value),
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             signal @ (ControlSignal::Apply(_)
             | ControlSignal::Memory(_)
             | ControlSignal::Session(_)

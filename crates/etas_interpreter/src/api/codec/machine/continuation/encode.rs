@@ -380,6 +380,8 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             path,
             key_type,
             value_type,
+
+            result_type,
             method,
             args,
             next_arg_index,
@@ -388,6 +390,7 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             frame,
         } => json!({
             "kind": "memory_args",
+            "result_type": result_type.0,
             "region_stable_id": region_stable_id,
             "path": path,
             "key_type": key_type.0,

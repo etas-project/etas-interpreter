@@ -16,6 +16,7 @@ impl<'a> EvalContext<'a> {
             path,
             key_type,
             value_type,
+            result_type,
             method,
             evaluated_args,
             span,
@@ -23,7 +24,7 @@ impl<'a> EvalContext<'a> {
         let request_id = HostRequestId(self.next_host_request);
         self.next_host_request += 1;
         let request = match method.as_str() {
-            "get" => {
+            "get" | "get_entry" => {
                 let key = match host_argument(&evaluated_args, 0, "memory get key") {
                     Ok(key) => key,
                     Err(error) => return abort_memory_store(span, error),
@@ -38,6 +39,33 @@ impl<'a> EvalContext<'a> {
                         path: path.clone(),
                     },
                     operation: MemoryOperation::Get { key },
+                    authority: self.host_authority(),
+                    trace: self.host_trace(),
+                    budget: self.host_budget(),
+                }
+            }
+            "page" => {
+                let (cursor, limit) = match super::memory_page::page_arguments(
+                    &evaluated_args,
+                    self.known_std_types.memory_cursor,
+                    &self.storage_limits,
+                ) {
+                    Ok(args) => args,
+                    Err(error) => return abort_memory_store(span, error),
+                };
+                MemoryRequest {
+                    id: request_id,
+                    store: StoreRef {
+                        region: MemoryRegionRef {
+                            stable_id: region_stable_id.clone(),
+                            schema_fingerprint: None,
+                        },
+                        path: path.clone(),
+                    },
+                    operation: MemoryOperation::Scan {
+                        cursor,
+                        limit: Some(limit),
+                    },
                     authority: self.host_authority(),
                     trace: self.host_trace(),
                     budget: self.host_budget(),
@@ -146,8 +174,7 @@ impl<'a> EvalContext<'a> {
                     operation: MemoryOperation::Put {
                         key,
                         value,
-                        expected: None,
-                        mode: MemoryWriteMode::Put,
+                        condition: WriteCondition::Any,
                     },
                     authority: self.host_authority(),
                     trace: self.host_trace(),
@@ -183,8 +210,7 @@ impl<'a> EvalContext<'a> {
                     operation: MemoryOperation::Put {
                         key,
                         value,
-                        expected: Some(expected),
-                        mode: MemoryWriteMode::Put,
+                        condition: WriteCondition::Match(expected),
                     },
                     authority: self.host_authority(),
                     trace: self.host_trace(),
@@ -212,8 +238,7 @@ impl<'a> EvalContext<'a> {
                     operation: MemoryOperation::Put {
                         key,
                         value,
-                        expected: None,
-                        mode: memory_write_mode(&method),
+                        condition: memory_write_condition(&method),
                     },
                     authority: self.host_authority(),
                     trace: self.host_trace(),
@@ -283,7 +308,7 @@ impl<'a> EvalContext<'a> {
                     },
                     operation: MemoryOperation::Delete {
                         key,
-                        expected: None,
+                        condition: WriteCondition::Any,
                     },
                     authority: self.host_authority(),
                     trace: self.host_trace(),
@@ -314,7 +339,7 @@ impl<'a> EvalContext<'a> {
                     },
                     operation: MemoryOperation::Delete {
                         key,
-                        expected: Some(expected),
+                        condition: WriteCondition::Match(expected),
                     },
                     authority: self.host_authority(),
                     trace: self.host_trace(),
@@ -331,6 +356,8 @@ impl<'a> EvalContext<'a> {
         ControlSignal::pending_memory(PendingMemory {
             request,
             decode: match method.as_str() {
+                "page" => MemoryDecode::Page { result_type },
+                "get_entry" => MemoryDecode::Entry { result_type },
                 "get" => MemoryDecode::OptionValue { value_type },
                 "contains" => MemoryDecode::BoolContains,
                 "keys" => MemoryDecode::KeyList { key_type },
@@ -345,12 +372,11 @@ impl<'a> EvalContext<'a> {
     }
 }
 
-fn memory_write_mode(method: &str) -> MemoryWriteMode {
+fn memory_write_condition(method: &str) -> WriteCondition {
     match method {
-        "insert" => MemoryWriteMode::Insert,
-        "update" => MemoryWriteMode::Update,
-        "upsert" => MemoryWriteMode::Upsert,
-        _ => MemoryWriteMode::Put,
+        "insert" => WriteCondition::Missing,
+        "update" => WriteCondition::Exists,
+        _ => WriteCondition::Any,
     }
 }
 
@@ -369,7 +395,7 @@ fn abort_memory_store(span: Span, message: impl Into<String>) -> ControlSignal {
     ControlSignal::invalid_arguments(message.into(), span)
 }
 
-fn memory_version_from_interp(
+pub(super) fn memory_version_from_interp(
     value: &InterpValue,
     expected_type: Option<etas_types::TypeId>,
 ) -> Option<etas_host::MemoryVersion> {
@@ -390,7 +416,7 @@ fn memory_version_from_interp(
                 ("opaque", InterpValue::String(token)) => Some(token),
                 _ => None,
             })?;
-    Some(etas_host::MemoryVersion { opaque: token })
+    etas_host::MemoryVersion::parse(&token).ok()
 }
 
 pub(super) struct MemoryStoreMethodEval<'a> {
@@ -398,6 +424,7 @@ pub(super) struct MemoryStoreMethodEval<'a> {
     pub path: Vec<String>,
     pub key_type: etas_types::TypeId,
     pub value_type: etas_types::TypeId,
+    pub result_type: etas_types::TypeId,
     pub method: &'a str,
     pub args: &'a [HirArg],
     pub span: Span,
@@ -408,6 +435,7 @@ pub(super) struct MemoryStoreArgs {
     pub path: Vec<String>,
     pub key_type: etas_types::TypeId,
     pub value_type: etas_types::TypeId,
+    pub result_type: etas_types::TypeId,
     pub method: String,
     pub evaluated_args: Vec<InterpValue>,
     pub span: Span,

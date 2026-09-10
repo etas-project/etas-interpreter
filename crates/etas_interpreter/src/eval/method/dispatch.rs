@@ -251,6 +251,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => return ControlSignal::Finish(value),
             ControlSignal::Break => return ControlSignal::Break,
             ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
             ControlSignal::Continue => return ControlSignal::Continue,
         };
         self.eval_method_on_receiver(
@@ -328,6 +329,18 @@ impl<'a> EvalContext<'a> {
                 value_type,
             } => self.eval_memory_store_method(
                 MemoryStoreMethodEval {
+                    result_type: match self.checked.types.expr_types.get(&expr).copied() {
+                        Some(ty) => ty,
+                        None => {
+                            return ControlSignal::Fault(Box::new(
+                                crate::control::ExecutionFault::new(
+                                    AnalysisDiagnosticCode::MissingCheckedFact,
+                                    span,
+                                    "memory method result type is missing",
+                                ),
+                            ));
+                        }
+                    },
                     region_stable_id,
                     path,
                     key_type,

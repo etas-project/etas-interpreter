@@ -141,6 +141,7 @@ impl<'a> EvalContext<'a> {
             .push(WorkflowEvent::RetryAttemptStarted(retry.id));
         let signal = self.execute_block(body, frame);
         match signal {
+            ControlSignal::Cancelled(cause) => Some(ControlSignal::Cancelled(cause)),
             signal @ (ControlSignal::Apply(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)

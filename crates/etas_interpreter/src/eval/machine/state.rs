@@ -48,6 +48,8 @@ pub(super) enum MachineInput {
 }
 
 pub(crate) enum MachinePoll {
+    CooperativeYield,
+    Cancelled(etas_host::execution::CancellationCause),
     Complete(Box<InterpValue>),
     Yield(PendingBoundary),
     Fault(ExecutionFault),
@@ -70,8 +72,10 @@ impl EvalMachine {
         checked: &etas_frontend::CheckedProject,
         slots: std::sync::Arc<crate::plan::SlotLayoutTable>,
         dispatch: &crate::plan::IntrinsicDispatchTable,
+        current: &crate::api::HostExecutionContext,
+        limits: &etas_host::StorageLimits,
     ) -> Result<Self, String> {
-        super::snapshot::SnapshotValidator::new(checked, &slots, dispatch)
+        super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, limits)
             .validate_machine(snapshot)?;
         let stack = snapshot
             .frames
@@ -119,10 +123,10 @@ impl EvalMachine {
                         frame
                     }
                     MachineFrameSnapshot::ModelLoop(frame) => {
-                        EvalFrame::ModelLoop(Box::new(frame.restore()?))
+                        EvalFrame::ModelLoop(Box::new(frame.restore(current)?))
                     }
                     MachineFrameSnapshot::SourceToolReturn(frame) => {
-                        EvalFrame::SourceToolReturn(frame.restore()?)
+                        EvalFrame::SourceToolReturn(frame.restore(current)?)
                     }
                 })
             })
