@@ -136,6 +136,7 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
         }),
         Continuation::RecordField {
             nominal_type,
+            variant_symbol,
             fields,
             next_index,
             values,
@@ -143,6 +144,7 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
         } => json!({
             "kind": "record_field",
             "nominal_type": nominal_type.map(|ty| ty.0),
+            "variant_symbol": variant_symbol.map(|symbol| symbol.0),
             "fields": fields.iter().map(field_init_snapshot).collect::<Result<Vec<_>, _>>()?,
             "next_index": next_index,
             "values": values.iter().map(|(name, value)| json!({

@@ -434,6 +434,7 @@ impl<'a> SnapshotValidator<'a> {
             }
             ContinuationSnapshot::RecordField {
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values,
@@ -441,6 +442,9 @@ impl<'a> SnapshotValidator<'a> {
             } => {
                 if let Some(ty) = nominal_type {
                     self.type_id(*ty, &format!("{context} nominal record type"))?;
+                }
+                if let Some(symbol) = variant_symbol {
+                    self.named_variant_fields(*symbol, *nominal_type, fields, context)?;
                 }
                 self.fields(fields, context)?;
                 self.index_at_most(*next_index, fields.len(), context)?;
@@ -1241,6 +1245,56 @@ impl<'a> SnapshotValidator<'a> {
             .get(id)
             .map(|_| ())
             .ok_or_else(|| format!("{context} references missing HIR symbol {}", id.0))
+    }
+
+    fn named_variant_fields(
+        &self,
+        symbol: SymbolId,
+        ty: Option<TypeId>,
+        fields: &[HirFieldInit],
+        context: &str,
+    ) -> Result<(), String> {
+        let error =
+            || format!("{context}: named enum continuation does not match its checked constructor");
+        let Some(etas_hir::SymbolDef::EnumVariant {
+            enum_item,
+            variant_index,
+        }) = self.checked.symbols.get(symbol).map(|symbol| &symbol.def)
+        else {
+            return Err(error());
+        };
+        let Some(etas_hir::HirItem::Enum(decl)) = self.checked.hir.items.get(*enum_item) else {
+            return Err(error());
+        };
+        let names = decl
+            .variants
+            .get(*variant_index as usize)
+            .and_then(|variant| variant.field_names.as_ref())
+            .ok_or_else(error)?;
+        let Some(etas_types::SymbolTypeFact::Type { constructor }) =
+            self.checked.types.symbol_types.get(&decl.symbol)
+        else {
+            return Err(error());
+        };
+        let ty = ty.ok_or_else(error)?;
+        let base = match self.checked.type_store.get(ty) {
+            Some(etas_types::Type::Applied { constructor, .. }) => TypeId(constructor.0),
+            Some(etas_types::Type::Enum(_)) => ty,
+            _ => return Err(error()),
+        };
+        if base != TypeId(constructor.0) || fields.len() != names.len() {
+            return Err(error());
+        }
+        let actual = fields
+            .iter()
+            .map(|field| match field {
+                HirFieldInit::Named { name, .. } | HirFieldInit::Shorthand { name, .. } => name,
+            })
+            .collect::<BTreeSet<_>>();
+        if actual.len() != fields.len() || actual != names.iter().collect() {
+            return Err(error());
+        }
+        Ok(())
     }
 
     fn scope(&self, id: ScopeId, context: &str) -> Result<(), String> {

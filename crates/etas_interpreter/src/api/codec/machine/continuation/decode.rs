@@ -95,6 +95,7 @@ pub(crate) fn continuation_from_snapshot(
         },
         "record_field" => Continuation::RecordField {
             nominal_type: optional_u32(value, "nominal_type")?.map(etas_types::TypeId),
+            variant_symbol: optional_u32(value, "variant_symbol")?.map(etas_hir::SymbolId),
             fields: required(value, "fields")?
                 .as_array()
                 .ok_or_else(|| "machine snapshot `fields` must be an array".to_owned())?

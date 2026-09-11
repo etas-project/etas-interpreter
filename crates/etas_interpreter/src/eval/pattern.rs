@@ -53,25 +53,90 @@ impl<'a> EvalContext<'a> {
                 InterpValue::Tuple(_) => Ok(false),
                 _ => Ok(false),
             },
-            HirPat::Record { fields, .. } => match pattern_projection_value(value) {
-                InterpValue::Record(values) => {
-                    let values = values.borrow();
+            HirPat::Record { path, fields, .. } => {
+                if let Some(symbol) = self.named_variant_symbol(path.as_ref()) {
+                    let Some(symbol) = self.checked.symbols.get(symbol) else {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "missing enum pattern symbol",
+                        ));
+                    };
+                    let SymbolDef::EnumVariant {
+                        enum_item,
+                        variant_index,
+                    } = symbol.def
+                    else {
+                        unreachable!()
+                    };
+                    let Some(HirItem::Enum(decl)) = self.checked.hir.items.get(enum_item) else {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "missing enum pattern declaration",
+                        ));
+                    };
+                    let Some(names) = decl
+                        .variants
+                        .get(variant_index as usize)
+                        .and_then(|v| v.field_names.as_ref())
+                    else {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "missing named enum pattern layout",
+                        ));
+                    };
+                    let InterpValue::Variant {
+                        name,
+                        fields: values,
+                    } = pattern_projection_value(value)
+                    else {
+                        return Ok(false);
+                    };
+                    if name != &symbol.name {
+                        return Ok(false);
+                    }
                     for field in fields {
-                        let Some((_, field_value)) =
-                            values.iter().find(|(name, _)| name == &field.name)
+                        let Some(value) = names
+                            .iter()
+                            .position(|name| name == &field.name)
+                            .and_then(|index| values.get(index))
                         else {
-                            return Ok(false);
+                            return Err(ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                "missing enum payload field",
+                            ));
                         };
-                        if let Some(pat) = field.pat
-                            && !self.match_pattern(pat, field_value, frame, field.span)?
-                        {
-                            return Ok(false);
+                        if let Some(pat) = field.pat {
+                            if !self.match_pattern(pat, value, frame, field.span)? {
+                                return Ok(false);
+                            }
                         }
                     }
-                    Ok(true)
+                    return Ok(true);
                 }
-                _ => Ok(false),
-            },
+                match pattern_projection_value(value) {
+                    InterpValue::Record(values) => {
+                        let values = values.borrow();
+                        for field in fields {
+                            let Some((_, field_value)) =
+                                values.iter().find(|(name, _)| name == &field.name)
+                            else {
+                                return Ok(false);
+                            };
+                            if let Some(pat) = field.pat
+                                && !self.match_pattern(pat, field_value, frame, field.span)?
+                            {
+                                return Ok(false);
+                            }
+                        }
+                        Ok(true)
+                    }
+                    _ => Ok(false),
+                }
+            }
             HirPat::Variant { path, args, .. } => {
                 let expected_name = self.variant_name_from_path(path, span)?;
                 match pattern_projection_value(value) {

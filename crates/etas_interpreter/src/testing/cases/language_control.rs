@@ -344,8 +344,7 @@ import std.http.codec.{MalformedMessage, decode_response};
 flow main() -> string {
   return match decode_response(utf8_encode("not http")) {
     Ok(_) => "unexpected",
-    Err(MalformedMessage) => "malformed",
-    Err(_) => "other"
+    Err(MalformedMessage) => "malformed"
   };
 }
 "#,

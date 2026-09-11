@@ -214,7 +214,7 @@ fn checked_enum_decode_rejects_unknown_wrong_arity_wrong_fields_and_missing_layo
             host_to_checked_interp_value(bad, ty, &checked, &StorageLimits::default()).is_err()
         );
     }
-    checked.types.std_enum_layouts.clear();
+    checked.types.enum_layouts.clear();
     assert!(
         host_to_checked_interp_value(valid, ty, &checked, &StorageLimits::default())
             .unwrap_err()

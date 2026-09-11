@@ -492,7 +492,7 @@ pub(crate) fn host_to_checked_interp_value(
         expected,
         &checked.type_store,
         &super::host_type_environment::HostTypeEnvironment::with_enum_layouts(
-            &checked.types.std_enum_layouts,
+            &checked.types.enum_layouts,
         ),
     )
 }

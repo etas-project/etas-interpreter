@@ -1,3 +1,4 @@
+mod adt;
 mod agent;
 mod boundary_io;
 mod cancellation;

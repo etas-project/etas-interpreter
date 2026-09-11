@@ -399,6 +399,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     RecordField {
         nominal_type: Option<TypeId>,
+        variant_symbol: Option<SymbolId>,
         fields: Vec<HirFieldInit>,
         next_index: usize,
         values: Vec<(String, ValueSnapshot)>,

@@ -134,6 +134,7 @@ pub enum Continuation {
     },
     RecordField {
         nominal_type: Option<etas_types::TypeId>,
+        variant_symbol: Option<SymbolId>,
         fields: Vec<etas_hir::HirFieldInit>,
         next_index: usize,
         values: Vec<(String, InterpValue)>,

@@ -135,12 +135,14 @@ impl ContinuationSnapshot {
             },
             Continuation::RecordField {
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values,
                 frame,
             } => Self::RecordField {
                 nominal_type: *nominal_type,
+                variant_symbol: *variant_symbol,
                 fields: fields.clone(),
                 next_index: *next_index,
                 values: values
@@ -755,12 +757,14 @@ impl ContinuationSnapshot {
             },
             Self::RecordField {
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values,
                 frame,
             } => Continuation::RecordField {
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values: values
