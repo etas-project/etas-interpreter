@@ -135,6 +135,7 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             "bounds": range_bounds_name(*bounds),
         }),
         Continuation::RecordField {
+            expr,
             nominal_type,
             variant_symbol,
             fields,
@@ -143,6 +144,7 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             frame,
         } => json!({
             "kind": "record_field",
+            "expr": expr.0,
             "nominal_type": nominal_type.map(|ty| ty.0),
             "variant_symbol": variant_symbol.map(|symbol| symbol.0),
             "fields": fields.iter().map(field_init_snapshot).collect::<Result<Vec<_>, _>>()?,

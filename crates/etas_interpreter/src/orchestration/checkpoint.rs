@@ -398,6 +398,7 @@ pub(crate) enum ContinuationSnapshot {
         bounds: HirRangeBounds,
     },
     RecordField {
+        expr: HirExprId,
         nominal_type: Option<TypeId>,
         variant_symbol: Option<SymbolId>,
         fields: Vec<HirFieldInit>,

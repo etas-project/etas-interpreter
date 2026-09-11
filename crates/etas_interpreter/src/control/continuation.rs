@@ -133,6 +133,7 @@ pub enum Continuation {
         bounds: etas_hir::HirRangeBounds,
     },
     RecordField {
+        expr: HirExprId,
         nominal_type: Option<etas_types::TypeId>,
         variant_symbol: Option<SymbolId>,
         fields: Vec<etas_hir::HirFieldInit>,

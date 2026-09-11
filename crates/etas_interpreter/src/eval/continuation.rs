@@ -462,8 +462,9 @@ impl<'a> EvalContext<'a> {
             } => self.resume_range_start(value, end, bounds, &mut frame),
             Continuation::RangeEnd { start, bounds } => self.finish_range(start, value, bounds),
             Continuation::RecordField {
-                nominal_type,
-                variant_symbol,
+                expr,
+                nominal_type: _,
+                variant_symbol: _,
                 fields,
                 next_index,
                 mut values,
@@ -479,14 +480,7 @@ impl<'a> EvalContext<'a> {
                     );
                 };
                 values.push((name.clone(), value));
-                self.resume_record_fields(
-                    nominal_type,
-                    variant_symbol,
-                    fields,
-                    next_index,
-                    values,
-                    &mut frame,
-                )
+                self.resume_record_fields(expr, fields, next_index, values, &mut frame)
             }
             Continuation::MapKey {
                 entries,

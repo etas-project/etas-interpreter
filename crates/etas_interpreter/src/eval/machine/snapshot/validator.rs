@@ -433,6 +433,7 @@ impl<'a> SnapshotValidator<'a> {
                 self.frame(frame, context)
             }
             ContinuationSnapshot::RecordField {
+                expr,
                 nominal_type,
                 variant_symbol,
                 fields,
@@ -440,6 +441,7 @@ impl<'a> SnapshotValidator<'a> {
                 values,
                 frame,
             } => {
+                self.record_construction(*expr, *nominal_type, *variant_symbol, fields, context)?;
                 if let Some(ty) = nominal_type {
                     self.type_id(*ty, &format!("{context} nominal record type"))?;
                 }
@@ -448,6 +450,23 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 self.fields(fields, context)?;
                 self.index_at_most(*next_index, fields.len(), context)?;
+                let Some(pending) = next_index.checked_sub(1) else {
+                    return Err(format!(
+                        "{context}: record continuation has no pending field"
+                    ));
+                };
+                if !matches!(fields.get(pending), Some(HirFieldInit::Named { .. }))
+                    || values.len() != pending
+                    || values.iter().zip(fields).any(|((actual, _), field)| {
+                        let (HirFieldInit::Named { name, .. }
+                        | HirFieldInit::Shorthand { name, .. }) = field;
+                        actual != name
+                    })
+                {
+                    return Err(format!(
+                        "{context}: record continuation has inconsistent evaluated fields"
+                    ));
+                }
                 for (_, value) in values {
                     self.snapshot_value(value)?;
                 }
@@ -1245,6 +1264,55 @@ impl<'a> SnapshotValidator<'a> {
             .get(id)
             .map(|_| ())
             .ok_or_else(|| format!("{context} references missing HIR symbol {}", id.0))
+    }
+
+    fn record_construction(
+        &self,
+        expr: HirExprId,
+        ty: Option<TypeId>,
+        variant: Option<SymbolId>,
+        fields: &[HirFieldInit],
+        context: &str,
+    ) -> Result<(), String> {
+        let error = || {
+            format!(
+                "{context}: record or named enum continuation does not match its checked construction"
+            )
+        };
+        let Some(etas_hir::HirExpr::Record(record)) = self.checked.hir.exprs.get(expr) else {
+            return Err(error());
+        };
+        let expected_type = if record.path.is_some() {
+            Some(*self.checked.types.expr_types.get(&expr).ok_or_else(error)?)
+        } else {
+            None
+        };
+        let expected_variant = match record.path.as_ref().map(|path| &path.resolution) {
+            Some(etas_hir::ResolveResult::Resolved(symbol)) => {
+                let symbol = self.checked.symbols.get(*symbol).ok_or_else(error)?;
+                matches!(symbol.def, etas_hir::SymbolDef::EnumVariant { .. }).then_some(symbol.id)
+            }
+            None => None,
+            _ => return Err(error()),
+        };
+        if ty != expected_type || variant != expected_variant || fields != record.fields {
+            return Err(error());
+        }
+        if expected_variant.is_none()
+            && let Some(ty) = ty
+        {
+            let base = match self.checked.type_store.get(ty) {
+                Some(etas_types::Type::Applied { constructor, .. }) => TypeId(constructor.0),
+                _ => ty,
+            };
+            if matches!(
+                self.checked.type_store.get(base),
+                Some(etas_types::Type::Enum(_))
+            ) {
+                return Err(error());
+            }
+        }
+        Ok(())
     }
 
     fn named_variant_fields(

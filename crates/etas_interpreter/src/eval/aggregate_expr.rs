@@ -188,6 +188,23 @@ impl<'a> EvalContext<'a> {
         record: &etas_hir::HirRecordExpr,
         frame: &mut Frame,
     ) -> ControlSignal {
+        self.resume_record_fields(expr, record.fields.clone(), 0, Vec::new(), frame)
+    }
+
+    pub(super) fn resume_record_fields(
+        &mut self,
+        expr: HirExprId,
+        fields: Vec<etas_hir::HirFieldInit>,
+        start_index: usize,
+        mut values: Vec<(String, InterpValue)>,
+        frame: &mut Frame,
+    ) -> ControlSignal {
+        let Some(HirExpr::Record(record)) = self.checked.hir.exprs.get(expr) else {
+            return ControlSignal::missing_checked_fact(
+                "record continuation is missing its checked construction expression",
+                item_span(self.checked, self.entry_item),
+            );
+        };
         let nominal_type = if record.path.is_some() {
             let Some(ty) = self.checked.types.expr_types.get(&expr).copied() else {
                 return ControlSignal::missing_checked_fact(
@@ -200,25 +217,6 @@ impl<'a> EvalContext<'a> {
             None
         };
         let variant_symbol = self.named_variant_symbol(record.path.as_ref());
-        self.resume_record_fields(
-            nominal_type,
-            variant_symbol,
-            record.fields.clone(),
-            0,
-            Vec::new(),
-            frame,
-        )
-    }
-
-    pub(super) fn resume_record_fields(
-        &mut self,
-        nominal_type: Option<etas_types::TypeId>,
-        variant_symbol: Option<SymbolId>,
-        fields: Vec<etas_hir::HirFieldInit>,
-        start_index: usize,
-        mut values: Vec<(String, InterpValue)>,
-        frame: &mut Frame,
-    ) -> ControlSignal {
         for (index, field) in fields.iter().enumerate().skip(start_index) {
             match field {
                 etas_hir::HirFieldInit::Shorthand {
@@ -236,6 +234,7 @@ impl<'a> EvalContext<'a> {
                             return compose_signal_continuation(
                                 signal,
                                 Continuation::RecordField {
+                                    expr,
                                     nominal_type,
                                     variant_symbol,
                                     fields,

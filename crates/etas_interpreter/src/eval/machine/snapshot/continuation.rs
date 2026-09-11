@@ -134,6 +134,7 @@ impl ContinuationSnapshot {
                 bounds: *bounds,
             },
             Continuation::RecordField {
+                expr,
                 nominal_type,
                 variant_symbol,
                 fields,
@@ -141,6 +142,7 @@ impl ContinuationSnapshot {
                 values,
                 frame,
             } => Self::RecordField {
+                expr: *expr,
                 nominal_type: *nominal_type,
                 variant_symbol: *variant_symbol,
                 fields: fields.clone(),
@@ -756,6 +758,7 @@ impl ContinuationSnapshot {
                 bounds,
             },
             Self::RecordField {
+                expr,
                 nominal_type,
                 variant_symbol,
                 fields,
@@ -763,6 +766,7 @@ impl ContinuationSnapshot {
                 values,
                 frame,
             } => Continuation::RecordField {
+                expr,
                 nominal_type,
                 variant_symbol,
                 fields,

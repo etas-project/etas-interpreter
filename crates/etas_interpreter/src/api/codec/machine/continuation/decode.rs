@@ -94,6 +94,7 @@ pub(crate) fn continuation_from_snapshot(
             bounds: range_bounds_from_name(required_str(value, "bounds")?)?,
         },
         "record_field" => Continuation::RecordField {
+            expr: HirExprId(required_u32(value, "expr")?),
             nominal_type: optional_u32(value, "nominal_type")?.map(etas_types::TypeId),
             variant_symbol: optional_u32(value, "variant_symbol")?.map(etas_hir::SymbolId),
             fields: required(value, "fields")?
