@@ -9,6 +9,19 @@ impl<'a> EvalContext<'a> {
         frame: &Frame,
         span: Span,
     ) -> Result<CallTarget, crate::control::ExecutionFault> {
+        let target = match target {
+            CallTarget::StdIntrinsic(call) => CallTarget::StdIntrinsic(
+                call.specialize(&self.checked.type_store, frame.type_bindings())
+                    .map_err(|message| {
+                        crate::control::ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            message,
+                        )
+                    })?,
+            ),
+            other => other,
+        };
         let Some(fact) = self.checked.types.generic_instantiations.get(&call) else {
             return Ok(target);
         };
@@ -113,6 +126,9 @@ impl<'a> EvalContext<'a> {
                 Some(CallTarget::AgentItem(*item))
             }
             SymbolDef::ImportAlias { path, .. } => {
+                if self.plan.dispatch.enum_constructor(symbol).is_some() {
+                    return Ok(Some(CallTarget::EnumVariant(symbol)));
+                }
                 if let Some(intrinsic) = self.std_intrinsic(symbol) {
                     return match intrinsic.dispatch {
                         etas_std::IntrinsicDispatch::PureKernel => self
@@ -165,6 +181,9 @@ impl<'a> EvalContext<'a> {
                 Some(CallTarget::AgentItem(*item))
             }
             SymbolDef::ImportAlias { path, .. } => {
+                if self.plan.dispatch.enum_constructor(symbol).is_some() {
+                    return Ok(Some(CallTarget::EnumVariant(symbol)));
+                }
                 if let Some(intrinsic) = self.std_intrinsic(symbol) {
                     return match intrinsic.dispatch {
                         etas_std::IntrinsicDispatch::PureKernel => self

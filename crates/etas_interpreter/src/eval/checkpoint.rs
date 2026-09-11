@@ -25,6 +25,9 @@ impl<'a> EvalContext<'a> {
         self.next_step = checkpoint.trace.events_recorded as u32;
         self.next_host_request = checkpoint.trace.next_host_request;
         self.next_message = checkpoint.trace.next_message;
+        self.storage_identity = Ok(checkpoint.storage.identity.clone());
+        self.storage_writes = checkpoint.storage.writes.clone();
+        self.storage_operations = checkpoint.storage.operations.clone();
         ControlSignal::Value(InterpValue::Unit)
     }
 
@@ -54,9 +57,21 @@ impl<'a> EvalContext<'a> {
                         format!("checkpoint budget snapshot failed: {error}"),
                     )
                 })?;
+        let storage_identity = self.storage_identity.clone().map_err(|error| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::UnhandledRuntimeError,
+                item_span(self.checked, self.entry_item),
+                error.to_string(),
+            )
+        })?;
         self.next_checkpoint += 1;
         self.events.push(WorkflowEvent::CheckpointCreated(id));
         self.checkpoints.push(InterpreterCheckpoint {
+            storage: crate::orchestration::StorageSnapshot {
+                identity: storage_identity,
+                writes: self.storage_writes.clone(),
+                operations: self.storage_operations.clone(),
+            },
             id,
             label,
             compilation,

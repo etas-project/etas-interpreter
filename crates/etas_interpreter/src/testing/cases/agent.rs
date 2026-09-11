@@ -51,7 +51,8 @@ flow main(input: string) -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingHostHandler)
@@ -90,10 +91,11 @@ flow main(input: string) -> string {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("encoded".to_owned())),
         "{:?}",
         result.diagnostics
@@ -145,11 +147,12 @@ flow main(input: string) -> string {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("draft".to_owned()))
     );
     assert_eq!(host.model_call_count(), 1);
@@ -243,9 +246,10 @@ flow main() -> string {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(result.value.is_none());
+    assert!(result.value().cloned().is_none());
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message
@@ -319,9 +323,10 @@ flow main() -> string {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(result.value.is_none());
+    assert!(result.value().cloned().is_none());
     assert_eq!(host.model_call_count(), 2);
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
@@ -385,9 +390,10 @@ flow main() -> string {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(result.value.is_none());
+    assert!(result.value().cloned().is_none());
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
             diagnostic
@@ -463,10 +469,11 @@ flow main() -> string {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("one".to_owned())),
         "{:?}",
         result.diagnostics
@@ -527,11 +534,12 @@ flow main() -> string ![Error<IOError>] {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("model answer".to_owned()))
     );
     assert_eq!(host.console_call_count(), 1);
@@ -594,11 +602,12 @@ flow main() -> string ![Error<IOError>] {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("nested answer".to_owned()))
     );
     assert_eq!(host.console_call_count(), 1);
@@ -642,10 +651,14 @@ flow main() -> bool ![Error<IOError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(false)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(false))
+    );
     assert_eq!(host.console_call_count(), 1);
 }
 
@@ -702,7 +715,8 @@ flow main(input: string) -> string {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
@@ -769,7 +783,8 @@ flow main(input: string) -> string {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
@@ -853,7 +868,8 @@ flow main(input: string) -> string {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
@@ -895,7 +911,8 @@ flow main(input: string) -> string {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
@@ -937,7 +954,8 @@ flow main(input: string) -> string {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
@@ -999,7 +1017,8 @@ flow main(input: string) -> Draft {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
@@ -1017,7 +1036,7 @@ flow main(input: string) -> Draft {
         }
         other => panic!("expected record output schema, got {other:?}"),
     }
-    let Some(value::InterpValue::Nominal { value, .. }) = result.value else {
+    let Some(value::InterpValue::Nominal { value, .. }) = result.value().cloned() else {
         panic!("typed agent output must preserve nominal runtime identity");
     };
     assert_eq!(
@@ -1086,7 +1105,8 @@ flow main(input: string) -> Draft {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     let diagnostic_text = result
         .diagnostics
@@ -1157,11 +1177,12 @@ flow main(input: string) -> Draft {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(host.model_call_count(), 2);
-    let Some(value::InterpValue::Nominal { value, .. }) = result.value else {
+    let Some(value::InterpValue::Nominal { value, .. }) = result.value().cloned() else {
         panic!("repaired typed output must preserve nominal runtime identity");
     };
     assert_eq!(
@@ -1243,9 +1264,10 @@ flow main(input: string) -> i8 {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)
     }));
@@ -1299,9 +1321,10 @@ flow main(input: string) -> Trusted<string> {
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)
     }));

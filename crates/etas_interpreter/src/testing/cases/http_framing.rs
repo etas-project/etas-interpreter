@@ -46,7 +46,11 @@ flow main() -> bool {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
 }

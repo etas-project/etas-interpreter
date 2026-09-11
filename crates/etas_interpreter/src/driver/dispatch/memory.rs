@@ -52,7 +52,36 @@ pub(in crate::driver) async fn dispatch(
     {
         return None;
     }
-    match dispatch_memory_request(eval, host, memory.request.clone()).await {
+    let response = if matches!(
+        memory.request.operation,
+        MemoryOperation::Put { .. } | MemoryOperation::Delete { .. }
+    ) {
+        let result = super::memory_write::dispatch(eval, host, memory.request.clone()).await;
+        if let Some(signal) = eval.cancellation_signal(memory.span) {
+            return Some(signal);
+        }
+        match result {
+            Ok(result) => Ok(MemoryResponse {
+                id: request_id,
+                result: Ok(result),
+            }),
+            Err(super::memory_write::WriteFailure::NotCommitted(error)) => {
+                return retry_or_report(
+                    eval,
+                    machine,
+                    memory.continuation,
+                    memory.span,
+                    format!("memory write was not committed: {}", error.message),
+                );
+            }
+            Err(super::memory_write::WriteFailure::Terminal(error)) => {
+                return Some(ControlSignal::runtime_fault(error.message, memory.span));
+            }
+        }
+    } else {
+        super::memory_pages::dispatch_read(eval, host, memory.request.clone()).await
+    };
+    match response {
         Ok(response) => match response.result {
             Ok(etas_host::MemoryResult::Conflict(conflict)) => {
                 Some(eval.memory_conflict_signal(memory, conflict))
@@ -72,34 +101,39 @@ pub(in crate::driver) async fn dispatch(
                     Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),
                 }
             }
-            Err(error) => retry_or_report(
-                eval,
-                machine,
-                memory.continuation,
-                memory.span,
-                format!("memory host boundary failed: {}", error.message),
-            ),
+            Err(error) => report_dispatched_error(eval, machine, memory, error),
         },
-        Err(error) => retry_or_report(
-            eval,
-            machine,
-            memory.continuation,
-            memory.span,
-            format!("memory host boundary failed: {}", error.message),
-        ),
+        Err(error) => report_dispatched_error(eval, machine, memory, error),
     }
+}
+
+fn report_dispatched_error(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    memory: PendingMemory,
+    error: HostError,
+) -> Option<ControlSignal> {
+    retry_or_report(
+        eval,
+        machine,
+        memory.continuation,
+        memory.span,
+        format!("memory host boundary failed: {}", error.message),
+    )
 }
 
 fn policy_subject(request: &MemoryRequest) -> PolicySubject {
     let (operation, effect_action, expected_version) = match &request.operation {
         MemoryOperation::Get { .. } => ("get", "read", None),
-        MemoryOperation::Put { expected, mode, .. } => match mode {
-            etas_host::MemoryWriteMode::Insert => ("insert", "write", expected.as_ref()),
-            etas_host::MemoryWriteMode::Update => ("update", "write", expected.as_ref()),
-            etas_host::MemoryWriteMode::Upsert => ("upsert", "write", expected.as_ref()),
-            etas_host::MemoryWriteMode::Put => ("put", "write", expected.as_ref()),
+        MemoryOperation::Put { condition, .. } => match condition {
+            etas_host::WriteCondition::Missing => ("insert", "write", None),
+            etas_host::WriteCondition::Exists => ("update", "write", None),
+            etas_host::WriteCondition::Any => ("put", "write", None),
+            etas_host::WriteCondition::Match(version) => ("put", "write", Some(version)),
         },
-        MemoryOperation::Delete { expected, .. } => ("delete", "write", expected.as_ref()),
+        MemoryOperation::Delete { condition, .. } => {
+            ("delete", "write", condition.expected_version())
+        }
         MemoryOperation::Scan { .. } => ("scan", "read", None),
         MemoryOperation::Query { .. } => ("query", "read", None),
         MemoryOperation::VectorSearch { .. } => ("vector_search", "read", None),
@@ -135,7 +169,7 @@ fn policy_subject(request: &MemoryRequest) -> PolicySubject {
     if let Some(version) = expected_version {
         attributes.push((
             "expected_version".to_owned(),
-            HostValue::String(version.opaque.clone()),
+            HostValue::String(version.as_token().to_owned()),
         ));
     }
     PolicySubject {
@@ -151,6 +185,9 @@ pub(in crate::driver) async fn validate_replayed_memory_version(
     replayed: &InterpValue,
 ) -> bool {
     match (&memory.request.operation, memory.decode) {
+        (MemoryOperation::Scan { .. }, crate::eval::MemoryDecode::Page { .. }) => {
+            validate_replayed_memory_page(eval, host, memory, replayed).await
+        }
         (MemoryOperation::Get { .. }, _) => {
             validate_replayed_memory_get_version(eval, host, memory, replayed).await
         }
@@ -163,6 +200,41 @@ pub(in crate::driver) async fn validate_replayed_memory_version(
         ) => validate_replayed_memory_scan_versions(eval, host, memory, replayed).await,
         _ => true,
     }
+}
+
+async fn validate_replayed_memory_page(
+    eval: &mut EvalContext<'_>,
+    host: &dyn HostServices,
+    memory: &PendingMemory,
+    replayed: &InterpValue,
+) -> bool {
+    if !check_replay_budget(eval, memory) {
+        return false;
+    }
+    let result = match dispatch_memory_request(eval, host, memory.request.clone()).await {
+        Ok(response) => response.result,
+        Err(error) => Err(error),
+    };
+    let message = match result {
+        Ok(result) => match eval.memory_result_value(memory, result) {
+            Ok(actual) if &actual == replayed => return true,
+            Ok(_) => "checkpoint memory page no longer matches the recorded page".to_owned(),
+            Err(fault) => {
+                eval.diagnostics.push(fault.into_diagnostic());
+                return false;
+            }
+        },
+        Err(error) => format!(
+            "checkpoint memory page validation failed: {}",
+            error.message
+        ),
+    };
+    eval.diagnostics.push(Diagnostic::analysis(
+        AnalysisDiagnosticCode::UnhandledRuntimeError,
+        memory.span,
+        message,
+    ));
+    false
 }
 
 pub(in crate::driver) async fn validate_replayed_memory_get_version(
@@ -215,7 +287,7 @@ pub(in crate::driver) async fn validate_replayed_memory_get_version(
         }
     };
     let actual_version = match response.result {
-        Ok(MemoryResult::Value { version, .. }) => Some(version.opaque),
+        Ok(MemoryResult::Value { version, .. }) => Some(version.as_token().to_owned()),
         Ok(MemoryResult::None) => None,
         Ok(other) => {
             eval.diagnostics.push(Diagnostic::analysis(
@@ -290,7 +362,7 @@ pub(in crate::driver) async fn validate_replayed_memory_absence(
                 memory.span,
                 format!(
                     "checkpoint memory absence replay mismatch for `{resource}`: expected <none>, actual {}",
-                    version.opaque
+                    version.as_token().to_owned()
                 ),
             ));
             false
@@ -350,17 +422,18 @@ pub(in crate::driver) async fn validate_replayed_memory_scan_versions(
         };
         expected_versions.insert(resource, version);
     }
-    let response = match dispatch_memory_request(eval, host, memory.request.clone()).await {
-        Ok(response) => response,
-        Err(error) => {
-            eval.diagnostics.push(Diagnostic::analysis(
-                AnalysisDiagnosticCode::UnhandledRuntimeError,
-                memory.span,
-                format!("memory scan version validation failed: {}", error.message),
-            ));
-            return false;
-        }
-    };
+    let response =
+        match super::memory_pages::dispatch_read(eval, host, memory.request.clone()).await {
+            Ok(response) => response,
+            Err(error) => {
+                eval.diagnostics.push(Diagnostic::analysis(
+                    AnalysisDiagnosticCode::UnhandledRuntimeError,
+                    memory.span,
+                    format!("memory scan version validation failed: {}", error.message),
+                ));
+                return false;
+            }
+        };
     let entries = match response.result {
         Ok(MemoryResult::Entries { entries, .. }) => entries,
         Ok(other) => {
@@ -385,7 +458,7 @@ pub(in crate::driver) async fn validate_replayed_memory_scan_versions(
         .map(|entry| {
             (
                 eval.memory_resource_for_key(memory, &entry.key),
-                entry.version.opaque.clone(),
+                entry.version.as_token().to_owned(),
             )
         })
         .collect::<BTreeMap<_, _>>();
@@ -442,7 +515,7 @@ fn check_replay_budget(eval: &mut EvalContext<'_>, memory: &PendingMemory) -> bo
     true
 }
 
-async fn dispatch_memory_request(
+pub(super) async fn dispatch_memory_request(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
     request: MemoryRequest,
@@ -460,7 +533,7 @@ async fn dispatch_memory_request(
         trace_payload,
         authority,
         trace,
-        host.memory(request),
+        |operation| host.memory(operation, request),
     )
     .await
 }

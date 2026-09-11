@@ -9,7 +9,7 @@ use etas_types::TypeId;
 use crate::api::ExecutionLimits;
 use crate::value::{
     HostJsonSupportValue, InterpValue, MemorySelectionKind, MessageRoleValue, ModelResponseValue,
-    PromptMessage, ProvenanceValue, RangeBounds, SessionSummaryValue,
+    PromptMessage, ProvenanceValue, RangeBounds,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -34,9 +34,25 @@ pub struct InterpreterCheckpoint {
     pub trace: TraceSnapshot,
     pub execution_progress: ExecutionProgressSnapshot,
     pub host_state: CheckpointHostState,
+    pub storage: StorageSnapshot,
     pub current_session: Option<String>,
     pub resource_versions: ResourceVersionSnapshot,
     pub completed_host_boundaries: HostBoundaryLedger,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageSnapshot {
+    pub identity: etas_host::StorageOperationKey,
+    pub operations: std::collections::BTreeMap<u32, etas_host::StorageOperationRef>,
+    pub writes: Vec<StorageWriteRecord>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct StorageWriteRecord {
+    pub request: u32,
+    pub evidence: etas_host::StorageWriteEvidence,
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -134,6 +150,7 @@ pub(crate) struct LocalsSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ValueSnapshot {
+    MemoryWriteIntent(Box<crate::value::MemoryWriteIntentValue>),
     Unit,
     Bool(bool),
     Number(crate::value::NumericValue),
@@ -233,9 +250,10 @@ pub(crate) struct MessageSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ConversationSnapshot {
+    pub(crate) selected_context: Option<etas_host::session::SessionPublishedContext>,
     pub(crate) session: String,
+    pub(crate) history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub(crate) messages: Vec<MessageSnapshot>,
-    pub(crate) summary: Option<SessionSummaryValue>,
     pub(crate) cursor: Option<String>,
 }
 
@@ -380,7 +398,9 @@ pub(crate) enum ContinuationSnapshot {
         bounds: HirRangeBounds,
     },
     RecordField {
+        expr: HirExprId,
         nominal_type: Option<TypeId>,
+        variant_symbol: Option<SymbolId>,
         fields: Vec<HirFieldInit>,
         next_index: usize,
         values: Vec<(String, ValueSnapshot)>,
@@ -515,6 +535,7 @@ pub(crate) enum ContinuationSnapshot {
         path: Vec<String>,
         key_type: TypeId,
         value_type: TypeId,
+        result_type: etas_types::TypeId,
         method: String,
         args: Vec<HirArg>,
         next_arg_index: usize,
@@ -677,7 +698,7 @@ pub(crate) struct ModelLoopFrameSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct PendingModelSnapshot {
-    pub(crate) request: etas_host::ModelRequest,
+    pub(crate) request: super::ModelRequestSnapshot,
     pub(crate) decode: ModelDecodeSnapshot,
     pub(crate) max_tool_rounds: usize,
     pub(crate) source_tools: Vec<SourceToolBindingSnapshot>,

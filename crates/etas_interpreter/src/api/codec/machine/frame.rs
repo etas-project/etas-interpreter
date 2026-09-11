@@ -5,7 +5,7 @@ use etas_hir::{HirBlockId, HirPatId, HirTypeId, ScopeId, SymbolId};
 use serde_json::{Value, json};
 
 use crate::{
-    api::codec::value_from_json, control::Frame, orchestration::ActiveHandlerArmRecord,
+    api::codec::value_from_json_with_limits, control::Frame, orchestration::ActiveHandlerArmRecord,
     plan::SlotLayoutTable,
 };
 
@@ -51,11 +51,12 @@ pub(super) fn handler_arm_from_snapshot(value: &Value) -> Result<ActiveHandlerAr
 }
 
 pub(super) fn frame_from_snapshot(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     slots: Arc<SlotLayoutTable>,
 ) -> Result<Frame, String> {
     if slots.slot_count() == 0 {
-        return frame_from_artifact_snapshot(value);
+        return frame_from_artifact_snapshot(limits, value);
     }
     let locals = required(value, "locals")?
         .as_array()
@@ -70,14 +71,17 @@ pub(super) fn frame_from_snapshot(
                 symbol.0
             ));
         }
-        let value =
-            value_from_json(required(local, "value")?).map_err(|error| error.to_string())?;
+        let value = value_from_json_with_limits(limits, required(local, "value")?)
+            .map_err(|error| error.to_string())?;
         frame.insert(symbol, value);
     }
     Ok(frame)
 }
 
-pub(super) fn frame_from_artifact_snapshot(value: &Value) -> Result<Frame, String> {
+pub(super) fn frame_from_artifact_snapshot(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<Frame, String> {
     let locals = required(value, "locals")?
         .as_array()
         .ok_or_else(|| "machine frame `locals` must be an array".to_owned())?
@@ -85,7 +89,8 @@ pub(super) fn frame_from_artifact_snapshot(value: &Value) -> Result<Frame, Strin
         .map(|local| {
             Ok((
                 SymbolId(required_u32(local, "symbol")?),
-                value_from_json(required(local, "value")?).map_err(|error| error.to_string())?,
+                value_from_json_with_limits(limits, required(local, "value")?)
+                    .map_err(|error| error.to_string())?,
             ))
         })
         .collect::<Result<Vec<_>, String>>()?;

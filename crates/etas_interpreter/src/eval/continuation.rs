@@ -147,6 +147,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Resume(value) => self.propagate_resume_to_continuation(value, outer),
             ControlSignal::Finish(value) => self.propagate_finish_to_continuation(value, outer),
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             signal @ (ControlSignal::Break | ControlSignal::Continue) => {
                 if let Continuation::RetryAttempt { retry, .. } = &outer {
                     self.finish_retry_attempt_success(retry);
@@ -461,19 +462,26 @@ impl<'a> EvalContext<'a> {
             } => self.resume_range_start(value, end, bounds, &mut frame),
             Continuation::RangeEnd { start, bounds } => self.finish_range(start, value, bounds),
             Continuation::RecordField {
-                nominal_type,
+                expr,
+                nominal_type: _,
+                variant_symbol: _,
                 fields,
                 next_index,
-                values,
+                mut values,
                 mut frame,
-            } => self.resume_record_field_value(
-                nominal_type,
-                fields,
-                next_index,
-                values,
-                value,
-                &mut frame,
-            ),
+            } => {
+                let Some(etas_hir::HirFieldInit::Named { name, .. }) = next_index
+                    .checked_sub(1)
+                    .and_then(|index| fields.get(index))
+                else {
+                    return ControlSignal::missing_checked_fact(
+                        "record field continuation does not point at a named field",
+                        item_span(self.checked, self.entry_item),
+                    );
+                };
+                values.push((name.clone(), value));
+                self.resume_record_fields(expr, fields, next_index, values, &mut frame)
+            }
             Continuation::MapKey {
                 entries,
                 index,
@@ -719,6 +727,8 @@ impl<'a> EvalContext<'a> {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,
@@ -733,6 +743,8 @@ impl<'a> EvalContext<'a> {
                         path,
                         key_type,
                         value_type,
+
+                        result_type,
                         method,
                         args,
                         start_arg_index: next_arg_index,

@@ -73,6 +73,8 @@ impl Default for ExecutionLimits {
 
 #[derive(Clone, Debug, Default)]
 pub struct RunOptions {
+    pub storage_limits: etas_host::StorageLimits,
+    pub event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
     pub plan: PlanOptions,
     pub execution_limits: ExecutionLimits,
     pub host_context: HostExecutionContext,

@@ -28,7 +28,8 @@ flow main() -> unit {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.checkpoints.len(), 1);
@@ -50,10 +51,11 @@ flow main() -> unit {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::Unit));
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::Unit));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -109,11 +111,12 @@ flow main() -> string {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("recovered".to_owned()))
     );
     assert_eq!(host.model_call_count(), 2);
@@ -194,11 +197,12 @@ flow main() -> string {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("recovered:after".to_owned()))
     );
 }
@@ -274,11 +278,12 @@ flow main() -> string ![Error<IOError>] {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("reviewed:done".to_owned()))
     );
     assert_eq!(host.stdout_text(), "reviewed\nafter\n");
@@ -314,10 +319,11 @@ flow main() -> i32 {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(24)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(24)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -353,9 +359,10 @@ flow main() -> i32 {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     let terminal = result
         .diagnostics
         .iter()
@@ -397,9 +404,10 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::UnhandledRuntimeError)
             && diagnostic
@@ -503,10 +511,14 @@ flow main(value: i32) -> i32 {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(depth)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::i32(depth))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -542,9 +554,10 @@ flow main() -> i32 {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::UnhandledRuntimeError)
             && diagnostic
@@ -617,11 +630,12 @@ flow main() -> string {
                 ..Default::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String(
             "recovered through tool".to_owned()
         ))
@@ -678,12 +692,8 @@ flow main() -> string ![Memory.write, Error<MemoryConflict>] {
 
     let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     host.seed_memory_conflict(etas_host::MemoryConflict {
-        expected: Some(etas_host::MemoryVersion {
-            opaque: "v0".to_owned(),
-        }),
-        actual: Some(etas_host::MemoryVersion {
-            opaque: "v1".to_owned(),
-        }),
+        expected: Some(crate::testing::host::fake_memory_version("v0")),
+        actual: Some(crate::testing::host::fake_memory_version("v1")),
         current_value: Some(HostValue::String("existing".to_owned())),
     });
 
@@ -697,11 +707,12 @@ flow main() -> string ![Memory.write, Error<MemoryConflict>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("written".to_owned()))
     );
     assert_eq!(host.memory_call_count(), 2);
@@ -764,12 +775,8 @@ flow main() -> string ![Memory.write, Error<MemoryConflict>] {
     let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     for version in ["v1", "v2"] {
         host.seed_memory_conflict(etas_host::MemoryConflict {
-            expected: Some(etas_host::MemoryVersion {
-                opaque: "v0".to_owned(),
-            }),
-            actual: Some(etas_host::MemoryVersion {
-                opaque: version.to_owned(),
-            }),
+            expected: Some(crate::testing::host::fake_memory_version("v0")),
+            actual: Some(crate::testing::host::fake_memory_version(version)),
             current_value: Some(HostValue::String("existing".to_owned())),
         });
     }
@@ -784,9 +791,10 @@ flow main() -> string ![Memory.write, Error<MemoryConflict>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert_eq!(host.memory_call_count(), 2);
     assert!(
         result

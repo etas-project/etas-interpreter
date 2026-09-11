@@ -24,7 +24,8 @@ flow main() -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let checkpoint = first.checkpoints.first().expect("checkpoint record");
@@ -38,11 +39,12 @@ flow main() -> string {
             )),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
-        resumed.value,
+        resumed.value().cloned(),
         Some(value::InterpValue::String("done".to_owned()))
     );
 }
@@ -97,7 +99,8 @@ flow main() -> string {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.checkpoints.len(), 2);
@@ -163,7 +166,8 @@ flow main() -> i32 {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
     let checkpoint = first
         .checkpoints
         .first()
@@ -184,9 +188,10 @@ flow main() -> i32 {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(resumed.value.is_none());
+    assert!(resumed.value().cloned().is_none());
     assert!(resumed.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message
@@ -217,7 +222,8 @@ flow main() -> unit {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
 
     let mut checkpoint = first
@@ -247,9 +253,10 @@ flow main() -> unit {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(rejected.value.is_none());
+    assert!(rejected.value().cloned().is_none());
     assert!(
         rejected.diagnostics.iter().any(|diagnostic| {
             diagnostic
@@ -292,7 +299,8 @@ flow main() -> i32 {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let checkpoint = first.checkpoints.first().expect("checkpoint record");
@@ -312,10 +320,14 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::i32(1000)));
+    assert_eq!(
+        resumed.value().cloned(),
+        Some(value::InterpValue::i32(1000))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -356,7 +368,8 @@ flow main() -> i32 ![Console, Error<IOError>] {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.console_call_count(), 1);
@@ -371,10 +384,14 @@ flow main() -> i32 ![Console, Error<IOError>] {
     let resumed_host = FakeHost::new(availability(&requirements));
     let resumed = Interpreter
         .resume_checkpoint(&checked, &checkpoint, &resumed_host, RunOptions::default())
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::i32(1000)));
+    assert_eq!(
+        resumed.value().cloned(),
+        Some(value::InterpValue::i32(1000))
+    );
     assert_eq!(resumed_host.console_call_count(), 1);
     assert_eq!(resumed_host.stdout_text(), "deep\n");
 }
@@ -415,10 +432,11 @@ flow main() -> i32 {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(1)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(1)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -459,7 +477,8 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let checkpoint = first.checkpoints.first().expect("checkpoint record");
@@ -484,8 +503,9 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
-    assert!(rejected.value.is_none());
+        .await
+        .expect("execution lifecycle infrastructure");
+    assert!(rejected.value().cloned().is_none());
     assert!(
         rejected.diagnostics.iter().any(|diagnostic| diagnostic
             .message
@@ -508,10 +528,11 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::i32(7)));
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::i32(7)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -548,7 +569,8 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let checkpoint = first.checkpoints.first().expect("checkpoint record");
@@ -575,10 +597,11 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::i32(128)));
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::i32(128)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -606,7 +629,8 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let artifact = crate::api::codec::checkpoint_artifact_json(
@@ -624,10 +648,11 @@ flow main() -> i32 {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::i32(42)));
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::i32(42)));
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -672,7 +697,8 @@ flow main(input: string) -> string {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let checkpoint = first.checkpoints.first().expect("checkpoint record");
@@ -696,11 +722,12 @@ flow main(input: string) -> string {
             ])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
-        resumed.value,
+        resumed.value().cloned(),
         Some(value::InterpValue::String("approved".to_owned()))
     );
 }
@@ -730,7 +757,8 @@ flow main() -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let checkpoint = first.checkpoints.first().expect("checkpoint record");
@@ -743,7 +771,8 @@ flow main() -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     let resumed_checkpoint = resumed
@@ -752,7 +781,7 @@ flow main() -> string {
         .expect("resumed checkpoint record");
     assert_eq!(resumed_checkpoint.id.0, 1);
     assert_eq!(
-        resumed.value,
+        resumed.value().cloned(),
         Some(value::InterpValue::String("done".to_owned()))
     );
 }
@@ -782,7 +811,8 @@ flow main() -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let mut checkpoint = first
@@ -811,7 +841,8 @@ flow main() -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     let resumed_checkpoint = resumed

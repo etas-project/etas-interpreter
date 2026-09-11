@@ -17,21 +17,15 @@ pub struct SessionConfigValue {
     pub id: String,
     pub context: Option<Box<InterpValue>>,
     pub retention: Option<Box<InterpValue>>,
-    pub compaction: Option<Box<InterpValue>>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversationValue {
+    pub selected_context: Option<Box<etas_host::session::SessionPublishedContext>>,
     pub session: String,
+    pub history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub messages: Vec<MessageValue>,
-    pub summary: Option<SessionSummaryValue>,
     pub cursor: Option<String>,
-}
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub struct SessionSummaryValue {
-    pub text: String,
-    pub message_count: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

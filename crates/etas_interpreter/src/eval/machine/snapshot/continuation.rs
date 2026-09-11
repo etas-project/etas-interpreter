@@ -134,13 +134,17 @@ impl ContinuationSnapshot {
                 bounds: *bounds,
             },
             Continuation::RecordField {
+                expr,
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values,
                 frame,
             } => Self::RecordField {
+                expr: *expr,
                 nominal_type: *nominal_type,
+                variant_symbol: *variant_symbol,
                 fields: fields.clone(),
                 next_index: *next_index,
                 values: values
@@ -369,6 +373,8 @@ impl ContinuationSnapshot {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,
@@ -380,6 +386,7 @@ impl ContinuationSnapshot {
                 path: path.clone(),
                 key_type: *key_type,
                 value_type: *value_type,
+                result_type: *result_type,
                 method: method.clone(),
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
@@ -751,13 +758,17 @@ impl ContinuationSnapshot {
                 bounds,
             },
             Self::RecordField {
+                expr,
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values,
                 frame,
             } => Continuation::RecordField {
+                expr,
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values: values
@@ -986,6 +997,8 @@ impl ContinuationSnapshot {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,
@@ -997,6 +1010,8 @@ impl ContinuationSnapshot {
                 path,
                 key_type,
                 value_type,
+
+                result_type,
                 method,
                 args,
                 next_arg_index,

@@ -2,12 +2,87 @@ use super::*;
 use crate::control::ExecutionFault;
 
 impl<'a> EvalContext<'a> {
+    pub(super) fn named_variant_symbol(
+        &self,
+        path: Option<&etas_hir::ResolvedPath>,
+    ) -> Option<SymbolId> {
+        let ResolveResult::Resolved(symbol) = path?.resolution else {
+            return None;
+        };
+        matches!(
+            self.checked.symbols.get(symbol)?.def,
+            SymbolDef::EnumVariant { .. }
+        )
+        .then_some(symbol)
+    }
+
+    pub(super) fn eval_named_variant(
+        &self,
+        symbol: SymbolId,
+        values: Vec<(String, InterpValue)>,
+        span: Span,
+    ) -> Result<InterpValue, ExecutionFault> {
+        let missing = || {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "named enum constructor has no checked field layout",
+            )
+        };
+        let SymbolDef::EnumVariant {
+            enum_item,
+            variant_index,
+        } = self.checked.symbols.get(symbol).ok_or_else(missing)?.def
+        else {
+            return Err(missing());
+        };
+        let Some(HirItem::Enum(decl)) = self.checked.hir.items.get(enum_item) else {
+            return Err(missing());
+        };
+        let names = decl
+            .variants
+            .get(variant_index as usize)
+            .and_then(|variant| variant.field_names.as_ref())
+            .ok_or_else(missing)?;
+        if values.len() != names.len() {
+            return Err(missing());
+        }
+        let mut fields = Vec::new();
+        for name in names {
+            let mut matching = values.iter().filter(|(key, _)| key == name);
+            let (_, value) = matching.next().ok_or_else(missing)?;
+            if matching.next().is_some() {
+                return Err(missing());
+            }
+            fields.push(value.clone());
+        }
+        self.eval_variant_constructor(symbol, fields, span)
+    }
+
     pub(super) fn eval_variant_constructor(
         &self,
         symbol: SymbolId,
         fields: Vec<InterpValue>,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
+        if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
+            if fields.len() != constructor.arity {
+                return Err(ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    span,
+                    format!(
+                        "enum constructor `{}` expects {} arguments, got {}",
+                        constructor.name,
+                        constructor.arity,
+                        fields.len()
+                    ),
+                ));
+            }
+            return Ok(InterpValue::Variant {
+                name: constructor.name.clone(),
+                fields,
+            });
+        }
         let Some(symbol_data) = self.checked.symbols.get(symbol) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -53,14 +128,10 @@ impl<'a> EvalContext<'a> {
                 ),
             ));
         }
-        match (symbol_data.name.as_str(), fields.as_slice()) {
-            ("None", []) => Ok(InterpValue::OptionNone),
-            ("Some", [value]) => Ok(InterpValue::OptionSome(Box::new(value.clone()))),
-            _ => Ok(InterpValue::Variant {
-                name: symbol_data.name.clone(),
-                fields,
-            }),
-        }
+        Ok(InterpValue::Variant {
+            name: symbol_data.name.clone(),
+            fields,
+        })
     }
 
     pub(super) fn resume_variant_args(
@@ -107,6 +178,7 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Finish(value) => return ControlSignal::Finish(value),
                 ControlSignal::Break => return ControlSignal::Break,
                 ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
+                ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }

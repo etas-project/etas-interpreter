@@ -179,7 +179,7 @@ impl<'a> EvalContext<'a> {
         args: &[InterpValue],
         span: Span,
     ) -> ControlSignal {
-        if !matches!(method, "load" | "compact") {
+        if method != "load" {
             return unsupported_method(span, "Conversation type", method);
         }
         let [session] = args else {
@@ -223,16 +223,9 @@ impl<'a> EvalContext<'a> {
                 );
             }
         };
-        let decode = match method {
-            "load" => SessionDecode::ResolveThenLoadConversation {
-                config: session_config,
-                payload_type,
-            },
-            "compact" => SessionDecode::ResolveThenCompactConversation {
-                config: session_config,
-                payload_type,
-            },
-            _ => unreachable!("conversation method was checked above"),
+        let decode = SessionDecode::ResolveThenLoadConversation {
+            config: session_config,
+            payload_type,
         };
         ControlSignal::pending_session(PendingSession {
             request: etas_host::SessionRequest {

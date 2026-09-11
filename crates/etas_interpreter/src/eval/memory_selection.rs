@@ -75,6 +75,7 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Finish(value) => return ControlSignal::Finish(value),
                 ControlSignal::Break => return ControlSignal::Break,
                 ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
+                ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }
@@ -149,19 +150,32 @@ impl<'a> EvalContext<'a> {
         };
         let request_id = HostRequestId(self.next_host_request);
         self.next_host_request += 1;
+        let store = StoreRef {
+            region: MemoryRegionRef {
+                stable_id: region_stable_id.clone(),
+                schema_fingerprint: None,
+            },
+            path: path.clone(),
+        };
+        // Finish the fenced scan before mutating. Delete only captured versions,
+        // never a concurrent replacement; clear is not an atomic transaction.
+        let resource = super::boundary_memory::memory_resource_key(&store, &key);
+        let Some(version) = self
+            .recorded_memory_version(&resource)
+            .and_then(|version| etas_host::MemoryVersion::parse(version).ok())
+        else {
+            return ControlSignal::runtime_fault(
+                "memory clear is missing its captured key version",
+                span,
+            );
+        };
         ControlSignal::pending_memory(PendingMemory {
             request: MemoryRequest {
                 id: request_id,
-                store: StoreRef {
-                    region: MemoryRegionRef {
-                        stable_id: region_stable_id.clone(),
-                        schema_fingerprint: None,
-                    },
-                    path: path.clone(),
-                },
+                store,
                 operation: MemoryOperation::Delete {
                     key,
-                    expected: None,
+                    condition: WriteCondition::Match(version),
                 },
                 authority: self.host_authority(),
                 trace: self.host_trace(),

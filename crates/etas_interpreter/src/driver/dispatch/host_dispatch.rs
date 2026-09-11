@@ -13,23 +13,34 @@ use crate::{eval::EvalContext, orchestration::WorkflowEvent};
 pub(super) struct HostDispatch;
 
 impl HostDispatch {
-    pub(super) async fn execute<Response, Call>(
+    pub(super) async fn execute<Response, Call, Dispatch>(
         eval: &mut EvalContext<'_>,
         request_id: HostRequestId,
         kind: HostRequestKind,
         trace_payload: HostTracePayload,
         authority: etas_host::AuthorityContext,
         trace: TraceContext,
-        call: Call,
+        call: Dispatch,
     ) -> Result<Response, HostError>
     where
         Response: TraceableHostResponse,
         Call: Future<Output = Result<Response, HostError>>,
+        Dispatch: FnOnce(etas_host::execution::OperationContext) -> Call,
     {
         let metadata =
             HostTraceMetadata::from_payload(&trace_payload, eval.host_trace_digest_key()?)?;
         let started_at_unix_micros = unix_timestamp_micros()?;
         let started = Instant::now();
+        let operation = eval
+            .execution
+            .register(None, Some(request_id), trace.clone())?;
+        if let Err(error) = operation.begin_dispatch() {
+            operation.complete(
+                etas_host::execution::ExternalOutcome::NotDispatched,
+                Vec::new(),
+            )?;
+            return Err(error);
+        }
         eval.events
             .push(WorkflowEvent::HostTrace(TraceEvent::HostRequestStarted {
                 id: request_id,
@@ -39,7 +50,7 @@ impl HostDispatch {
                 trace,
                 started_at_unix_micros,
             }));
-        let result = match call.await {
+        let result = match call(operation.context().clone()).await {
             Ok(response) => {
                 let response_id = response.response_id();
                 if response_id != request_id {
@@ -55,6 +66,26 @@ impl HostDispatch {
             }
             Err(error) => Err(error),
         };
+        let outcome = match &result {
+            Ok(response) => response.outcome(),
+            Err(error) => HostOutcome::Failed(error.clone()),
+        };
+        let external = match &result {
+            Ok(response) => response.external_outcome(),
+            Err(_) => etas_host::execution::ExternalOutcome::Unknown,
+        };
+        if let etas_host::execution::ExternalOutcome::StorageWrite(evidence) = &external {
+            eval.storage_writes
+                .push(crate::orchestration::StorageWriteRecord {
+                    request: request_id.0,
+                    evidence: evidence.clone(),
+                });
+            eval.events.push(WorkflowEvent::StorageWrite {
+                request: request_id,
+                evidence: evidence.clone(),
+            });
+        }
+        operation.complete(external, Vec::new())?;
         let finished_at_unix_micros = unix_timestamp_micros()?;
         let duration_micros = u64::try_from(started.elapsed().as_micros()).map_err(|_| {
             HostError::new(
@@ -62,28 +93,30 @@ impl HostDispatch {
                 "host request duration exceeded trace ABI range",
             )
         })?;
-        let outcome = match &result {
-            Ok(response) => response.outcome(),
-            Err(error) => HostOutcome::Failed(error.clone()),
-        };
         eval.events
             .push(WorkflowEvent::HostTrace(TraceEvent::HostRequestFinished {
                 id: request_id,
                 outcome,
+                command_isolation: result
+                    .as_ref()
+                    .ok()
+                    .and_then(|response| response.command_isolation()),
                 finished_at_unix_micros,
                 duration_micros,
             }));
+        eval.execution.signal()?.check()?;
         result
     }
 
-    pub(super) async fn execute_approval<Call>(
+    pub(super) async fn execute_approval<Call, Dispatch>(
         eval: &mut EvalContext<'_>,
         request: etas_host::ApprovalRequest,
         authority: etas_host::AuthorityContext,
-        call: Call,
+        call: Dispatch,
     ) -> Result<ApprovalResponse, HostError>
     where
         Call: Future<Output = Result<ApprovalResponse, HostError>>,
+        Dispatch: FnOnce(etas_host::execution::OperationContext) -> Call,
     {
         let id = request.id;
         let trace = request.trace.clone();
@@ -98,8 +131,8 @@ impl HostDispatch {
             }));
         let expected = request;
         let budget = eval.host_budget();
-        let checked_call = async move {
-            let response = await_approval_response(call, budget).await?;
+        let checked_call = |operation| async move {
+            let response = await_approval_response(call(operation), budget).await?;
             validate_approval_response(&expected, &response)?;
             Ok(response)
         };
@@ -151,9 +184,12 @@ fn unix_timestamp_micros() -> Result<u64, HostError> {
     })
 }
 
-pub(super) trait TraceableHostResponse {
+pub(super) trait TraceableHostResponse: etas_host::execution::OperationResponse {
     fn response_id(&self) -> HostRequestId;
     fn outcome(&self) -> HostOutcome;
+    fn command_isolation(&self) -> Option<etas_host::CommandIsolationReport> {
+        None
+    }
 }
 
 macro_rules! result_response {
@@ -177,11 +213,73 @@ result_response!(ToolResponse);
 result_response!(MemoryResponse);
 result_response!(SessionResponse);
 result_response!(FilesystemResponse);
-result_response!(CommandResponse);
 result_response!(TcpConnectResponse);
 result_response!(TlsConnectResponse);
 result_response!(SecretResponse);
 result_response!(BrowserProtocolResponse);
+
+impl TraceableHostResponse for etas_host::memory::MemoryWriteResponse {
+    fn response_id(&self) -> HostRequestId {
+        self.id
+    }
+    fn outcome(&self) -> HostOutcome {
+        use etas_host::{
+            WriteOutcome,
+            memory::{MemoryNotCommitted, MemoryWriteResult},
+        };
+        match &self.result {
+            Err(error)
+            | Ok(MemoryWriteResult::Outcome(WriteOutcome::Unknown { error, .. }))
+            | Ok(MemoryWriteResult::Outcome(WriteOutcome::NotCommitted {
+                reason: MemoryNotCommitted::Rejected(error),
+                ..
+            })) => HostOutcome::Failed(error.clone()),
+            Ok(_) => HostOutcome::Succeeded,
+        }
+    }
+}
+
+impl TraceableHostResponse for etas_host::session::SessionWriteResponse {
+    fn response_id(&self) -> HostRequestId {
+        self.id
+    }
+    fn outcome(&self) -> HostOutcome {
+        use etas_host::{WriteOutcome, session::SessionWriteResult};
+        match &self.result {
+            Err(error)
+            | Ok(SessionWriteResult::Context(WriteOutcome::Unknown { error, .. }))
+            | Ok(SessionWriteResult::Context(WriteOutcome::NotCommitted {
+                reason: etas_host::session::SessionContextRejection::Rejected(error),
+                ..
+            }))
+            | Ok(SessionWriteResult::Outcome(WriteOutcome::Unknown { error, .. }))
+            | Ok(SessionWriteResult::Outcome(WriteOutcome::NotCommitted {
+                reason: error, ..
+            })) => HostOutcome::Failed(error.clone()),
+            Ok(_) => HostOutcome::Succeeded,
+        }
+    }
+}
+
+impl TraceableHostResponse for CommandResponse {
+    fn response_id(&self) -> HostRequestId {
+        self.id
+    }
+
+    fn outcome(&self) -> HostOutcome {
+        match &self.result {
+            Ok(_) => HostOutcome::Succeeded,
+            Err(error) => HostOutcome::Failed(error.clone()),
+        }
+    }
+
+    fn command_isolation(&self) -> Option<etas_host::CommandIsolationReport> {
+        self.result
+            .as_ref()
+            .ok()
+            .map(|output| output.isolation.clone())
+    }
+}
 
 impl TraceableHostResponse for ModelResponse {
     fn response_id(&self) -> HostRequestId {

@@ -50,7 +50,8 @@ flow main() -> Prompt {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.memory_call_count(), 1);
@@ -60,11 +61,15 @@ flow main() -> Prompt {
         vec![
             crate::orchestration::ResourceVersionRecord {
                 resource: "memory:project_memory:Papers:\"paper-1\"".to_owned(),
-                version: "v1".to_owned(),
+                version: crate::testing::host::fake_memory_version("v1")
+                    .as_token()
+                    .to_owned(),
             },
             crate::orchestration::ResourceVersionRecord {
                 resource: "memory:project_memory:Papers:\"paper-2\"".to_owned(),
-                version: "v1".to_owned(),
+                version: crate::testing::host::fake_memory_version("v1")
+                    .as_token()
+                    .to_owned(),
             },
         ]
     );
@@ -93,11 +98,12 @@ flow main() -> Prompt {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    let Some(value::InterpValue::Prompt(messages)) = resumed.value else {
-        panic!("expected prompt value, got {:?}", resumed.value);
+    let Some(value::InterpValue::Prompt(messages)) = resumed.value().cloned() else {
+        panic!("expected prompt value, got {:?}", resumed.value().cloned());
     };
     assert_eq!(messages.len(), 1);
     assert!(messages[0].text.contains(r#""key":"paper-1""#));
@@ -165,7 +171,8 @@ flow main() -> Prompt {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let mut replay_checkpoint = first.checkpoints[0].clone();
@@ -196,9 +203,10 @@ flow main() -> Prompt {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(resumed.value.is_none());
+    assert!(resumed.value().cloned().is_none());
     assert!(
         resumed
             .diagnostics
@@ -260,7 +268,8 @@ flow main() -> Option<string> {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.memory_call_count(), 1);
@@ -269,7 +278,9 @@ flow main() -> Option<string> {
         first.checkpoints[1].resource_versions.versions,
         vec![crate::orchestration::ResourceVersionRecord {
             resource: "memory:project_memory:Papers:\"paper-1\"".to_owned(),
-            version: "v1".to_owned(),
+            version: crate::testing::host::fake_memory_version("v1")
+                .as_token()
+                .to_owned(),
         }]
     );
 
@@ -295,11 +306,12 @@ flow main() -> Option<string> {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
-        resumed.value,
+        resumed.value().cloned(),
         Some(value::InterpValue::OptionSome(Box::new(
             value::InterpValue::String("draft".to_owned()),
         )))
@@ -361,7 +373,8 @@ flow main() -> Option<string> {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let mut replay_checkpoint = first.checkpoints[0].clone();
@@ -380,9 +393,10 @@ flow main() -> Option<string> {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(resumed.value.is_none());
+    assert!(resumed.value().cloned().is_none());
     assert!(
         resumed
             .diagnostics
@@ -434,7 +448,8 @@ flow main() -> Option<string> {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.memory_call_count(), 1);
@@ -456,10 +471,14 @@ flow main() -> Option<string> {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::OptionNone));
+    assert_eq!(
+        resumed.value().cloned(),
+        Some(value::InterpValue::OptionNone)
+    );
     assert_eq!(replay_host.memory_call_count(), 1);
     assert!(resumed.events.iter().any(|event| matches!(
         event,
@@ -511,7 +530,8 @@ flow main() -> Option<string> {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let mut replay_checkpoint = first.checkpoints[0].clone();
@@ -536,9 +556,10 @@ flow main() -> Option<string> {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(resumed.value.is_none());
+    assert!(resumed.value().cloned().is_none());
     assert!(
         resumed.diagnostics.iter().any(|diagnostic| diagnostic
             .message
@@ -601,7 +622,8 @@ flow main() -> List<string> {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.memory_call_count(), 1);
@@ -611,11 +633,15 @@ flow main() -> List<string> {
         vec![
             crate::orchestration::ResourceVersionRecord {
                 resource: "memory:project_memory:Papers:\"paper-1\"".to_owned(),
-                version: "v1".to_owned(),
+                version: crate::testing::host::fake_memory_version("v1")
+                    .as_token()
+                    .to_owned(),
             },
             crate::orchestration::ResourceVersionRecord {
                 resource: "memory:project_memory:Papers:\"paper-2\"".to_owned(),
-                version: "v1".to_owned(),
+                version: crate::testing::host::fake_memory_version("v1")
+                    .as_token()
+                    .to_owned(),
             },
         ]
     );
@@ -648,11 +674,12 @@ flow main() -> List<string> {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
-        resumed.value,
+        resumed.value().cloned(),
         Some(value::InterpValue::List(
             vec![
                 value::InterpValue::String("paper-1".to_owned()),
@@ -718,7 +745,8 @@ flow main() -> List<string> {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     let mut replay_checkpoint = first.checkpoints[0].clone();
@@ -749,9 +777,10 @@ flow main() -> List<string> {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert!(resumed.value.is_none());
+    assert!(resumed.value().cloned().is_none());
     assert!(
         resumed
             .diagnostics
@@ -803,7 +832,8 @@ flow main() -> unit {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.memory_call_count(), 1);
@@ -812,7 +842,9 @@ flow main() -> unit {
         first.checkpoints[1].resource_versions.versions,
         vec![crate::orchestration::ResourceVersionRecord {
             resource: "memory:project_memory:Papers:\"paper-1\"".to_owned(),
-            version: "v1".to_owned(),
+            version: crate::testing::host::fake_memory_version("v1")
+                .as_token()
+                .to_owned(),
         }]
     );
 
@@ -831,10 +863,11 @@ flow main() -> unit {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::Unit));
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::Unit));
     assert_eq!(replay_host.memory_call_count(), 1);
     assert_eq!(
         replay_host.memory_value(
@@ -887,7 +920,8 @@ flow main() -> MemorySelection<string> {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.memory_call_count(), 0);
@@ -908,10 +942,11 @@ flow main() -> MemorySelection<string> {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    let (region_stable_id, path, kind, predicate, limit) = match resumed.value {
+    let (region_stable_id, path, kind, predicate, limit) = match resumed.value().cloned() {
         Some(value::InterpValue::MemorySelection {
             region_stable_id,
             path,

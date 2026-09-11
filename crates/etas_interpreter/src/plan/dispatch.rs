@@ -23,10 +23,17 @@ pub struct IntrinsicDispatchTable {
     pure_abi: PureAbiProjector,
     handlers: StdIntrinsicHandlerRegistry,
     std_intrinsics: HashMap<SymbolId, StdIntrinsicIdentity>,
+    enum_constructors: HashMap<SymbolId, StdEnumConstructor>,
     imported_intrinsics: HashMap<StdIntrinsicId, IntrinsicDispatch>,
     reachable_intrinsics: HashSet<StdIntrinsicId>,
     map_exprs: HashSet<HirExprId>,
     brace_literals: HashMap<HirExprId, BraceLiteralShape>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct StdEnumConstructor {
+    pub name: String,
+    pub arity: usize,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -39,12 +46,42 @@ impl IntrinsicDispatchTable {
     pub(crate) fn for_project(project: &CheckedProject) -> Result<Self, Vec<String>> {
         let handlers = StdIntrinsicHandlerRegistry::build(&project.std_registry);
         let mut std_intrinsics = HashMap::new();
+        let mut enum_constructors = HashMap::new();
         let mut imported_intrinsics = HashMap::new();
         let mut errors = Vec::new();
         for symbol in project.symbols.iter() {
             let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
                 continue;
             };
+            if let Some(std_symbol) = project.std_registry.lookup_qualified(path)
+                && std_symbol.enum_owner.is_some()
+            {
+                let etas_std::StdDecl::Flow(declaration) = &std_symbol.decl else {
+                    errors.push(format!(
+                        "standard enum constructor {} has no signature",
+                        path.join(".")
+                    ));
+                    continue;
+                };
+                if !matches!(
+                    project.types.symbol_types.get(&symbol.id),
+                    Some(etas_types::SymbolTypeFact::Flow { .. })
+                ) {
+                    errors.push(format!(
+                        "standard enum constructor {} has no checked signature",
+                        path.join(".")
+                    ));
+                    continue;
+                }
+                enum_constructors.insert(
+                    symbol.id,
+                    StdEnumConstructor {
+                        name: std_symbol.name.clone(),
+                        arity: declaration.params.len(),
+                    },
+                );
+                continue;
+            }
             let Some(descriptor) = project
                 .std_registry
                 .lookup_qualified(path)
@@ -105,6 +142,7 @@ impl IntrinsicDispatchTable {
             pure_abi,
             handlers,
             std_intrinsics,
+            enum_constructors,
             imported_intrinsics,
             reachable_intrinsics,
             map_exprs,
@@ -114,6 +152,10 @@ impl IntrinsicDispatchTable {
 
     pub fn std_intrinsic(&self, symbol: SymbolId) -> Option<StdIntrinsicIdentity> {
         self.std_intrinsics.get(&symbol).copied()
+    }
+
+    pub(crate) fn enum_constructor(&self, symbol: SymbolId) -> Option<&StdEnumConstructor> {
+        self.enum_constructors.get(&symbol)
     }
 
     pub fn resolve_std_callable(

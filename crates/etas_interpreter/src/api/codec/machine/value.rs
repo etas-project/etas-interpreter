@@ -1,8 +1,9 @@
 use serde_json::Value;
 
-use crate::api::codec::value_from_json;
+use crate::api::codec::value_from_json_with_limits;
 
 pub(super) fn optional_values(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     field: &str,
 ) -> Result<Option<Vec<crate::value::InterpValue>>, String> {
@@ -17,12 +18,13 @@ pub(super) fn optional_values(
         .ok_or_else(|| format!("machine snapshot `{field}` must be an array or null"))?;
     values
         .iter()
-        .map(|value| value_from_json(value).map_err(|error| error.to_string()))
+        .map(|value| value_from_json_with_limits(limits, value).map_err(|error| error.to_string()))
         .collect::<Result<Vec<_>, _>>()
         .map(Some)
 }
 
 pub(super) fn optional_value(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     field: &str,
 ) -> Result<Option<crate::value::InterpValue>, String> {
@@ -32,12 +34,13 @@ pub(super) fn optional_value(
     if value.is_null() {
         return Ok(None);
     }
-    value_from_json(value)
+    value_from_json_with_limits(limits, value)
         .map(Some)
         .map_err(|error| error.to_string())
 }
 
 pub(super) fn required_values(
+    limits: &etas_host::StorageLimits,
     value: &Value,
     field: &str,
 ) -> Result<Vec<crate::value::InterpValue>, String> {
@@ -45,7 +48,7 @@ pub(super) fn required_values(
         .as_array()
         .ok_or_else(|| format!("machine snapshot `{field}` must be an array"))?
         .iter()
-        .map(|value| value_from_json(value).map_err(|error| error.to_string()))
+        .map(|value| value_from_json_with_limits(limits, value).map_err(|error| error.to_string()))
         .collect()
 }
 

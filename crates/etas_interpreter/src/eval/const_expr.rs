@@ -419,6 +419,9 @@ impl<'a> EvalContext<'a> {
                 }
             }
         }
+        if let Some(symbol) = self.named_variant_symbol(record.path.as_ref()) {
+            return self.eval_named_variant(symbol, fields, span);
+        }
         let representation = InterpValue::Record(fields.into());
         if record.path.is_none() {
             return Ok(representation);

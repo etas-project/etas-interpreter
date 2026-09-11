@@ -39,6 +39,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => ControlSignal::Finish(value),
             ControlSignal::Break => ControlSignal::Break,
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             ControlSignal::Continue => ControlSignal::Continue,
         }
     }
@@ -224,20 +225,41 @@ impl<'a> EvalContext<'a> {
                         .map(InterpValue::Message)
                         .collect(),
                 ))),
-                "summary" => Ok(conversation
-                    .summary
-                    .map(|summary| {
-                        InterpValue::OptionSome(Box::new(InterpValue::Record(RecordValue::new(
-                            vec![
-                                ("text".to_owned(), InterpValue::String(summary.text)),
-                                (
-                                    "message_count".to_owned(),
-                                    InterpValue::usize(summary.message_count),
-                                ),
-                            ],
-                        ))))
+                "summary" => {
+                    let Some(context) = conversation.selected_context else {
+                        return Ok(InterpValue::OptionNone);
+                    };
+                    let result_type = super::resolve_std_type(
+                        self.checked,
+                        &["std", "agent", "session", "SessionPublishedContext"],
+                    )
+                    .ok_or_else(|| {
+                        ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "conversation summary lacks checked field type",
+                        )
+                    })?;
+                    let value =
+                        etas_host::session::published_context_value(&context, &self.storage_limits)
+                            .map_err(|e| {
+                                ExecutionFault::new(
+                                    AnalysisDiagnosticCode::InvalidArguments,
+                                    span,
+                                    e.message,
+                                )
+                            })?;
+                    super::host_value::host_to_checked_interp_value(
+                        value,
+                        result_type,
+                        self.checked,
+                        &self.storage_limits,
+                    )
+                    .map(|value| InterpValue::OptionSome(Box::new(value)))
+                    .map_err(|error| {
+                        ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, error)
                     })
-                    .unwrap_or(InterpValue::OptionNone)),
+                }
                 "cursor" => Ok(option_string(conversation.cursor)),
                 _ => Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::InvalidArguments,

@@ -31,9 +31,12 @@ impl ModelLoopFrameSnapshot {
         })
     }
 
-    pub(crate) fn restore(self) -> Result<ModelLoopFrame, String> {
+    pub(crate) fn restore(
+        self,
+        current: &crate::api::HostExecutionContext,
+    ) -> Result<ModelLoopFrame, String> {
         Ok(ModelLoopFrame {
-            pending: self.pending.restore()?,
+            pending: self.pending.restore(current)?,
             round: self.round,
             repair: ModelRepairState {
                 attempts: self.repair.attempts,
@@ -55,7 +58,7 @@ impl ModelLoopFrameSnapshot {
 impl PendingModelSnapshot {
     fn capture(pending: &PendingModel) -> Result<Self, String> {
         Ok(Self {
-            request: pending.request.clone(),
+            request: crate::orchestration::ModelRequestSnapshot::capture(&pending.request),
             decode: match pending.decode {
                 ModelDecode::String => ModelDecodeSnapshot::String,
                 ModelDecode::ModelResponse => ModelDecodeSnapshot::ModelResponse,
@@ -72,9 +75,9 @@ impl PendingModelSnapshot {
         })
     }
 
-    fn restore(self) -> Result<PendingModel, String> {
+    fn restore(self, current: &crate::api::HostExecutionContext) -> Result<PendingModel, String> {
         Ok(PendingModel {
-            request: self.request,
+            request: self.request.restore(current),
             decode: match self.decode {
                 ModelDecodeSnapshot::String => ModelDecode::String,
                 ModelDecodeSnapshot::ModelResponse => ModelDecode::ModelResponse,
@@ -123,7 +126,10 @@ impl SourceToolReturnFrameSnapshot {
         })
     }
 
-    pub(crate) fn restore(self) -> Result<SourceToolReturnFrame, String> {
+    pub(crate) fn restore(
+        self,
+        current: &crate::api::HostExecutionContext,
+    ) -> Result<SourceToolReturnFrame, String> {
         Ok(SourceToolReturnFrame {
             tool_call_id: self.tool_call_id,
             tool_name: self.tool_name,
@@ -131,7 +137,7 @@ impl SourceToolReturnFrameSnapshot {
             args: self.args,
             boundary_key: self.boundary_key,
             output_schema: self.output_schema,
-            model_loop: Box::new(self.model_loop.restore()?),
+            model_loop: Box::new(self.model_loop.restore(current)?),
         })
     }
 }

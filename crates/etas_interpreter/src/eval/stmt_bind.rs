@@ -67,6 +67,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => Some(ControlSignal::Finish(value)),
             ControlSignal::Break => Some(ControlSignal::Break),
             ControlSignal::Fault(fault) => Some(ControlSignal::Fault(fault)),
+            ControlSignal::Cancelled(cause) => Some(ControlSignal::Cancelled(cause)),
             ControlSignal::Continue => Some(ControlSignal::Continue),
         }
     }

@@ -24,7 +24,8 @@ flow main() -> unit {
             &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let checkpoint = result.checkpoints.first().expect("checkpoint snapshot");
@@ -75,11 +76,12 @@ flow main(input: string) -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("approved".to_owned()))
     );
 }
@@ -118,11 +120,12 @@ flow main() -> string {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("fallback".to_owned()))
     );
 }
@@ -160,10 +163,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 0);
 }
 
@@ -205,10 +212,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 0);
 }
 
@@ -248,7 +259,8 @@ flow main(input: string) -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
@@ -257,7 +269,7 @@ flow main(input: string) -> string {
         "{:?}",
         result.diagnostics
     );
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -296,7 +308,8 @@ flow main(input: string) -> string {
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
@@ -305,7 +318,7 @@ flow main(input: string) -> string {
         "{:?}",
         result.diagnostics
     );
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -351,11 +364,12 @@ flow main() -> string ![Console.stdin_read_line, Error<IOError>, Approval.reques
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("resumed\n".to_owned()))
     );
 }
@@ -397,10 +411,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 1);
 }
 
@@ -438,10 +456,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 1);
     assert!(result.events.iter().any(|event| matches!(
         event,
@@ -490,10 +512,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 1);
     assert!(result.events.iter().any(|event| matches!(
         event,
@@ -537,10 +563,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 1);
 }
 
@@ -575,10 +605,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 1);
     assert!(result.events.iter().any(|event| matches!(
         event,
@@ -622,10 +656,14 @@ flow main() -> bool {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(host.approval_call_count(), 2);
 }
 
@@ -696,10 +734,14 @@ flow main() -> bool {
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -775,11 +817,12 @@ flow main() -> string {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::String("outer".to_owned()))
     );
     assert_eq!(host.approval_call_count(), 0);
@@ -819,7 +862,8 @@ flow main() -> bool {
             &first_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first_host.approval_call_count(), 1);
@@ -840,10 +884,14 @@ flow main() -> bool {
             &replay_host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value, Some(value::InterpValue::Bool(true)));
+    assert_eq!(
+        resumed.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
     assert_eq!(replay_host.approval_call_count(), 0);
     assert!(!resumed.events.iter().any(|event| matches!(
         event,

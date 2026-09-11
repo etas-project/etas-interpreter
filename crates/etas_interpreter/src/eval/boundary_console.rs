@@ -51,6 +51,9 @@ impl<'a> EvalContext<'a> {
         console: PendingConsole,
         error: HostError,
     ) -> ControlSignal {
+        if let Some(signal) = self.cancellation_signal(console.span) {
+            return signal;
+        }
         let error_type = match self.standard_io_error_type(console.span) {
             Ok(error_type) => error_type,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),

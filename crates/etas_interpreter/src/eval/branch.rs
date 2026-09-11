@@ -39,6 +39,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => ControlSignal::Finish(value),
             ControlSignal::Break => ControlSignal::Break,
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             ControlSignal::Continue => ControlSignal::Continue,
         }
     }
@@ -76,6 +77,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => ControlSignal::Finish(value),
             ControlSignal::Break => ControlSignal::Break,
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             ControlSignal::Continue => ControlSignal::Continue,
         }
     }
@@ -152,6 +154,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => ControlSignal::Finish(value),
             ControlSignal::Break => ControlSignal::Break,
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             ControlSignal::Continue => ControlSignal::Continue,
         }
     }
@@ -191,6 +194,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Finish(value) => ControlSignal::Finish(value),
             ControlSignal::Break => ControlSignal::Break,
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             ControlSignal::Continue => ControlSignal::Continue,
         }
     }

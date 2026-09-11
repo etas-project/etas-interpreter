@@ -57,7 +57,7 @@ mod advanced_collections;
 mod args;
 mod collections;
 mod dispatch;
-mod helpers;
+pub(super) mod helpers;
 mod local;
 mod message;
 mod prompt;

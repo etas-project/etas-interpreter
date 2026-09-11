@@ -43,15 +43,32 @@ impl<'a> EvalContext<'a> {
         span: Span,
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
+        let checked_call = match checked_call.specialize(&self.checked.type_store, type_bindings) {
+            Ok(call) => call,
+            Err(message) => return ControlSignal::missing_checked_fact(message, span),
+        };
+        let checked_call = &checked_call;
         match kind {
+            StdCallable::SessionContext(kind) => {
+                self.execute_session_context(kind, checked_call, &call_args, span)
+            }
+            StdCallable::SessionHistoryPage => {
+                self.execute_session_history_page(checked_call, &call_args, span)
+            }
+            StdCallable::MemoryIntent(callable) => {
+                self.execute_memory_intent_callable(callable, checked_call, call_args, span)
+            }
             StdCallable::Approval => self.execute_approval_callable(call_args, span),
             StdCallable::Checkpoint => self.execute_checkpoint_callable(call_args, span),
             StdCallable::MemoryRegion => {
                 self.execute_memory_region_callable(checked_call.result_type, call_args, span)
             }
-            StdCallable::MemoryStore(callable) => {
-                self.execute_memory_store_callable(callable, call_args, span)
-            }
+            StdCallable::MemoryStore(callable) => self.execute_memory_store_callable(
+                callable,
+                checked_call.result_type,
+                call_args,
+                span,
+            ),
             StdCallable::MemoryVersionConstructor => {
                 self.execute_memory_version_constructor(call_args, span)
             }
@@ -200,6 +217,7 @@ impl<'a> EvalContext<'a> {
     fn execute_memory_store_callable(
         &mut self,
         callable: crate::intrinsic::dispatch::MemoryStoreCallable,
+        result_type: etas_types::TypeId,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -224,6 +242,7 @@ impl<'a> EvalContext<'a> {
             path,
             key_type,
             value_type,
+            result_type,
             method: memory_store_callable_name(callable).to_owned(),
             evaluated_args: args.collect(),
             span,
@@ -1793,6 +1812,8 @@ fn memory_store_callable_name(
     use crate::intrinsic::dispatch::MemoryStoreCallable;
 
     match callable {
+        MemoryStoreCallable::Page => "page",
+        MemoryStoreCallable::GetEntry => "get_entry",
         MemoryStoreCallable::Get => "get",
         MemoryStoreCallable::Put => "put",
         MemoryStoreCallable::PutVersioned => "put_versioned",

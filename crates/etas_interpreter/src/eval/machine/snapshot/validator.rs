@@ -21,6 +21,7 @@ pub(crate) struct SnapshotValidator<'a> {
     checked: &'a CheckedProject,
     slots: &'a SlotLayoutTable,
     dispatch: &'a IntrinsicDispatchTable,
+    limits: &'a etas_host::StorageLimits,
 }
 
 impl<'a> SnapshotValidator<'a> {
@@ -28,11 +29,13 @@ impl<'a> SnapshotValidator<'a> {
         checked: &'a CheckedProject,
         slots: &'a SlotLayoutTable,
         dispatch: &'a IntrinsicDispatchTable,
+        limits: &'a etas_host::StorageLimits,
     ) -> Self {
         Self {
             checked,
             slots,
             dispatch,
+            limits,
         }
     }
 
@@ -40,6 +43,48 @@ impl<'a> SnapshotValidator<'a> {
         &self,
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<(), String> {
+        for (request, operation) in &checkpoint.storage.operations {
+            operation.validate().map_err(|error| error.to_string())?;
+            if *request >= checkpoint.trace.next_host_request {
+                return Err("checkpoint storage operation refers to a future request".into());
+            }
+        }
+        if checkpoint.storage.operations.len() > self.limits.max_receipts {
+            return Err("checkpoint storage operation ledger exceeds limits".into());
+        }
+        let mut write_ids = BTreeSet::new();
+        for write in &checkpoint.storage.writes {
+            write
+                .evidence
+                .operation
+                .validate()
+                .map_err(|error| error.to_string())?;
+            if write.request >= checkpoint.trace.next_host_request
+                || !write_ids.insert(write.request)
+                || checkpoint.storage.operations.get(&write.request)
+                    != Some(&write.evidence.operation)
+            {
+                return Err(
+                    "checkpoint storage evidence does not belong to its boundary occurrence"
+                        .to_owned(),
+                );
+            }
+            if let etas_host::CommitStatus::Committed { revision, .. } = &write.evidence.status {
+                if revision.starts_with("mv1:") {
+                    etas_host::MemoryVersion::parse(revision).map_err(|error| error.to_string())?;
+                } else if revision.starts_with("sv1:") {
+                    etas_host::session::SessionVersion::parse(revision)
+                        .map_err(|error| error.to_string())?;
+                } else if revision.starts_with("sg1:") {
+                    etas_host::session::SessionGeneration::parse(revision)
+                        .map_err(|error| error.to_string())?;
+                } else {
+                    return Err(
+                        "checkpoint storage evidence has an unknown revision kind".to_owned()
+                    );
+                }
+            }
+        }
         checkpoint
             .execution_progress
             .original_limits
@@ -388,17 +433,40 @@ impl<'a> SnapshotValidator<'a> {
                 self.frame(frame, context)
             }
             ContinuationSnapshot::RecordField {
+                expr,
                 nominal_type,
+                variant_symbol,
                 fields,
                 next_index,
                 values,
                 frame,
             } => {
+                self.record_construction(*expr, *nominal_type, *variant_symbol, fields, context)?;
                 if let Some(ty) = nominal_type {
                     self.type_id(*ty, &format!("{context} nominal record type"))?;
                 }
+                if let Some(symbol) = variant_symbol {
+                    self.named_variant_fields(*symbol, *nominal_type, fields, context)?;
+                }
                 self.fields(fields, context)?;
                 self.index_at_most(*next_index, fields.len(), context)?;
+                let Some(pending) = next_index.checked_sub(1) else {
+                    return Err(format!(
+                        "{context}: record continuation has no pending field"
+                    ));
+                };
+                if !matches!(fields.get(pending), Some(HirFieldInit::Named { .. }))
+                    || values.len() != pending
+                    || values.iter().zip(fields).any(|((actual, _), field)| {
+                        let (HirFieldInit::Named { name, .. }
+                        | HirFieldInit::Shorthand { name, .. }) = field;
+                        actual != name
+                    })
+                {
+                    return Err(format!(
+                        "{context}: record continuation has inconsistent evaluated fields"
+                    ));
+                }
                 for (_, value) in values {
                     self.snapshot_value(value)?;
                 }
@@ -596,6 +664,9 @@ impl<'a> SnapshotValidator<'a> {
             } => {
                 self.type_id(*key_type, context)?;
                 self.type_id(*value_type, context)?;
+                if let ContinuationSnapshot::MemoryArgs { result_type, .. } = continuation {
+                    self.type_id(*result_type, context)?;
+                }
                 self.args(args, context)?;
                 self.index_at_most(*next_arg_index, args.len(), context)?;
                 self.snapshot_values(evaluated_args)?;
@@ -757,8 +828,21 @@ impl<'a> SnapshotValidator<'a> {
             CallTargetSnapshot::FlowItem(item)
             | CallTargetSnapshot::AgentItem(item)
             | CallTargetSnapshot::ToolItem(item) => self.item(*item, context),
-            CallTargetSnapshot::SpecImplMethod(symbol)
-            | CallTargetSnapshot::EnumVariant(symbol) => self.symbol(*symbol, context),
+            CallTargetSnapshot::SpecImplMethod(symbol) => self.symbol(*symbol, context),
+            CallTargetSnapshot::EnumVariant(symbol) => {
+                self.symbol(*symbol, context)?;
+                if self.dispatch.enum_constructor(*symbol).is_some()
+                    || self.checked.symbols.get(*symbol).is_some_and(|symbol| {
+                        matches!(symbol.def, etas_hir::SymbolDef::EnumVariant { .. })
+                    })
+                {
+                    Ok(())
+                } else {
+                    Err(format!(
+                        "{context}: call target is not a checked enum constructor"
+                    ))
+                }
+            }
             CallTargetSnapshot::NominalConstructor(ty) => self.type_id(*ty, context),
             CallTargetSnapshot::PureIntrinsic {
                 intrinsic,
@@ -845,6 +929,7 @@ impl<'a> SnapshotValidator<'a> {
 
     fn snapshot_value(&self, value: &ValueSnapshot) -> Result<(), String> {
         match value {
+            ValueSnapshot::MemoryWriteIntent(value) => value.validate(self.checked, self.limits),
             ValueSnapshot::Nominal { ty, value } => {
                 self.type_id(*ty, "checkpoint nominal value type")?;
                 self.snapshot_value(value)
@@ -860,6 +945,7 @@ impl<'a> SnapshotValidator<'a> {
                 Ok(())
             }
             ValueSnapshot::Conversation(conversation) => {
+                crate::value::conversation::validate_snapshot(conversation, self.limits)?;
                 for message in &conversation.messages {
                     self.snapshot_value(&message.payload)?;
                 }
@@ -1180,6 +1266,105 @@ impl<'a> SnapshotValidator<'a> {
             .ok_or_else(|| format!("{context} references missing HIR symbol {}", id.0))
     }
 
+    fn record_construction(
+        &self,
+        expr: HirExprId,
+        ty: Option<TypeId>,
+        variant: Option<SymbolId>,
+        fields: &[HirFieldInit],
+        context: &str,
+    ) -> Result<(), String> {
+        let error = || {
+            format!(
+                "{context}: record or named enum continuation does not match its checked construction"
+            )
+        };
+        let Some(etas_hir::HirExpr::Record(record)) = self.checked.hir.exprs.get(expr) else {
+            return Err(error());
+        };
+        let expected_type = if record.path.is_some() {
+            Some(*self.checked.types.expr_types.get(&expr).ok_or_else(error)?)
+        } else {
+            None
+        };
+        let expected_variant = match record.path.as_ref().map(|path| &path.resolution) {
+            Some(etas_hir::ResolveResult::Resolved(symbol)) => {
+                let symbol = self.checked.symbols.get(*symbol).ok_or_else(error)?;
+                matches!(symbol.def, etas_hir::SymbolDef::EnumVariant { .. }).then_some(symbol.id)
+            }
+            None => None,
+            _ => return Err(error()),
+        };
+        if ty != expected_type || variant != expected_variant || fields != record.fields {
+            return Err(error());
+        }
+        if expected_variant.is_none()
+            && let Some(ty) = ty
+        {
+            let base = match self.checked.type_store.get(ty) {
+                Some(etas_types::Type::Applied { constructor, .. }) => TypeId(constructor.0),
+                _ => ty,
+            };
+            if matches!(
+                self.checked.type_store.get(base),
+                Some(etas_types::Type::Enum(_))
+            ) {
+                return Err(error());
+            }
+        }
+        Ok(())
+    }
+
+    fn named_variant_fields(
+        &self,
+        symbol: SymbolId,
+        ty: Option<TypeId>,
+        fields: &[HirFieldInit],
+        context: &str,
+    ) -> Result<(), String> {
+        let error =
+            || format!("{context}: named enum continuation does not match its checked constructor");
+        let Some(etas_hir::SymbolDef::EnumVariant {
+            enum_item,
+            variant_index,
+        }) = self.checked.symbols.get(symbol).map(|symbol| &symbol.def)
+        else {
+            return Err(error());
+        };
+        let Some(etas_hir::HirItem::Enum(decl)) = self.checked.hir.items.get(*enum_item) else {
+            return Err(error());
+        };
+        let names = decl
+            .variants
+            .get(*variant_index as usize)
+            .and_then(|variant| variant.field_names.as_ref())
+            .ok_or_else(error)?;
+        let Some(etas_types::SymbolTypeFact::Type { constructor }) =
+            self.checked.types.symbol_types.get(&decl.symbol)
+        else {
+            return Err(error());
+        };
+        let ty = ty.ok_or_else(error)?;
+        let base = match self.checked.type_store.get(ty) {
+            Some(etas_types::Type::Applied { constructor, .. }) => TypeId(constructor.0),
+            Some(etas_types::Type::Enum(_)) => ty,
+            _ => return Err(error()),
+        };
+        if base != TypeId(constructor.0) || fields.len() != names.len() {
+            return Err(error());
+        }
+        let actual = fields
+            .iter()
+            .map(|field| match field {
+                HirFieldInit::Named { name, .. } | HirFieldInit::Shorthand { name, .. } => name,
+            })
+            .collect::<BTreeSet<_>>();
+        if actual.len() != fields.len() || actual != names.iter().collect() {
+            return Err(error());
+        }
+        Ok(())
+    }
+
     fn scope(&self, id: ScopeId, context: &str) -> Result<(), String> {
         self.checked
             .scopes
@@ -1247,7 +1432,13 @@ flow main() -> unit {
         let slots = SlotLayoutTable::for_project(checked);
         let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
             .map_err(|errors| errors.join("; "))?;
-        SnapshotValidator::new(checked, &slots, &dispatch).validate_machine(&MachineSnapshot {
+        SnapshotValidator::new(
+            checked,
+            &slots,
+            &dispatch,
+            &etas_host::StorageLimits::default(),
+        )
+        .validate_machine(&MachineSnapshot {
             frames: vec![MachineFrameSnapshot::Continuation { continuation }],
         })
     }
@@ -1308,6 +1499,7 @@ flow main() -> unit {
             ),
             (
                 ContinuationSnapshot::MemoryArgs {
+                    result_type: TypeId(u32::MAX),
                     region_stable_id: "region".to_owned(),
                     path: Vec::new(),
                     key_type: TypeId(u32::MAX),
@@ -1368,7 +1560,8 @@ flow main() -> unit {
         let slots = SlotLayoutTable::for_project(&checked);
         let dispatch = crate::plan::IntrinsicDispatchTable::for_project(&checked)
             .expect("test intrinsic dispatch");
-        let validator = SnapshotValidator::new(&checked, &slots, &dispatch);
+        let limits = etas_host::StorageLimits::default();
+        let validator = SnapshotValidator::new(&checked, &slots, &dispatch, &limits);
         let error = validator
             .handler_arm(
                 &ActiveHandlerArmRecord {

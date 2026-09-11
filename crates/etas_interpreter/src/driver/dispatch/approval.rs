@@ -46,8 +46,10 @@ pub(in crate::driver) async fn dispatch(
         return None;
     }
     let authority = eval.host_authority();
-    match HostDispatch::execute_approval(eval, request.clone(), authority, host.approval(request))
-        .await
+    match HostDispatch::execute_approval(eval, request.clone(), authority, |operation| {
+        host.approval(operation, request)
+    })
+    .await
     {
         Ok(response) => {
             let value = match response.decision {
@@ -63,6 +65,9 @@ pub(in crate::driver) async fn dispatch(
             Some(eval.resume_perform_signal(perform, value))
         }
         Err(error) => {
+            if let Some(signal) = eval.cancellation_signal(perform.span) {
+                return Some(signal);
+            }
             eval.diagnostics.push(Diagnostic::analysis(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
                 perform.span,

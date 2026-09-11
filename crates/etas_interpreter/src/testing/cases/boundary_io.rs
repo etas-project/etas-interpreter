@@ -37,10 +37,11 @@ flow main() -> i32 ![Console, Error<IOError>] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::i32(0)));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(0)));
     assert_eq!(host.stdout_text(), "READY\nVALUE<alpha\n>\nVALUE<beta>\n");
     assert_eq!(host.stderr_text(), "DONE\n");
     assert_eq!(host.console_call_count(), 10);
@@ -71,7 +72,8 @@ flow main() -> unit ![Console, Error<IOError>]
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingHostHandler)
@@ -129,7 +131,8 @@ flow main() -> unit ![Console, Error<IOError>]
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(host.policy_call_count(), 1);
@@ -204,7 +207,8 @@ flow main() -> unit ![Console, Error<IOError>] {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert_eq!(host.console_call_count(), 0);
     assert!(result.diagnostics.iter().any(|diagnostic| {
@@ -274,7 +278,8 @@ flow main() -> unit ![Console, Error<IOError>] {
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert_eq!(host.console_call_count(), 0);
     assert!(result.diagnostics.iter().any(|diagnostic| {
@@ -338,7 +343,8 @@ flow main() -> unit ![Console, Error<IOError>]
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(host.policy_call_count(), 2);
@@ -409,7 +415,8 @@ flow main() -> unit ![Console, Error<IOError>]
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(first.checkpoints.len(), 2);
@@ -460,7 +467,8 @@ flow main() -> unit ![Console, Error<IOError>]
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     let replay_requests = replay_host.policy_requests();
@@ -510,7 +518,8 @@ flow main() -> unit ![Console, Error<IOError>]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
@@ -561,7 +570,8 @@ flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
@@ -616,11 +626,12 @@ flow main() -> CommandResult ![Command.run<DefaultCommandSandbox>]
             &host,
             options,
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::CommandResult {
             exit_code: 7,
             stdout: b"done".to_vec(),
@@ -683,11 +694,12 @@ flow main(
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::Command {
             argv: vec!["tool".into(), "run".into()],
             env: vec![("LANG".into(), "C".into())],
@@ -746,9 +758,10 @@ flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
                 ..RunOptions::default()
             },
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert_eq!(host.policy_call_count(), 1);
     assert_eq!(host.command_call_count(), 0);
     let requests = host.policy_requests();
@@ -794,10 +807,11 @@ flow main() -> unit ![Console, Error<IOError>]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value, Some(value::InterpValue::Unit));
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::Unit));
     assert_eq!(host.console_call_count(), 2);
     assert_eq!(host.stdout_text(), "hello\n");
     assert_eq!(host.stderr_text(), "");
@@ -831,11 +845,12 @@ flow main() -> Result<string, IOError> ![Console]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.value,
+        result.value().cloned(),
         Some(value::InterpValue::Variant {
             name: "Err".to_owned(),
             fields: vec![value::InterpValue::Variant {
@@ -900,7 +915,8 @@ flow main() -> Result<string, IOError> ![Console]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert_eq!(host.console_call_count(), 1);
     assert!(
@@ -911,7 +927,7 @@ flow main() -> Result<string, IOError> ![Console]
         "{:?}",
         result.diagnostics
     );
-    assert_eq!(result.value, None);
+    assert_eq!(result.value().cloned(), None);
     assert_eq!(
         result.diagnostics.len(),
         1,
@@ -947,7 +963,8 @@ flow main() -> Result<string, IOError> ![Console]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
@@ -988,7 +1005,8 @@ flow main() -> unit ![Approval] {
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
@@ -1028,7 +1046,8 @@ flow main() -> unit ![Console, Error<IOError>]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(host.stdout_text(), "var-value\n\n");
@@ -1063,7 +1082,8 @@ flow main() -> unit ![Console, Error<IOError>]
             &host,
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(host.stdout_text(), "assigned\n\n");
@@ -1099,7 +1119,8 @@ flow main() -> unit {
             &FakeHost::new(availability(&[HostRequirementKind::Network])),
             RunOptions::default(),
         )
-        .await;
+        .await
+        .expect("execution lifecycle infrastructure");
 
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code

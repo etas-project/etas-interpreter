@@ -7,6 +7,7 @@ use crate::value::{
 impl ValueSnapshot {
     pub(crate) fn capture(value: &InterpValue) -> Result<Self, String> {
         Ok(match value {
+            InterpValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value.clone()),
             InterpValue::Unit => Self::Unit,
             InterpValue::Bool(value) => Self::Bool(*value),
             InterpValue::Number(value) => Self::Number(*value),
@@ -148,6 +149,7 @@ impl ValueSnapshot {
 
     pub(crate) fn restore(self) -> Result<InterpValue, String> {
         Ok(match self {
+            Self::MemoryWriteIntent(value) => InterpValue::MemoryWriteIntent(value),
             Self::Unit => InterpValue::Unit,
             Self::Bool(value) => InterpValue::Bool(value),
             Self::Number(value) => InterpValue::Number(value),
@@ -314,26 +316,28 @@ impl MessageSnapshot {
 impl ConversationSnapshot {
     fn capture(conversation: &ConversationValue) -> Result<Self, String> {
         Ok(Self {
+            selected_context: conversation.selected_context.as_deref().cloned(),
             session: conversation.session.clone(),
+            history_fence: conversation.history_fence.clone(),
             messages: conversation
                 .messages
                 .iter()
                 .map(MessageSnapshot::capture)
                 .collect::<Result<Vec<_>, _>>()?,
-            summary: conversation.summary.clone(),
             cursor: conversation.cursor.clone(),
         })
     }
 
     fn restore(self) -> Result<ConversationValue, String> {
         Ok(ConversationValue {
+            selected_context: self.selected_context.map(Box::new),
             session: self.session,
+            history_fence: self.history_fence,
             messages: self
                 .messages
                 .into_iter()
                 .map(MessageSnapshot::restore)
                 .collect::<Result<Vec<_>, _>>()?,
-            summary: self.summary,
             cursor: self.cursor,
         })
     }

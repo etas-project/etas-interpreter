@@ -135,14 +135,18 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             "bounds": range_bounds_name(*bounds),
         }),
         Continuation::RecordField {
+            expr,
             nominal_type,
+            variant_symbol,
             fields,
             next_index,
             values,
             frame,
         } => json!({
             "kind": "record_field",
+            "expr": expr.0,
             "nominal_type": nominal_type.map(|ty| ty.0),
+            "variant_symbol": variant_symbol.map(|symbol| symbol.0),
             "fields": fields.iter().map(field_init_snapshot).collect::<Result<Vec<_>, _>>()?,
             "next_index": next_index,
             "values": values.iter().map(|(name, value)| json!({
@@ -380,6 +384,8 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             path,
             key_type,
             value_type,
+
+            result_type,
             method,
             args,
             next_arg_index,
@@ -388,6 +394,7 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             frame,
         } => json!({
             "kind": "memory_args",
+            "result_type": result_type.0,
             "region_stable_id": region_stable_id,
             "path": path,
             "key_type": key_type.0,

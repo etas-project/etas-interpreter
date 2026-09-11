@@ -25,6 +25,9 @@ pub(in crate::driver) fn retry_or_report(
     span: Span,
     message: String,
 ) -> Option<ControlSignal> {
+    if let Some(signal) = eval.cancellation_signal(span) {
+        return Some(signal);
+    }
     if let Some(signal) = machine.retry_boundary_failure(eval, continuation, span, message.clone())
     {
         return Some(signal);

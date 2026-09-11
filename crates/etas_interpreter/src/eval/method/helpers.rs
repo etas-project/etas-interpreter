@@ -1,6 +1,6 @@
 use super::*;
 
-pub(super) fn session_config_from_value(
+pub(in crate::eval) fn session_config_from_value(
     value: &InterpValue,
 ) -> Option<crate::value::SessionConfigValue> {
     match value {
@@ -12,12 +12,17 @@ pub(super) fn session_config_from_value(
                 id: format!("continue_or_new:{key}"),
                 context: None,
                 retention: None,
-                compaction: None,
             })
         }
         InterpValue::Nominal { value, .. } => session_config_from_value(value),
         InterpValue::Record(fields) => {
             let snapshot = fields.snapshot();
+            if snapshot
+                .iter()
+                .any(|(field, _)| !matches!(field.as_str(), "id" | "context" | "retention"))
+            {
+                return None;
+            }
             let id = snapshot.iter().find_map(|(field, value)| {
                 (field == "id").then(|| match value {
                     InterpValue::String(value) => Some(value.clone()),
@@ -33,10 +38,6 @@ pub(super) fn session_config_from_value(
                 retention: snapshot
                     .iter()
                     .find(|(field, _)| field == "retention")
-                    .map(|(_, value)| Box::new(value.clone())),
-                compaction: snapshot
-                    .iter()
-                    .find(|(field, _)| field == "compaction")
                     .map(|(_, value)| Box::new(value.clone())),
             })
         }

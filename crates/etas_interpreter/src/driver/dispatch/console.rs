@@ -44,7 +44,7 @@ pub(in crate::driver) async fn dispatch(
         console.request.trace_payload(),
         console.request.authority.clone(),
         console.request.trace.clone(),
-        host.console(console.request.clone()),
+        |operation| host.console(operation, console.request.clone()),
     )
     .await
     {
