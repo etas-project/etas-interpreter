@@ -49,8 +49,8 @@ impl<'a> EvalContext<'a> {
                                 "checkpoint memory scan replay result is not a key list",
                             ));
                         };
-                        let mut resources = Vec::with_capacity(keys.borrow().len());
-                        for key in keys.borrow().iter() {
+                        let mut resources = Vec::with_capacity(keys.len());
+                        for key in keys.iter() {
                             let host_key = interp_to_host_value(key).map_err(|error| {
                                 ExecutionFault::new(
                                     AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -168,7 +168,7 @@ impl<'a> EvalContext<'a> {
             (MemoryDecode::OptionValue { .. }, MemoryResult::None) => Ok(InterpValue::OptionNone),
             (MemoryDecode::OptionValue { value_type }, MemoryResult::Value { value, .. }) => {
                 host_to_typed_interp_value(value, value_type, &self.checked.type_store)
-                    .map(|value| InterpValue::OptionSome(Box::new(value)))
+                    .map(|value| InterpValue::OptionSome(crate::value::SharedValue::new(value)))
                     .map_err(|error| {
                         ExecutionFault::new(
                             AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -449,14 +449,14 @@ fn memory_conflict_value(
     let actual = memory_version_option(conflict.actual, version_type)?;
     Ok(InterpValue::Nominal {
         ty: conflict_type,
-        value: Box::new(InterpValue::Record(
+        value: crate::value::SharedValue::new(InterpValue::Record(
         vec![
             ("expected".to_owned(), expected),
             ("actual".to_owned(), actual),
             (
                 "current_value".to_owned(),
                 match conflict.current_value {
-                    Some(value) => InterpValue::OptionSome(Box::new(
+                    Some(value) => InterpValue::OptionSome(crate::value::SharedValue::new(
                         host_value_to_json_interp_value(value).map_err(|error| {
                             format!(
                                 "memory conflict current value cannot be represented as std.json.JsonValue: {}",
@@ -501,10 +501,9 @@ fn memory_version_option(
         "memory conflict contains a version but checked std.memory.MemoryVersion facts are missing"
             .to_owned()
     })?;
-    Ok(InterpValue::OptionSome(Box::new(memory_version_value(
-        version,
-        version_type,
-    ))))
+    Ok(InterpValue::OptionSome(crate::value::SharedValue::new(
+        memory_version_value(version, version_type),
+    )))
 }
 
 fn memory_version_value(
@@ -513,10 +512,10 @@ fn memory_version_value(
 ) -> InterpValue {
     InterpValue::Nominal {
         ty: version_type,
-        value: Box::new(InterpValue::Record(
+        value: crate::value::SharedValue::new(InterpValue::Record(
             vec![(
                 "opaque".to_owned(),
-                InterpValue::String(version.as_token().to_owned()),
+                InterpValue::String(version.as_token().to_owned().into()),
             )]
             .into(),
         )),

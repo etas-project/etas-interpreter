@@ -9,7 +9,17 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
         span: Span,
     ) -> Result<(), ExecutionFault> {
-        if self.match_pattern(pat, &value, frame, span)? {
+        self.bind_borrowed_pattern(pat, &value, frame, span)
+    }
+
+    fn bind_borrowed_pattern(
+        &self,
+        pat: etas_hir::HirPatId,
+        value: &InterpValue,
+        frame: &mut Frame,
+        span: Span,
+    ) -> Result<(), ExecutionFault> {
+        if self.match_pattern(pat, value, frame, span)? {
             Ok(())
         } else {
             Err(ExecutionFault::new(
@@ -53,40 +63,22 @@ impl<'a> EvalContext<'a> {
                 InterpValue::Tuple(_) => Ok(false),
                 _ => Ok(false),
             },
-            HirPat::Record { path, fields, .. } => {
+            HirPat::Record { path, .. } => {
                 if let Some(symbol) = self.named_variant_symbol(path.as_ref()) {
-                    let Some(symbol) = self.checked.symbols.get(symbol) else {
+                    let layout = self.plan.named_variants.pattern(pat).ok_or_else(|| {
+                        ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "named enum pattern has no checked slot layout",
+                        )
+                    })?;
+                    if symbol != layout.symbol {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::MissingCheckedFact,
                             span,
-                            "missing enum pattern symbol",
+                            "named enum pattern constructor differs from checked slot layout",
                         ));
-                    };
-                    let SymbolDef::EnumVariant {
-                        enum_item,
-                        variant_index,
-                    } = symbol.def
-                    else {
-                        unreachable!()
-                    };
-                    let Some(HirItem::Enum(decl)) = self.checked.hir.items.get(enum_item) else {
-                        return Err(ExecutionFault::new(
-                            AnalysisDiagnosticCode::MissingCheckedFact,
-                            span,
-                            "missing enum pattern declaration",
-                        ));
-                    };
-                    let Some(names) = decl
-                        .variants
-                        .get(variant_index as usize)
-                        .and_then(|v| v.field_names.as_ref())
-                    else {
-                        return Err(ExecutionFault::new(
-                            AnalysisDiagnosticCode::MissingCheckedFact,
-                            span,
-                            "missing named enum pattern layout",
-                        ));
-                    };
+                    }
                     let InterpValue::Variant {
                         name,
                         fields: values,
@@ -94,40 +86,49 @@ impl<'a> EvalContext<'a> {
                     else {
                         return Ok(false);
                     };
-                    if name != &symbol.name {
+                    if name != &layout.name {
                         return Ok(false);
                     }
-                    for field in fields {
-                        let Some(value) = names
-                            .iter()
-                            .position(|name| name == &field.name)
-                            .and_then(|index| values.get(index))
-                        else {
-                            return Err(ExecutionFault::new(
+                    if values.len() != layout.arity {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "enum payload does not match checked pattern arity",
+                        ));
+                    }
+                    for (slot, pat, field_span) in &layout.fields {
+                        let value = values.get(*slot).ok_or_else(|| {
+                            ExecutionFault::new(
                                 AnalysisDiagnosticCode::MissingCheckedFact,
-                                span,
-                                "missing enum payload field",
-                            ));
-                        };
-                        if let Some(pat) = field.pat {
-                            if !self.match_pattern(pat, value, frame, field.span)? {
-                                return Ok(false);
-                            }
+                                *field_span,
+                                "invalid checked enum field slot",
+                            )
+                        })?;
+                        if !self.match_pattern(*pat, value, frame, *field_span)? {
+                            return Ok(false);
                         }
                     }
                     return Ok(true);
                 }
                 match pattern_projection_value(value) {
                     InterpValue::Record(values) => {
-                        let values = values.borrow();
+                        let fields = self.plan.records.pattern(pat).ok_or_else(|| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                "record pattern has no checked slot layout",
+                            )
+                        })?;
                         for field in fields {
-                            let Some((_, field_value)) =
-                                values.iter().find(|(name, _)| name == &field.name)
-                            else {
-                                return Ok(false);
-                            };
+                            let field_value = field.field.borrow(values).map_err(|message| {
+                                ExecutionFault::new(
+                                    AnalysisDiagnosticCode::MissingCheckedFact,
+                                    field.span,
+                                    message,
+                                )
+                            })?;
                             if let Some(pat) = field.pat
-                                && !self.match_pattern(pat, field_value, frame, field.span)?
+                                && !self.match_pattern(pat, &field_value, frame, field.span)?
                             {
                                 return Ok(false);
                             }
@@ -246,8 +247,8 @@ impl<'a> EvalContext<'a> {
                 "handler arm pattern arity does not match performed action arguments",
             ));
         }
-        for (pat, value) in patterns.iter().zip(args.iter().cloned()) {
-            self.bind_pattern(*pat, value, frame, span)?;
+        for (pat, value) in patterns.iter().zip(args) {
+            self.bind_borrowed_pattern(*pat, value, frame, span)?;
         }
         Ok(())
     }

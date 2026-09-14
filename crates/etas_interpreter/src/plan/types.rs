@@ -13,6 +13,9 @@ use super::{
 pub struct InterpreterPlan {
     pub entry: EntryPoint,
     pub slots: Arc<SlotLayoutTable>,
+    pub closures: super::ClosureLayoutTable,
+    pub named_variants: super::NamedVariantLayoutTable,
+    pub records: super::RecordLayoutTable,
     pub globals: GlobalTable,
     pub resources: ResourceTable,
     pub dispatch: IntrinsicDispatchTable,

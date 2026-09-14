@@ -75,7 +75,7 @@ flow main(ticket: SessionId, text: string) -> bool {
                     },
                     vec![
                         InterpValue::String("selected-context".into()),
-                        InterpValue::String(text),
+                        InterpValue::String(text.into()),
                     ],
                     &host,
                     options.clone(),

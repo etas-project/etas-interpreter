@@ -1,20 +1,27 @@
 mod action_mediation;
+mod captures;
 mod context;
 mod dispatch;
 mod entry;
 mod globals;
 mod pipeline;
 mod readiness;
+mod records;
 mod resources;
 mod slots;
 mod types;
 mod validate;
+mod variants;
 
 pub use action_mediation::ActionMediationTable;
+pub use captures::ClosureLayoutTable;
 pub use dispatch::{BraceLiteralShape, IntrinsicDispatchTable};
 pub use globals::GlobalTable;
 pub use pipeline::build_plan;
 pub use readiness::HostRequirementTable;
+pub(crate) use records::FieldAccessSite;
+pub use records::RecordLayoutTable;
 pub use resources::ResourceTable;
 pub use slots::SlotLayoutTable;
 pub use types::InterpreterPlan;
+pub use variants::NamedVariantLayoutTable;

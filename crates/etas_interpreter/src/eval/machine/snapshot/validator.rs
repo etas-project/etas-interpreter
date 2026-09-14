@@ -3,8 +3,8 @@ use std::collections::BTreeSet;
 use etas_frontend::CheckedProject;
 use etas_hir::{
     HirArg, HirBlockId, HirEffectArg, HirElseBranch, HirExprId, HirFieldInit, HirItemId,
-    HirMapEntry, HirMatchArm, HirMatchArmBody, HirPatId, HirStage, HirTypeId, ResolveResult,
-    ResolvedActionRef, ResolvedPath, ScopeId, SymbolId,
+    HirMatchArm, HirMatchArmBody, HirPatId, HirStage, HirTypeId, ResolveResult, ResolvedActionRef,
+    ResolvedPath, ScopeId, SymbolId,
 };
 use etas_types::TypeId;
 
@@ -18,9 +18,11 @@ use crate::orchestration::{
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
+    frame_definitions: std::cell::RefCell<std::collections::HashMap<u64, LocalsSnapshot>>,
     checked: &'a CheckedProject,
     slots: &'a SlotLayoutTable,
     dispatch: &'a IntrinsicDispatchTable,
+    closures: &'a crate::plan::ClosureLayoutTable,
     limits: &'a etas_host::StorageLimits,
 }
 
@@ -29,12 +31,15 @@ impl<'a> SnapshotValidator<'a> {
         checked: &'a CheckedProject,
         slots: &'a SlotLayoutTable,
         dispatch: &'a IntrinsicDispatchTable,
+        closures: &'a crate::plan::ClosureLayoutTable,
         limits: &'a etas_host::StorageLimits,
     ) -> Self {
         Self {
+            frame_definitions: Default::default(),
             checked,
             slots,
             dispatch,
+            closures,
             limits,
         }
     }
@@ -421,14 +426,27 @@ impl<'a> SnapshotValidator<'a> {
             | ContinuationSnapshot::RangeEnd { start: left, .. }
             | ContinuationSnapshot::PipelineTarget { input: left, .. } => self.snapshot_value(left),
             ContinuationSnapshot::AggregateElement {
-                exprs,
+                expr,
                 next_index,
                 values,
                 frame,
                 ..
             } => {
-                self.exprs(exprs, context)?;
-                self.index_at_most(*next_index, exprs.len(), context)?;
+                let elems = match self.checked.hir.exprs.get(*expr) {
+                    Some(
+                        etas_hir::HirExpr::Tuple { elems, .. }
+                        | etas_hir::HirExpr::Array { elems, .. }
+                        | etas_hir::HirExpr::List { elems, .. }
+                        | etas_hir::HirExpr::Set { elems, .. },
+                    ) => elems,
+                    _ => return Err(format!("{context}: missing checked aggregate construction")),
+                };
+                self.index_at_most(*next_index, elems.len(), context)?;
+                if next_index.checked_sub(1) != Some(values.len()) {
+                    return Err(format!(
+                        "{context}: inconsistent evaluated aggregate elements"
+                    ));
+                }
                 self.snapshot_values(values)?;
                 self.frame(frame, context)
             }
@@ -436,12 +454,12 @@ impl<'a> SnapshotValidator<'a> {
                 expr,
                 nominal_type,
                 variant_symbol,
-                fields,
                 next_index,
                 values,
                 frame,
             } => {
-                self.record_construction(*expr, *nominal_type, *variant_symbol, fields, context)?;
+                let fields =
+                    self.record_construction(*expr, *nominal_type, *variant_symbol, context)?;
                 if let Some(ty) = nominal_type {
                     self.type_id(*ty, &format!("{context} nominal record type"))?;
                 }
@@ -473,20 +491,27 @@ impl<'a> SnapshotValidator<'a> {
                 self.frame(frame, context)
             }
             ContinuationSnapshot::MapKey {
-                entries,
+                expr,
                 index,
                 values,
                 frame,
             }
             | ContinuationSnapshot::MapValue {
-                entries,
+                expr,
                 index,
                 values,
                 frame,
                 ..
             } => {
-                self.map_entries(entries, context)?;
+                let Some(etas_hir::HirExpr::Map { entries, .. }) =
+                    self.checked.hir.exprs.get(*expr)
+                else {
+                    return Err(format!("{context}: missing checked map construction"));
+                };
                 self.index_below(*index, entries.len(), context)?;
+                if values.len() != *index {
+                    return Err(format!("{context}: inconsistent evaluated map entries"));
+                }
                 for (key, value) in values {
                     self.snapshot_value(key)?;
                     self.snapshot_value(value)?;
@@ -743,9 +768,10 @@ impl<'a> SnapshotValidator<'a> {
             }
             ContinuationSnapshot::ForLoop {
                 pat,
-                values,
+                source,
                 next_index,
                 body,
+                iterations,
                 loop_scope,
                 frame,
                 ..
@@ -755,12 +781,15 @@ impl<'a> SnapshotValidator<'a> {
                 for symbol in loop_scope {
                     self.symbol(*symbol, context)?;
                 }
-                if let Some(values) = values {
-                    self.index_at_most(*next_index, values.len(), context)?;
-                    self.snapshot_values(values)?;
+                self.index_at_most(*next_index, *iterations, context)?;
+                if *iterations == 0 || *iterations > u32::MAX as usize {
+                    return Err(format!("{context} has an invalid for-loop iteration limit"));
+                }
+                if let Some(source) = source {
+                    self.iteration_source(source, *next_index, context)?;
                 } else if *next_index != 0 {
                     return Err(format!(
-                        "{context} has a for-loop index without materialized values"
+                        "{context} has a for-loop index without an iteration source"
                     ));
                 }
                 self.frame(frame, context)
@@ -859,6 +888,30 @@ impl<'a> SnapshotValidator<'a> {
             }
             CallTargetSnapshot::Lambda { expr, captured } => {
                 self.expr(*expr, context)?;
+                let layout = self
+                    .closures
+                    .get(*expr)
+                    .ok_or_else(|| format!("{context}: lambda has no checked capture layout"))?;
+                let symbols = captured
+                    .locals
+                    .iter()
+                    .map(|(symbol, _)| *symbol)
+                    .collect::<BTreeSet<_>>();
+                if !layout
+                    .captures
+                    .iter()
+                    .all(|symbol| symbols.contains(symbol))
+                {
+                    return Err(format!("{context}: lambda is missing a required capture"));
+                }
+                if symbols
+                    .iter()
+                    .any(|symbol| layout.slots.resolve(*symbol).is_none())
+                {
+                    return Err(format!(
+                        "{context}: lambda contains a binding outside its checked layout"
+                    ));
+                }
                 self.frame(captured, context)
             }
             CallTargetSnapshot::StdIntrinsic {
@@ -905,6 +958,19 @@ impl<'a> SnapshotValidator<'a> {
     }
 
     fn frame(&self, frame: &LocalsSnapshot, context: &str) -> Result<(), String> {
+        if frame.id == 0 {
+            return Err(format!("{context} has a zero frame identity"));
+        }
+        {
+            let mut definitions = self.frame_definitions.borrow_mut();
+            if let Some(existing) = definitions.get(&frame.id) {
+                if existing != frame {
+                    return Err(format!("{context} has conflicting local-frame definitions"));
+                }
+                return Ok(());
+            }
+            definitions.insert(frame.id, frame.clone());
+        }
         let mut type_params = std::collections::BTreeSet::new();
         for (name, ty) in &frame.type_bindings {
             if name.is_empty() || !type_params.insert(name) {
@@ -914,7 +980,7 @@ impl<'a> SnapshotValidator<'a> {
             }
             self.type_id(*ty, &format!("{context} frame type binding"))?;
         }
-        for (symbol, value) in &frame.locals {
+        for (symbol, value) in frame.locals.iter() {
             self.symbol(*symbol, &format!("{context} frame local"))?;
             if self.slots.resolve(*symbol).is_none() {
                 return Err(format!(
@@ -927,96 +993,54 @@ impl<'a> SnapshotValidator<'a> {
         Ok(())
     }
 
-    fn snapshot_value(&self, value: &ValueSnapshot) -> Result<(), String> {
-        match value {
-            ValueSnapshot::MemoryWriteIntent(value) => value.validate(self.checked, self.limits),
-            ValueSnapshot::Nominal { ty, value } => {
-                self.type_id(*ty, "checkpoint nominal value type")?;
-                self.snapshot_value(value)
-            }
-            ValueSnapshot::Trust { value, .. } | ValueSnapshot::OptionSome(value) => {
-                self.snapshot_value(value)
-            }
-            ValueSnapshot::Tuple(values) | ValueSnapshot::Variant { fields: values, .. } => {
-                self.snapshot_values(values)
-            }
-            ValueSnapshot::Message(message) => {
-                self.snapshot_value(&message.payload)?;
-                Ok(())
-            }
-            ValueSnapshot::Conversation(conversation) => {
-                crate::value::conversation::validate_snapshot(conversation, self.limits)?;
-                for message in &conversation.messages {
-                    self.snapshot_value(&message.payload)?;
+    fn snapshot_value(&self, root: &ValueSnapshot) -> Result<(), String> {
+        // Iterator frames track depth, not the width of a collection.
+        for value in root.walk() {
+            match value {
+                ValueSnapshot::MemoryWriteIntent(value) => {
+                    value.validate(self.checked, self.limits)?
                 }
-                Ok(())
-            }
-            ValueSnapshot::Array(values)
-            | ValueSnapshot::List(values)
-            | ValueSnapshot::Slice(values)
-            | ValueSnapshot::Set(values)
-            | ValueSnapshot::Deque(values)
-            | ValueSnapshot::Queue(values)
-            | ValueSnapshot::Stack(values)
-            | ValueSnapshot::OrderedSet(values) => self.snapshot_values(values),
-            ValueSnapshot::Map(values)
-            | ValueSnapshot::PriorityQueue(values)
-            | ValueSnapshot::OrderedMap(values) => {
-                for (key, value) in values {
-                    self.snapshot_value(key)?;
-                    self.snapshot_value(value)?;
+                ValueSnapshot::Nominal { ty, .. } => {
+                    self.type_id(*ty, "checkpoint nominal value type")?
                 }
-                Ok(())
-            }
-            ValueSnapshot::Range { start, end, .. } => {
-                self.snapshot_value(start)?;
-                self.snapshot_value(end)
-            }
-            ValueSnapshot::Record(record) => {
-                for (_, value) in record {
-                    self.snapshot_value(value)?;
+                ValueSnapshot::Conversation(conversation) => {
+                    crate::value::conversation::validate_snapshot(conversation, self.limits)?
                 }
-                Ok(())
-            }
-            ValueSnapshot::Callable(target) => {
-                self.call_target(target, "checkpoint callable value")
-            }
-            ValueSnapshot::Handler {
-                fact_expr,
-                handlers,
-            } => {
-                self.expr(*fact_expr, "checkpoint handler value fact expression")?;
-                for (index, handler) in handlers.iter().enumerate() {
-                    self.handler_arm(handler, &format!("checkpoint handler value arm {index}"))?;
+                ValueSnapshot::Callable(target) => {
+                    self.call_target(target, "checkpoint callable value")?
                 }
-                Ok(())
-            }
-            ValueSnapshot::ResourceHandle { ty, .. } => {
-                self.type_id(*ty, "checkpoint resource handle type")
-            }
-            ValueSnapshot::MemoryStore {
-                key_type,
-                value_type,
-                ..
-            }
-            | ValueSnapshot::MemorySelection {
-                key_type,
-                value_type,
-                ..
-            } => {
-                self.type_id(*key_type, "checkpoint memory key type")?;
-                self.type_id(*value_type, "checkpoint memory value type")?;
-                if let ValueSnapshot::MemorySelection {
-                    predicate: Some(predicate),
+                ValueSnapshot::Handler {
+                    fact_expr,
+                    handlers,
+                } => {
+                    self.expr(*fact_expr, "checkpoint handler value fact expression")?;
+                    for (index, handler) in handlers.iter().enumerate() {
+                        self.handler_arm(
+                            handler,
+                            &format!("checkpoint handler value arm {index}"),
+                        )?;
+                    }
+                }
+                ValueSnapshot::ResourceHandle { ty, .. } => {
+                    self.type_id(*ty, "checkpoint resource handle type")?
+                }
+                ValueSnapshot::MemoryStore {
+                    key_type,
+                    value_type,
                     ..
-                } = value
-                {
-                    self.snapshot_value(predicate)?;
                 }
-                Ok(())
+                | ValueSnapshot::MemorySelection {
+                    key_type,
+                    value_type,
+                    ..
+                } => {
+                    self.type_id(*key_type, "checkpoint memory key type")?;
+                    self.type_id(*value_type, "checkpoint memory value type")?;
+                }
+                _ => {}
             }
-            _ => Ok(()),
         }
+        Ok(())
     }
 
     fn snapshot_values(&self, values: &[ValueSnapshot]) -> Result<(), String> {
@@ -1024,6 +1048,45 @@ impl<'a> SnapshotValidator<'a> {
             self.snapshot_value(value)?;
         }
         Ok(())
+    }
+
+    fn iteration_source(
+        &self,
+        source: &ValueSnapshot,
+        position: usize,
+        context: &str,
+    ) -> Result<(), String> {
+        match source {
+            ValueSnapshot::Array(values)
+            | ValueSnapshot::List(values)
+            | ValueSnapshot::Slice(values)
+            | ValueSnapshot::Set(values)
+            | ValueSnapshot::Deque(values)
+            | ValueSnapshot::Queue(values)
+            | ValueSnapshot::Stack(values)
+            | ValueSnapshot::OrderedSet(values) => {
+                self.index_at_most(position, values.len(), context)?
+            }
+            ValueSnapshot::PriorityQueue(values) | ValueSnapshot::OrderedMap(values) => {
+                self.index_at_most(position, values.len(), context)?
+            }
+            ValueSnapshot::Range { start, end, bounds } => {
+                let (ValueSnapshot::Number(start), ValueSnapshot::Number(end)) = (&**start, &**end)
+                else {
+                    return Err(format!("{context} has non-integer range bounds"));
+                };
+                let valid = crate::value::range::IntegerRange::new(*start, *end, *bounds)
+                    .and_then(|range| range.allows_position(position))
+                    .map_err(|error| format!("{context} has invalid range bounds: {error:?}"))?;
+                if !valid {
+                    return Err(format!(
+                        "{context} has a for-loop position outside its range"
+                    ));
+                }
+            }
+            _ => return Err(format!("{context} has a non-iterable for-loop source")),
+        }
+        self.snapshot_value(source)
     }
 
     fn local_segments(
@@ -1080,14 +1143,6 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 HirFieldInit::Named { value, .. } => self.expr(*value, context)?,
             }
-        }
-        Ok(())
-    }
-
-    fn map_entries(&self, entries: &[HirMapEntry], context: &str) -> Result<(), String> {
-        for entry in entries {
-            self.expr(entry.key, context)?;
-            self.expr(entry.value, context)?;
         }
         Ok(())
     }
@@ -1271,9 +1326,8 @@ impl<'a> SnapshotValidator<'a> {
         expr: HirExprId,
         ty: Option<TypeId>,
         variant: Option<SymbolId>,
-        fields: &[HirFieldInit],
         context: &str,
-    ) -> Result<(), String> {
+    ) -> Result<&[HirFieldInit], String> {
         let error = || {
             format!(
                 "{context}: record or named enum continuation does not match its checked construction"
@@ -1295,7 +1349,7 @@ impl<'a> SnapshotValidator<'a> {
             None => None,
             _ => return Err(error()),
         };
-        if ty != expected_type || variant != expected_variant || fields != record.fields {
+        if ty != expected_type || variant != expected_variant {
             return Err(error());
         }
         if expected_variant.is_none()
@@ -1312,7 +1366,7 @@ impl<'a> SnapshotValidator<'a> {
                 return Err(error());
             }
         }
-        Ok(())
+        Ok(&record.fields)
     }
 
     fn named_variant_fields(
@@ -1420,7 +1474,8 @@ flow main() -> unit {
 
     fn empty_locals() -> LocalsSnapshot {
         LocalsSnapshot {
-            locals: Vec::new(),
+            id: 1,
+            locals: Default::default(),
             type_bindings: Vec::new(),
         }
     }
@@ -1432,15 +1487,80 @@ flow main() -> unit {
         let slots = SlotLayoutTable::for_project(checked);
         let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
             .map_err(|errors| errors.join("; "))?;
+        let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)?;
         SnapshotValidator::new(
             checked,
             &slots,
             &dispatch,
+            &closures,
             &etas_host::StorageLimits::default(),
         )
         .validate_machine(&MachineSnapshot {
             frames: vec![MachineFrameSnapshot::Continuation { continuation }],
         })
+    }
+
+    #[test]
+    fn frame_definition_validation_does_not_copy_the_captured_value_graph() {
+        use crate::{
+            control::Frame,
+            testing::allocation::measure,
+            value::{ArrayValue, InterpValue},
+        };
+        let checked = crate::testing::project::checked_project(
+            "module app.main; flow main() -> unit { let values: Array<string> = []; return; }",
+        );
+        let plan = crate::Interpreter
+            .plan(&checked, crate::api::PlanOptions)
+            .plan
+            .unwrap();
+        let symbol = checked
+            .symbols
+            .iter()
+            .find(|s| s.name == "values")
+            .unwrap()
+            .id;
+        let block = checked.hir.blocks.iter().next().unwrap().0;
+        let limits = etas_host::StorageLimits::default();
+        let mut baseline = None;
+        for count in [1000, 2000, 4000] {
+            let frame = Frame::from_snapshot(vec![(
+                symbol,
+                InterpValue::Array(ArrayValue::new(
+                    (0..count)
+                        .map(|_| InterpValue::String("payload".repeat(128).into()))
+                        .collect(),
+                )),
+            )])
+            .unwrap();
+            let frame = super::super::frame::capture_frame(&frame).unwrap();
+            let machine = MachineSnapshot {
+                frames: (0..3)
+                    .map(|_| MachineFrameSnapshot::Continuation {
+                        continuation: ContinuationSnapshot::ContinueBlock {
+                            block,
+                            next_stmt_index: 0,
+                            frame: frame.clone(),
+                        },
+                    })
+                    .collect(),
+            };
+            let validator = SnapshotValidator::new(
+                &checked,
+                &plan.slots,
+                &plan.dispatch,
+                &plan.closures,
+                &limits,
+            );
+            let (result, cost) = measure(|| validator.validate_machine(&machine));
+            result.unwrap();
+            assert!(
+                cost.bytes < 4096,
+                "only validation bookkeeping, n={count}: {cost:?}"
+            );
+            let measured = (cost.count, cost.bytes);
+            assert_eq!(*baseline.get_or_insert(measured), measured, "n={count}");
+        }
     }
 
     #[test]
@@ -1561,7 +1681,8 @@ flow main() -> unit {
         let dispatch = crate::plan::IntrinsicDispatchTable::for_project(&checked)
             .expect("test intrinsic dispatch");
         let limits = etas_host::StorageLimits::default();
-        let validator = SnapshotValidator::new(&checked, &slots, &dispatch, &limits);
+        let closures = crate::plan::ClosureLayoutTable::build(&checked, &slots).unwrap();
+        let validator = SnapshotValidator::new(&checked, &slots, &dispatch, &closures, &limits);
         let error = validator
             .handler_arm(
                 &ActiveHandlerArmRecord {

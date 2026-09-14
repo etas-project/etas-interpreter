@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::ExecutionFault;
+use crate::plan::FieldAccessSite;
 
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_field(
@@ -12,7 +13,7 @@ impl<'a> EvalContext<'a> {
     ) -> ControlSignal {
         match self.eval_expr(base, frame) {
             ControlSignal::Value(value) => {
-                self.eval_field_value_signal(Some(expr), value, field, span)
+                self.eval_field_value_signal(FieldAccessSite::Expr(expr), value, field, span)
             }
             signal @ (ControlSignal::Apply(_)
             | ControlSignal::Checkpoint(_)
@@ -46,17 +47,10 @@ impl<'a> EvalContext<'a> {
 
     fn memory_store_types_for_expr(
         &self,
-        expr: Option<HirExprId>,
+        site: FieldAccessSite<'_>,
         span: Span,
     ) -> Result<(etas_types::TypeId, etas_types::TypeId), ExecutionFault> {
-        let Some(expr) = expr else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "memory store field is missing a checked expression id for host value decoding",
-            ));
-        };
-        let Some(ty) = self.checked.types.expr_types.get(&expr).copied() else {
+        let Some(ty) = self.plan.records.field_type(self.checked, site) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
@@ -127,22 +121,22 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn eval_const_field_value(
         &self,
-        expr: Option<HirExprId>,
+        site: FieldAccessSite<'_>,
         base: InterpValue,
         field: &str,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
-        self.try_eval_field_value(expr, base, field, span)
+        self.try_eval_field_value(site, base, field, span)
     }
 
     pub(super) fn eval_field_value_signal(
         &mut self,
-        expr: Option<HirExprId>,
+        site: FieldAccessSite<'_>,
         base: InterpValue,
         field: &str,
         span: Span,
     ) -> ControlSignal {
-        match self.try_eval_field_value(expr, base, field, span) {
+        match self.try_eval_field_value(site, base, field, span) {
             Ok(value) => ControlSignal::Value(value),
             Err(fault) => ControlSignal::Fault(Box::new(fault)),
         }
@@ -150,26 +144,41 @@ impl<'a> EvalContext<'a> {
 
     fn try_eval_field_value(
         &self,
-        expr: Option<HirExprId>,
+        site: FieldAccessSite<'_>,
         base: InterpValue,
         field: &str,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
         match base {
             InterpValue::Nominal { value, .. } => {
-                self.try_eval_field_value(expr, *value, field, span)
+                self.try_eval_field_value(site, value.into_value(), field, span)
             }
-            InterpValue::Record(fields) => fields
-                .snapshot()
-                .into_iter()
-                .find_map(|(name, value)| (name == field).then_some(value))
-                .ok_or_else(|| {
+            InterpValue::Record(fields) => {
+                let layout = self.plan.records.field(site).ok_or_else(|| {
                     ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
+                        AnalysisDiagnosticCode::MissingCheckedFact,
                         span,
-                        format!("record field `{field}` does not exist at runtime"),
+                        "record field expression has no checked slot layout",
                     )
-                }),
+                })?;
+                if layout.name() != field {
+                    return Err(ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        "record field differs from checked projection",
+                    ));
+                }
+                layout
+                    .borrow(&fields)
+                    .map(|value| value.clone())
+                    .map_err(|message| {
+                        ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            message,
+                        )
+                    })
+            }
             InterpValue::ResourceHandle { stable_id, ty, .. } => {
                 let (key_type, value_type) =
                     self.memory_store_types_for_resource_field(ty, field, span)?;
@@ -185,7 +194,7 @@ impl<'a> EvalContext<'a> {
                 mut path,
                 ..
             } => {
-                let (key_type, value_type) = self.memory_store_types_for_expr(expr, span)?;
+                let (key_type, value_type) = self.memory_store_types_for_expr(site, span)?;
                 path.push(field.to_owned());
                 Ok(InterpValue::MemoryStore {
                     region_stable_id,
@@ -196,18 +205,20 @@ impl<'a> EvalContext<'a> {
             }
             InterpValue::Message(message) => match field {
                 "body" | "content" => Ok(*message.payload),
-                "id" => Ok(InterpValue::String(message.id)),
+                "id" => Ok(InterpValue::String(message.id.into())),
                 "from" => Ok(option_string(message.from)),
                 "to" => Ok(option_string(message.to)),
                 "role" => Ok(InterpValue::String(
-                    message_role_name(message.role).to_owned(),
+                    message_role_name(message.role).to_owned().into(),
                 )),
                 "session" => Ok(option_string(message.session)),
-                "created_at" => Ok(InterpValue::String(message.created_at)),
+                "created_at" => Ok(InterpValue::String(message.created_at.into())),
                 "provenance" => Ok(message
                     .provenance
                     .map(|provenance| {
-                        InterpValue::OptionSome(Box::new(InterpValue::Provenance(provenance)))
+                        InterpValue::OptionSome(crate::value::SharedValue::new(
+                            InterpValue::Provenance(provenance),
+                        ))
                     })
                     .unwrap_or(InterpValue::OptionNone)),
                 _ => Err(ExecutionFault::new(
@@ -217,7 +228,7 @@ impl<'a> EvalContext<'a> {
                 )),
             },
             InterpValue::Conversation(conversation) => match field {
-                "session" => Ok(InterpValue::String(conversation.session)),
+                "session" => Ok(InterpValue::String(conversation.session.into())),
                 "messages" => Ok(InterpValue::Array(ArrayValue::new(
                     conversation
                         .messages
@@ -255,7 +266,7 @@ impl<'a> EvalContext<'a> {
                         self.checked,
                         &self.storage_limits,
                     )
-                    .map(|value| InterpValue::OptionSome(Box::new(value)))
+                    .map(|value| InterpValue::OptionSome(crate::value::SharedValue::new(value)))
                     .map_err(|error| {
                         ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, error)
                     })
@@ -271,10 +282,9 @@ impl<'a> EvalContext<'a> {
                 if name == "SessionConfig.continue_or_new" && fields.len() == 1 =>
             {
                 match field {
-                    "id" => Ok(InterpValue::String(format!(
-                        "continue_or_new:{}",
-                        stable_session_config_key(&fields[0])
-                    ))),
+                    "id" => Ok(InterpValue::String(
+                        format!("continue_or_new:{}", stable_session_config_key(&fields[0])).into(),
+                    )),
                     _ => Err(ExecutionFault::new(
                         AnalysisDiagnosticCode::InvalidArguments,
                         span,
@@ -295,13 +305,17 @@ impl<'a> EvalContext<'a> {
 
 fn option_string(value: Option<String>) -> InterpValue {
     value
-        .map(|value| InterpValue::OptionSome(Box::new(InterpValue::String(value))))
+        .map(|value| {
+            InterpValue::OptionSome(crate::value::SharedValue::new(InterpValue::String(
+                value.into(),
+            )))
+        })
         .unwrap_or(InterpValue::OptionNone)
 }
 
 fn stable_session_config_key(value: &InterpValue) -> String {
     match value {
-        InterpValue::String(value) => value.clone(),
+        InterpValue::String(value) => value.to_string(),
         InterpValue::Number(value) => value.display_value(),
         InterpValue::Bool(value) => value.to_string(),
         other => format!("{other:?}"),

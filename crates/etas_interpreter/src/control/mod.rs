@@ -3,7 +3,7 @@ mod fault;
 mod frame;
 mod signal;
 
-pub use continuation::{AggregateKind, CallTarget, Continuation, StaticMethodKind};
+pub use continuation::{CallTarget, Continuation, StaticMethodKind};
 pub use fault::ExecutionFault;
 pub use frame::Frame;
 pub use signal::{

@@ -72,7 +72,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("approved".to_owned())],
+            vec![value::InterpValue::String("approved".to_owned().into())],
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
@@ -82,7 +82,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("approved".to_owned()))
+        Some(value::InterpValue::String("approved".to_owned().into()))
     );
 }
 
@@ -126,7 +126,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("fallback".to_owned()))
+        Some(value::InterpValue::String("fallback".to_owned().into()))
     );
 }
 
@@ -255,7 +255,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("approved".to_owned())],
+            vec![value::InterpValue::String("approved".to_owned().into())],
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
@@ -304,7 +304,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("approved".to_owned())],
+            vec![value::InterpValue::String("approved".to_owned().into())],
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
@@ -370,7 +370,7 @@ flow main() -> string ![Console.stdin_read_line, Error<IOError>, Approval.reques
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("resumed\n".to_owned()))
+        Some(value::InterpValue::String("resumed\n".to_owned().into()))
     );
 }
 
@@ -823,7 +823,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("outer".to_owned()))
+        Some(value::InterpValue::String("outer".to_owned().into()))
     );
     assert_eq!(host.approval_call_count(), 0);
 }

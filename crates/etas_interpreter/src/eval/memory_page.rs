@@ -35,7 +35,7 @@ pub(super) fn page_arguments(
                 return Err("invalid memory cursor token".into());
             }
             Some(MemoryCursor {
-                opaque: opaque.clone(),
+                opaque: opaque.to_string(),
             })
         }
         _ => return Err("memory page expects Option<MemoryCursor>".into()),

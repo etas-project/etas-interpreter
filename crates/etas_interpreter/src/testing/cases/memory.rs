@@ -94,7 +94,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(host.memory_call_count(), 1);
 }
@@ -503,6 +503,7 @@ flow main() -> string ![Memory.write] {
             crate::testing::host::fake_memory_version("v2")
                 .as_token()
                 .to_owned()
+                .into()
         ))
     );
 }
@@ -709,7 +710,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(host.memory_call_count(), 2);
 }
@@ -766,7 +767,9 @@ flow main() -> string ![Memory] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict-continued".to_owned()))
+        Some(value::InterpValue::String(
+            "conflict-continued".to_owned().into()
+        ))
     );
     assert_eq!(host.memory_call_count(), 3);
 }
@@ -873,7 +876,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(
         host.memory_value(
@@ -931,7 +934,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(
         host.memory_value(
@@ -988,9 +991,9 @@ flow main() -> Option<string> {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::OptionSome(Box::new(
-            value::InterpValue::String("draft".to_owned()),
-        )))
+        Some(value::InterpValue::OptionSome(
+            crate::value::SharedValue::new(value::InterpValue::String("draft".to_owned().into()),)
+        ))
     );
     assert_eq!(host.memory_call_count(), 1);
 }
@@ -1092,12 +1095,14 @@ flow main() -> Option<Array<string>> {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::OptionSome(Box::new(
-            value::InterpValue::Array(value::ArrayValue::new(vec![
-                value::InterpValue::String("a".to_owned()),
-                value::InterpValue::String("b".to_owned()),
-            ])),
-        )))
+        Some(value::InterpValue::OptionSome(
+            crate::value::SharedValue::new(value::InterpValue::Array(value::ArrayValue::new(
+                vec![
+                    value::InterpValue::String("a".to_owned().into()),
+                    value::InterpValue::String("b".to_owned().into()),
+                ]
+            )),)
+        ))
     );
 }
 
@@ -1149,15 +1154,15 @@ flow main() -> Option<List<string>> {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::OptionSome(Box::new(
-            value::InterpValue::List(
+        Some(value::InterpValue::OptionSome(
+            crate::value::SharedValue::new(value::InterpValue::List(
                 vec![
-                    value::InterpValue::String("head".to_owned()),
-                    value::InterpValue::String("tail".to_owned()),
+                    value::InterpValue::String("head".to_owned().into()),
+                    value::InterpValue::String("tail".to_owned().into()),
                 ]
                 .into(),
-            ),
-        )))
+            ),)
+        ))
     );
 }
 
@@ -1264,8 +1269,8 @@ flow main() -> List<string> {
         result.value().cloned(),
         Some(value::InterpValue::List(
             vec![
-                value::InterpValue::String("paper-1".to_owned()),
-                value::InterpValue::String("paper-2".to_owned()),
+                value::InterpValue::String("paper-1".to_owned().into()),
+                value::InterpValue::String("paper-2".to_owned().into()),
             ]
             .into()
         ))
@@ -1384,7 +1389,7 @@ flow main() -> MemorySelection<string> {
     assert_eq!(limit, Some(2));
     assert_eq!(
         predicate.as_deref(),
-        Some(&value::InterpValue::String("paper".to_owned()))
+        Some(&value::InterpValue::String("paper".to_owned().into()))
     );
     assert_eq!(host.memory_call_count(), 0);
 }

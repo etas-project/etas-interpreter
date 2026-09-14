@@ -155,14 +155,14 @@ fn missing_try_capture_fault(span: Span) -> ControlSignal {
 
 fn result_ok(value: InterpValue) -> InterpValue {
     InterpValue::Variant {
-        name: "Ok".to_owned(),
-        fields: vec![value],
+        name: "Ok".to_owned().into(),
+        fields: vec![value].into(),
     }
 }
 
 fn result_err(error: InterpValue) -> InterpValue {
     InterpValue::Variant {
-        name: "Err".to_owned(),
-        fields: vec![error],
+        name: "Err".to_owned().into(),
+        fields: vec![error].into(),
     }
 }

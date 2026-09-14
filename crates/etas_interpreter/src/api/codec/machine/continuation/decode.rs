@@ -6,151 +6,167 @@ pub(crate) fn continuation_from_snapshot(
     limits: &etas_host::StorageLimits,
     value: &Value,
     checked: &etas_frontend::CheckedProject,
-    slots: Arc<SlotLayoutTable>,
-) -> Result<Continuation, String> {
+) -> Result<ContinuationSnapshot, String> {
     let kind = required_str(value, "kind")?;
     Ok(match kind {
-        "continue_block" => Continuation::ContinueBlock {
+        "continue_block" => ContinuationSnapshot::ContinueBlock {
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "bind" => Continuation::Bind {
+        "bind" => ContinuationSnapshot::Bind {
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             pat: HirPatId(required_u32(value, "pat")?),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "assign" => Continuation::Assign {
+        "assign" => ContinuationSnapshot::Assign {
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             target: HirExprId(required_u32(value, "target")?),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "assign_target_index" => Continuation::AssignTargetIndex {
+        "assign_target_index" => ContinuationSnapshot::AssignTargetIndex {
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             root_symbol: SymbolId(required_u32(value, "root_symbol")?),
             segments: local_place_segments_from_snapshot(limits, required(value, "segments")?)?,
             components: local_place_components_from_snapshot(required(value, "components")?)?,
             next_component_index: required_usize(value, "next_component_index")?,
-            new_value: value_from_json_with_limits(limits, required(value, "new_value")?)
-                .map_err(|error| error.to_string())?,
+            new_value: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "new_value")?,
+            )
+            .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "field_receiver" => Continuation::FieldReceiver {
+        "field_receiver" => ContinuationSnapshot::FieldReceiver {
             expr: HirExprId(required_u32(value, "expr")?),
             field: required_str(value, "field")?.to_owned(),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "unary" => Continuation::Unary {
+        "unary" => ContinuationSnapshot::Unary {
             op: unary_op_from_name(required_str(value, "op")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "binary_left" => Continuation::BinaryLeft {
+        "binary_left" => ContinuationSnapshot::BinaryLeft {
             op: binary_op_from_name(required_str(value, "op")?)?,
             rhs: HirExprId(required_u32(value, "rhs")?),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "binary_right" => Continuation::BinaryRight {
+        "binary_right" => ContinuationSnapshot::BinaryRight {
             op: binary_op_from_name(required_str(value, "op")?)?,
-            left: value_from_json_with_limits(limits, required(value, "left")?)
-                .map_err(|error| error.to_string())?,
+            left: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "left")?,
+            )
+            .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "aggregate_element" => Continuation::AggregateElement {
-            kind: aggregate_kind_from_name(required_str(value, "aggregate_kind")?)?,
-            exprs: required_u32_array(value, "exprs")?
-                .into_iter()
-                .map(HirExprId)
-                .collect(),
+        "aggregate_element" => ContinuationSnapshot::AggregateElement {
+            expr: HirExprId(required_u32(value, "expr")?),
             next_index: required_usize(value, "next_index")?,
             values: required_values(limits, value, "values")?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "list_cons_head" => Continuation::ListConsHead {
+        "list_cons_head" => ContinuationSnapshot::ListConsHead {
             tail: HirExprId(required_u32(value, "tail")?),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "list_cons_tail" => Continuation::ListConsTail {
-            head: value_from_json_with_limits(limits, required(value, "head")?)
-                .map_err(|error| error.to_string())?,
+        "list_cons_tail" => ContinuationSnapshot::ListConsTail {
+            head: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "head")?,
+            )
+            .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "range_start" => Continuation::RangeStart {
+        "range_start" => ContinuationSnapshot::RangeStart {
             end: HirExprId(required_u32(value, "end")?),
             bounds: range_bounds_from_name(required_str(value, "bounds")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "range_end" => Continuation::RangeEnd {
-            start: value_from_json_with_limits(limits, required(value, "start")?)
-                .map_err(|error| error.to_string())?,
+        "range_end" => ContinuationSnapshot::RangeEnd {
+            start: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "start")?,
+            )
+            .map_err(|error| error.to_string())?,
             bounds: range_bounds_from_name(required_str(value, "bounds")?)?,
         },
-        "record_field" => Continuation::RecordField {
+        "record_field" => ContinuationSnapshot::RecordField {
             expr: HirExprId(required_u32(value, "expr")?),
             nominal_type: optional_u32(value, "nominal_type")?.map(etas_types::TypeId),
             variant_symbol: optional_u32(value, "variant_symbol")?.map(etas_hir::SymbolId),
-            fields: required(value, "fields")?
-                .as_array()
-                .ok_or_else(|| "machine snapshot `fields` must be an array".to_owned())?
-                .iter()
-                .map(field_init_from_snapshot)
-                .collect::<Result<Vec<_>, _>>()?,
             next_index: required_usize(value, "next_index")?,
             values: record_values_from_snapshot(limits, required(value, "values")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "map_key" => Continuation::MapKey {
-            entries: map_entries_from_snapshot(required(value, "entries")?)?,
+        "map_key" => ContinuationSnapshot::MapKey {
+            expr: HirExprId(required_u32(value, "expr")?),
             index: required_usize(value, "index")?,
             values: map_values_from_snapshot(limits, required(value, "values")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "map_value" => Continuation::MapValue {
-            entries: map_entries_from_snapshot(required(value, "entries")?)?,
+        "map_value" => ContinuationSnapshot::MapValue {
+            expr: HirExprId(required_u32(value, "expr")?),
             index: required_usize(value, "index")?,
-            key: value_from_json_with_limits(limits, required(value, "key")?)
-                .map_err(|error| error.to_string())?,
+            key: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "key")?,
+            )
+            .map_err(|error| error.to_string())?,
             values: map_values_from_snapshot(limits, required(value, "values")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "index_base" => Continuation::IndexBase {
+        "index_base" => ContinuationSnapshot::IndexBase {
             expr: HirExprId(required_u32(value, "expr")?),
             index: HirExprId(required_u32(value, "index")?),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "index_value" => Continuation::IndexValue {
+        "index_value" => ContinuationSnapshot::IndexValue {
             expr: HirExprId(required_u32(value, "expr")?),
-            base: value_from_json_with_limits(limits, required(value, "base")?)
-                .map_err(|error| error.to_string())?,
+            base: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "base")?,
+            )
+            .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "slice_base" => Continuation::SliceBase {
+        "slice_base" => ContinuationSnapshot::SliceBase {
             eval: slice_eval_from_snapshot(required(value, "eval")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "slice_start" => Continuation::SliceStart {
+        "slice_start" => ContinuationSnapshot::SliceStart {
             eval: slice_eval_from_snapshot(required(value, "eval")?)?,
-            base: value_from_json_with_limits(limits, required(value, "base")?)
-                .map_err(|error| error.to_string())?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            base: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "base")?,
+            )
+            .map_err(|error| error.to_string())?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "slice_end" => Continuation::SliceEnd {
+        "slice_end" => ContinuationSnapshot::SliceEnd {
             eval: slice_eval_from_snapshot(required(value, "eval")?)?,
-            base: value_from_json_with_limits(limits, required(value, "base")?)
-                .map_err(|error| error.to_string())?,
-            start: value_from_json_with_limits(limits, required(value, "start")?)
-                .map_err(|error| error.to_string())?,
+            base: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "base")?,
+            )
+            .map_err(|error| error.to_string())?,
+            start: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "start")?,
+            )
+            .map_err(|error| error.to_string())?,
         },
-        "method_receiver" => Continuation::MethodReceiver {
+        "method_receiver" => ContinuationSnapshot::MethodReceiver {
             expr: HirExprId(required_u32(value, "expr")?),
             method: required_str(value, "method")?.to_owned(),
             type_args: required_u32_array(value, "type_args")?
@@ -159,19 +175,22 @@ pub(crate) fn continuation_from_snapshot(
                 .collect(),
             args: args_from_snapshot(required(value, "args")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "prompt_value_method_arg" => Continuation::PromptValueMethodArg {
+        "prompt_value_method_arg" => ContinuationSnapshot::PromptValueMethodArg {
             messages: prompt_messages_from_snapshot(required(value, "messages")?)?,
             method: required_str(value, "method")?.to_owned(),
             role: prompt_role_from_name(required_str(value, "role")?)?,
             allow_plain_system_content: required_bool(value, "allow_plain_system_content")?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "local_method_args" => Continuation::LocalMethodArgs {
+        "local_method_args" => ContinuationSnapshot::LocalMethodArgs {
             expr: HirExprId(required_u32(value, "expr")?),
-            receiver: value_from_json_with_limits(limits, required(value, "receiver")?)
-                .map_err(|error| error.to_string())?,
+            receiver: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "receiver")?,
+            )
+            .map_err(|error| error.to_string())?,
             method: required_str(value, "method")?.to_owned(),
             type_args: required_u32_array(value, "type_args")?
                 .into_iter()
@@ -181,9 +200,9 @@ pub(crate) fn continuation_from_snapshot(
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "static_method_args" => Continuation::StaticMethodArgs {
+        "static_method_args" => ContinuationSnapshot::StaticMethodArgs {
             expr: HirExprId(required_u32(value, "expr")?),
             kind: static_method_kind_from_snapshot(required(value, "static_kind")?)?,
             method: required_str(value, "method")?.to_owned(),
@@ -195,9 +214,9 @@ pub(crate) fn continuation_from_snapshot(
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "spec_method_receiver" => Continuation::SpecMethodReceiver {
+        "spec_method_receiver" => ContinuationSnapshot::SpecMethodReceiver {
             expr: HirExprId(required_u32(value, "expr")?),
             receiver_expr: HirExprId(required_u32(value, "receiver_expr")?),
             spec_symbol: SymbolId(required_u32(value, "spec_symbol")?),
@@ -208,40 +227,36 @@ pub(crate) fn continuation_from_snapshot(
             method: required_str(value, "method")?.to_owned(),
             args: args_from_snapshot(required(value, "args")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "callee_eval" => Continuation::CalleeEval {
+        "callee_eval" => ContinuationSnapshot::CalleeEval {
             args: args_from_snapshot(required(value, "args")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "pipeline_stage_target" => Continuation::PipelineStageTarget {
+        "pipeline_stage_target" => ContinuationSnapshot::PipelineStageTarget {
             stages: stages_from_snapshot(required(value, "stages")?)?,
             next_stage_index: required_usize(value, "next_stage_index")?,
-            targets: call_targets_from_snapshot(
-                limits,
-                required(value, "targets")?,
-                slots.clone(),
-            )?,
+            targets: call_target_snapshots_from_json(limits, required(value, "targets")?)?,
             current_limits: runtime_limits_from_snapshot(required(value, "current_limits")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "call_args" => Continuation::CallArgs {
-            target: call_target_from_snapshot(limits, required(value, "target")?, slots.clone())?,
+        "call_args" => ContinuationSnapshot::CallArgs {
+            target: call_target_snapshot_from_json(limits, required(value, "target")?)?,
             args: args_from_snapshot(required(value, "args")?)?,
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "variant_args" => Continuation::VariantArgs {
+        "variant_args" => ContinuationSnapshot::VariantArgs {
             variant_symbol: SymbolId(required_u32(value, "variant_symbol")?),
             args: args_from_snapshot(required(value, "args")?)?,
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "perform_args" => {
             let expr = HirExprId(required_u32(value, "expr")?);
@@ -254,7 +269,7 @@ pub(crate) fn continuation_from_snapshot(
                     expr.0
                 ));
             };
-            Continuation::PerformArgs {
+            ContinuationSnapshot::PerformArgs {
                 expr,
                 action: action.clone(),
                 type_args: required_u32_array(value, "type_args")?
@@ -265,10 +280,10 @@ pub(crate) fn continuation_from_snapshot(
                 next_arg_index: required_usize(value, "next_arg_index")?,
                 evaluated_args: required_values(limits, value, "evaluated_args")?,
                 span: *span,
-                frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+                frame: locals_from_snapshot(limits, required(value, "frame")?)?,
             }
         }
-        "memory_args" => Continuation::MemoryArgs {
+        "memory_args" => ContinuationSnapshot::MemoryArgs {
             result_type: etas_types::TypeId(required_u32(value, "result_type")?),
             region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
             path: required_string_array(value, "path")?,
@@ -279,9 +294,9 @@ pub(crate) fn continuation_from_snapshot(
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "memory_selection_limit_args" => Continuation::MemorySelectionLimitArgs {
+        "memory_selection_limit_args" => ContinuationSnapshot::MemorySelectionLimitArgs {
             region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
             path: required_string_array(value, "path")?,
             key_type: etas_types::TypeId(required_u32(value, "key_type")?),
@@ -296,83 +311,85 @@ pub(crate) fn continuation_from_snapshot(
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "if_expr" => Continuation::IfExpr {
+        "if_expr" => ContinuationSnapshot::IfExpr {
             then_block: HirBlockId(required_u32(value, "then_block")?),
             else_branch: optional_else_branch(value, "else_branch")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "if_stmt" => Continuation::IfStmt {
+        "if_stmt" => ContinuationSnapshot::IfStmt {
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             then_block: HirBlockId(required_u32(value, "then_block")?),
             else_branch: optional_else_branch(value, "else_branch")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "match_expr" => Continuation::MatchExpr {
+        "match_expr" => ContinuationSnapshot::MatchExpr {
             arms: match_arms_from_snapshot(required(value, "arms")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "match_stmt" => Continuation::MatchStmt {
+        "match_stmt" => ContinuationSnapshot::MatchStmt {
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             arms: match_arms_from_snapshot(required(value, "arms")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "handle_handler" => Continuation::HandleHandler {
+        "handle_handler" => ContinuationSnapshot::HandleHandler {
             handle_expr: HirExprId(required_u32(value, "handle_expr")?),
             body: HirExprId(required_u32(value, "body")?),
             handler: HirExprId(required_u32(value, "handler")?),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "pipeline_input" => Continuation::PipelineInput {
+        "pipeline_input" => ContinuationSnapshot::PipelineInput {
             stages: stages_from_snapshot(required(value, "stages")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "pipeline_target" => Continuation::PipelineTarget {
-            input: value_from_json_with_limits(limits, required(value, "input")?)
-                .map_err(|error| error.to_string())?,
+        "pipeline_target" => ContinuationSnapshot::PipelineTarget {
+            input: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "input")?,
+            )
+            .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "composed_call" => Continuation::ComposedCall {
-            remaining: call_targets_from_snapshot(limits, required(value, "remaining")?, slots)?,
+        "composed_call" => ContinuationSnapshot::ComposedCall {
+            remaining: call_target_snapshots_from_json(limits, required(value, "remaining")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "restore_model_policy" => Continuation::RestoreModelPolicy {
+        "restore_model_policy" => ContinuationSnapshot::RestoreModelPolicy {
             previous: Box::new(model_policy_from_snapshot(required(value, "previous")?)?),
             inner: Box::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
-                slots,
             )?),
         },
-        "try_expr" => Continuation::TryExpr {
+        "try_expr" => ContinuationSnapshot::TryExpr {
             expr: HirExprId(required_u32(value, "expr")?),
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "memory_clear_delete_all" => Continuation::MemoryClearDeleteAll {
+        "memory_clear_delete_all" => ContinuationSnapshot::MemoryClearDeleteAll {
             region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
             path: required_string_array(value, "path")?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "memory_clear_delete_next" => Continuation::MemoryClearDeleteNext {
+        "memory_clear_delete_next" => ContinuationSnapshot::MemoryClearDeleteNext {
             region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
             path: required_string_array(value, "path")?,
             remaining_keys: required_values(limits, value, "remaining_keys")?,
             next_index: required_usize(value, "next_index")?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "for_loop" => Continuation::ForLoop {
+        "for_loop" => ContinuationSnapshot::ForLoop {
             pat: HirPatId(required_u32(value, "pat")?),
-            values: optional_values(limits, value, "values")?,
+            source: optional_value(limits, value, "source")?,
             next_index: required_usize(value, "next_index")?,
             body: HirBlockId(required_u32(value, "body")?),
             iterations: required_usize(value, "iterations")?,
@@ -381,18 +398,18 @@ pub(crate) fn continuation_from_snapshot(
                 .map(SymbolId)
                 .collect(),
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "while_loop" => Continuation::WhileLoop {
+        "while_loop" => ContinuationSnapshot::WhileLoop {
             cond: HirExprId(required_u32(value, "cond")?),
             body: HirBlockId(required_u32(value, "body")?),
             iteration: required_u32(value, "iteration")?,
             max_iterations: required_u32(value, "max_iterations")?,
             resume_after_body: required_bool(value, "resume_after_body")?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "retry_attempt" => Continuation::RetryAttempt {
+        "retry_attempt" => ContinuationSnapshot::RetryAttempt {
             retry: RetryAttemptRecord {
                 id: RetryAttemptId(required_u32(value, "retry_id")?),
                 ordinal: required_u32(value, "retry_ordinal")?,
@@ -402,15 +419,14 @@ pub(crate) fn continuation_from_snapshot(
             next_attempt: required_usize(value, "next_attempt")?,
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "handle_boundary" => Continuation::HandleBoundary {
+        "handle_boundary" => ContinuationSnapshot::HandleBoundary {
             scope_id: HandlerScopeId(required_u32(value, "scope_id")?),
             inner: Box::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
-                slots.clone(),
             )?),
             handlers: required(value, "handlers")?
                 .as_array()
@@ -419,56 +435,51 @@ pub(crate) fn continuation_from_snapshot(
                 .map(handler_arm_from_snapshot)
                 .collect::<Result<Vec<_>, _>>()?,
             span: span_from_snapshot(required(value, "span")?)?,
-            frame: frame_from_snapshot(limits, required(value, "frame")?, slots)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "handler_dispatch" => Continuation::HandlerDispatch {
+        "handler_dispatch" => ContinuationSnapshot::HandlerDispatch {
             outer: Box::new(continuation_from_snapshot(
                 limits,
                 required(value, "outer")?,
                 checked,
-                slots,
             )?),
         },
-        "agent_prompt_body" => Continuation::AgentPromptBody {
+        "agent_prompt_body" => ContinuationSnapshot::AgentPromptBody {
             item: etas_hir::HirItemId(required_u32(value, "item")?),
             span: span_from_snapshot(required(value, "span")?)?,
             model_policy: optional_model_policy(value, "model_policy")?.map(Box::new),
         },
-        "scoped_model_policy" => Continuation::ScopedModelPolicy {
+        "scoped_model_policy" => ContinuationSnapshot::ScopedModelPolicy {
             policy: Box::new(model_policy_from_snapshot(required(value, "policy")?)?),
             inner: Box::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
-                slots,
             )?),
         },
-        "call_boundary" => Continuation::CallBoundary {
+        "call_boundary" => ContinuationSnapshot::CallBoundary {
             outer: Box::new(continuation_from_snapshot(
                 limits,
                 required(value, "outer")?,
                 checked,
-                slots,
             )?),
         },
-        "chain" => Continuation::Chain {
+        "chain" => ContinuationSnapshot::Chain {
             inner: Box::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
-                slots.clone(),
             )?),
             outer: Box::new(continuation_from_snapshot(
                 limits,
                 required(value, "outer")?,
                 checked,
-                slots,
             )?),
         },
-        "return" => Continuation::Return,
-        "resume" => Continuation::Resume,
-        "finish" => Continuation::Finish,
-        "block_value" => Continuation::BlockValue,
+        "return" => ContinuationSnapshot::Return,
+        "resume" => ContinuationSnapshot::Resume,
+        "finish" => ContinuationSnapshot::Finish,
+        "block_value" => ContinuationSnapshot::BlockValue,
         other => return Err(format!("unknown machine continuation `{other}`")),
     })
 }

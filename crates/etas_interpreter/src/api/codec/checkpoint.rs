@@ -7,12 +7,14 @@ pub fn checkpoint_artifact_json(
     flow: &str,
     checkpoint: &InterpreterCheckpoint,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let mut artifact = json!({
         "schema": crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA,
         "sources": sources,
         "flow": flow,
-        "checkpoint": checkpoint_json(checkpoint)?,
-    }))
+        "checkpoint": null,
+    });
+    artifact["checkpoint"] = checkpoint_json(checkpoint)?;
+    Ok(artifact)
 }
 
 pub fn checkpoint_id(checkpoint: &InterpreterCheckpoint) -> u32 {
@@ -126,9 +128,13 @@ pub fn checkpoint_from_json_with_limits(
     let slots = crate::plan::SlotLayoutTable::for_project(checked);
     let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
         .map_err(|errors| InterpreterCodecError::new(errors.join("; ")))?;
-    crate::eval::machine::snapshot::SnapshotValidator::new(checked, &slots, &dispatch, limits)
-        .validate_checkpoint(&checkpoint)
+    let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)
         .map_err(InterpreterCodecError::new)?;
+    crate::eval::machine::snapshot::SnapshotValidator::new(
+        checked, &slots, &dispatch, &closures, limits,
+    )
+    .validate_checkpoint(&checkpoint)
+    .map_err(InterpreterCodecError::new)?;
     Ok(checkpoint)
 }
 
@@ -409,13 +415,13 @@ fn host_request_kind_name(kind: etas_host::HostRequestKind) -> &'static str {
 pub(super) fn checkpoint_json(
     checkpoint: &InterpreterCheckpoint,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let mut artifact = json!({
         "id": checkpoint.id.0,
         "label": checkpoint.label,
         "compilation": compilation_identity_json(&checkpoint.compilation),
         "entry_item": checkpoint.entry_item.0,
         "args": checkpoint.args.iter().map(value_json).collect::<Vec<_>>(),
-        "machine": machine_json(&checkpoint.machine)?,
+        "machine": null,
         "handlers": checkpoint.handlers.handlers.iter().map(|handler| {
             json!({
                 "id": handler.id.0,
@@ -447,7 +453,9 @@ pub(super) fn checkpoint_json(
                 "result": completed_host_boundary_result_json(&boundary.result),
             })
         }).collect::<Vec<_>>(),
-    }))
+    });
+    artifact["machine"] = machine_json(&checkpoint.machine)?;
+    Ok(artifact)
 }
 
 fn boundary_occurrence_json(occurrence: &BoundaryOccurrenceId) -> Value {
@@ -588,58 +596,52 @@ pub(super) fn machine_json(machine: &MachineSnapshot) -> Result<Value, Interpret
     let frames = machine
         .frames
         .iter()
-        .map(|frame| -> Result<Value, InterpreterCodecError> {
-            Ok(match frame {
-                MachineFrameSnapshot::Block { continuation } => json!({
-                    "kind": "block",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Expr { continuation } => json!({
-                    "kind": "expr",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Call { continuation, span } => json!({
-                    "kind": "call",
-                    "continuation": machine_continuation_json(continuation)?,
-                    "span": span_json(*span),
-                }),
-                MachineFrameSnapshot::Continuation { continuation } => json!({
-                    "kind": "continuation",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Handler { continuation } => json!({
-                    "kind": "handler",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Retry { continuation } => json!({
-                    "kind": "retry",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
+        .map(|frame| {
+            let (mut object, continuation) = match frame {
+                MachineFrameSnapshot::Block { continuation } => {
+                    (json!({"kind":"block","continuation":null}), continuation)
+                }
+                MachineFrameSnapshot::Expr { continuation } => {
+                    (json!({"kind":"expr","continuation":null}), continuation)
+                }
+                MachineFrameSnapshot::Call { continuation, span } => (
+                    json!({"kind":"call","span":span_json(*span),"continuation":null}),
+                    continuation,
+                ),
+                MachineFrameSnapshot::Continuation { continuation } => (
+                    json!({"kind":"continuation","continuation":null}),
+                    continuation,
+                ),
+                MachineFrameSnapshot::Handler { continuation } => {
+                    (json!({"kind":"handler","continuation":null}), continuation)
+                }
+                MachineFrameSnapshot::Retry { continuation } => {
+                    (json!({"kind":"retry","continuation":null}), continuation)
+                }
                 MachineFrameSnapshot::ModelLoop(frame) => {
-                    json!({
-                        "kind": "model_loop",
-                        "model": model_loop_frame_json(frame)?,
-                    })
+                    let mut object = json!({"kind":"model_loop","model":null});
+                    object["model"] = model_loop_frame_json(frame)?;
+                    return Ok(object);
                 }
                 MachineFrameSnapshot::SourceToolReturn(frame) => {
-                    json!({
-                        "kind": "source_tool_return",
-                        "source_tool": source_tool_return_frame_json(frame)?,
-                    })
+                    let mut object = json!({"kind":"source_tool_return","source_tool":null});
+                    object["source_tool"] = source_tool_return_frame_json(frame)?;
+                    return Ok(object);
                 }
-            })
+            };
+            object["continuation"] = machine_continuation_json(continuation)?;
+            Ok(object)
         })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({ "frames": frames }))
+        .collect::<Result<Vec<_>, InterpreterCodecError>>()?;
+    let mut object = json!({"frames":null});
+    object["frames"] = Value::Array(frames);
+    Ok(object)
 }
 
 pub(super) fn machine_continuation_json(
     continuation: &ContinuationSnapshot,
 ) -> Result<Value, InterpreterCodecError> {
-    let continuation = continuation
-        .to_runtime()
-        .map_err(InterpreterCodecError::new)?;
-    machine::continuation_snapshot(&continuation).map_err(InterpreterCodecError::new)
+    Ok(snapshot::continuation_json(continuation))
 }
 
 pub(super) fn machine_from_json(
@@ -673,32 +675,22 @@ pub(super) fn machine_from_json(
                 limits,
                 required_obj(frame, "continuation")?,
                 checked,
-                std::sync::Arc::new(crate::plan::SlotLayoutTable::default()),
             )
             .map_err(InterpreterCodecError::new)?;
             let kind = required_str(frame, "kind")?;
             if kind == "handler"
-                && !matches!(
-                    continuation,
-                    crate::control::Continuation::HandleBoundary { .. }
-                )
+                && !matches!(continuation, ContinuationSnapshot::HandleBoundary { .. })
             {
                 return Err(InterpreterCodecError::new(
                     "checkpoint handler frame does not contain a handler boundary",
                 ));
             }
-            if kind == "retry"
-                && !matches!(
-                    continuation,
-                    crate::control::Continuation::RetryAttempt { .. }
-                )
+            if kind == "retry" && !matches!(continuation, ContinuationSnapshot::RetryAttempt { .. })
             {
                 return Err(InterpreterCodecError::new(
                     "checkpoint retry frame does not contain a retry attempt",
                 ));
             }
-            let continuation =
-                ContinuationSnapshot::capture(&continuation).map_err(InterpreterCodecError::new)?;
             match kind {
                 "block" => Ok(MachineFrameSnapshot::Block { continuation }),
                 "expr" => Ok(MachineFrameSnapshot::Expr { continuation }),
@@ -721,8 +713,8 @@ pub(super) fn machine_from_json(
 pub(super) fn model_loop_frame_json(
     frame: &crate::orchestration::ModelLoopFrameSnapshot,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
-        "pending": pending_model_json(&frame.pending)?,
+    let mut object = json!({
+        "pending": null,
         "round": frame.round,
         "repair_attempts": frame.repair.attempts,
         "repair_kind": frame.repair.last_kind,
@@ -734,8 +726,11 @@ pub(super) fn model_loop_frame_json(
             "boundary_key": tool.boundary_key,
         })),
         "boundary_key": frame.boundary_key,
-        "outer_continuation": machine_continuation_json(&frame.outer_continuation)?,
-    }))
+        "outer_continuation": null,
+    });
+    object["pending"] = pending_model_json(&frame.pending)?;
+    object["outer_continuation"] = machine_continuation_json(&frame.outer_continuation)?;
+    Ok(object)
 }
 
 pub(super) fn model_loop_frame_from_json(
@@ -765,14 +760,10 @@ pub(super) fn model_loop_frame_from_json(
         completed_tool_result: required_bool(value, "completed_tool_result")?,
         current_host_tool,
         boundary_key: required_str(value, "boundary_key")?.to_owned(),
-        outer_continuation: ContinuationSnapshot::capture(
-            &machine::continuation_from_snapshot(
-                limits,
-                required_obj(value, "outer_continuation")?,
-                checked,
-                std::sync::Arc::new(crate::plan::SlotLayoutTable::default()),
-            )
-            .map_err(InterpreterCodecError::new)?,
+        outer_continuation: machine::continuation_from_snapshot(
+            limits,
+            required_obj(value, "outer_continuation")?,
+            checked,
         )
         .map_err(InterpreterCodecError::new)?,
     })
@@ -781,15 +772,17 @@ pub(super) fn model_loop_frame_from_json(
 pub(super) fn source_tool_return_frame_json(
     frame: &crate::orchestration::SourceToolReturnFrameSnapshot,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let mut object = json!({
         "tool_call_id": frame.tool_call_id,
         "tool_name": frame.tool_name,
         "binding": source_tool_binding_json(&frame.binding),
         "args": host_value_json(&frame.args),
         "boundary_key": frame.boundary_key,
         "output_schema": frame.output_schema.as_ref().map(machine::host_schema_snapshot),
-        "model_loop": model_loop_frame_json(&frame.model_loop)?,
-    }))
+        "model_loop": null,
+    });
+    object["model_loop"] = model_loop_frame_json(&frame.model_loop)?;
+    Ok(object)
 }
 
 pub(super) fn source_tool_return_frame_from_json(
@@ -821,7 +814,7 @@ pub(super) fn source_tool_return_frame_from_json(
 pub(super) fn pending_model_json(
     pending: &crate::orchestration::PendingModelSnapshot,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let mut object = json!({
         "request": model_request_json(&pending.request)?,
         "decode": match pending.decode {
             crate::orchestration::ModelDecodeSnapshot::String => json!({"kind": "string"}),
@@ -831,8 +824,10 @@ pub(super) fn pending_model_json(
         "max_tool_rounds": pending.max_tool_rounds,
         "source_tools": pending.source_tools.iter().map(source_tool_binding_json).collect::<Vec<_>>(),
         "span": span_json(pending.span),
-        "continuation": machine_continuation_json(&pending.continuation)?,
-    }))
+        "continuation": null,
+    });
+    object["continuation"] = machine_continuation_json(&pending.continuation)?;
+    Ok(object)
 }
 
 pub(super) fn pending_model_from_json(
@@ -862,14 +857,10 @@ pub(super) fn pending_model_from_json(
             .map(source_tool_binding_from_json)
             .collect::<Result<Vec<_>, _>>()?,
         span: span_from_json(required_obj(value, "span")?)?,
-        continuation: ContinuationSnapshot::capture(
-            &machine::continuation_from_snapshot(
-                limits,
-                required_obj(value, "continuation")?,
-                checked,
-                std::sync::Arc::new(crate::plan::SlotLayoutTable::default()),
-            )
-            .map_err(InterpreterCodecError::new)?,
+        continuation: machine::continuation_from_snapshot(
+            limits,
+            required_obj(value, "continuation")?,
+            checked,
         )
         .map_err(InterpreterCodecError::new)?,
     })

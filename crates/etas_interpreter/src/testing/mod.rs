@@ -1,4 +1,6 @@
 use super::*;
+mod aggregate_performance;
+pub(crate) mod allocation;
 mod host;
 pub(crate) mod project;
 use self::host::{FakeHost, availability};

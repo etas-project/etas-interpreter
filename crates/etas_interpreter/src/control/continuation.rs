@@ -36,14 +36,6 @@ pub enum CallTarget {
     Composed(Vec<CallTarget>),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AggregateKind {
-    Tuple,
-    Array,
-    List,
-    Set,
-}
-
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StaticMethodKind {
     Prompt,
@@ -108,8 +100,7 @@ pub enum Continuation {
         span: Span,
     },
     AggregateElement {
-        kind: AggregateKind,
-        exprs: Vec<HirExprId>,
+        expr: HirExprId,
         next_index: usize,
         values: Vec<InterpValue>,
         frame: Frame,
@@ -136,19 +127,18 @@ pub enum Continuation {
         expr: HirExprId,
         nominal_type: Option<etas_types::TypeId>,
         variant_symbol: Option<SymbolId>,
-        fields: Vec<etas_hir::HirFieldInit>,
         next_index: usize,
         values: Vec<(String, InterpValue)>,
         frame: Frame,
     },
     MapKey {
-        entries: Vec<etas_hir::HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         values: Vec<(InterpValue, InterpValue)>,
         frame: Frame,
     },
     MapValue {
-        entries: Vec<etas_hir::HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         key: InterpValue,
         values: Vec<(InterpValue, InterpValue)>,
@@ -188,7 +178,7 @@ pub enum Continuation {
         frame: Frame,
     },
     PromptValueMethodArg {
-        messages: Vec<crate::value::PromptMessage>,
+        messages: crate::value::PromptValue,
         method: String,
         role: crate::value::PromptRole,
         allow_plain_system_content: bool,
@@ -347,7 +337,7 @@ pub enum Continuation {
     },
     ForLoop {
         pat: HirPatId,
-        values: Option<Vec<InterpValue>>,
+        source: Option<crate::value::iteration::IterationSource>,
         next_index: usize,
         body: HirBlockId,
         iterations: usize,

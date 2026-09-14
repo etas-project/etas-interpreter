@@ -195,6 +195,7 @@ pub(crate) async fn resume_checkpoint_inner(
         project,
         &plan.slots,
         &plan.dispatch,
+        &plan.closures,
         &options.storage_limits,
     )
     .validate_checkpoint(checkpoint)

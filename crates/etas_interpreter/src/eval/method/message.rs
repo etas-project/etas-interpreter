@@ -146,9 +146,9 @@ impl<'a> EvalContext<'a> {
             return ControlSignal::Value(InterpValue::OptionNone);
         };
         message.payload = Box::new(payload);
-        ControlSignal::Value(InterpValue::OptionSome(Box::new(InterpValue::Message(
-            message,
-        ))))
+        ControlSignal::Value(InterpValue::OptionSome(crate::value::SharedValue::new(
+            InterpValue::Message(message),
+        )))
     }
 
     pub(in crate::eval) fn eval_session_config_type_method_values(
@@ -167,8 +167,8 @@ impl<'a> EvalContext<'a> {
             );
         };
         ControlSignal::Value(InterpValue::Variant {
-            name: "SessionConfig.continue_or_new".to_owned(),
-            fields: vec![key.clone()],
+            name: "SessionConfig.continue_or_new".to_owned().into(),
+            fields: vec![key.clone()].into(),
         })
     }
 

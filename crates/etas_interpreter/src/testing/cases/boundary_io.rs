@@ -689,7 +689,7 @@ flow main(
                     value::InterpValue::String("LANG".into()),
                     value::InterpValue::String("C".into()),
                 )])),
-                value::InterpValue::Bytes(b"input".to_vec()),
+                value::InterpValue::Bytes(b"input".to_vec().into()),
             ],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
@@ -852,13 +852,15 @@ flow main() -> Result<string, IOError> ![Console]
     assert_eq!(
         result.value().cloned(),
         Some(value::InterpValue::Variant {
-            name: "Err".to_owned(),
+            name: "Err".to_owned().into(),
             fields: vec![value::InterpValue::Variant {
-                name: "Host".to_owned(),
+                name: "Host".to_owned().into(),
                 fields: vec![value::InterpValue::String(
-                    "ProviderUnavailable: stdin closed".to_owned()
-                )],
-            }],
+                    "ProviderUnavailable: stdin closed".to_owned().into()
+                )]
+                .into(),
+            }]
+            .into(),
         })
     );
     assert!(result.events.iter().any(|event| matches!(

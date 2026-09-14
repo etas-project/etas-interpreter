@@ -2,6 +2,9 @@ use super::*;
 use crate::value::{ListValue, MapValue, RecordValue, SetValue};
 use etas_types::{PrimitiveType, Type, TypeId};
 
+mod projection;
+mod record;
+
 pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
     match value {
         InterpValue::MemoryWriteIntent(value) => format!(
@@ -50,7 +53,6 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
         InterpValue::List(values) => format!(
             "list:[{}]",
             values
-                .borrow()
                 .iter()
                 .map(boundary_key_fragment)
                 .collect::<Vec<_>>()
@@ -267,162 +269,14 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
 }
 
 pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, String> {
-    match value {
-        InterpValue::MemoryWriteIntent(_) => {
-            Err("write intents require the explicit storage/checkpoint codec".into())
-        }
-        InterpValue::Unit => Ok(HostValue::Unit),
-        InterpValue::Bool(value) => Ok(HostValue::Bool(*value)),
-        InterpValue::Number(value) => numeric_to_host_value(*value)
-            .ok_or_else(|| "non-finite numeric value is not host-encodable".to_owned()),
-        InterpValue::String(value) => Ok(HostValue::String(value.clone())),
-        InterpValue::Bytes(value) => Ok(HostValue::Bytes(value.clone())),
-        InterpValue::Json(value) => Ok(HostValue::Json(host_json_support_value_to_host(value))),
-        InterpValue::Nominal { value, .. } => interp_to_host_value(value),
-        InterpValue::Trust { value, .. } => interp_to_host_value(value),
-        InterpValue::Tuple(values) => values
-            .iter()
-            .map(interp_to_host_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(HostValue::List),
-        InterpValue::Array(values) => values
-            .borrow()
-            .iter()
-            .map(interp_to_host_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(HostValue::List),
-        InterpValue::List(values) => values
-            .borrow()
-            .iter()
-            .map(interp_to_host_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(HostValue::List),
-        InterpValue::Deque(values) | InterpValue::Queue(values) | InterpValue::Stack(values) => {
-            values
-                .borrow()
-                .iter()
-                .map(interp_to_host_value)
-                .collect::<Result<Vec<_>, _>>()
-                .map(HostValue::List)
-        }
-        InterpValue::Map(entries) => entries
-            .borrow()
-            .iter()
-            .map(|(key, value)| Ok((interp_to_host_value(key)?, interp_to_host_value(value)?)))
-            .collect::<Result<Vec<_>, String>>()
-            .map(HostValue::Map),
-        InterpValue::OrderedMap(entries) | InterpValue::PriorityQueue(entries) => entries
-            .borrow()
-            .iter()
-            .map(|(key, value)| Ok((interp_to_host_value(key)?, interp_to_host_value(value)?)))
-            .collect::<Result<Vec<_>, String>>()
-            .map(HostValue::Map),
-        InterpValue::Slice(_)
-        | InterpValue::Set(_)
-        | InterpValue::OrderedSet(_)
-        | InterpValue::Range(_) => Err(format!(
-            "{} is not host-encodable",
-            interp_value_kind(value)
-        )),
-        InterpValue::Record(fields) => fields
-            .borrow()
-            .iter()
-            .map(|(name, value)| Ok((name.clone(), interp_to_host_value(value)?)))
-            .collect::<Result<Vec<_>, String>>()
-            .map(HostValue::Record),
-        InterpValue::Variant { name, fields } => fields
-            .iter()
-            .map(interp_to_host_value)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|fields| HostValue::Variant {
-                name: name.clone(),
-                fields,
-            }),
-        InterpValue::OptionNone => Ok(HostValue::Variant {
-            name: "None".to_owned(),
-            fields: Vec::new(),
-        }),
-        InterpValue::OptionSome(value) => Ok(HostValue::Variant {
-            name: "Some".to_owned(),
-            fields: vec![interp_to_host_value(value)?],
-        }),
-        InterpValue::Message(message) => {
-            super::boundary_session::message_envelope_from_message_value(message)
-                .map(|message| etas_host::session::message_envelope_to_host_value(&message))
-        }
-        InterpValue::Conversation(conversation) => {
-            let messages = conversation
-                .messages
-                .iter()
-                .map(|message| interp_to_host_value(&InterpValue::Message(message.clone())))
-                .collect::<Result<Vec<_>, _>>()?;
-            Ok(HostValue::Record(vec![
-                (
-                    "selected_context".into(),
-                    conversation
-                        .selected_context
-                        .as_ref()
-                        .map(|c| {
-                            HostValue::Record(vec![
-                                ("text".into(), HostValue::String(c.content.text.clone())),
-                                (
-                                    "provenance".into(),
-                                    HostValue::Record(
-                                        c.content
-                                            .provenance
-                                            .iter()
-                                            .map(|(k, v)| (k.clone(), HostValue::String(v.clone())))
-                                            .collect(),
-                                    ),
-                                ),
-                                (
-                                    "fence".into(),
-                                    HostValue::String(c.fence.as_token().to_owned()),
-                                ),
-                                ("version".into(), HostValue::UInt(c.version as u128)),
-                            ])
-                        })
-                        .unwrap_or(HostValue::Unit),
-                ),
-                (
-                    "history_fence".to_owned(),
-                    conversation
-                        .history_fence
-                        .as_ref()
-                        .map(|fence| HostValue::String(fence.as_token().to_owned()))
-                        .unwrap_or(HostValue::Unit),
-                ),
-                (
-                    "session".to_owned(),
-                    HostValue::String(conversation.session.clone()),
-                ),
-                ("messages".to_owned(), HostValue::List(messages)),
-                (
-                    "cursor".to_owned(),
-                    conversation
-                        .cursor
-                        .as_ref()
-                        .map(|cursor| HostValue::String(cursor.clone()))
-                        .unwrap_or(HostValue::Unit),
-                ),
-            ]))
-        }
-        InterpValue::Prompt(_) | InterpValue::Provenance(_) | InterpValue::ModelResponse(_) => Err(
-            format!("{} is not host-encodable", interp_value_kind(value)),
-        ),
-        InterpValue::Command { .. }
-        | InterpValue::CommandResult { .. }
-        | InterpValue::Callable(_)
-        | InterpValue::Handler { .. }
-        | InterpValue::HostHandle(_)
-        | InterpValue::ResourceHandle { .. }
-        | InterpValue::WorkspacePath(_)
-        | InterpValue::MemoryStore { .. }
-        | InterpValue::MemorySelection { .. } => Err(format!(
-            "{} is not host-encodable",
-            interp_value_kind(value)
-        )),
-    }
+    etas_host::value::projection::project_to_host_value(&projection::BorrowedValue(value))
+        .map_err(|error| error.message)
+}
+
+pub(super) fn interp_to_host_json_string(
+    value: &InterpValue,
+) -> Result<String, etas_host::HostError> {
+    etas_host::value::json::project_to_json_string(&projection::BorrowedValue(value))
 }
 
 fn interp_value_kind(value: &InterpValue) -> &'static str {
@@ -601,7 +455,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                         .map_err(|error| format!("tuple element {index}: {error}"))
                 })
                 .collect::<Result<Vec<_>, String>>()
-                .map(InterpValue::Tuple),
+                .map(|values| InterpValue::Tuple(values.into())),
             HostValue::List(values) => Err(format!(
                 "host tuple has {} elements but checked tuple requires {}",
                 values.len(),
@@ -613,44 +467,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
             )),
         },
         Type::Record(record) => match value {
-            HostValue::Record(fields) => {
-                let mut names = std::collections::HashSet::new();
-                for (name, _) in &fields {
-                    if !names.insert(name) {
-                        return Err(format!("host record contains duplicate field `{name}`"));
-                    }
-                }
-                if let Some((name, _)) = fields
-                    .iter()
-                    .find(|(name, _)| !record.fields.iter().any(|field| field.name == *name))
-                {
-                    return Err(format!("host record contains unknown field `{name}`"));
-                }
-                record
-                    .fields
-                    .iter()
-                    .map(|field| {
-                        let (_, value) = fields
-                            .iter()
-                            .find(|(name, _)| name == &field.name)
-                            .ok_or_else(|| {
-                                format!("host record is missing field `{}`", field.name)
-                            })?;
-                        Ok((
-                            field.name.clone(),
-                            host_to_typed_interp_value_with_substitutions(
-                                value.clone(),
-                                field.ty,
-                                store,
-                                substitutions,
-                            )
-                            .map_err(|error| format!("record field `{}`: {error}", field.name))?,
-                        ))
-                    })
-                    .collect::<Result<Vec<_>, String>>()
-                    .map(RecordValue::new)
-                    .map(InterpValue::Record)
-            }
+            HostValue::Record(fields) => record::decode(fields, record, store, substitutions),
             value => Err(format!(
                 "expected record host value, received {}",
                 host_value_kind(&value)
@@ -671,7 +488,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
             )
             .map(|value| InterpValue::Nominal {
                 ty: expected,
-                value: Box::new(value),
+                value: crate::value::SharedValue::new(value),
             })
         }
         Type::Enum(_) => super::host_enum::decode(value, expected, &[], store, substitutions),
@@ -714,7 +531,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
             )
             .map(|value| InterpValue::Nominal {
                 ty: concrete_type,
-                value: Box::new(value),
+                value: crate::value::SharedValue::new(value),
             })
         }
         Type::Option(inner) => match value {
@@ -728,7 +545,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                     store,
                     substitutions,
                 )
-                .map(Box::new)
+                .map(crate::value::SharedValue::new)
                 .map(InterpValue::OptionSome)
             }
             value => Err(format!(
@@ -745,8 +562,8 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                     substitutions,
                 )
                 .map(|value| InterpValue::Variant {
-                    name: "Ok".to_owned(),
-                    fields: vec![value],
+                    name: "Ok".to_owned().into(),
+                    fields: vec![value].into(),
                 })
             }
             HostValue::Variant { name, mut fields } if name == "Err" && fields.len() == 1 => {
@@ -757,8 +574,8 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                     substitutions,
                 )
                 .map(|value| InterpValue::Variant {
-                    name: "Err".to_owned(),
-                    fields: vec![value],
+                    name: "Err".to_owned().into(),
+                    fields: vec![value].into(),
                 })
             }
             value => Err(format!(
@@ -770,7 +587,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
             host_to_typed_interp_value_with_substitutions(value, *inner, store, substitutions).map(
                 |value| InterpValue::Trust {
                     wrapper: *wrapper,
-                    value: Box::new(value),
+                    value: crate::value::SharedValue::new(value),
                 },
             )
         }
@@ -856,30 +673,6 @@ pub(crate) fn host_json_support_value_from_serde(
                 .collect::<Result<Vec<_>, etas_host::HostError>>()?,
         ),
     })
-}
-
-pub(crate) fn host_json_support_value_to_host(
-    value: &crate::value::HostJsonSupportValue,
-) -> etas_host::HostJsonValue {
-    match value {
-        crate::value::HostJsonSupportValue::Null => etas_host::HostJsonValue::Null,
-        crate::value::HostJsonSupportValue::Bool(value) => etas_host::HostJsonValue::Bool(*value),
-        crate::value::HostJsonSupportValue::NumberBits(value) => {
-            etas_host::HostJsonValue::Number(f64::from_bits(*value))
-        }
-        crate::value::HostJsonSupportValue::String(value) => {
-            etas_host::HostJsonValue::String(value.clone())
-        }
-        crate::value::HostJsonSupportValue::Array(values) => etas_host::HostJsonValue::Array(
-            values.iter().map(host_json_support_value_to_host).collect(),
-        ),
-        crate::value::HostJsonSupportValue::Object(entries) => etas_host::HostJsonValue::Object(
-            entries
-                .iter()
-                .map(|(name, value)| (name.clone(), host_json_support_value_to_host(value)))
-                .collect(),
-        ),
-    }
 }
 
 fn host_json_to_plain_host_value(value: etas_host::HostJsonValue) -> Result<HostValue, String> {
@@ -1037,8 +830,10 @@ fn decode_primitive_host_value(
     let kind = host_value_kind(&value);
     let decoded = match (primitive, value) {
         (PrimitiveType::Bool, HostValue::Bool(value)) => Some(InterpValue::Bool(value)),
-        (PrimitiveType::String, HostValue::String(value)) => Some(InterpValue::String(value)),
-        (PrimitiveType::Bytes, HostValue::Bytes(value)) => Some(InterpValue::Bytes(value)),
+        (PrimitiveType::String, HostValue::String(value)) => {
+            Some(InterpValue::String(value.into()))
+        }
+        (PrimitiveType::Bytes, HostValue::Bytes(value)) => Some(InterpValue::Bytes(value.into())),
         (PrimitiveType::Unit, HostValue::Unit) => Some(InterpValue::Unit),
         (PrimitiveType::Char, HostValue::String(value)) => {
             let mut chars = value.chars();
@@ -1048,7 +843,7 @@ fn decode_primitive_host_value(
             chars
                 .next()
                 .is_none()
-                .then_some(InterpValue::String(first.to_string()))
+                .then_some(InterpValue::String(first.to_string().into()))
         }
         (
             primitive @ (PrimitiveType::I8
@@ -1155,7 +950,7 @@ mod tests {
             host_to_typed_interp_value(HostValue::String("u1".to_owned()), nominal, &store),
             Ok(InterpValue::Nominal {
                 ty: nominal,
-                value: Box::new(InterpValue::String("u1".to_owned())),
+                value: crate::value::SharedValue::new(InterpValue::String("u1".to_owned().into())),
             })
         );
     }
@@ -1195,9 +990,11 @@ mod tests {
             value,
             InterpValue::Nominal {
                 ty: applied_outer,
-                value: Box::new(InterpValue::Nominal {
+                value: crate::value::SharedValue::new(InterpValue::Nominal {
                     ty: concrete_inner,
-                    value: Box::new(InterpValue::List(vec![InterpValue::Bool(true)].into())),
+                    value: crate::value::SharedValue::new(InterpValue::List(
+                        vec![InterpValue::Bool(true)].into()
+                    )),
                 })
             }
         );
@@ -1220,7 +1017,7 @@ mod tests {
             role: crate::value::MessageRoleValue::Assistant,
             session: None,
             created_at: "2026-07-18T00:00:00Z".to_owned(),
-            payload: Box::new(InterpValue::String("hello".to_owned())),
+            payload: Box::new(InterpValue::String("hello".to_owned().into())),
             provenance: None,
         });
 

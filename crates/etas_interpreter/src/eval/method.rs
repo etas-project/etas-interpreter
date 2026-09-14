@@ -1,17 +1,8 @@
 use super::*;
 use crate::control::ExecutionFault;
 
-macro_rules! eval_method_arg {
-    ($result:expr) => {
-        match $result {
-            Ok(value) => value,
-            Err(signal) => return *signal,
-        }
-    };
-}
-
 struct PromptMemorySelectionRequest {
-    messages: Vec<crate::value::PromptMessage>,
+    messages: crate::value::PromptValue,
     method: String,
     role: crate::value::PromptRole,
     allow_plain_system_content: bool,
@@ -53,12 +44,11 @@ pub(super) struct LocalMethodArgsState {
     pub span: Span,
 }
 
-mod advanced_collections;
-mod args;
-mod collections;
+mod constructors;
 mod dispatch;
 pub(super) mod helpers;
 mod local;
+mod local_args;
 mod message;
 mod prompt;
 

@@ -63,7 +63,7 @@ impl EvalContext<'_> {
                     return Err(invalid("invalid cursor token"));
                 }
                 Some(SessionCursor {
-                    opaque: opaque.clone(),
+                    opaque: opaque.to_string(),
                 })
             }
             _ => return Err(invalid("history_page requires Option<SessionCursor>")),

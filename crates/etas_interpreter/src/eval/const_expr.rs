@@ -27,8 +27,8 @@ impl<'a> EvalContext<'a> {
                         )
                     })
             }
-            HirLiteral::String { value, .. } => Ok(InterpValue::String(value.clone())),
-            HirLiteral::Char { value, .. } => Ok(InterpValue::String(value.to_string())),
+            HirLiteral::String { value, .. } => Ok(InterpValue::String(value.clone().into())),
+            HirLiteral::Char { value, .. } => Ok(InterpValue::String(value.to_string().into())),
             HirLiteral::Float { text, span } => {
                 let primitive = self.numeric_literal_type(expr, true, *span)?;
                 crate::value::NumericValue::parse_float(text, primitive)
@@ -125,8 +125,13 @@ impl<'a> EvalContext<'a> {
                         Err(fault) => return ControlSignal::Fault(Box::new(fault)),
                     }
                 };
-                for field in partial.remaining {
-                    match self.eval_field_value_signal(None, value, &field, span) {
+                for (index, field) in partial.remaining.iter().enumerate() {
+                    let site = crate::plan::FieldAccessSite::Path {
+                        prefix,
+                        remaining: &partial.remaining,
+                        index,
+                    };
+                    match self.eval_field_value_signal(site, value, field, span) {
                         ControlSignal::Value(next) => value = next,
                         other => return other,
                     }
@@ -235,8 +240,8 @@ impl<'a> EvalContext<'a> {
             return None;
         };
         Some(InterpValue::Variant {
-            name: value.name.clone(),
-            fields: Vec::new(),
+            name: value.name.clone().into(),
+            fields: Vec::new().into(),
         })
     }
 
@@ -292,7 +297,8 @@ impl<'a> EvalContext<'a> {
                 elems
                     .iter()
                     .map(|expr| self.eval_const_expr(*expr, span, visiting))
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
             )),
             HirExpr::Array { elems, .. } => Ok(InterpValue::Array(ArrayValue::new(
                 elems
@@ -350,7 +356,12 @@ impl<'a> EvalContext<'a> {
             }
             HirExpr::Field { base, field, span } => {
                 let base = self.eval_const_expr(*base, *span, visiting)?;
-                self.eval_const_field_value(Some(expr), base, field, *span)
+                self.eval_const_field_value(
+                    crate::plan::FieldAccessSite::Expr(expr),
+                    base,
+                    field,
+                    *span,
+                )
             }
             HirExpr::Index { base, index, span } => {
                 let base = self.eval_const_expr(*base, *span, visiting)?;
@@ -420,9 +431,15 @@ impl<'a> EvalContext<'a> {
             }
         }
         if let Some(symbol) = self.named_variant_symbol(record.path.as_ref()) {
-            return self.eval_named_variant(symbol, fields, span);
+            return self.eval_named_variant(expr, symbol, fields, span);
         }
-        let representation = InterpValue::Record(fields.into());
+        let representation = self
+            .plan
+            .records
+            .construct(expr, fields)
+            .map_err(|message| {
+                ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+            })?;
         if record.path.is_none() {
             return Ok(representation);
         }
@@ -435,7 +452,7 @@ impl<'a> EvalContext<'a> {
         };
         Ok(InterpValue::Nominal {
             ty,
-            value: Box::new(representation),
+            value: crate::value::SharedValue::new(representation),
         })
     }
 
@@ -473,16 +490,15 @@ impl<'a> EvalContext<'a> {
     ) -> Result<InterpValue, ExecutionFault> {
         let head = self.eval_const_expr(head, span, visiting)?;
         let tail = self.eval_const_expr(tail, span, visiting)?;
-        let InterpValue::List(values) = tail else {
+        let InterpValue::List(mut values) = tail else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
                 "constant list cons tail must evaluate to a List[T]",
             ));
         };
-        let mut result = values.snapshot();
-        result.insert(0, head);
-        Ok(InterpValue::List(result.into()))
+        values.push_front(head);
+        Ok(InterpValue::List(values))
     }
 
     fn eval_const_empty_sequence(

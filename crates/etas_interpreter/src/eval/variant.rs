@@ -18,6 +18,7 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn eval_named_variant(
         &self,
+        expr: HirExprId,
         symbol: SymbolId,
         values: Vec<(String, InterpValue)>,
         span: Span,
@@ -29,33 +30,10 @@ impl<'a> EvalContext<'a> {
                 "named enum constructor has no checked field layout",
             )
         };
-        let SymbolDef::EnumVariant {
-            enum_item,
-            variant_index,
-        } = self.checked.symbols.get(symbol).ok_or_else(missing)?.def
-        else {
-            return Err(missing());
-        };
-        let Some(HirItem::Enum(decl)) = self.checked.hir.items.get(enum_item) else {
-            return Err(missing());
-        };
-        let names = decl
-            .variants
-            .get(variant_index as usize)
-            .and_then(|variant| variant.field_names.as_ref())
-            .ok_or_else(missing)?;
-        if values.len() != names.len() {
-            return Err(missing());
-        }
-        let mut fields = Vec::new();
-        for name in names {
-            let mut matching = values.iter().filter(|(key, _)| key == name);
-            let (_, value) = matching.next().ok_or_else(missing)?;
-            if matching.next().is_some() {
-                return Err(missing());
-            }
-            fields.push(value.clone());
-        }
+        let layout = self.plan.named_variants.get(expr).ok_or_else(missing)?;
+        let fields = layout.reorder(symbol, values).map_err(|message| {
+            ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+        })?;
         self.eval_variant_constructor(symbol, fields, span)
     }
 
@@ -79,8 +57,8 @@ impl<'a> EvalContext<'a> {
                 ));
             }
             return Ok(InterpValue::Variant {
-                name: constructor.name.clone(),
-                fields,
+                name: constructor.name.clone().into(),
+                fields: fields.into(),
             });
         }
         let Some(symbol_data) = self.checked.symbols.get(symbol) else {
@@ -129,8 +107,8 @@ impl<'a> EvalContext<'a> {
             ));
         }
         Ok(InterpValue::Variant {
-            name: symbol_data.name.clone(),
-            fields,
+            name: symbol_data.name.clone().into(),
+            fields: fields.into(),
         })
     }
 

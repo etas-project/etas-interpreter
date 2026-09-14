@@ -54,6 +54,119 @@ flow main() -> i32 { return sum(Tree.Branch(Tree.Leaf(2), Tree.Branch(Tree.Leaf(
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn named_variant_permutation_preserves_effectful_source_evaluation_order() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+import std.io.println;
+enum Report<T> { Fields { a: T, b: T, c: T } }
+flow field(label: string, value: i32) -> i32 {
+    println(label);
+    checkpoint(label);
+    return value;
+}
+flow main() -> i32 {
+    let report = Report.Fields { c = field("c", 3), a = field("a", 1), b = field("b", 2) };
+    return match report { Report.Fields { a, b, c } => a * 100 + b * 10 + c };
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]));
+    let first = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(first.value(), Some(&InterpValue::i32(123)));
+    assert_eq!(host.stdout_text(), "c\na\nb\n");
+    assert_eq!(host.console_call_count(), 3);
+    assert_eq!(first.checkpoints.len(), 3);
+    for checkpoint in &first.checkpoints {
+        let artifact =
+            crate::api::codec::checkpoint_artifact_json(&["main.es".into()], "main", checkpoint)
+                .unwrap();
+        let restored = crate::api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, &restored, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::i32(123)));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn named_pattern_permutation_tests_payloads_not_just_constructor_name() {
+    run(
+        r#"
+module app.main;
+enum Response { Failure { code: i32, text: string }, Success }
+flow main() -> string {
+    let value = Response.Failure { text = "kept", code = 503 };
+    return match value {
+        Response.Failure { text: _, code: 404 } => "wrong code",
+        Response.Failure { text: "other", code: _ } => "wrong text",
+        Response.Failure { text, code: _ } => text,
+        Response.Success => "wrong constructor",
+    };
+}
+"#,
+        InterpValue::String("kept".into()),
+    )
+    .await;
+}
+
+#[test]
+fn plan_rejects_named_pattern_with_no_declared_field_slot() {
+    let mut checked = checked_project(
+        r#"
+module app.main;
+enum Response { Failure { code: i32 } }
+flow main() -> i32 {
+    let value = Response.Failure { code = 503 };
+    return match value { Response.Failure { code } => code };
+}
+"#,
+    );
+    let mut edits = 0;
+    let patterns = checked
+        .hir
+        .pats
+        .iter()
+        .map(|(id, _)| id)
+        .collect::<Vec<_>>();
+    for id in patterns {
+        let pattern = checked.hir.pats.get_mut(id).unwrap();
+        if let etas_hir::HirPat::Record { fields, .. } = pattern {
+            fields[0].name = "unknown".into();
+            edits += 1;
+        }
+    }
+    assert_eq!(edits, 1);
+    let result = Interpreter.plan(&checked, Default::default());
+    assert!(result.plan.is_none());
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("unknown or duplicate named variant pattern field")),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn named_enum_fields_construct_match_and_shorthand() {
     run(
         r#"

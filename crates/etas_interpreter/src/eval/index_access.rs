@@ -91,7 +91,6 @@ impl<'a> EvalContext<'a> {
                         span,
                     );
                 };
-                let values = values.borrow();
                 match values.get(index).cloned() {
                     Some(value) => ControlSignal::Value(value),
                     None => self.raise_index_error(
@@ -126,9 +125,7 @@ impl<'a> EvalContext<'a> {
                 }
             }
             InterpValue::Map(entries) => entries
-                .snapshot()
-                .into_iter()
-                .find_map(|(key, value)| (key == index).then_some(value))
+                .get(&index)
                 .map(ControlSignal::Value)
                 .unwrap_or_else(|| {
                     ControlSignal::invalid_arguments(
@@ -167,19 +164,14 @@ impl<'a> EvalContext<'a> {
                         span,
                     );
                 };
-                let len = value.chars().count();
-                value
-                    .chars()
-                    .nth(index)
-                    .map(|ch| InterpValue::String(ch.to_string()))
-                    .map(ControlSignal::Value)
-                    .unwrap_or_else(|| {
-                        self.raise_index_error(
-                            expr,
-                            format!("string index {index} is out of bounds, length is {len}"),
-                            span,
-                        )
-                    })
+                match scalar_at(value.chars(), index) {
+                    Ok(ch) => ControlSignal::Value(InterpValue::String(ch.to_string().into())),
+                    Err(len) => self.raise_index_error(
+                        expr,
+                        format!("string index {index} is out of bounds, length is {len}"),
+                        span,
+                    ),
+                }
             }
             other => ControlSignal::fault(
                 AnalysisDiagnosticCode::InvalidArguments,
@@ -218,11 +210,45 @@ impl<'a> EvalContext<'a> {
                 span,
             },
             args: vec![InterpValue::Variant {
-                name: "IndexError".to_owned(),
-                fields: vec![InterpValue::String(message.into())],
+                name: "IndexError".to_owned().into(),
+                fields: vec![InterpValue::String(message.into().into())].into(),
             }],
             span,
             continuation: Continuation::BlockValue,
         })
+    }
+}
+
+fn scalar_at(chars: impl Iterator<Item = char>, index: usize) -> Result<char, usize> {
+    let mut len = 0;
+    for ch in chars {
+        if len == index {
+            return Ok(ch);
+        }
+        len += 1;
+    }
+    Err(len)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::scalar_at;
+    use std::cell::Cell;
+
+    #[test]
+    fn scalar_index_stops_at_the_requested_unicode_scalar() {
+        for count in [1000, 2000, 4000] {
+            let text = "aé中🙂".repeat(count);
+            for (index, expected) in [(0, 'a'), (1, 'é'), (2, '中'), (3, '🙂')] {
+                let visited = Cell::new(0);
+                let chars = text.chars().inspect(|_| visited.set(visited.get() + 1));
+                assert_eq!(scalar_at(chars, index), Ok(expected));
+                assert_eq!(visited.get(), index + 1);
+            }
+            assert_eq!(scalar_at(text.chars(), usize::MAX), Err(4 * count));
+        }
+        assert_eq!(scalar_at("".chars(), 0), Err(0));
+        assert_eq!(scalar_at("e\u{301}".chars(), 1), Ok('\u{301}'));
+        assert_eq!(scalar_at("e\u{301}".chars(), 2), Err(2));
     }
 }

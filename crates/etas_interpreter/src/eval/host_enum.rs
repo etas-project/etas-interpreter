@@ -47,5 +47,8 @@ pub(super) fn decode(
                 .map_err(|error| format!("enum variant `{name}` field {index}: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(InterpValue::Variant { name, fields })
+    Ok(InterpValue::Variant {
+        name: name.into(),
+        fields: fields.into(),
+    })
 }

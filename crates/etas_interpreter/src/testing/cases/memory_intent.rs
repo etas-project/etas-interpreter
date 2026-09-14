@@ -162,9 +162,10 @@ async fn source_preparation_reports_typed_size_failure_without_storage_dispatch(
             EntryPoint {
                 item: checked.entry.unwrap(),
             },
-            vec![InterpValue::String("x".repeat(
-                etas_host::StorageLimits::default().max_value_bytes + 1,
-            ))],
+            vec![InterpValue::String(
+                "x".repeat(etas_host::StorageLimits::default().max_value_bytes + 1)
+                    .into(),
+            )],
             &host,
             RunOptions::default(),
         )

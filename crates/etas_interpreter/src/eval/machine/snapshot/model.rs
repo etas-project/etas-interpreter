@@ -1,3 +1,4 @@
+use super::RestoreContext;
 use crate::control::{ModelDecode, PendingModel, SourceToolBinding};
 use crate::eval::machine::frame::{
     HostToolProgress, ModelLoopFrame, ModelRepairState, SourceToolReturnFrame,
@@ -34,9 +35,10 @@ impl ModelLoopFrameSnapshot {
     pub(crate) fn restore(
         self,
         current: &crate::api::HostExecutionContext,
+        context: &mut RestoreContext,
     ) -> Result<ModelLoopFrame, String> {
         Ok(ModelLoopFrame {
-            pending: self.pending.restore(current)?,
+            pending: self.pending.restore(current, context)?,
             round: self.round,
             repair: ModelRepairState {
                 attempts: self.repair.attempts,
@@ -50,7 +52,7 @@ impl ModelLoopFrameSnapshot {
                 boundary_key: progress.boundary_key,
             }),
             boundary_key: self.boundary_key,
-            outer_continuation: self.outer_continuation.restore()?,
+            outer_continuation: self.outer_continuation.restore_with(context)?,
         })
     }
 }
@@ -75,7 +77,11 @@ impl PendingModelSnapshot {
         })
     }
 
-    fn restore(self, current: &crate::api::HostExecutionContext) -> Result<PendingModel, String> {
+    fn restore(
+        self,
+        current: &crate::api::HostExecutionContext,
+        context: &mut RestoreContext,
+    ) -> Result<PendingModel, String> {
         Ok(PendingModel {
             request: self.request.restore(current),
             decode: match self.decode {
@@ -90,7 +96,7 @@ impl PendingModelSnapshot {
                 .map(SourceToolBindingSnapshot::restore)
                 .collect(),
             span: self.span,
-            continuation: self.continuation.restore()?,
+            continuation: self.continuation.restore_with(context)?,
         })
     }
 }
@@ -129,6 +135,7 @@ impl SourceToolReturnFrameSnapshot {
     pub(crate) fn restore(
         self,
         current: &crate::api::HostExecutionContext,
+        context: &mut RestoreContext,
     ) -> Result<SourceToolReturnFrame, String> {
         Ok(SourceToolReturnFrame {
             tool_call_id: self.tool_call_id,
@@ -137,7 +144,7 @@ impl SourceToolReturnFrameSnapshot {
             args: self.args,
             boundary_key: self.boundary_key,
             output_schema: self.output_schema,
-            model_loop: Box::new(self.model_loop.restore(current)?),
+            model_loop: Box::new(self.model_loop.restore(current, context)?),
         })
     }
 }

@@ -280,7 +280,7 @@ impl<'a> EvalContext<'a> {
             args,
             span,
         } = dispatch;
-        if local_value_method_expected_arg_count(&receiver, method).is_some() {
+        if let Some(expected) = local_value_method_expected_arg_count(&receiver, method) {
             return self.resume_local_method_args(
                 LocalMethodArgsState {
                     expr,
@@ -289,7 +289,7 @@ impl<'a> EvalContext<'a> {
                     type_args: type_args.to_vec(),
                     args: args.to_vec(),
                     start_arg_index: 0,
-                    evaluated_args: Vec::new(),
+                    evaluated_args: Vec::with_capacity(expected),
                     span,
                 },
                 frame,
@@ -302,25 +302,17 @@ impl<'a> EvalContext<'a> {
             InterpValue::Message(message) => {
                 self.eval_message_value_method(message, method, type_args, args, span)
             }
-            InterpValue::Array(values) => {
-                self.eval_array_method(expr, values, method, args, span, frame)
-            }
-            InterpValue::List(values) => self.eval_list_method(values, method, args, span, frame),
-            InterpValue::Slice(values) => {
-                self.eval_slice_method(expr, values, method, args, span, frame)
-            }
-            InterpValue::Map(entries) => self.eval_map_method(entries, method, args, span, frame),
-            InterpValue::Deque(values) => self.eval_deque_method(values, method, args, span, frame),
-            InterpValue::Queue(values) => self.eval_queue_method(values, method, args, span, frame),
-            InterpValue::Stack(values) => self.eval_stack_method(values, method, args, span, frame),
-            InterpValue::PriorityQueue(entries) => {
-                self.eval_priority_queue_method(entries, method, args, span, frame)
-            }
-            InterpValue::OrderedMap(entries) => {
-                self.eval_ordered_map_method(entries, method, args, span, frame)
-            }
-            InterpValue::OrderedSet(values) => {
-                self.eval_ordered_set_method(values, method, args, span, frame)
+            collection @ (InterpValue::Array(_)
+            | InterpValue::List(_)
+            | InterpValue::Slice(_)
+            | InterpValue::Map(_)
+            | InterpValue::Deque(_)
+            | InterpValue::Queue(_)
+            | InterpValue::Stack(_)
+            | InterpValue::PriorityQueue(_)
+            | InterpValue::OrderedMap(_)
+            | InterpValue::OrderedSet(_)) => {
+                unsupported_collection_method(span, local_receiver_name(&collection), method)
             }
             InterpValue::MemoryStore {
                 region_stable_id,
@@ -441,7 +433,7 @@ impl<'a> EvalContext<'a> {
                 if method != "new" || !args.is_empty() {
                     return unsupported_method(span, "Prompt type", method);
                 }
-                ControlSignal::Value(InterpValue::Prompt(Vec::new()))
+                ControlSignal::Value(InterpValue::Prompt(Default::default()))
             }
             StaticMethodKind::Message => self.eval_message_type_method_values(method, args, span),
             StaticMethodKind::SessionConfig => {

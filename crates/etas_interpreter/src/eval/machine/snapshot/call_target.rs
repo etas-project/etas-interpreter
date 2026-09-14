@@ -1,3 +1,4 @@
+use super::RestoreContext;
 use crate::control::CallTarget;
 use crate::orchestration::CallTargetSnapshot;
 
@@ -44,7 +45,10 @@ pub(super) fn capture_call_target(target: &CallTarget) -> Result<CallTargetSnaps
     })
 }
 
-pub(super) fn restore_call_target(snapshot: CallTargetSnapshot) -> Result<CallTarget, String> {
+pub(super) fn restore_call_target(
+    snapshot: CallTargetSnapshot,
+    context: &mut RestoreContext,
+) -> Result<CallTarget, String> {
     Ok(match snapshot {
         CallTargetSnapshot::FlowItem(item) => CallTarget::FlowItem(item),
         CallTargetSnapshot::AgentItem(item) => CallTarget::AgentItem(item),
@@ -52,7 +56,7 @@ pub(super) fn restore_call_target(snapshot: CallTargetSnapshot) -> Result<CallTa
         CallTargetSnapshot::SpecImplMethod(symbol) => CallTarget::SpecImplMethod(symbol),
         CallTargetSnapshot::Lambda { expr, captured } => CallTarget::Lambda {
             expr,
-            captured: super::frame::restore_frame(captured)?,
+            captured: super::frame::restore_frame(captured, context)?,
         },
         CallTargetSnapshot::EnumVariant(symbol) => CallTarget::EnumVariant(symbol),
         CallTargetSnapshot::NominalConstructor(ty) => CallTarget::NominalConstructor(ty),
@@ -82,17 +86,17 @@ pub(super) fn restore_call_target(snapshot: CallTargetSnapshot) -> Result<CallTa
             target,
             type_bindings,
         } => CallTarget::Specialized {
-            target: Box::new(restore_call_target(*target)?),
+            target: Box::new(restore_call_target(*target, context)?),
             type_bindings,
         },
         CallTargetSnapshot::Limited { target, limits } => CallTarget::Limited {
-            target: Box::new(restore_call_target(*target)?),
+            target: Box::new(restore_call_target(*target, context)?),
             limits,
         },
         CallTargetSnapshot::Composed(targets) => CallTarget::Composed(
             targets
                 .into_iter()
-                .map(restore_call_target)
+                .map(|target| restore_call_target(target, context))
                 .collect::<Result<Vec<_>, _>>()?,
         ),
     })

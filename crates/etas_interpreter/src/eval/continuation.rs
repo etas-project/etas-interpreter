@@ -422,7 +422,12 @@ impl<'a> EvalContext<'a> {
                 field,
                 span,
                 frame: _frame,
-            } => self.eval_field_value_signal(Some(expr), value, &field, span),
+            } => self.eval_field_value_signal(
+                crate::plan::FieldAccessSite::Expr(expr),
+                value,
+                &field,
+                span,
+            ),
             Continuation::Unary { op, span } => match self.eval_unary_value(op, value, span) {
                 Ok(value) => ControlSignal::Value(value),
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),
@@ -440,14 +445,13 @@ impl<'a> EvalContext<'a> {
                 }
             }
             Continuation::AggregateElement {
-                kind,
-                exprs,
+                expr,
                 next_index,
                 mut values,
                 mut frame,
             } => {
                 values.push(value);
-                self.resume_expr_sequence(kind, exprs, next_index, values, &mut frame)
+                self.resume_expr_sequence(expr, next_index, values, &mut frame)
             }
             Continuation::ListConsHead {
                 tail,
@@ -465,14 +469,19 @@ impl<'a> EvalContext<'a> {
                 expr,
                 nominal_type: _,
                 variant_symbol: _,
-                fields,
                 next_index,
                 mut values,
                 mut frame,
             } => {
+                let Some(HirExpr::Record(record)) = self.checked.hir.exprs.get(expr) else {
+                    return ControlSignal::missing_checked_fact(
+                        "record continuation is missing its checked construction expression",
+                        item_span(self.checked, self.entry_item),
+                    );
+                };
                 let Some(etas_hir::HirFieldInit::Named { name, .. }) = next_index
                     .checked_sub(1)
-                    .and_then(|index| fields.get(index))
+                    .and_then(|index| record.fields.get(index))
                 else {
                     return ControlSignal::missing_checked_fact(
                         "record field continuation does not point at a named field",
@@ -480,21 +489,21 @@ impl<'a> EvalContext<'a> {
                     );
                 };
                 values.push((name.clone(), value));
-                self.resume_record_fields(expr, fields, next_index, values, &mut frame)
+                self.resume_record_fields(expr, next_index, values, &mut frame)
             }
             Continuation::MapKey {
-                entries,
+                expr,
                 index,
                 values,
                 mut frame,
-            } => self.resume_map_key_value(entries, index, values, value, &mut frame),
+            } => self.resume_map_key_value(expr, index, values, value, &mut frame),
             Continuation::MapValue {
-                entries,
+                expr,
                 index,
                 key,
                 values,
                 mut frame,
-            } => self.resume_map_value(entries, index, values, key, value, &mut frame),
+            } => self.resume_map_value(expr, index, values, key, value, &mut frame),
             Continuation::IndexBase {
                 expr,
                 index,
@@ -855,7 +864,7 @@ impl<'a> EvalContext<'a> {
             Continuation::CallBoundary { outer } => self.apply_continuation(*outer, value),
             Continuation::ForLoop {
                 pat,
-                values,
+                source,
                 next_index,
                 body,
                 iterations,
@@ -865,7 +874,7 @@ impl<'a> EvalContext<'a> {
             } => self.resume_for_loop(
                 crate::eval::loop_control::ForLoopResume {
                     pat,
-                    values,
+                    source,
                     next_index,
                     body,
                     iterations,

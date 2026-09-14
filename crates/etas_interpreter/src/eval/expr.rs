@@ -53,15 +53,15 @@ impl<'a> EvalContext<'a> {
             }
             HirExpr::Record(record) => self.eval_record_expr(expr, record, frame),
             HirExpr::EmptyRecordOrMap { span } => self.eval_empty_record_or_map_expr(expr, *span),
-            HirExpr::Tuple { elems, .. } => self.eval_tuple_expr(elems, frame),
-            HirExpr::Array { elems, .. } => self.eval_array_expr(elems, frame),
-            HirExpr::List { elems, .. } => self.eval_list_expr(elems, frame),
+            HirExpr::Tuple { .. } => self.eval_sequence_expr(expr, frame),
+            HirExpr::Array { .. } => self.eval_sequence_expr(expr, frame),
+            HirExpr::List { .. } => self.eval_sequence_expr(expr, frame),
             HirExpr::ListCons { head, tail, span } => {
                 self.eval_list_cons_expr(*head, *tail, *span, frame)
             }
             HirExpr::EmptySequence { span } => self.eval_empty_sequence_expr(expr, *span),
-            HirExpr::Map { entries, .. } => self.eval_map_expr(entries, frame),
-            HirExpr::Set { elems, .. } => self.eval_set_expr(elems, frame),
+            HirExpr::Map { .. } => self.eval_map_expr(expr, frame),
+            HirExpr::Set { .. } => self.eval_sequence_expr(expr, frame),
             HirExpr::Range {
                 start, end, bounds, ..
             } => self.eval_range_expr(*start, *end, *bounds, frame),

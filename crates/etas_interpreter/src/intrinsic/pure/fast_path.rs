@@ -8,13 +8,66 @@ use crate::value::InterpValue;
 use super::abi::input::type_mismatch;
 use super::abi::{AbiShape, AdapterError, PureAbiProjector};
 
+pub(super) enum FastPathResult {
+    Value(InterpValue),
+    Kernel(Vec<InterpValue>),
+}
+
 pub(super) fn checked_container_fast_path(
     call: &CheckedPureIntrinsicCall,
-    args: &[InterpValue],
+    mut args: Vec<InterpValue>,
     projector: &PureAbiProjector,
-) -> Result<Option<InterpValue>, AdapterError> {
-    let [arg] = args else {
-        return Ok(None);
+) -> Result<FastPathResult, AdapterError> {
+    if matches!(
+        call.intrinsic.0,
+        intrinsic::pure::LIST_LEN | intrinsic::pure::LIST_IS_EMPTY
+    ) && let [ty] = call.parameter_types.as_slice()
+        && matches!(projector.shape(*ty), Some(AbiShape::Map { .. }))
+    {
+        let [value] = args.as_slice() else {
+            return Err(invalid_checked_abi(call, projector));
+        };
+        let InterpValue::Map(entries) = value else {
+            return Err(type_mismatch(*ty, value));
+        };
+        let count = entries.borrow().len();
+        let value = if call.intrinsic.0 == intrinsic::pure::LIST_LEN {
+            if !matches!(
+                projector.shape(call.result_type),
+                Some(AbiShape::Primitive(PrimitiveType::USize))
+            ) {
+                return Err(invalid_checked_abi(call, projector));
+            }
+            InterpValue::usize(count)
+        } else {
+            if !matches!(
+                projector.shape(call.result_type),
+                Some(AbiShape::Primitive(PrimitiveType::Bool))
+            ) {
+                return Err(invalid_checked_abi(call, projector));
+            }
+            InterpValue::Bool(count == 0)
+        };
+        return Ok(FastPathResult::Value(value));
+    }
+    if args.len() != 1
+        || !matches!(
+            call.intrinsic.0,
+            intrinsic::pure::OPTION_IS_SOME
+                | intrinsic::pure::OPTION_IS_NONE
+                | intrinsic::pure::RESULT_IS_OK
+                | intrinsic::pure::RESULT_IS_ERR
+                | intrinsic::pure::OPTION_UNWRAP
+                | intrinsic::pure::RESULT_UNWRAP
+                | intrinsic::pure::OPTION_SOME
+                | intrinsic::pure::RESULT_OK
+                | intrinsic::pure::RESULT_ERR
+        )
+    {
+        return Ok(FastPathResult::Kernel(args));
+    }
+    let Some(arg) = args.pop() else {
+        return Ok(FastPathResult::Kernel(args));
     };
     match call.intrinsic.0 {
         intrinsic::pure::OPTION_IS_SOME | intrinsic::pure::OPTION_IS_NONE => {
@@ -28,9 +81,9 @@ pub(super) fn checked_container_fast_path(
             let is_some = match arg {
                 InterpValue::OptionSome(_) => true,
                 InterpValue::OptionNone => false,
-                other => return Err(type_mismatch(call.parameter_types[0], other)),
+                other => return Err(type_mismatch(call.parameter_types[0], &other)),
             };
-            Ok(Some(InterpValue::Bool(
+            Ok(FastPathResult::Value(InterpValue::Bool(
                 if call.intrinsic.0 == intrinsic::pure::OPTION_IS_SOME {
                     is_some
                 } else {
@@ -52,9 +105,9 @@ pub(super) fn checked_container_fast_path(
                 {
                     name == "Ok"
                 }
-                other => return Err(type_mismatch(call.parameter_types[0], other)),
+                other => return Err(type_mismatch(call.parameter_types[0], &other)),
             };
-            Ok(Some(InterpValue::Bool(
+            Ok(FastPathResult::Value(InterpValue::Bool(
                 if call.intrinsic.0 == intrinsic::pure::RESULT_IS_OK {
                     is_ok
                 } else {
@@ -70,9 +123,12 @@ pub(super) fn checked_container_fast_path(
                 return Err(invalid_checked_abi(call, projector));
             }
             match arg {
-                InterpValue::OptionSome(value) => Ok(Some((**value).clone())),
-                InterpValue::OptionNone => Ok(None),
-                other => Err(type_mismatch(call.parameter_types[0], other)),
+                InterpValue::OptionSome(value) => Ok(FastPathResult::Value(value.into_value())),
+                InterpValue::OptionNone => {
+                    args.push(InterpValue::OptionNone);
+                    Ok(FastPathResult::Kernel(args))
+                }
+                other => Err(type_mismatch(call.parameter_types[0], &other)),
             }
         }
         intrinsic::pure::RESULT_UNWRAP => {
@@ -83,13 +139,17 @@ pub(super) fn checked_container_fast_path(
                 return Err(invalid_checked_abi(call, projector));
             }
             match arg {
-                InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => {
-                    Ok(Some(fields[0].clone()))
-                }
+                InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => Ok(
+                    FastPathResult::Value(fields.into_single().ok_or(AdapterError::Arity {
+                        expected: 1,
+                        actual: 0,
+                    })?),
+                ),
                 InterpValue::Variant { name, fields } if name == "Err" && fields.len() == 1 => {
-                    Ok(None)
+                    args.push(InterpValue::Variant { name, fields });
+                    Ok(FastPathResult::Kernel(args))
                 }
-                other => Err(type_mismatch(call.parameter_types[0], other)),
+                other => Err(type_mismatch(call.parameter_types[0], &other)),
             }
         }
         intrinsic::pure::OPTION_SOME => {
@@ -99,7 +159,9 @@ pub(super) fn checked_container_fast_path(
             if *inner != call.parameter_types[0] {
                 return Err(invalid_checked_abi(call, projector));
             }
-            Ok(Some(InterpValue::OptionSome(Box::new(arg.clone()))))
+            Ok(FastPathResult::Value(InterpValue::OptionSome(
+                crate::value::SharedValue::new(arg),
+            )))
         }
         intrinsic::pure::RESULT_OK | intrinsic::pure::RESULT_ERR => {
             let Some(AbiShape::Result { ok, err }) = projector.shape(call.result_type) else {
@@ -113,17 +175,21 @@ pub(super) fn checked_container_fast_path(
             if expected != call.parameter_types[0] {
                 return Err(invalid_checked_abi(call, projector));
             }
-            Ok(Some(InterpValue::Variant {
+            Ok(FastPathResult::Value(InterpValue::Variant {
                 name: if call.intrinsic.0 == intrinsic::pure::RESULT_OK {
                     "Ok"
                 } else {
                     "Err"
                 }
-                .to_owned(),
-                fields: vec![arg.clone()],
+                .to_owned()
+                .into(),
+                fields: vec![arg].into(),
             }))
         }
-        _ => Ok(None),
+        _ => {
+            args.push(arg);
+            Ok(FastPathResult::Kernel(args))
+        }
     }
 }
 
@@ -151,14 +217,16 @@ pub(super) fn interpreter_fast_path(
             Some(collections::list::len_from_count(values.borrow().len()))
         }
         (intrinsic::pure::LIST_LEN, [InterpValue::List(values)]) => {
-            Some(collections::list::len_from_count(values.borrow().len()))
+            Some(collections::list::len_from_count(values.len()))
         }
         (intrinsic::pure::LIST_LEN, [InterpValue::Slice(values)]) => {
             Some(collections::list::len_from_count(values.borrow().len()))
         }
         (intrinsic::pure::LIST_LEN, [InterpValue::Deque(values)])
-        | (intrinsic::pure::LIST_LEN, [InterpValue::Queue(values)])
-        | (intrinsic::pure::LIST_LEN, [InterpValue::Stack(values)]) => {
+        | (intrinsic::pure::LIST_LEN, [InterpValue::Queue(values)]) => {
+            Some(collections::list::len_from_count(values.borrow().len()))
+        }
+        (intrinsic::pure::LIST_LEN, [InterpValue::Stack(values)]) => {
             Some(collections::list::len_from_count(values.borrow().len()))
         }
         (intrinsic::pure::LIST_LEN, [InterpValue::PriorityQueue(entries)])
@@ -171,15 +239,17 @@ pub(super) fn interpreter_fast_path(
         (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Array(values)]) => Some(
             collections::list::is_empty_from_count(values.borrow().len()),
         ),
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::List(values)]) => Some(
-            collections::list::is_empty_from_count(values.borrow().len()),
-        ),
+        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::List(values)]) => {
+            Some(collections::list::is_empty_from_count(values.len()))
+        }
         (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Slice(values)]) => Some(
             collections::list::is_empty_from_count(values.borrow().len()),
         ),
         (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Deque(values)])
-        | (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Queue(values)])
-        | (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Stack(values)]) => Some(
+        | (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Queue(values)]) => Some(
+            collections::list::is_empty_from_count(values.borrow().len()),
+        ),
+        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Stack(values)]) => Some(
             collections::list::is_empty_from_count(values.borrow().len()),
         ),
         (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::PriorityQueue(entries)])

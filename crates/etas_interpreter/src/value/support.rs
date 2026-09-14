@@ -138,6 +138,6 @@ pub enum PromptRole {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptMessage {
     pub role: PromptRole,
-    pub text: String,
+    pub text: super::StringValue,
     pub trust: Option<etas_types::TrustWrapper>,
 }

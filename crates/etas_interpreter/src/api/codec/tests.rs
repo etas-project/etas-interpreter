@@ -226,7 +226,7 @@ fn value_codec_round_trips_every_numeric_width_and_nominal_identity() {
     .collect::<Vec<_>>();
     let expected = InterpValue::Nominal {
         ty: etas_types::TypeId(27),
-        value: Box::new(InterpValue::Tuple(values)),
+        value: crate::value::SharedValue::new(InterpValue::Tuple(values.into())),
     };
 
     let encoded = value_json(&expected);
@@ -376,7 +376,8 @@ flow main() -> unit {
                     handlers: vec![handler_arm.clone()],
                     span: test_span(1, 10),
                     frame: LocalsSnapshot {
-                        locals: Vec::new(),
+                        id: 1,
+                        locals: Default::default(),
                         type_bindings: Vec::new(),
                     },
                 },
@@ -437,7 +438,9 @@ flow main() -> unit {
                 occurrence: BoundaryOccurrenceId::HostRequest(HostRequestId(7)),
                 kind: "console".to_owned(),
                 key: "read:line".to_owned(),
-                result: CompletedHostBoundaryResult::Runtime(InterpValue::String("ok".to_owned())),
+                result: CompletedHostBoundaryResult::Runtime(InterpValue::String(
+                    "ok".to_owned().into(),
+                )),
             }],
         },
     };
@@ -593,7 +596,7 @@ fn checkpoint_codec_rejects_legacy_artifact_without_machine_stack() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v32`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
     );
 }
 
@@ -618,7 +621,7 @@ fn checkpoint_codec_rejects_v4_artifact_after_handler_scope_schema_change() {
         .expect_err("v4 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -635,7 +638,7 @@ fn checkpoint_codec_rejects_v5_artifact_after_lossless_host_ledger_schema_change
         .expect_err("v5 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -652,7 +655,7 @@ fn checkpoint_codec_rejects_v6_artifact_after_canonical_message_schema_change() 
         .expect_err("v6 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -669,7 +672,7 @@ fn checkpoint_codec_rejects_v7_artifact_without_checked_intrinsic_abi() {
         .expect_err("v7 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -686,7 +689,7 @@ fn checkpoint_codec_rejects_v8_artifact_with_executable_std_callable_payloads() 
         .expect_err("v8 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -703,7 +706,7 @@ fn checkpoint_codec_rejects_v9_artifact_without_run_owned_budget_state() {
         .expect_err("v9 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v9`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v9`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -720,7 +723,7 @@ fn checkpoint_codec_rejects_v10_artifact_without_execution_progress() {
         .expect_err("v10 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v10`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v10`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -737,7 +740,7 @@ fn checkpoint_codec_rejects_v11_artifact_without_trace_parent_identity() {
         .expect_err("v11 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v11`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v11`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -754,7 +757,7 @@ fn checkpoint_codec_rejects_v12_artifact_with_32_bit_trace_identity() {
         .expect_err("v12 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v12`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v12`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -771,7 +774,7 @@ fn checkpoint_codec_rejects_v13_artifact_with_persisted_invocation_authority() {
         .expect_err("v13 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v13`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v13`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -788,7 +791,7 @@ fn checkpoint_codec_rejects_v14_artifact_with_live_budget_ledger() {
         .expect_err("v14 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v14`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v14`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -805,7 +808,7 @@ fn checkpoint_codec_rejects_v15_artifact_without_runtime_generic_bindings() {
         .expect_err("v15 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v15`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v15`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -822,7 +825,7 @@ fn checkpoint_codec_rejects_v16_artifact_without_boundary_occurrences() {
         .expect_err("v16 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v16`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v16`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -839,7 +842,7 @@ fn checkpoint_codec_rejects_v17_artifact_without_region_indexed_command_cwd() {
         .expect_err("v17 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v17`; expected `etas.cli.interpreter-checkpoint.v32`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v17`; expected `etas.cli.interpreter-checkpoint.v34`"
         ),
         "{}",
         error.message()
@@ -867,6 +870,11 @@ fn checkpoint_codec_rejects_unimported_and_unknown_std_intrinsics() {
         }]);
         let error = checkpoint_from_json(&artifact, &checked)
             .expect_err("checkpoint must not inject an intrinsic outside the current plan");
+        let bytes = checkpoint_file_to_bytes(artifact, CheckpointFileLimits::default()).unwrap();
+        let document = checkpoint_file_from_bytes(&bytes, CheckpointFileLimits::default()).unwrap();
+        let file_error = checkpoint_from_json(&document, &checked)
+            .expect_err("file decoding must retain checked intrinsic validation");
+        assert_eq!(file_error.message(), error.message());
         assert!(
             error.message().contains("is not imported"),
             "unexpected error for intrinsic {intrinsic}: {}",
@@ -888,7 +896,24 @@ fn checkpoint_codec_rejects_v24_without_published_context_contract() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v32`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v33_with_copied_aggregate_descriptors() {
+    let checked = checked_project();
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v33"});
+    let error = checkpoint_from_json(&artifact, &checked).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
     );
 }
 
@@ -917,7 +942,7 @@ fn checkpoint_codec_rejects_v23_before_decoding_history_without_fence() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v32`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
     );
 }
 
@@ -1008,7 +1033,7 @@ fn run_report_json_includes_message_session_trace_events() {
                     session: Some("session-42".to_owned()),
                     role: "user".to_owned(),
                     created_at: "step-1".to_owned(),
-                    payload: Box::new(InterpValue::String("hello".to_owned())),
+                    payload: Box::new(InterpValue::String("hello".to_owned().into())),
                     provenance: Some(crate::value::ProvenanceValue {
                         trace_id: Some("TraceId(0)".to_owned()),
                         source: Some("Message.new".to_owned()),
@@ -1020,8 +1045,8 @@ fn run_report_json_includes_message_session_trace_events() {
                     session_config: crate::value::SessionConfigValue {
                         id: "session-43".to_owned(),
                         context: Some(Box::new(InterpValue::Variant {
-                            name: "LastTurns".to_owned(),
-                            fields: vec![InterpValue::i32(4)],
+                            name: "LastTurns".to_owned().into(),
+                            fields: vec![InterpValue::i32(4)].into(),
                         })),
                         retention: None,
                     },
@@ -1235,7 +1260,7 @@ fn value_codec_round_trips_canonical_message_contract() {
         role: crate::value::MessageRoleValue::User,
         session: Some("session-7".to_owned()),
         created_at: "step-4".to_owned(),
-        payload: Box::new(InterpValue::String("hello".to_owned())),
+        payload: Box::new(InterpValue::String("hello".to_owned().into())),
         provenance: Some(crate::value::ProvenanceValue {
             trace_id: Some("trace-7".to_owned()),
             source: Some("test".to_owned()),

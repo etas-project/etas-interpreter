@@ -1,5 +1,23 @@
 use super::*;
 
+enum EvaluatedLocalArgs {
+    None,
+    One(InterpValue),
+    Two(InterpValue, InterpValue),
+}
+
+impl EvaluatedLocalArgs {
+    fn from_values(values: Vec<InterpValue>) -> Result<Self, ()> {
+        let mut values = values.into_iter();
+        match (values.next(), values.next(), values.next()) {
+            (None, None, None) => Ok(Self::None),
+            (Some(first), None, None) => Ok(Self::One(first)),
+            (Some(first), Some(second), None) => Ok(Self::Two(first, second)),
+            _ => Err(()),
+        }
+    }
+}
+
 impl<'a> EvalContext<'a> {
     pub(in crate::eval) fn eval_local_method_with_values(
         &mut self,
@@ -7,12 +25,30 @@ impl<'a> EvalContext<'a> {
         receiver: InterpValue,
         method: &str,
         type_args: &[etas_hir::HirTypeId],
-        args: &[InterpValue],
+        args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        let Some(expected) = local_value_method_expected_arg_count(&receiver, method) else {
+            return unsupported_method(span, local_receiver_name(&receiver), method);
+        };
+        if args.len() != expected {
+            return ControlSignal::invalid_arguments(
+                format!(
+                    "{} expects exactly {expected} argument(s)",
+                    local_method_label(&receiver, method)
+                ),
+                span,
+            );
+        }
+        let Ok(args) = EvaluatedLocalArgs::from_values(args) else {
+            return ControlSignal::missing_checked_fact(
+                "collection method has no runtime argument layout",
+                span,
+            );
+        };
         match receiver {
             InterpValue::Message(message) if method == "cast" => {
-                if !args.is_empty() {
+                if !matches!(args, EvaluatedLocalArgs::None) {
                     return ControlSignal::invalid_arguments(
                         "Message.cast expects no value arguments",
                         span,
@@ -50,19 +86,23 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(in crate::eval) fn eval_array_method_values(
+    fn eval_array_method_values(
         &mut self,
         expr: HirExprId,
         values: ArrayValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(values.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty())),
-            "get" => {
-                let Some(index) = self.index_usize(args[0].clone(), span) else {
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(values.borrow().len()))
+            }
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
+            }
+            ("get", EvaluatedLocalArgs::One(arg)) => {
+                let Some(index) = self.index_usize(arg, span) else {
                     return ControlSignal::Value(InterpValue::OptionNone);
                 };
                 ControlSignal::Value(
@@ -70,84 +110,85 @@ impl<'a> EvalContext<'a> {
                         .borrow()
                         .get(index)
                         .cloned()
-                        .map(Box::new)
+                        .map(crate::value::SharedValue::new)
                         .map(InterpValue::OptionSome)
                         .unwrap_or(InterpValue::OptionNone),
                 )
             }
-            "at" => self.eval_index_value(expr, InterpValue::Array(values), args[0].clone(), span),
-            "push" => {
-                let mut next = values.snapshot();
-                next.push(args[0].clone());
+            ("at", EvaluatedLocalArgs::One(arg)) => {
+                self.eval_index_value(expr, InterpValue::Array(values), arg, span)
+            }
+            ("push", EvaluatedLocalArgs::One(arg)) => {
+                let mut next = values.into_values();
+                next.push(arg);
                 ControlSignal::Value(InterpValue::Array(ArrayValue::new(next)))
             }
-            "pop" => {
-                let mut next = values.snapshot();
+            ("pop", EvaluatedLocalArgs::None) => {
+                let mut next = values.into_values();
                 let popped = next.pop();
                 ControlSignal::Value(collection_pop_result(
                     InterpValue::Array(ArrayValue::new(next)),
                     popped,
                 ))
             }
-            "extend" => {
-                let InterpValue::Array(other) = args[0].clone() else {
+            ("extend", EvaluatedLocalArgs::One(arg)) => {
+                let InterpValue::Array(other) = arg else {
                     return ControlSignal::invalid_arguments(
                         "Array.extend expects an Array value",
                         span,
                     );
                 };
-                let mut next = values.snapshot();
-                next.extend(other.snapshot());
+                let mut next = values.into_values();
+                next.extend(other.into_values());
                 ControlSignal::Value(InterpValue::Array(ArrayValue::new(next)))
             }
             _ => unsupported_collection_method(span, "Array", method),
         }
     }
 
-    pub(in crate::eval) fn eval_list_method_values(
+    fn eval_list_method_values(
         &mut self,
-        values: crate::value::ListValue,
+        mut values: crate::value::ListValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(values.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty())),
-            "push" => {
-                let mut next = values.snapshot();
-                next.insert(0, args[0].clone());
-                ControlSignal::Value(InterpValue::List(next.into()))
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(values.len()))
             }
-            "pop" => {
-                let mut next = values.snapshot();
-                let popped = if next.is_empty() {
-                    None
-                } else {
-                    Some(next.remove(0))
-                };
-                ControlSignal::Value(collection_pop_result(
-                    InterpValue::List(next.into()),
-                    popped,
-                ))
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(values.is_empty()))
+            }
+            ("push", EvaluatedLocalArgs::One(arg)) => {
+                values.push_front(arg);
+                ControlSignal::Value(InterpValue::List(values))
+            }
+            ("pop", EvaluatedLocalArgs::None) => {
+                let popped = values.pop_front();
+                ControlSignal::Value(collection_pop_result(InterpValue::List(values), popped))
             }
             _ => unsupported_collection_method(span, "List", method),
         }
     }
 
-    pub(in crate::eval) fn eval_slice_method_values(
+    fn eval_slice_method_values(
         &mut self,
         expr: HirExprId,
         values: SliceValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(values.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty())),
-            "get" => {
-                let Some(index) = self.index_usize(args[0].clone(), span) else {
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(values.borrow().len()))
+            }
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
+            }
+            ("get", EvaluatedLocalArgs::One(arg)) => {
+                let Some(index) = self.index_usize(arg, span) else {
                     return ControlSignal::Value(InterpValue::OptionNone);
                 };
                 ControlSignal::Value(
@@ -155,41 +196,42 @@ impl<'a> EvalContext<'a> {
                         .borrow()
                         .get(index)
                         .cloned()
-                        .map(Box::new)
+                        .map(crate::value::SharedValue::new)
                         .map(InterpValue::OptionSome)
                         .unwrap_or(InterpValue::OptionNone),
                 )
             }
-            "at" => self.eval_index_value(expr, InterpValue::Slice(values), args[0].clone(), span),
-            "to_array" => {
-                ControlSignal::Value(InterpValue::Array(ArrayValue::new(values.snapshot())))
+            ("at", EvaluatedLocalArgs::One(arg)) => {
+                self.eval_index_value(expr, InterpValue::Slice(values), arg, span)
+            }
+            ("to_array", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Array(ArrayValue::new(values.into_values())))
             }
             _ => unsupported_collection_method(span, "Slice", method),
         }
     }
 
-    pub(in crate::eval) fn eval_map_method_values(
+    fn eval_map_method_values(
         &mut self,
         entries: MapValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(entries.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty())),
-            "contains_key" => ControlSignal::Value(InterpValue::Bool(
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(entries.borrow().len()))
+            }
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty()))
+            }
+            ("contains_key", EvaluatedLocalArgs::One(arg)) => {
+                ControlSignal::Value(InterpValue::Bool(entries.contains_key(&arg)))
+            }
+            ("get", EvaluatedLocalArgs::One(arg)) => ControlSignal::Value(
                 entries
-                    .snapshot()
-                    .iter()
-                    .any(|(candidate, _)| candidate == &args[0]),
-            )),
-            "get" => ControlSignal::Value(
-                entries
-                    .snapshot()
-                    .into_iter()
-                    .find_map(|(candidate, value)| (candidate == args[0]).then_some(value))
-                    .map(Box::new)
+                    .get(&arg)
+                    .map(crate::value::SharedValue::new)
                     .map(InterpValue::OptionSome)
                     .unwrap_or(InterpValue::OptionNone),
             ),
@@ -197,85 +239,87 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(in crate::eval) fn eval_deque_method_values(
+    fn eval_deque_method_values(
         &mut self,
-        values: ArrayValue,
+        mut values: crate::value::DequeValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(values.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty())),
-            "push_front" | "push_back" => {
-                let mut next = values.snapshot();
-                if method == "push_front" {
-                    next.insert(0, args[0].clone());
-                } else {
-                    next.push(args[0].clone());
-                }
-                ControlSignal::Value(InterpValue::Deque(ArrayValue::new(next)))
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(values.borrow().len()))
             }
-            "pop_front" | "pop_back" => {
-                let mut next = values.snapshot();
-                let popped = if method == "pop_front" {
-                    (!next.is_empty()).then(|| next.remove(0))
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
+            }
+            ("push_front" | "push_back", EvaluatedLocalArgs::One(arg)) => {
+                if method == "push_front" {
+                    values.push_front(arg);
                 } else {
-                    next.pop()
+                    values.push_back(arg);
+                }
+                ControlSignal::Value(InterpValue::Deque(values))
+            }
+            ("pop_front" | "pop_back", EvaluatedLocalArgs::None) => {
+                let popped = if method == "pop_front" {
+                    values.pop_front()
+                } else {
+                    values.pop_back()
                 };
-                ControlSignal::Value(collection_pop_result(
-                    InterpValue::Deque(ArrayValue::new(next)),
-                    popped,
-                ))
+                ControlSignal::Value(collection_pop_result(InterpValue::Deque(values), popped))
             }
             _ => unsupported_collection_method(span, "Deque", method),
         }
     }
 
-    pub(in crate::eval) fn eval_queue_method_values(
+    fn eval_queue_method_values(
         &mut self,
-        values: ArrayValue,
+        mut values: crate::value::DequeValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(values.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty())),
-            "push" => {
-                let mut next = values.snapshot();
-                next.push(args[0].clone());
-                ControlSignal::Value(InterpValue::Queue(ArrayValue::new(next)))
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(values.borrow().len()))
             }
-            "pop" => {
-                let mut next = values.snapshot();
-                let popped = (!next.is_empty()).then(|| next.remove(0));
-                ControlSignal::Value(collection_pop_result(
-                    InterpValue::Queue(ArrayValue::new(next)),
-                    popped,
-                ))
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
+            }
+            ("push", EvaluatedLocalArgs::One(arg)) => {
+                values.push_back(arg);
+                ControlSignal::Value(InterpValue::Queue(values))
+            }
+            ("pop", EvaluatedLocalArgs::None) => {
+                let popped = values.pop_front();
+                ControlSignal::Value(collection_pop_result(InterpValue::Queue(values), popped))
             }
             _ => unsupported_collection_method(span, "Queue", method),
         }
     }
 
-    pub(in crate::eval) fn eval_stack_method_values(
+    fn eval_stack_method_values(
         &mut self,
         values: ArrayValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(values.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty())),
-            "push" => {
-                let mut next = values.snapshot();
-                next.push(args[0].clone());
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(values.borrow().len()))
+            }
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
+            }
+            ("push", EvaluatedLocalArgs::One(arg)) => {
+                let mut next = values.into_values();
+                next.push(arg);
                 ControlSignal::Value(InterpValue::Stack(ArrayValue::new(next)))
             }
-            "pop" => {
-                let mut next = values.snapshot();
+            ("pop", EvaluatedLocalArgs::None) => {
+                let mut next = values.into_values();
                 let popped = next.pop();
                 ControlSignal::Value(collection_pop_result(
                     InterpValue::Stack(ArrayValue::new(next)),
@@ -286,23 +330,27 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(in crate::eval) fn eval_priority_queue_method_values(
+    fn eval_priority_queue_method_values(
         &mut self,
         entries: MapValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(entries.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty())),
-            "push" => {
-                let mut next = entries.snapshot();
-                next.push((args[1].clone(), args[0].clone()));
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(entries.borrow().len()))
+            }
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty()))
+            }
+            ("push", EvaluatedLocalArgs::Two(value, priority)) => {
+                let mut next = entries.into_values();
+                next.push((priority, value));
                 ControlSignal::Value(InterpValue::PriorityQueue(MapValue::new(next)))
             }
-            "pop" => {
-                let mut next = entries.snapshot();
+            ("pop", EvaluatedLocalArgs::None) => {
+                let mut next = entries.into_values();
                 let popped = next.pop().map(|(_, value)| value);
                 ControlSignal::Value(collection_pop_result(
                     InterpValue::PriorityQueue(MapValue::new(next)),
@@ -313,35 +361,32 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(in crate::eval) fn eval_ordered_map_method_values(
+    fn eval_ordered_map_method_values(
         &mut self,
         entries: MapValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(entries.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty())),
-            "contains_key" => ControlSignal::Value(InterpValue::Bool(
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(entries.borrow().len()))
+            }
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty()))
+            }
+            ("contains_key", EvaluatedLocalArgs::One(arg)) => {
+                ControlSignal::Value(InterpValue::Bool(entries.contains_key(&arg)))
+            }
+            ("get", EvaluatedLocalArgs::One(arg)) => ControlSignal::Value(
                 entries
-                    .snapshot()
-                    .iter()
-                    .any(|(candidate, _)| candidate == &args[0]),
-            )),
-            "get" => ControlSignal::Value(
-                entries
-                    .snapshot()
-                    .into_iter()
-                    .find_map(|(candidate, value)| (candidate == args[0]).then_some(value))
-                    .map(Box::new)
+                    .get(&arg)
+                    .map(crate::value::SharedValue::new)
                     .map(InterpValue::OptionSome)
                     .unwrap_or(InterpValue::OptionNone),
             ),
-            "insert" => {
-                let key = args[0].clone();
-                let value = args[1].clone();
-                let mut next = entries.snapshot();
+            ("insert", EvaluatedLocalArgs::Two(key, value)) => {
+                let mut next = entries.into_values();
                 if let Some((_, existing)) =
                     next.iter_mut().find(|(candidate, _)| candidate == &key)
                 {
@@ -355,26 +400,27 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(in crate::eval) fn eval_ordered_set_method_values(
+    fn eval_ordered_set_method_values(
         &mut self,
         values: crate::value::SetValue,
         method: &str,
-        args: &[InterpValue],
+        args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match method {
-            "len" => ControlSignal::Value(InterpValue::usize(values.borrow().len())),
-            "is_empty" => ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty())),
-            "contains" => ControlSignal::Value(InterpValue::Bool(
-                values
-                    .snapshot()
-                    .iter()
-                    .any(|candidate| candidate == &args[0]),
-            )),
-            "insert" => {
-                let mut next = values.snapshot();
-                if !next.iter().any(|candidate| candidate == &args[0]) {
-                    next.push(args[0].clone());
+        match (method, args) {
+            ("len", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::usize(values.borrow().len()))
+            }
+            ("is_empty", EvaluatedLocalArgs::None) => {
+                ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
+            }
+            ("contains", EvaluatedLocalArgs::One(arg)) => {
+                ControlSignal::Value(InterpValue::Bool(values.contains(&arg)))
+            }
+            ("insert", EvaluatedLocalArgs::One(arg)) => {
+                let mut next = values.into_values();
+                if !next.iter().any(|candidate| candidate == &arg) {
+                    next.push(arg);
                 }
                 ControlSignal::Value(InterpValue::OrderedSet(next.into()))
             }
@@ -382,3 +428,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 }
+
+#[cfg(test)]
+#[path = "local_tests.rs"]
+mod tests;

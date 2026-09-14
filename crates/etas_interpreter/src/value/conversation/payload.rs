@@ -44,14 +44,20 @@ impl Payload for InterpValue {
                 }
                 Ok(())
             }
-            Array(values) | Deque(values) | Queue(values) | Stack(values) => {
+            Array(values) | Stack(values) => {
+                for value in values.borrow().iter() {
+                    value.measure(budget, depth + 1)?;
+                }
+                Ok(())
+            }
+            Deque(values) | Queue(values) => {
                 for value in values.borrow().iter() {
                     value.measure(budget, depth + 1)?;
                 }
                 Ok(())
             }
             List(values) => {
-                for value in values.borrow().iter() {
+                for value in values.iter() {
                     value.measure(budget, depth + 1)?;
                 }
                 Ok(())

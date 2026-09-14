@@ -34,7 +34,7 @@ impl<'a> EvalContext<'a> {
                     })
                     .collect::<Vec<_>>()
                     .join("");
-                Ok(InterpValue::String(text))
+                Ok(InterpValue::String(text.into()))
             }
             ModelDecode::ModelResponse => Ok(InterpValue::ModelResponse(
                 model_response_value_from_host(response),
@@ -351,7 +351,7 @@ fn json_to_typed_interp_value_with_substitutions(
             )
             .map(|value| InterpValue::Nominal {
                 ty: expected,
-                value: Box::new(value),
+                value: crate::value::SharedValue::new(value),
             })
         }
         Type::Applied { constructor, args } => {
@@ -371,7 +371,7 @@ fn json_to_typed_interp_value_with_substitutions(
             )
             .map(|value| InterpValue::Nominal {
                 ty: expected,
-                value: Box::new(value),
+                value: crate::value::SharedValue::new(value),
             })
         }
         Type::Tuple(types) => {
@@ -386,14 +386,14 @@ fn json_to_typed_interp_value_with_substitutions(
                     json_to_typed_interp_value_with_substitutions(value, *ty, store, substitutions)
                 })
                 .collect::<Option<Vec<_>>>()
-                .map(InterpValue::Tuple)
+                .map(|values| InterpValue::Tuple(values.into()))
         }
         Type::Option(inner) => {
             if value.is_null() {
                 Some(InterpValue::OptionNone)
             } else {
                 json_to_typed_interp_value_with_substitutions(value, *inner, store, substitutions)
-                    .map(Box::new)
+                    .map(crate::value::SharedValue::new)
                     .map(InterpValue::OptionSome)
             }
         }
@@ -405,7 +405,7 @@ fn json_to_typed_interp_value_with_substitutions(
             json_to_typed_interp_value_with_substitutions(value, *inner, store, substitutions).map(
                 |value| InterpValue::Trust {
                     wrapper: *wrapper,
-                    value: Box::new(value),
+                    value: crate::value::SharedValue::new(value),
                 },
             )
         }
@@ -422,7 +422,7 @@ fn json_to_primitive(value: &serde_json::Value, primitive: PrimitiveType) -> Opt
         PrimitiveType::Bool => value.as_bool().map(InterpValue::Bool),
         PrimitiveType::String => value
             .as_str()
-            .map(|value| InterpValue::String(value.to_owned())),
+            .map(|value| InterpValue::String(value.to_owned().into())),
         PrimitiveType::Char => value
             .as_str()
             .and_then(|value| {
@@ -430,11 +430,11 @@ fn json_to_primitive(value: &serde_json::Value, primitive: PrimitiveType) -> Opt
                 let ch = chars.next()?;
                 chars.next().is_none().then_some(ch)
             })
-            .map(|ch| InterpValue::String(ch.to_string())),
+            .map(|ch| InterpValue::String(ch.to_string().into())),
         PrimitiveType::Unit => value.is_null().then_some(InterpValue::Unit),
         PrimitiveType::Bytes => value
             .as_str()
-            .map(|value| InterpValue::Bytes(value.as_bytes().to_vec())),
+            .map(|value| InterpValue::Bytes(value.as_bytes().to_vec().into())),
         primitive @ (PrimitiveType::I8
         | PrimitiveType::I16
         | PrimitiveType::I32
@@ -565,8 +565,8 @@ fn json_to_result(
     if let Some(value) = object.get("Ok") {
         return json_to_typed_interp_value_with_substitutions(value, ok, store, substitutions).map(
             |value| InterpValue::Variant {
-                name: "Ok".to_owned(),
-                fields: vec![value],
+                name: "Ok".to_owned().into(),
+                fields: vec![value].into(),
             },
         );
     }
@@ -576,16 +576,16 @@ fn json_to_result(
             json_to_typed_interp_value_with_substitutions(value, err, store, substitutions)
         })
         .map(|value| InterpValue::Variant {
-            name: "Err".to_owned(),
-            fields: vec![value],
+            name: "Err".to_owned().into(),
+            fields: vec![value].into(),
         })
 }
 
 fn json_to_enum(value: &serde_json::Value) -> Option<InterpValue> {
     if let Some(name) = value.as_str() {
         return Some(InterpValue::Variant {
-            name: name.to_owned(),
-            fields: Vec::new(),
+            name: name.to_owned().into(),
+            fields: Vec::new().into(),
         });
     }
     let object = value.as_object()?;
@@ -600,8 +600,8 @@ fn json_to_enum(value: &serde_json::Value) -> Option<InterpValue> {
         _ => return None,
     };
     Some(InterpValue::Variant {
-        name: name.clone(),
-        fields,
+        name: name.clone().into(),
+        fields: fields.into(),
     })
 }
 
@@ -772,7 +772,7 @@ mod tests {
             panic!("expected applied nominal value");
         };
         assert_eq!(ty, applied);
-        let InterpValue::Record(fields) = *value else {
+        let InterpValue::Record(ref fields) = *value else {
             panic!("expected nominal record representation");
         };
         assert_eq!(
@@ -798,8 +798,8 @@ mod tests {
         assert_eq!(
             json_to_typed_interp_value(&serde_json::json!("Empty"), enum_ty, &store),
             Some(InterpValue::Variant {
-                name: "Empty".to_owned(),
-                fields: Vec::new(),
+                name: "Empty".to_owned().into(),
+                fields: Vec::new().into(),
             })
         );
     }

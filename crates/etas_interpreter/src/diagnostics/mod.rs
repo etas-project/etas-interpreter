@@ -113,7 +113,7 @@ fn runtime_error_detail_value(value: &InterpValue) -> Option<String> {
     let first = value;
     match first {
         InterpValue::Variant { fields, .. } => fields.iter().find_map(runtime_error_detail_value),
-        InterpValue::String(message) => Some(message.clone()),
+        InterpValue::String(message) => Some(message.to_string()),
         other => Some(format!("{other:?}")),
     }
 }

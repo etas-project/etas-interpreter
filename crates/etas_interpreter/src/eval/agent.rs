@@ -184,7 +184,7 @@ impl<'a> EvalContext<'a> {
                             }
                             crate::value::PromptRole::Assistant => ModelRole::Assistant,
                         },
-                        content: vec![ModelContent::Text(message.text)],
+                        content: vec![ModelContent::Text(message.text.into_string())],
                         tool_call_id: None,
                         tool_calls: Vec::new(),
                     })

@@ -358,7 +358,9 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
     entry: FilesystemEntry,
 ) -> Result<InterpValue, String> {
     match (decode, entry) {
-        (HostBoundaryDecode::Bytes, FilesystemEntry::Bytes(bytes)) => Ok(InterpValue::Bytes(bytes)),
+        (HostBoundaryDecode::Bytes, FilesystemEntry::Bytes(bytes)) => {
+            Ok(InterpValue::Bytes(bytes.into()))
+        }
         (HostBoundaryDecode::PathList, FilesystemEntry::Entries(entries)) => {
             Ok(InterpValue::List(ListValue::new(
                 entries
@@ -409,21 +411,21 @@ pub(in crate::driver) fn host_boundary_value_from_stream_payload(
     match (decode, payload) {
         (HostBoundaryDecode::StreamRead, StreamPayload::Read(StreamRead::Data(bytes))) => {
             Ok(InterpValue::Variant {
-                name: "Data".to_owned(),
-                fields: vec![InterpValue::Bytes(bytes)],
+                name: "Data".to_owned().into(),
+                fields: vec![InterpValue::Bytes(bytes.into())].into(),
             })
         }
         (HostBoundaryDecode::StreamRead, StreamPayload::Read(StreamRead::Eof)) => {
             Ok(InterpValue::Variant {
-                name: "Eof".to_owned(),
-                fields: Vec::new(),
+                name: "Eof".to_owned().into(),
+                fields: Vec::new().into(),
             })
         }
         (HostBoundaryDecode::StreamBytes, StreamPayload::Read(StreamRead::Data(bytes))) => {
-            Ok(InterpValue::Bytes(bytes))
+            Ok(InterpValue::Bytes(bytes.into()))
         }
         (HostBoundaryDecode::StreamBytes, StreamPayload::Read(StreamRead::Eof)) => {
-            Ok(InterpValue::Bytes(Vec::new()))
+            Ok(InterpValue::Bytes(Vec::new().into()))
         }
         (HostBoundaryDecode::Unit, StreamPayload::Unit) => Ok(InterpValue::Unit),
         (decode, payload) => Err(format!(
@@ -466,7 +468,7 @@ pub(in crate::driver) fn host_boundary_value_from_secret(
             )))
         }
         (HostBoundaryDecode::SecretBytes, SecretPayload::Bytes(bytes)) => {
-            Ok(InterpValue::Bytes(bytes))
+            Ok(InterpValue::Bytes(bytes.into()))
         }
         (decode, payload) => Err(format!(
             "secret response payload {:?} does not match decode {:?}",
@@ -493,17 +495,20 @@ pub(in crate::driver) fn host_boundary_value_from_browser_payload(
         }
         (HostBoundaryDecode::BrowserPayload, BrowserProtocolPayload::Message(bytes)) => {
             Ok(InterpValue::Record(RecordValue::new(vec![
-                ("kind".to_owned(), InterpValue::String("Message".to_owned())),
-                ("body".to_owned(), InterpValue::Bytes(bytes)),
+                (
+                    "kind".to_owned(),
+                    InterpValue::String("Message".to_owned().into()),
+                ),
+                ("body".to_owned(), InterpValue::Bytes(bytes.into())),
             ])))
         }
         (HostBoundaryDecode::BrowserPayload, BrowserProtocolPayload::Screenshot(bytes)) => {
             Ok(InterpValue::Record(RecordValue::new(vec![
                 (
                     "kind".to_owned(),
-                    InterpValue::String("Screenshot".to_owned()),
+                    InterpValue::String("Screenshot".to_owned().into()),
                 ),
-                ("body".to_owned(), InterpValue::Bytes(bytes)),
+                ("body".to_owned(), InterpValue::Bytes(bytes.into())),
             ])))
         }
         (HostBoundaryDecode::Unit, BrowserProtocolPayload::Unit) => Ok(InterpValue::Unit),

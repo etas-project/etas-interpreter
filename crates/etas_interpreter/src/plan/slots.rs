@@ -17,7 +17,7 @@ pub struct SlotLayoutTable {
 
 impl SlotLayoutTable {
     pub fn for_project(project: &CheckedProject) -> Self {
-        let mut symbols = project
+        let symbols = project
             .symbols
             .iter()
             .filter(|symbol| {
@@ -26,6 +26,10 @@ impl SlotLayoutTable {
             })
             .map(|symbol| symbol.id)
             .collect::<Vec<_>>();
+        Self::from_symbols(symbols)
+    }
+
+    pub(crate) fn from_symbols(mut symbols: Vec<SymbolId>) -> Self {
         symbols.sort_by_key(|symbol| symbol.0);
         symbols.dedup();
 

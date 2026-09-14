@@ -24,7 +24,7 @@ pub fn entry_args_from_strings(checked: &CheckedProject, args: Vec<String>) -> V
         [param] if is_string_array_type(checked, *param) => {
             vec![InterpValue::Array(
                 args.into_iter()
-                    .map(InterpValue::String)
+                    .map(|value| InterpValue::String(value.into()))
                     .collect::<Vec<_>>()
                     .into(),
             )]

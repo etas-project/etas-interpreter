@@ -1,40 +1,19 @@
 use serde_json::Value;
 
-use crate::api::codec::value_from_json_with_limits;
-
-pub(super) fn optional_values(
-    limits: &etas_host::StorageLimits,
-    value: &Value,
-    field: &str,
-) -> Result<Option<Vec<crate::value::InterpValue>>, String> {
-    let Some(value) = value.get(field) else {
-        return Err(format!("machine snapshot is missing `{field}`"));
-    };
-    if value.is_null() {
-        return Ok(None);
-    }
-    let values = value
-        .as_array()
-        .ok_or_else(|| format!("machine snapshot `{field}` must be an array or null"))?;
-    values
-        .iter()
-        .map(|value| value_from_json_with_limits(limits, value).map_err(|error| error.to_string()))
-        .collect::<Result<Vec<_>, _>>()
-        .map(Some)
-}
+use crate::api::codec::value::snapshot_from_json_with_limits;
 
 pub(super) fn optional_value(
     limits: &etas_host::StorageLimits,
     value: &Value,
     field: &str,
-) -> Result<Option<crate::value::InterpValue>, String> {
+) -> Result<Option<crate::orchestration::ValueSnapshot>, String> {
     let Some(value) = value.get(field) else {
         return Err(format!("machine snapshot is missing `{field}`"));
     };
     if value.is_null() {
         return Ok(None);
     }
-    value_from_json_with_limits(limits, value)
+    snapshot_from_json_with_limits(limits, value)
         .map(Some)
         .map_err(|error| error.to_string())
 }
@@ -43,12 +22,14 @@ pub(super) fn required_values(
     limits: &etas_host::StorageLimits,
     value: &Value,
     field: &str,
-) -> Result<Vec<crate::value::InterpValue>, String> {
+) -> Result<Vec<crate::orchestration::ValueSnapshot>, String> {
     required(value, field)?
         .as_array()
         .ok_or_else(|| format!("machine snapshot `{field}` must be an array"))?
         .iter()
-        .map(|value| value_from_json_with_limits(limits, value).map_err(|error| error.to_string()))
+        .map(|value| {
+            snapshot_from_json_with_limits(limits, value).map_err(|error| error.to_string())
+        })
         .collect()
 }
 

@@ -47,7 +47,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hi".to_owned())],
+            vec![value::InterpValue::String("hi".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -87,7 +87,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hi".to_owned())],
+            vec![value::InterpValue::String("hi".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -96,7 +96,7 @@ flow main(input: string) -> string {
 
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("encoded".to_owned())),
+        Some(value::InterpValue::String("encoded".to_owned().into())),
         "{:?}",
         result.diagnostics
     );
@@ -143,7 +143,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -153,7 +153,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("draft".to_owned()))
+        Some(value::InterpValue::String("draft".to_owned().into()))
     );
     assert_eq!(host.model_call_count(), 1);
 
@@ -474,7 +474,7 @@ flow main() -> string {
 
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("one".to_owned())),
+        Some(value::InterpValue::String("one".to_owned().into())),
         "{:?}",
         result.diagnostics
     );
@@ -540,7 +540,7 @@ flow main() -> string ![Error<IOError>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("model answer".to_owned()))
+        Some(value::InterpValue::String("model answer".to_owned().into()))
     );
     assert_eq!(host.console_call_count(), 1);
     assert_eq!(host.model_call_count(), 1);
@@ -608,7 +608,9 @@ flow main() -> string ![Error<IOError>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("nested answer".to_owned()))
+        Some(value::InterpValue::String(
+            "nested answer".to_owned().into()
+        ))
     );
     assert_eq!(host.console_call_count(), 1);
     assert_eq!(host.model_call_count(), 1);
@@ -711,7 +713,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -779,7 +781,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -864,7 +866,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -907,7 +909,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions::default(),
         )
@@ -950,7 +952,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions::default(),
         )
@@ -1013,7 +1015,7 @@ flow main(input: string) -> Draft {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -1045,7 +1047,7 @@ flow main(input: string) -> Draft {
             vec![
                 (
                     "title".to_owned(),
-                    value::InterpValue::String("Hello".to_owned())
+                    value::InterpValue::String("Hello".to_owned().into())
                 ),
                 ("score".to_owned(), value::InterpValue::i64(7)),
             ]
@@ -1101,7 +1103,7 @@ flow main(input: string) -> Draft {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -1173,7 +1175,7 @@ flow main(input: string) -> Draft {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -1191,7 +1193,7 @@ flow main(input: string) -> Draft {
             vec![
                 (
                     "title".to_owned(),
-                    value::InterpValue::String("Fixed".to_owned())
+                    value::InterpValue::String("Fixed".to_owned().into())
                 ),
                 ("score".to_owned(), value::InterpValue::i64(9)),
             ]
@@ -1260,7 +1262,7 @@ flow main(input: string) -> i8 {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -1317,7 +1319,7 @@ flow main(input: string) -> Trusted<string> {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )

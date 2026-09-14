@@ -14,6 +14,12 @@ pub(crate) enum LocalPlaceComponent {
     Index { base: HirExprId, index: HirExprId },
 }
 
+pub(super) struct ResolvedLocalAssignment {
+    pub root_symbol: SymbolId,
+    pub segments: Vec<LocalPlaceSegment>,
+    pub value: InterpValue,
+}
+
 #[derive(Clone, Debug)]
 pub(super) struct AssignTargetIndexResume {
     pub root_symbol: SymbolId,
@@ -46,7 +52,7 @@ impl<'a> EvalContext<'a> {
         span: Span,
         new_value: InterpValue,
         resume: Option<(HirBlockId, usize)>,
-    ) -> Result<(SymbolId, Vec<LocalPlaceSegment>), Box<ControlSignal>> {
+    ) -> Result<ResolvedLocalAssignment, Box<ControlSignal>> {
         let mut components = Vec::new();
         let root_symbol = match self.collect_local_place(expr, &mut components, span) {
             Ok(symbol) => symbol,
@@ -74,8 +80,35 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<SymbolId, ExecutionFault> {
         match &self.checked.hir.exprs[expr] {
-            HirExpr::Path(path) => match path.resolution {
-                ResolveResult::Resolved(symbol) => Ok(symbol),
+            HirExpr::Path(path) => match &path.resolution {
+                ResolveResult::Resolved(symbol) => Ok(*symbol),
+                ResolveResult::PartiallyResolved(partial)
+                    if partial.reason == PartialResolutionReason::MemberRequiresTypeChecking =>
+                {
+                    let root = partial.resolved_prefix.ok_or_else(|| {
+                        ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "assignment member path has no resolved root",
+                        )
+                    })?;
+                    for index in 0..partial.remaining.len() {
+                        let site = crate::plan::FieldAccessSite::Path {
+                            prefix: root,
+                            remaining: &partial.remaining,
+                            index,
+                        };
+                        let field = self.plan.records.field(site).ok_or_else(|| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                "assignment member has no checked record projection",
+                            )
+                        })?;
+                        components.push(LocalPlaceComponent::Field(field.name().to_owned()));
+                    }
+                    Ok(root)
+                }
                 _ => Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::MissingCheckedFact,
                     span,
@@ -107,7 +140,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         mut state: AssignTargetIndexResume,
         frame: &mut Frame,
-    ) -> Result<(SymbolId, Vec<LocalPlaceSegment>), Box<ControlSignal>> {
+    ) -> Result<ResolvedLocalAssignment, Box<ControlSignal>> {
         for component_index in state.next_component_index..state.components.len() {
             let component = state.components[component_index].clone();
             match component {
@@ -138,7 +171,7 @@ impl<'a> EvalContext<'a> {
                                     next_component_index: component_index + 1,
                                     new_value: state.new_value,
                                     span: state.span,
-                                    frame: frame.clone(),
+                                    frame: state.frame,
                                     resume: state.resume,
                                 },
                             )));
@@ -177,7 +210,11 @@ impl<'a> EvalContext<'a> {
                 }
             }
         }
-        Ok((state.root_symbol, state.segments))
+        Ok(ResolvedLocalAssignment {
+            root_symbol: state.root_symbol,
+            segments: state.segments,
+            value: state.new_value,
+        })
     }
 
     fn expr_type_is_map(&self, expr: HirExprId) -> bool {
@@ -242,18 +279,17 @@ impl<'a> EvalContext<'a> {
                 segments: resume.segments,
                 components: resume.components,
                 next_component_index: resume.next_component_index,
-                new_value: resume.new_value.clone(),
+                new_value: resume.new_value,
                 span: resume.span,
                 frame: frame.clone(),
                 resume: Some((resume.block, resume.next_stmt_index)),
             },
             frame,
         )?;
-        let (root_symbol, segments) = resolved;
         self.assign_resolved_local_place(
-            root_symbol,
-            &segments,
-            resume.new_value,
+            resolved.root_symbol,
+            &resolved.segments,
+            resolved.value,
             frame,
             resume.span,
         )

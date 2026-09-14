@@ -168,7 +168,7 @@ impl<'a> EvalContext<'a> {
             }
         };
         let label = match state {
-            InterpValue::String(label) => Some(label),
+            InterpValue::String(label) => Some(label.into_string()),
             _ => None,
         };
         ControlSignal::pending_checkpoint(PendingCheckpoint {
@@ -208,8 +208,8 @@ impl<'a> EvalContext<'a> {
             );
         };
         ControlSignal::Value(InterpValue::ResourceHandle {
-            name,
-            stable_id,
+            name: name.into_string(),
+            stable_id: stable_id.into_string(),
             ty: result_type,
         })
     }
@@ -275,9 +275,12 @@ impl<'a> EvalContext<'a> {
         }
         ControlSignal::Value(InterpValue::Nominal {
             ty: result_type,
-            value: Box::new(InterpValue::Record(RecordValue::new(vec![
+            value: crate::value::SharedValue::new(InterpValue::Record(RecordValue::new(vec![
                 ("amount".to_owned(), amount),
-                ("currency".to_owned(), InterpValue::String("USD".to_owned())),
+                (
+                    "currency".to_owned(),
+                    InterpValue::String("USD".to_owned().into()),
+                ),
             ]))),
         })
     }
@@ -314,8 +317,8 @@ impl<'a> EvalContext<'a> {
             return ControlSignal::invalid_arguments(message, span);
         }
         ControlSignal::Value(InterpValue::Variant {
-            name: runtime_limit_constructor_name(kind).to_owned(),
-            fields: vec![InterpValue::Number(value)],
+            name: runtime_limit_constructor_name(kind).to_owned().into(),
+            fields: vec![InterpValue::Number(value)].into(),
         })
     }
 
@@ -332,8 +335,8 @@ impl<'a> EvalContext<'a> {
             );
         }
         ControlSignal::Value(InterpValue::Variant {
-            name: name.to_owned(),
-            fields: call_args,
+            name: name.to_owned().into(),
+            fields: call_args.into(),
         })
     }
 
@@ -361,8 +364,8 @@ impl<'a> EvalContext<'a> {
             );
         }
         ControlSignal::Value(InterpValue::Variant {
-            name: "Host".to_owned(),
-            fields: vec![message],
+            name: "Host".to_owned().into(),
+            fields: vec![message].into(),
         })
     }
 
@@ -381,7 +384,7 @@ impl<'a> EvalContext<'a> {
             let message = "current_session requires an active runtime session".to_owned();
             return ControlSignal::runtime_fault(message, span);
         };
-        ControlSignal::Value(InterpValue::String(session))
+        ControlSignal::Value(InterpValue::String(session.into()))
     }
 
     fn execute_memory_version_constructor(
@@ -410,7 +413,7 @@ impl<'a> EvalContext<'a> {
         };
         ControlSignal::Value(InterpValue::Nominal {
             ty: version_type,
-            value: Box::new(InterpValue::Record(
+            value: crate::value::SharedValue::new(InterpValue::Record(
                 vec![("opaque".to_owned(), InterpValue::String(token))].into(),
             )),
         })
@@ -430,7 +433,7 @@ impl<'a> EvalContext<'a> {
         }
         ControlSignal::Value(InterpValue::Trust {
             wrapper,
-            value: Box::new(call_args.remove(0)),
+            value: crate::value::SharedValue::new(call_args.remove(0)),
         })
     }
 
@@ -461,8 +464,8 @@ impl<'a> EvalContext<'a> {
                     );
                 }
                 ControlSignal::Value(InterpValue::Variant {
-                    name: "InvalidJson".to_owned(),
-                    fields: vec![message],
+                    name: "InvalidJson".to_owned().into(),
+                    fields: vec![message].into(),
                 })
             }
             JsonCallable::Parse => {
@@ -510,16 +513,15 @@ impl<'a> EvalContext<'a> {
                         );
                     }
                 };
-                let InterpValue::Json(value) = value else {
+                let value @ InterpValue::Json(_) = value else {
                     return self.invalid_arguments_abort(
                         span,
                         "std.json.stringify expects a JsonValue argument",
                     );
                 };
-                let host_json = super::host_value::host_json_support_value_to_host(&value);
-                match etas_host::host_value_to_json(&etas_host::HostValue::Json(host_json)) {
-                    Ok(value) => {
-                        ControlSignal::Value(json_ok_result(InterpValue::String(value.to_string())))
+                match super::host_value::interp_to_host_json_string(&value) {
+                    Ok(text) => {
+                        ControlSignal::Value(json_ok_result(InterpValue::String(text.into())))
                     }
                     Err(error) => ControlSignal::Value(json_error_result(format!(
                         "std.json.stringify cannot encode JsonValue: {error:?}"
@@ -582,15 +584,15 @@ impl<'a> EvalContext<'a> {
                 };
                 let operation = match callable {
                     ConsoleCallable::Print => ConsoleOperation::WriteStdout {
-                        text,
+                        text: text.into_string(),
                         newline: false,
                     },
                     ConsoleCallable::PrintLn => ConsoleOperation::WriteStdout {
-                        text,
+                        text: text.into_string(),
                         newline: true,
                     },
                     ConsoleCallable::EPrintLn => ConsoleOperation::WriteStderr {
-                        text,
+                        text: text.into_string(),
                         newline: true,
                     },
                     ConsoleCallable::ReadAll | ConsoleCallable::ReadLine => unreachable!(),
@@ -660,7 +662,7 @@ impl<'a> EvalContext<'a> {
             );
         }
         let mut argv = Vec::with_capacity(args.borrow().len() + 1);
-        argv.push(program.clone());
+        argv.push(program.to_string());
         for arg in args.borrow().iter() {
             let InterpValue::String(arg) = arg else {
                 return ControlSignal::missing_checked_fact(
@@ -668,7 +670,7 @@ impl<'a> EvalContext<'a> {
                     span,
                 );
             };
-            argv.push(arg.clone());
+            argv.push(arg.to_string());
         }
         ControlSignal::Value(InterpValue::Command {
             argv,
@@ -697,7 +699,7 @@ impl<'a> EvalContext<'a> {
                     span,
                 );
             };
-            env.push((key.clone(), value.clone()));
+            env.push((key.to_string(), value.to_string()));
         }
         self.command_with(command, Some(env), None, None, span)
     }
@@ -727,7 +729,7 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
-        self.command_with(command, None, None, Some(stdin.clone()), span)
+        self.command_with(command, None, None, Some(stdin.to_vec()), span)
     }
 
     fn command_with(
@@ -1400,17 +1402,20 @@ impl<'a> EvalContext<'a> {
                 );
             }
         };
-        match etas_host::WorkspacePathRef::new(region, relative) {
+        match etas_host::WorkspacePathRef::new(region, relative.as_str()) {
             Ok(path) => ControlSignal::Value(InterpValue::Variant {
-                name: "Ok".to_owned(),
-                fields: vec![InterpValue::WorkspacePath(path)],
+                name: "Ok".to_owned().into(),
+                fields: vec![InterpValue::WorkspacePath(path)].into(),
             }),
             Err(error) => ControlSignal::Value(InterpValue::Variant {
-                name: "Err".to_owned(),
+                name: "Err".to_owned().into(),
                 fields: vec![InterpValue::Nominal {
                     ty: error_type,
-                    value: Box::new(InterpValue::String(error.message)),
-                }],
+                    value: crate::value::SharedValue::new(InterpValue::String(
+                        error.message.into(),
+                    )),
+                }]
+                .into(),
             }),
         }
     }
@@ -1505,9 +1510,9 @@ impl<'a> EvalContext<'a> {
     ) -> Result<String, ExecutionFault> {
         let value = nominal_representation_ref(value);
         match value {
-            InterpValue::String(value) => Ok(value.clone()),
+            InterpValue::String(value) => Ok(value.to_string()),
             InterpValue::Record(record) => {
-                let fields = record.snapshot();
+                let fields = record.borrow();
                 field_names
                     .iter()
                     .find_map(|field_name| {
@@ -1516,7 +1521,7 @@ impl<'a> EvalContext<'a> {
                                 && let InterpValue::String(value) =
                                     nominal_representation_ref(value)
                             {
-                                return Some(value.clone());
+                                return Some(value.to_string());
                             }
                             None
                         })
@@ -1545,15 +1550,15 @@ impl<'a> EvalContext<'a> {
     ) -> Result<Vec<u8>, ExecutionFault> {
         let value = nominal_representation_ref(value);
         match value {
-            InterpValue::Bytes(bytes) => Ok(bytes.clone()),
+            InterpValue::Bytes(bytes) => Ok(bytes.to_vec()),
             InterpValue::Record(record) => record
-                .snapshot()
+                .borrow()
                 .iter()
                 .find_map(|(name, value)| {
                     if (name == "body" || name == "bytes" || name == "message")
                         && let InterpValue::Bytes(bytes) = nominal_representation_ref(value)
                     {
-                        return Some(bytes.clone());
+                        return Some(bytes.to_vec());
                     }
                     None
                 })
@@ -1780,18 +1785,19 @@ fn nominal_representation_ref(mut value: &InterpValue) -> &InterpValue {
 
 fn json_ok_result(value: InterpValue) -> InterpValue {
     InterpValue::Variant {
-        name: "Ok".to_owned(),
-        fields: vec![value],
+        name: "Ok".to_owned().into(),
+        fields: vec![value].into(),
     }
 }
 
 fn json_error_result(message: String) -> InterpValue {
     InterpValue::Variant {
-        name: "Err".to_owned(),
+        name: "Err".to_owned().into(),
         fields: vec![InterpValue::Variant {
-            name: "InvalidJson".to_owned(),
-            fields: vec![InterpValue::String(message)],
-        }],
+            name: "InvalidJson".to_owned().into(),
+            fields: vec![InterpValue::String(message.into())].into(),
+        }]
+        .into(),
     }
 }
 

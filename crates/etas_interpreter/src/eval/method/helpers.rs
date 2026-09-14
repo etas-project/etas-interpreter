@@ -16,7 +16,7 @@ pub(in crate::eval) fn session_config_from_value(
         }
         InterpValue::Nominal { value, .. } => session_config_from_value(value),
         InterpValue::Record(fields) => {
-            let snapshot = fields.snapshot();
+            let snapshot = fields.borrow();
             if snapshot
                 .iter()
                 .any(|(field, _)| !matches!(field.as_str(), "id" | "context" | "retention"))
@@ -25,7 +25,7 @@ pub(in crate::eval) fn session_config_from_value(
             }
             let id = snapshot.iter().find_map(|(field, value)| {
                 (field == "id").then(|| match value {
-                    InterpValue::String(value) => Some(value.clone()),
+                    InterpValue::String(value) => Some(value.to_string()),
                     _ => None,
                 })?
             })?;
@@ -58,7 +58,7 @@ pub(super) fn current_message_timestamp() -> Result<String, String> {
 
 pub(super) fn stable_interp_key(value: &InterpValue) -> Option<String> {
     match value {
-        InterpValue::String(value) => Some(value.clone()),
+        InterpValue::String(value) => Some(value.to_string()),
         InterpValue::Number(value) => Some(value.display_value()),
         InterpValue::Bool(value) => Some(value.to_string()),
         InterpValue::Nominal { value, .. } => stable_interp_key(value),
@@ -70,13 +70,16 @@ pub(super) fn collection_pop_result(
     collection: InterpValue,
     popped: Option<InterpValue>,
 ) -> InterpValue {
-    InterpValue::Tuple(vec![
-        collection,
-        popped
-            .map(Box::new)
-            .map(InterpValue::OptionSome)
-            .unwrap_or(InterpValue::OptionNone),
-    ])
+    InterpValue::Tuple(
+        vec![
+            collection,
+            popped
+                .map(crate::value::SharedValue::new)
+                .map(InterpValue::OptionSome)
+                .unwrap_or(InterpValue::OptionNone),
+        ]
+        .into(),
+    )
 }
 
 pub(super) fn unsupported_collection_method(
@@ -225,7 +228,7 @@ pub(super) fn attach_method_receiver_continuation(
 
 pub(super) fn attach_prompt_value_method_arg_continuation(
     signal: ControlSignal,
-    messages: Vec<crate::value::PromptMessage>,
+    messages: crate::value::PromptValue,
     method: &str,
     role: crate::value::PromptRole,
     allow_plain_system_content: bool,
@@ -331,32 +334,108 @@ pub(super) fn prompt_data_contains_secret(value: &InterpValue) -> bool {
             *wrapper == etas_types::TrustWrapper::Secret || prompt_data_contains_secret(value)
         }
         InterpValue::Tuple(values) => values.iter().any(prompt_data_contains_secret),
-        InterpValue::Array(values)
-        | InterpValue::Deque(values)
-        | InterpValue::Queue(values)
-        | InterpValue::Stack(values) => values.snapshot().iter().any(prompt_data_contains_secret),
-        InterpValue::List(values) => values.snapshot().iter().any(prompt_data_contains_secret),
-        InterpValue::Slice(values) => values.snapshot().iter().any(prompt_data_contains_secret),
+        InterpValue::Array(values) | InterpValue::Stack(values) => {
+            values.borrow().iter().any(prompt_data_contains_secret)
+        }
+        InterpValue::Deque(values) | InterpValue::Queue(values) => {
+            values.borrow().iter().any(prompt_data_contains_secret)
+        }
+        InterpValue::List(values) => values.iter().any(prompt_data_contains_secret),
+        InterpValue::Slice(values) => values.borrow().iter().any(prompt_data_contains_secret),
         InterpValue::Set(values) | InterpValue::OrderedSet(values) => {
-            values.snapshot().iter().any(prompt_data_contains_secret)
+            values.borrow().iter().any(prompt_data_contains_secret)
         }
         InterpValue::Map(entries)
         | InterpValue::OrderedMap(entries)
-        | InterpValue::PriorityQueue(entries) => entries.snapshot().iter().any(|(key, value)| {
+        | InterpValue::PriorityQueue(entries) => entries.borrow().iter().any(|(key, value)| {
             prompt_data_contains_secret(key) || prompt_data_contains_secret(value)
         }),
         InterpValue::Record(fields) => fields
-            .snapshot()
+            .borrow()
             .iter()
             .any(|(_, value)| prompt_data_contains_secret(value)),
         InterpValue::Range(range) => {
             prompt_data_contains_secret(&range.start) || prompt_data_contains_secret(&range.end)
         }
         InterpValue::Variant { fields, .. } => fields.iter().any(prompt_data_contains_secret),
-        InterpValue::OptionSome(value)
-        | InterpValue::Message(crate::value::MessageValue { payload: value, .. }) => {
+        InterpValue::OptionSome(value) | InterpValue::Nominal { value, .. } => {
             prompt_data_contains_secret(value)
         }
+        InterpValue::Message(crate::value::MessageValue { payload: value, .. }) => {
+            prompt_data_contains_secret(value)
+        }
+        InterpValue::Conversation(conversation) => conversation
+            .messages
+            .iter()
+            .any(|message| prompt_data_contains_secret(&message.payload)),
         _ => false,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::prompt_data_contains_secret;
+    use crate::testing::allocation::measure;
+    use crate::value::{ArrayValue, InterpValue, MapValue, RecordValue};
+
+    #[test]
+    fn secret_scan_crosses_nominal_and_conversation_payload_boundaries() {
+        use crate::value::{ConversationValue, MessageRoleValue, MessageValue};
+        let secret = InterpValue::Nominal {
+            ty: etas_types::TypeId(0),
+            value: crate::value::SharedValue::new(InterpValue::Trust {
+                wrapper: etas_types::TrustWrapper::Secret,
+                value: crate::value::SharedValue::new(InterpValue::String("must-not-leak".into())),
+            }),
+        };
+        assert!(prompt_data_contains_secret(&secret));
+        let conversation = InterpValue::Conversation(ConversationValue {
+            selected_context: None,
+            session: "session".into(),
+            history_fence: None,
+            cursor: None,
+            messages: vec![MessageValue {
+                id: "message".into(),
+                from: None,
+                to: None,
+                role: MessageRoleValue::User,
+                session: None,
+                created_at: "0".into(),
+                payload: Box::new(secret),
+                provenance: None,
+            }],
+        });
+        let (found, allocations) = measure(|| prompt_data_contains_secret(&conversation));
+        assert!(found);
+        assert_eq!(allocations.count, 0);
+    }
+
+    #[test]
+    fn secret_scan_borrows_nested_payloads_without_materialization() {
+        for count in [1000, 2000, 4000] {
+            for secret in [false, true] {
+                let mut values = (0..count)
+                    .map(|_| InterpValue::Bytes(vec![7; 128].into()))
+                    .collect::<Vec<_>>();
+                if secret {
+                    values.push(InterpValue::Trust {
+                        wrapper: etas_types::TrustWrapper::Secret,
+                        value: crate::value::SharedValue::new(InterpValue::String(
+                            "private".into(),
+                        )),
+                    });
+                }
+                let value = InterpValue::Record(RecordValue::new(vec![(
+                    "nested".into(),
+                    InterpValue::Map(MapValue::new(vec![(
+                        InterpValue::String("key".into()),
+                        InterpValue::Array(ArrayValue::new(values)),
+                    )])),
+                )]));
+                let (found, allocations) = measure(|| prompt_data_contains_secret(&value));
+                assert_eq!(found, secret);
+                assert_eq!(allocations.count, 0, "{count}: {allocations:?}");
+            }
+        }
     }
 }

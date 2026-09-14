@@ -12,7 +12,7 @@ pub fn run_report_json(
         .iter()
         .map(checkpoint_json)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({
+    let mut report = json!({
         "schema": "etas.cli.interpreter-report.v1",
         "command": command,
         "sources": sources,
@@ -49,9 +49,11 @@ pub fn run_report_json(
         },
         "value": result.value().map(value_json),
         "events": result.events.iter().map(event_json).collect::<Vec<_>>(),
-        "checkpoints": checkpoints,
+        "checkpoints": null,
         "diagnostics": result.diagnostics.iter().map(diagnostic_summary_json).collect::<Vec<_>>(),
-    }))
+    });
+    report["checkpoints"] = Value::Array(checkpoints);
+    Ok(report)
 }
 
 fn failure_json(failure: &crate::api::RunFailure) -> Value {

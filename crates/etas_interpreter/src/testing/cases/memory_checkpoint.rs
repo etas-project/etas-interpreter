@@ -312,9 +312,9 @@ flow main() -> Option<string> {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
         resumed.value().cloned(),
-        Some(value::InterpValue::OptionSome(Box::new(
-            value::InterpValue::String("draft".to_owned()),
-        )))
+        Some(value::InterpValue::OptionSome(
+            crate::value::SharedValue::new(value::InterpValue::String("draft".to_owned().into()),)
+        ))
     );
     assert_eq!(replay_host.memory_call_count(), 1);
     assert!(resumed.events.iter().any(|event| matches!(
@@ -682,8 +682,8 @@ flow main() -> List<string> {
         resumed.value().cloned(),
         Some(value::InterpValue::List(
             vec![
-                value::InterpValue::String("paper-1".to_owned()),
-                value::InterpValue::String("paper-2".to_owned()),
+                value::InterpValue::String("paper-1".to_owned().into()),
+                value::InterpValue::String("paper-2".to_owned().into()),
             ]
             .into()
         ))
@@ -963,7 +963,7 @@ flow main() -> MemorySelection<string> {
     assert_eq!(limit, Some(2));
     assert_eq!(
         predicate.as_deref(),
-        Some(&value::InterpValue::String("paper".to_owned()))
+        Some(&value::InterpValue::String("paper".to_owned().into()))
     );
     assert_eq!(replay_host.memory_call_count(), 0);
     assert!(!resumed.events.iter().any(|event| matches!(

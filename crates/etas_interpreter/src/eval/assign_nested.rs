@@ -13,23 +13,20 @@ impl<'a> EvalContext<'a> {
             *current = new_value;
             return Ok(());
         };
-        self.make_value_unique(current);
         if let InterpValue::Nominal { value, .. } = current {
-            return self.assign_nested_value(value, segments, new_value, span);
+            return self.assign_nested_value(value.make_mut(), segments, new_value, span);
         }
         match head {
             LocalPlaceSegment::Field(field) => match current {
                 InterpValue::Record(fields) => {
-                    let mut fields = fields.borrow_mut();
-                    let Some((_, field_value)) = fields.iter_mut().find(|(name, _)| name == field)
-                    else {
+                    let Some(mut field_value) = fields.field_mut(field) else {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             span,
                             format!("record field `{field}` does not exist at runtime"),
                         ));
                     };
-                    self.assign_nested_value(field_value, tail, new_value, span)
+                    self.assign_nested_value(&mut field_value, tail, new_value, span)
                 }
                 other => Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::InvalidArguments,
@@ -53,7 +50,6 @@ impl<'a> EvalContext<'a> {
                     self.assign_nested_value(slot, tail, new_value, span)
                 }
                 InterpValue::List(values) => {
-                    let mut values = values.borrow_mut();
                     let Some(slot) = values.get_mut(*index) else {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
@@ -105,24 +101,6 @@ impl<'a> EvalContext<'a> {
                     format!("map assignment requires a local map value, got {:?}", other),
                 )),
             },
-        }
-    }
-
-    pub(super) fn make_value_unique(&mut self, value: &mut InterpValue) {
-        match value {
-            InterpValue::Array(values) => values.make_unique(),
-            InterpValue::List(values) => values.make_unique(),
-            InterpValue::Map(entries) => entries.make_unique(),
-            InterpValue::Deque(values)
-            | InterpValue::Queue(values)
-            | InterpValue::Stack(values) => values.make_unique(),
-            InterpValue::PriorityQueue(entries) | InterpValue::OrderedMap(entries) => {
-                entries.make_unique()
-            }
-            InterpValue::OrderedSet(values) => values.make_unique(),
-            InterpValue::Record(fields) => fields.make_unique(),
-            InterpValue::Nominal { value, .. } => self.make_value_unique(value),
-            _ => {}
         }
     }
 }

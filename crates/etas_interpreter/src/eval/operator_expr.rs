@@ -336,10 +336,9 @@ impl<'a> EvalContext<'a> {
                 values.extend(rhs.snapshot());
                 Ok(InterpValue::Array(ArrayValue::new(values)))
             }
-            (InterpValue::List(lhs), InterpValue::List(rhs)) => {
-                let mut values = lhs.snapshot();
-                values.extend(rhs.snapshot());
-                Ok(InterpValue::List(ListValue::new(values)))
+            (InterpValue::List(mut lhs), InterpValue::List(rhs)) => {
+                lhs.append(rhs);
+                Ok(InterpValue::List(lhs))
             }
             (lhs, rhs) => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,

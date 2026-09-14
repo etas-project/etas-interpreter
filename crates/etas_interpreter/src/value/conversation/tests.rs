@@ -61,7 +61,7 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
         let large = "x".repeat(2048);
         let message = &mut value.messages[0];
         match field {
-            "payload" => *message.payload = InterpValue::String(large),
+            "payload" => *message.payload = InterpValue::String(large.into()),
             "id" => message.id = large,
             "from" => message.from = Some(large),
             "to" => message.to = Some(large),
@@ -110,7 +110,9 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
     );
     let mut value = view();
     for _ in 0..20 {
-        *value.messages[0].payload = InterpValue::OptionSome(value.messages[0].payload.clone());
+        *value.messages[0].payload = InterpValue::OptionSome(crate::value::SharedValue::new(
+            value.messages[0].payload.as_ref().clone(),
+        ));
     }
     check_all(
         &value,
@@ -125,7 +127,7 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
 #[test]
 fn json_preflight_rejects_size_before_decoding_payloads() {
     let mut value = view();
-    *value.messages[0].payload = InterpValue::String("x".repeat(65536));
+    *value.messages[0].payload = InterpValue::String("x".repeat(65536).into());
     let mut encoded = crate::api::codec::value_json(&InterpValue::Conversation(value));
     // A later invalid runtime value must never be reached before the size rejection.
     let mut bad = encoded["messages"][0].clone();

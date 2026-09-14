@@ -10,10 +10,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
     ty: TypeId,
     projector: &PureAbiProjector,
 ) -> Result<BuiltinValue, AdapterError> {
-    let shape = projector
-        .shape(ty)
-        .cloned()
-        .ok_or(AdapterError::MissingType(ty))?;
+    let shape = projector.shape(ty).ok_or(AdapterError::MissingType(ty))?;
     match shape {
         AbiShape::Nominal { representation } => {
             let InterpValue::Nominal {
@@ -29,20 +26,20 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                     actual: runtime_ty,
                 });
             }
-            into_builtin_for_type(*value, representation, projector)
+            into_builtin_for_type(value.into_value(), *representation, projector)
         }
-        AbiShape::Primitive(primitive) => into_builtin_primitive(value, ty, primitive),
+        AbiShape::Primitive(primitive) => into_builtin_primitive(value, ty, *primitive),
         AbiShape::Array(inner) => {
-            sequence_into_builtin(value, ty, inner, projector, SequenceKind::Array)
+            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Array)
         }
         AbiShape::List(inner) => {
-            sequence_into_builtin(value, ty, inner, projector, SequenceKind::List)
+            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::List)
         }
         AbiShape::Slice(inner) => {
-            sequence_into_builtin(value, ty, inner, projector, SequenceKind::Slice)
+            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Slice)
         }
         AbiShape::Set(inner) => {
-            sequence_into_builtin(value, ty, inner, projector, SequenceKind::Set)
+            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Set)
         }
         AbiShape::Map {
             key,
@@ -52,12 +49,12 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                 return Err(type_mismatch(ty, &value));
             };
             entries
-                .snapshot()
+                .into_values()
                 .into_iter()
                 .map(|(entry_key, entry_value)| {
                     Ok((
-                        into_builtin_for_type(entry_key, key, projector)?,
-                        into_builtin_for_type(entry_value, value_ty, projector)?,
+                        into_builtin_for_type(entry_key, *key, projector)?,
+                        into_builtin_for_type(entry_value, *value_ty, projector)?,
                     ))
                 })
                 .collect::<Result<Vec<_>, _>>()
@@ -68,28 +65,44 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                 return Err(type_mismatch(ty, &value));
             };
             Ok(BuiltinValue::Range {
-                start: Box::new(into_builtin_for_type(*range.start, index, projector)?),
-                end: Box::new(into_builtin_for_type(*range.end, index, projector)?),
+                start: Box::new(into_builtin_for_type(*range.start, *index, projector)?),
+                end: Box::new(into_builtin_for_type(*range.end, *index, projector)?),
                 bounds: into_builtin_range_bounds(range.bounds),
             })
         }
         AbiShape::Option(inner) => match value {
             InterpValue::OptionNone => Ok(BuiltinValue::OptionNone),
-            InterpValue::OptionSome(value) => into_builtin_for_type(*value, inner, projector)
-                .map(Box::new)
-                .map(BuiltinValue::OptionSome),
+            InterpValue::OptionSome(value) => {
+                into_builtin_for_type(value.into_value(), *inner, projector)
+                    .map(Box::new)
+                    .map(BuiltinValue::OptionSome)
+            }
             other => Err(type_mismatch(ty, &other)),
         },
         AbiShape::Result { ok, err } => match value {
-            InterpValue::Variant { name, mut fields } if name == "Ok" && fields.len() == 1 => {
-                into_builtin_for_type(fields.remove(0), ok, projector)
-                    .map(Box::new)
-                    .map(BuiltinValue::ResultOk)
+            InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => {
+                into_builtin_for_type(
+                    fields.into_single().ok_or(AdapterError::Arity {
+                        expected: 1,
+                        actual: 0,
+                    })?,
+                    *ok,
+                    projector,
+                )
+                .map(Box::new)
+                .map(BuiltinValue::ResultOk)
             }
-            InterpValue::Variant { name, mut fields } if name == "Err" && fields.len() == 1 => {
-                into_builtin_for_type(fields.remove(0), err, projector)
-                    .map(Box::new)
-                    .map(BuiltinValue::ResultErr)
+            InterpValue::Variant { name, fields } if name == "Err" && fields.len() == 1 => {
+                into_builtin_for_type(
+                    fields.into_single().ok_or(AdapterError::Arity {
+                        expected: 1,
+                        actual: 0,
+                    })?,
+                    *err,
+                    projector,
+                )
+                .map(Box::new)
+                .map(BuiltinValue::ResultErr)
             }
             other => Err(type_mismatch(ty, &other)),
         },
@@ -97,7 +110,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
             let InterpValue::Record(fields) = value else {
                 return Err(type_mismatch(ty, &value));
             };
-            checked_record_into_builtin(fields.snapshot(), ty, &expected_fields, projector)
+            checked_record_into_builtin(fields.into_values(), ty, expected_fields, projector)
         }
         AbiShape::Tuple(types) => {
             let InterpValue::Tuple(values) = value else {
@@ -108,7 +121,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
             }
             values
                 .into_iter()
-                .zip(types)
+                .zip(types.iter().copied())
                 .map(|(value, ty)| into_builtin_for_type(value, ty, projector))
                 .collect::<Result<Vec<_>, _>>()
                 .map(|fields| BuiltinValue::Variant {
@@ -117,7 +130,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                 })
         }
         AbiShape::Enum => into_builtin_enum(value, ty),
-        AbiShape::Refined { base } => into_builtin_for_type(value, base, projector),
+        AbiShape::Refined { base } => into_builtin_for_type(value, *base, projector),
         AbiShape::Trust { wrapper, inner } => {
             let InterpValue::Trust {
                 wrapper: runtime_wrapper,
@@ -126,7 +139,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
             else {
                 return Err(type_mismatch(ty, &value));
             };
-            if runtime_wrapper != wrapper {
+            if runtime_wrapper != *wrapper {
                 return Err(type_mismatch(
                     ty,
                     &InterpValue::Trust {
@@ -135,7 +148,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                     },
                 ));
             }
-            into_builtin_for_type(*value, inner, projector)
+            into_builtin_for_type(value.into_value(), *inner, projector)
         }
         AbiShape::Unsupported(description) => Err(AdapterError::UnsupportedValue(format!(
             "checked pure intrinsic ABI does not support type {ty:?}: {description}"
@@ -151,10 +164,10 @@ fn sequence_into_builtin(
     kind: SequenceKind,
 ) -> Result<BuiltinValue, AdapterError> {
     let values = match (kind, value) {
-        (SequenceKind::Array, InterpValue::Array(values)) => values.snapshot(),
-        (SequenceKind::List, InterpValue::List(values)) => values.snapshot(),
-        (SequenceKind::Slice, InterpValue::Slice(values)) => values.snapshot(),
-        (SequenceKind::Set, InterpValue::Set(values)) => values.snapshot(),
+        (SequenceKind::Array, InterpValue::Array(values)) => values.into_values(),
+        (SequenceKind::List, InterpValue::List(values)) => values.into_values(),
+        (SequenceKind::Slice, InterpValue::Slice(values)) => values.into_values(),
+        (SequenceKind::Set, InterpValue::Set(values)) => values.into_values(),
         (_, other) => return Err(type_mismatch(ty, &other)),
     };
     let values = values
@@ -170,7 +183,7 @@ fn sequence_into_builtin(
 }
 
 fn checked_record_into_builtin(
-    mut values: Vec<(String, InterpValue)>,
+    values: Vec<(String, InterpValue)>,
     ty: TypeId,
     fields: &[etas_types::FieldType],
     projector: &PureAbiProjector,
@@ -181,20 +194,30 @@ fn checked_record_into_builtin(
             actual: format!("record with {} field(s)", values.len()),
         });
     }
+    let mut indexed = std::collections::HashMap::with_capacity(values.len());
+    for (name, value) in values {
+        match indexed.entry(name) {
+            std::collections::hash_map::Entry::Vacant(entry) => {
+                entry.insert(value);
+            }
+            std::collections::hash_map::Entry::Occupied(entry) => {
+                return Err(AdapterError::TypeMismatch {
+                    expected: ty,
+                    actual: format!("record with duplicate field `{}`", entry.key()),
+                });
+            }
+        }
+    }
     fields
         .iter()
         .map(|field| {
-            let Some(index) = values.iter().position(|(name, _)| name == &field.name) else {
+            let Some((name, value)) = indexed.remove_entry(&field.name) else {
                 return Err(AdapterError::TypeMismatch {
                     expected: ty,
                     actual: format!("record missing field `{}`", field.name),
                 });
             };
-            let (_, value) = values.remove(index);
-            Ok((
-                field.name.clone(),
-                into_builtin_for_type(value, field.ty, projector)?,
-            ))
+            Ok((name, into_builtin_for_type(value, field.ty, projector)?))
         })
         .collect::<Result<Vec<_>, _>>()
         .map(BuiltinValue::Record)
@@ -208,8 +231,12 @@ fn into_builtin_primitive(
     match (primitive, value) {
         (PrimitiveType::Unit, InterpValue::Unit) => Ok(BuiltinValue::Unit),
         (PrimitiveType::Bool, InterpValue::Bool(value)) => Ok(BuiltinValue::Bool(value)),
-        (PrimitiveType::String, InterpValue::String(value)) => Ok(BuiltinValue::String(value)),
-        (PrimitiveType::Bytes, InterpValue::Bytes(value)) => Ok(BuiltinValue::Bytes(value)),
+        (PrimitiveType::String, InterpValue::String(value)) => {
+            Ok(BuiltinValue::String(value.into_string()))
+        }
+        (PrimitiveType::Bytes, InterpValue::Bytes(value)) => {
+            Ok(BuiltinValue::Bytes(value.into_vec()))
+        }
         (expected, InterpValue::Number(value)) if value.primitive() == expected => {
             numeric_into_builtin(value)
         }
@@ -252,7 +279,10 @@ fn into_builtin_enum(value: InterpValue, ty: TypeId) -> Result<BuiltinValue, Ada
         .into_iter()
         .map(into_builtin)
         .collect::<Result<Vec<_>, _>>()
-        .map(|fields| BuiltinValue::Variant { name, fields })
+        .map(|fields| BuiltinValue::Variant {
+            name: name.into_string(),
+            fields,
+        })
 }
 
 pub(in crate::intrinsic::pure) fn type_mismatch(
@@ -261,7 +291,7 @@ pub(in crate::intrinsic::pure) fn type_mismatch(
 ) -> AdapterError {
     AdapterError::TypeMismatch {
         expected,
-        actual: format!("{actual:?}"),
+        actual: actual.kind_name().to_owned(),
     }
 }
 
@@ -272,40 +302,40 @@ pub(in crate::intrinsic::pure) fn into_builtin(
         InterpValue::Unit => Ok(BuiltinValue::Unit),
         InterpValue::Bool(value) => Ok(BuiltinValue::Bool(value)),
         InterpValue::Number(value) => numeric_into_builtin(value),
-        InterpValue::String(value) => Ok(BuiltinValue::String(value)),
-        InterpValue::Bytes(value) => Ok(BuiltinValue::Bytes(value)),
+        InterpValue::String(value) => Ok(BuiltinValue::String(value.into_string())),
+        InterpValue::Bytes(value) => Ok(BuiltinValue::Bytes(value.into_vec())),
         InterpValue::Array(values) => values
-            .snapshot()
+            .into_values()
             .into_iter()
             .map(into_builtin)
             .collect::<Result<Vec<_>, _>>()
             .map(BuiltinValue::Array),
         InterpValue::List(values) => values
-            .snapshot()
+            .into_values()
             .into_iter()
             .map(into_builtin)
             .collect::<Result<Vec<_>, _>>()
             .map(BuiltinValue::List),
         InterpValue::Slice(values) => values
-            .snapshot()
+            .into_values()
             .into_iter()
             .map(into_builtin)
             .collect::<Result<Vec<_>, _>>()
             .map(BuiltinValue::Slice),
         InterpValue::Map(entries) => entries
-            .snapshot()
+            .into_values()
             .into_iter()
             .map(|(key, value)| Ok((into_builtin(key)?, into_builtin(value)?)))
             .collect::<Result<Vec<_>, _>>()
             .map(BuiltinValue::Map),
         InterpValue::Set(values) => values
-            .snapshot()
+            .into_values()
             .into_iter()
             .map(into_builtin)
             .collect::<Result<Vec<_>, _>>()
             .map(BuiltinValue::Set),
         InterpValue::Record(fields) => fields
-            .snapshot()
+            .into_values()
             .into_iter()
             .map(|(field, value)| Ok((field, into_builtin(value)?)))
             .collect::<Result<Vec<_>, _>>()
@@ -316,24 +346,33 @@ pub(in crate::intrinsic::pure) fn into_builtin(
             bounds: into_builtin_range_bounds(range.bounds),
         }),
         InterpValue::OptionNone => Ok(BuiltinValue::OptionNone),
-        InterpValue::OptionSome(value) => into_builtin(*value)
+        InterpValue::OptionSome(value) => into_builtin(value.into_value())
             .map(Box::new)
             .map(BuiltinValue::OptionSome),
-        InterpValue::Variant { name, mut fields } if name == "Ok" && fields.len() == 1 => {
-            into_builtin(fields.remove(0))
-                .map(Box::new)
-                .map(BuiltinValue::ResultOk)
+        InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => {
+            into_builtin(fields.into_single().ok_or(AdapterError::Arity {
+                expected: 1,
+                actual: 0,
+            })?)
+            .map(Box::new)
+            .map(BuiltinValue::ResultOk)
         }
-        InterpValue::Variant { name, mut fields } if name == "Err" && fields.len() == 1 => {
-            into_builtin(fields.remove(0))
-                .map(Box::new)
-                .map(BuiltinValue::ResultErr)
+        InterpValue::Variant { name, fields } if name == "Err" && fields.len() == 1 => {
+            into_builtin(fields.into_single().ok_or(AdapterError::Arity {
+                expected: 1,
+                actual: 0,
+            })?)
+            .map(Box::new)
+            .map(BuiltinValue::ResultErr)
         }
         InterpValue::Variant { name, fields } => fields
             .into_iter()
             .map(into_builtin)
             .collect::<Result<Vec<_>, _>>()
-            .map(|fields| BuiltinValue::Variant { name, fields }),
+            .map(|fields| BuiltinValue::Variant {
+                name: name.into_string(),
+                fields,
+            }),
         InterpValue::Nominal { .. } => Err(AdapterError::UnsupportedValue(
             "nominal values require a checked ABI projection".to_owned(),
         )),

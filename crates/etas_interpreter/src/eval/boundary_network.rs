@@ -54,8 +54,8 @@ fn typed_host_error_value(error_type: etas_types::TypeId, error: HostError) -> I
         .map(|detail| {
             InterpValue::Record(
                 vec![
-                    ("key".to_owned(), InterpValue::String(detail.key)),
-                    ("value".to_owned(), InterpValue::String(detail.value)),
+                    ("key".to_owned(), InterpValue::String(detail.key.into())),
+                    ("value".to_owned(), InterpValue::String(detail.value.into())),
                 ]
                 .into(),
             )
@@ -63,10 +63,16 @@ fn typed_host_error_value(error_type: etas_types::TypeId, error: HostError) -> I
         .collect::<Vec<_>>();
     InterpValue::Nominal {
         ty: error_type,
-        value: Box::new(InterpValue::Record(
+        value: crate::value::SharedValue::new(InterpValue::Record(
             vec![
-                ("code".to_owned(), InterpValue::String(code.to_owned())),
-                ("message".to_owned(), InterpValue::String(error.message)),
+                (
+                    "code".to_owned(),
+                    InterpValue::String(code.to_owned().into()),
+                ),
+                (
+                    "message".to_owned(),
+                    InterpValue::String(error.message.into()),
+                ),
                 ("details".to_owned(), InterpValue::Array(details.into())),
             ]
             .into(),

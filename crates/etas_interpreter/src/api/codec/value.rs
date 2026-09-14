@@ -1,7 +1,10 @@
 use super::*;
-mod session;
+mod decode;
+mod scalar;
+pub(super) mod session;
+mod snapshot_support;
 
-fn numeric_value_json(value: crate::value::NumericValue) -> Value {
+pub(super) fn numeric_value_json(value: crate::value::NumericValue) -> Value {
     use crate::value::NumericValue;
 
     let primitive = value.primitive().source_name();
@@ -179,7 +182,7 @@ pub fn value_json(value: &InterpValue) -> Value {
         }),
         InterpValue::List(values) => json!({
             "kind": "list",
-            "values": values.borrow().iter().map(value_json).collect::<Vec<_>>()
+            "values": values.iter().map(value_json).collect::<Vec<_>>()
         }),
         InterpValue::Slice(values) => json!({
             "kind": "slice",
@@ -779,271 +782,26 @@ pub(crate) fn value_from_json_with_limits(
     limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<InterpValue, InterpreterCodecError> {
+    decode::decode(limits, value)
+}
+
+pub(in crate::api::codec) fn snapshot_from_json_with_limits(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<crate::orchestration::ValueSnapshot, InterpreterCodecError> {
+    decode::decode(limits, value)
+}
+
+fn decode_scalar_or_support(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<InterpValue, InterpreterCodecError> {
     match required_str(value, "kind")? {
-        "unit" => Ok(InterpValue::Unit),
-        "bool" => Ok(InterpValue::Bool(required_bool(value, "value")?)),
-        "number" => Ok(InterpValue::Number(numeric_value_from_json(value)?)),
-        "string" => Ok(InterpValue::String(
-            required_str(value, "value")?.to_owned(),
-        )),
-        "bytes" => Ok(InterpValue::Bytes(byte_array(value, "value")?)),
-        "json" => Ok(InterpValue::Json(host_json_support_value_from_json(
-            required_obj(value, "value")?,
-        )?)),
-        "trust" => Ok(InterpValue::Trust {
-            wrapper: value_codec::trust_wrapper_from_json(required_str(value, "wrapper")?)
-                .map_err(InterpreterCodecError::new)?,
-            value: Box::new(value_from_json_with_limits(
-                limits,
-                required_obj(value, "value")?,
-            )?),
-        }),
-        "prompt" => Ok(InterpValue::Prompt(
-            required_array(value, "messages")?
-                .iter()
-                .map(|message| {
-                    Ok(crate::value::PromptMessage {
-                        role: value_codec::prompt_role_from_json(required_str(message, "role")?)
-                            .map_err(InterpreterCodecError::new)?,
-                        text: required_str(message, "text")?.to_owned(),
-                        trust: optional_string(message, "trust")?
-                            .map(|wrapper| {
-                                value_codec::trust_wrapper_from_json(&wrapper)
-                                    .map_err(InterpreterCodecError::new)
-                            })
-                            .transpose()?,
-                    })
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
-        )),
-        "message" => {
-            reject_unknown_fields(
-                value,
-                &[
-                    "kind",
-                    "id",
-                    "from",
-                    "to",
-                    "role",
-                    "session",
-                    "created_at",
-                    "payload",
-                    "provenance",
-                ],
-                "message value",
-            )?;
-            let provenance = value
-                .get("provenance")
-                .ok_or_else(|| InterpreterCodecError::new("missing `provenance`"))?;
-            Ok(InterpValue::Message(crate::value::MessageValue {
-                id: required_str(value, "id")?.to_owned(),
-                from: required_optional_string(value, "from")?,
-                to: required_optional_string(value, "to")?,
-                role: value_codec::message_role_from_json(required_str(value, "role")?)
-                    .map_err(InterpreterCodecError::new)?,
-                session: required_optional_string(value, "session")?,
-                created_at: required_str(value, "created_at")?.to_owned(),
-                payload: Box::new(value_from_json_with_limits(
-                    limits,
-                    required_obj(value, "payload")?,
-                )?),
-                provenance: if provenance.is_null() {
-                    None
-                } else {
-                    Some(provenance_from_json(provenance)?)
-                },
-            }))
-        }
+        "message" => session::message_parts(limits, value, value_from_json_with_limits)
+            .map(|message| InterpValue::Message(message.into())),
         "conversation" => {
             session::conversation_from_json(limits, value).map(InterpValue::Conversation)
         }
-        "provenance" => Ok(InterpValue::Provenance(provenance_from_json(
-            required_obj(value, "value")?,
-        )?)),
-        "model_response" => Ok(InterpValue::ModelResponse(model_response_from_json(value)?)),
-        "command" => Ok(InterpValue::Command {
-            argv: string_array(value, "argv")?,
-            env: required_array(value, "env")?
-                .iter()
-                .map(|entry| {
-                    Ok((
-                        required_str(entry, "key")?.to_owned(),
-                        required_str(entry, "value")?.to_owned(),
-                    ))
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
-            cwd: match value.get("cwd") {
-                Some(Value::Null) | None => None,
-                Some(cwd) => Some(
-                    etas_host::WorkspacePathRef::new(
-                        etas_host::WorkspaceRegionId::new(required_str(cwd, "region")?.to_owned())
-                            .map_err(|error| InterpreterCodecError::new(error.message))?,
-                        required_str(cwd, "relative")?,
-                    )
-                    .map_err(|error| InterpreterCodecError::new(error.message))?,
-                ),
-            },
-            stdin: match value.get("stdin") {
-                Some(Value::Null) | None => None,
-                Some(_) => Some(byte_array(value, "stdin")?),
-            },
-        }),
-        "command_result" => Ok(InterpValue::CommandResult {
-            exit_code: required_i64(value, "exit_code").and_then(|exit_code| {
-                i32::try_from(exit_code)
-                    .map_err(|_| InterpreterCodecError::new("command exit_code must fit i32"))
-            })?,
-            stdout: byte_array(value, "stdout")?,
-            stderr: byte_array(value, "stderr")?,
-        }),
-        "tuple" => Ok(InterpValue::Tuple(values_from_array(
-            limits, value, "values",
-        )?)),
-        "array" => Ok(InterpValue::Array(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "list" => Ok(InterpValue::List(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "slice" => Ok(InterpValue::Slice(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "map" => Ok(InterpValue::Map(
-            required_array(value, "entries")?
-                .iter()
-                .map(|entry| {
-                    Ok((
-                        value_from_json_with_limits(limits, required_obj(entry, "key")?)?,
-                        value_from_json_with_limits(limits, required_obj(entry, "value")?)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?
-                .into(),
-        )),
-        "set" => Ok(InterpValue::Set(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "deque" => Ok(InterpValue::Deque(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "queue" => Ok(InterpValue::Queue(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "stack" => Ok(InterpValue::Stack(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "priority_queue" => Ok(InterpValue::PriorityQueue(
-            required_array(value, "entries")?
-                .iter()
-                .map(|entry| {
-                    Ok((
-                        value_from_json_with_limits(limits, required_obj(entry, "priority")?)?,
-                        value_from_json_with_limits(limits, required_obj(entry, "value")?)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?
-                .into(),
-        )),
-        "ordered_map" => Ok(InterpValue::OrderedMap(
-            required_array(value, "entries")?
-                .iter()
-                .map(|entry| {
-                    Ok((
-                        value_from_json_with_limits(limits, required_obj(entry, "key")?)?,
-                        value_from_json_with_limits(limits, required_obj(entry, "value")?)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?
-                .into(),
-        )),
-        "ordered_set" => Ok(InterpValue::OrderedSet(
-            values_from_array(limits, value, "values")?.into(),
-        )),
-        "range" => Ok(InterpValue::Range(crate::value::RangeValue {
-            start: Box::new(value_from_json_with_limits(
-                limits,
-                required_obj(value, "start")?,
-            )?),
-            end: Box::new(value_from_json_with_limits(
-                limits,
-                required_obj(value, "end")?,
-            )?),
-            bounds: value_codec::range_bounds_from_json(required_str(value, "bounds")?)
-                .map_err(InterpreterCodecError::new)?,
-        })),
-        "record" => Ok(InterpValue::Record(
-            required_array(value, "fields")?
-                .iter()
-                .map(|field| {
-                    Ok((
-                        required_str(field, "name")?.to_owned(),
-                        value_from_json_with_limits(limits, required_obj(field, "value")?)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?
-                .into(),
-        )),
-        "memory_write_intent" => {
-            reject_unknown_fields(
-                value,
-                &["kind", "ty", "key_type", "value_type", "intent"],
-                "memory write intent",
-            )?;
-            Ok(InterpValue::MemoryWriteIntent(Box::new(
-                crate::value::MemoryWriteIntentValue::restore(
-                    etas_types::TypeId(required_u32(value, "ty")?),
-                    etas_types::TypeId(required_u32(value, "key_type")?),
-                    etas_types::TypeId(required_u32(value, "value_type")?),
-                    required_str(value, "intent")?,
-                    limits,
-                )
-                .map_err(InterpreterCodecError::new)?,
-            )))
-        }
-        "nominal" => Ok(InterpValue::Nominal {
-            ty: etas_types::TypeId(required_u32(value, "ty")?),
-            value: Box::new(value_from_json_with_limits(
-                limits,
-                required_obj(value, "value")?,
-            )?),
-        }),
-        "variant" => Ok(InterpValue::Variant {
-            name: required_str(value, "name")?.to_owned(),
-            fields: values_from_array(limits, value, "fields")?,
-        }),
-        "option_none" => Ok(InterpValue::OptionNone),
-        "option_some" => Ok(InterpValue::OptionSome(Box::new(
-            value_from_json_with_limits(limits, required_obj(value, "value")?)?,
-        ))),
-        "handler" => Ok(InterpValue::Handler {
-            fact_expr: HirExprId(required_u32(value, "fact_expr")?),
-            handlers: required_array(value, "handlers")?
-                .iter()
-                .map(handler_arm_from_json)
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
-        }),
-        "host_handle" => Err(InterpreterCodecError::new(
-            "serialized host handles cannot be restored without a live host capability",
-        )),
-        "resource_handle" => Ok(InterpValue::ResourceHandle {
-            name: required_str(value, "name")?.to_owned(),
-            stable_id: required_str(value, "stable_id")?.to_owned(),
-            ty: etas_types::TypeId(required_u32(value, "ty")?),
-        }),
-        "workspace_path" => Ok(InterpValue::WorkspacePath(
-            etas_host::WorkspacePathRef::new(
-                etas_host::WorkspaceRegionId::new(required_str(value, "region")?.to_owned())
-                    .map_err(|error| InterpreterCodecError::new(error.message))?,
-                required_str(value, "relative")?,
-            )
-            .map_err(|error| InterpreterCodecError::new(error.message))?,
-        )),
-        "memory_store" => Ok(InterpValue::MemoryStore {
-            region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
-            path: string_array(value, "path")?,
-            key_type: etas_types::TypeId(required_u32(value, "key_type")?),
-            value_type: etas_types::TypeId(required_u32(value, "value_type")?),
-        }),
         "memory_selection" => Ok(InterpValue::MemorySelection {
             region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
             path: string_array(value, "path")?,
@@ -1061,9 +819,7 @@ pub(crate) fn value_from_json_with_limits(
             machine::call_target_from_artifact_snapshot(limits, required_obj(value, "target")?)
                 .map_err(InterpreterCodecError::new)?,
         )),
-        other => Err(InterpreterCodecError::new(format!(
-            "unsupported serialized interpreter value `{other}`"
-        ))),
+        _ => scalar::decode(limits, value).map(Into::into),
     }
 }
 

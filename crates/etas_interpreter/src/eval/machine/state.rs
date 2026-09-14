@@ -72,11 +72,13 @@ impl EvalMachine {
         checked: &etas_frontend::CheckedProject,
         slots: std::sync::Arc<crate::plan::SlotLayoutTable>,
         dispatch: &crate::plan::IntrinsicDispatchTable,
+        closures: &crate::plan::ClosureLayoutTable,
         current: &crate::api::HostExecutionContext,
         limits: &etas_host::StorageLimits,
     ) -> Result<Self, String> {
-        super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, limits)
+        super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, closures, limits)
             .validate_machine(snapshot)?;
+        let mut context = super::snapshot::RestoreContext::default();
         let stack = snapshot
             .frames
             .iter()
@@ -85,27 +87,28 @@ impl EvalMachine {
                 Ok(match frame {
                     MachineFrameSnapshot::Block { continuation } => {
                         EvalFrame::Block(super::frame::BlockFrame {
-                            continuation: continuation.restore()?,
+                            continuation: continuation.restore_with(&mut context)?,
                         })
                     }
                     MachineFrameSnapshot::Expr { continuation } => {
                         EvalFrame::Expr(super::frame::ExprFrame {
-                            continuation: continuation.restore()?,
+                            continuation: continuation.restore_with(&mut context)?,
                         })
                     }
                     MachineFrameSnapshot::Call { continuation, span } => {
                         EvalFrame::Call(super::frame::CallFrame {
-                            continuation: continuation.restore()?,
+                            continuation: continuation.restore_with(&mut context)?,
                             span,
                         })
                     }
                     MachineFrameSnapshot::Continuation { continuation } => {
                         EvalFrame::Continuation(super::frame::ContinuationFrame {
-                            continuation: continuation.restore()?,
+                            continuation: continuation.restore_with(&mut context)?,
                         })
                     }
                     MachineFrameSnapshot::Handler { continuation } => {
-                        let frame = EvalFrame::from_continuation(continuation.restore()?);
+                        let frame =
+                            EvalFrame::from_continuation(continuation.restore_with(&mut context)?);
                         if !matches!(frame, EvalFrame::Handler(_)) {
                             return Err(
                                 "checkpoint handler frame does not contain a handler boundary"
@@ -115,7 +118,8 @@ impl EvalMachine {
                         frame
                     }
                     MachineFrameSnapshot::Retry { continuation } => {
-                        let frame = EvalFrame::from_continuation(continuation.restore()?);
+                        let frame =
+                            EvalFrame::from_continuation(continuation.restore_with(&mut context)?);
                         if !matches!(frame, EvalFrame::Retry(_)) {
                             return Err("checkpoint retry frame does not contain a retry attempt"
                                 .to_owned());
@@ -123,10 +127,10 @@ impl EvalMachine {
                         frame
                     }
                     MachineFrameSnapshot::ModelLoop(frame) => {
-                        EvalFrame::ModelLoop(Box::new(frame.restore(current)?))
+                        EvalFrame::ModelLoop(Box::new(frame.restore(current, &mut context)?))
                     }
                     MachineFrameSnapshot::SourceToolReturn(frame) => {
-                        EvalFrame::SourceToolReturn(frame.restore(current)?)
+                        EvalFrame::SourceToolReturn(frame.restore(current, &mut context)?)
                     }
                 })
             })
