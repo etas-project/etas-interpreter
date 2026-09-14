@@ -38,16 +38,20 @@ impl Drop for Link {
 }
 
 impl ListValue {
-    pub(super) fn into_unique_prefix_for_drop(mut self) -> Vec<InterpValue> {
-        let mut values = Vec::new();
-        while let Some(head) = self.head.0.take() {
-            let Ok(Node { value, next }) = Rc::try_unwrap(head) else {
-                break;
-            };
-            self.head = next;
-            values.push(value);
+    pub(super) fn pop_unique_front_for_drop(&mut self) -> Option<InterpValue> {
+        let head = self.head.0.take()?;
+        match Rc::try_unwrap(head) {
+            Ok(Node { value, next }) => {
+                self.head = next;
+                self.len -= 1;
+                Some(value)
+            }
+            Err(_) => {
+                // Another list owns the suffix. Do not clone or drain it.
+                self.len = 0;
+                None
+            }
         }
-        values
     }
 
     pub fn new(values: Vec<InterpValue>) -> Self {

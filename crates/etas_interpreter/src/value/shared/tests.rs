@@ -10,6 +10,43 @@ use etas_types::TypeId;
 use std::sync::Arc;
 
 #[test]
+fn releasing_wide_unique_adt_collections_does_not_materialize_child_buffers() {
+    for count in [1000, 2000, 4000] {
+        let cases = [
+            InterpValue::Array(ArrayValue::new(vec![InterpValue::Unit; count])),
+            InterpValue::List(ListValue::new(vec![InterpValue::Unit; count])),
+            InterpValue::Map(MapValue::new(
+                (0..count)
+                    .map(|i| (InterpValue::i32(i as i32), InterpValue::Unit))
+                    .collect(),
+            )),
+            InterpValue::Record(RecordValue::new(
+                (0..count)
+                    .map(|i| (format!("f{i}"), InterpValue::Unit))
+                    .collect(),
+            )),
+            InterpValue::Deque(crate::value::DequeValue::new(vec![
+                InterpValue::Unit;
+                count
+            ])),
+        ];
+        for (kind, value) in cases.into_iter().enumerate() {
+            let value = SharedValue::new(value);
+            let (_, cost) = measure(|| drop(value));
+            eprintln!("wide ADT release kind={kind} n={count}: {cost:?}");
+            assert!(
+                cost.bytes < 4096,
+                "release materialized a width-sized buffer: {cost:?}"
+            );
+            assert!(
+                cost.count <= 1,
+                "release repeatedly grew pending children: {cost:?}"
+            );
+        }
+    }
+}
+
+#[test]
 fn wide_adt_frame_reads_share_field_storage_without_allocating() {
     for count in [1000, 2000, 4000] {
         let fields = SharedFields::new(
@@ -161,4 +198,68 @@ fn deep_adt_release_is_iterative_through_collection_and_record_children() {
     assert_eq!(cost.count, 0, "a shared root does not walk its subtree");
     drop(alias);
     assert_eq!(retained.as_ref(), &InterpValue::String("retained".into()));
+}
+
+#[test]
+fn release_cursors_free_unique_children_but_stop_at_retained_list_tails() {
+    let child = SharedValue::new(InterpValue::String("retained".into()));
+    let weak = Rc::downgrade(&child.0);
+    let tail = ListValue::new(vec![InterpValue::OptionSome(child)]);
+    let mut prefix = tail.clone();
+    for _ in 0..4000 {
+        prefix.push_front(InterpValue::Tuple(vec![InterpValue::Unit].into()));
+    }
+    drop(SharedValue::new(InterpValue::List(prefix)));
+    assert_eq!(tail.len(), 1);
+    assert!(weak.upgrade().is_some());
+    drop(tail);
+    assert!(weak.upgrade().is_none());
+
+    for shape in 0..9 {
+        let child = SharedValue::new(InterpValue::String("owned".into()));
+        let weak = Rc::downgrade(&child.0);
+        let leaf = InterpValue::OptionSome(child);
+        let value = match shape {
+            0 => InterpValue::Tuple(vec![leaf.clone(), leaf].into()),
+            1 => InterpValue::Variant {
+                name: "Pair".into(),
+                fields: vec![leaf.clone(), leaf].into(),
+            },
+            2 => InterpValue::Set(vec![leaf].into()),
+            3 => InterpValue::Stack(ArrayValue::new(vec![leaf])),
+            4 => InterpValue::Queue(crate::value::DequeValue::new(vec![leaf])),
+            5 => InterpValue::Record(RecordValue::new(vec![
+                ("a".into(), leaf.clone()),
+                ("b".into(), leaf),
+            ])),
+            6 => InterpValue::Map(MapValue::new(vec![(leaf.clone(), leaf)])),
+            7 => {
+                let source = ArrayValue::new(vec![leaf, InterpValue::Unit]);
+                InterpValue::Slice(crate::value::SliceValue::from_array(source, 1..2).unwrap())
+            }
+            _ => InterpValue::Range(crate::value::RangeValue {
+                start: Box::new(leaf.clone()),
+                end: Box::new(leaf),
+                bounds: crate::value::RangeBounds::ClosedOpen,
+            }),
+        };
+        drop(SharedValue::new(value));
+        assert!(
+            weak.upgrade().is_none(),
+            "unreleased subtree for shape {shape}"
+        );
+    }
+}
+
+#[test]
+fn branching_adt_release_retains_and_then_releases_every_sibling() {
+    let leaf = SharedValue::new(InterpValue::Unit);
+    let weak = Rc::downgrade(&leaf.0);
+    let mut root = InterpValue::OptionSome(leaf.clone());
+    for _ in 0..30_000 {
+        root = InterpValue::Tuple(vec![root, InterpValue::OptionSome(leaf.clone())].into());
+    }
+    drop(leaf);
+    drop(SharedValue::new(root));
+    assert!(weak.upgrade().is_none());
 }

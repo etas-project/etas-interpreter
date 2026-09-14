@@ -1,6 +1,8 @@
 use std::{fmt, ops::Deref, rc::Rc};
 
 use super::InterpValue;
+mod release;
+use release::release_value;
 
 #[cfg(test)]
 mod tests;
@@ -132,87 +134,5 @@ impl Drop for FieldsNode {
         for value in std::mem::take(&mut self.0) {
             release_value(value);
         }
-    }
-}
-
-fn release_value(mut current: InterpValue) {
-    // Detach unique ADT children before dropping their headers. Shared children
-    // stop the walk; another live value still owns their immutable contents.
-    let mut pending = Vec::new();
-    loop {
-        match current {
-            InterpValue::Nominal { value, .. }
-            | InterpValue::Trust { value, .. }
-            | InterpValue::OptionSome(value) => {
-                if let Ok(mut node) = Rc::try_unwrap(value.0) {
-                    current = std::mem::replace(&mut node.0, InterpValue::Unit);
-                    continue;
-                }
-            }
-            InterpValue::Tuple(fields) | InterpValue::Variant { fields, .. } => {
-                if let Ok(mut node) = Rc::try_unwrap(fields.0) {
-                    let mut fields = std::mem::take(&mut node.0);
-                    if let Some(next) = fields.pop() {
-                        if pending.is_empty() {
-                            pending = fields;
-                        } else {
-                            pending.extend(fields);
-                        }
-                        current = next;
-                        continue;
-                    }
-                }
-            }
-            InterpValue::Array(values) | InterpValue::Stack(values) => {
-                if let Some(values) = values.into_unique_values() {
-                    pending.extend(values);
-                }
-            }
-            InterpValue::Slice(values) => {
-                if let Some(values) = values.into_unique_backing() {
-                    pending.extend(values);
-                }
-            }
-            InterpValue::Set(values) | InterpValue::OrderedSet(values) => {
-                if let Some(values) = values.into_unique_values() {
-                    pending.extend(values);
-                }
-            }
-            InterpValue::Deque(values) | InterpValue::Queue(values) => {
-                if let Some(values) = values.into_unique_values() {
-                    pending.extend(values);
-                }
-            }
-            InterpValue::List(values) => pending.extend(values.into_unique_prefix_for_drop()),
-            InterpValue::Record(values) => {
-                if let Some(values) = values.into_unique_values() {
-                    pending.extend(values.into_iter().map(|(_, value)| value));
-                }
-            }
-            InterpValue::Map(values)
-            | InterpValue::OrderedMap(values)
-            | InterpValue::PriorityQueue(values) => {
-                if let Some(values) = values.into_unique_values() {
-                    for (key, value) in values {
-                        pending.push(key);
-                        pending.push(value);
-                    }
-                }
-            }
-            InterpValue::Message(message) => {
-                current = *message.payload;
-                continue;
-            }
-            InterpValue::Range(range) => {
-                pending.push(*range.start);
-                current = *range.end;
-                continue;
-            }
-            _ => {}
-        }
-        let Some(next) = pending.pop() else {
-            return;
-        };
-        current = next;
     }
 }
