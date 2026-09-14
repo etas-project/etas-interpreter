@@ -1,6 +1,13 @@
 use super::host_value::host_to_typed_interp_value;
 use super::*;
 use etas_types::{PrimitiveType, Type, TypeId, TypeStore};
+mod json;
+use json::{
+    from_host as json_host_value_to_typed_interp_value, from_serde as json_to_typed_interp_value,
+};
+
+#[cfg(test)]
+mod projection_tests;
 
 impl<'a> EvalContext<'a> {
     pub(crate) fn replayed_model_result(&self, model: &PendingModel) -> Option<InterpValue> {
@@ -228,383 +235,6 @@ fn host_value_to_typed_interp_value(
     }
 }
 
-fn json_host_value_to_typed_interp_value(
-    value: &etas_host::HostJsonValue,
-    expected: TypeId,
-    store: &TypeStore,
-) -> Option<InterpValue> {
-    let json = match value {
-        etas_host::HostJsonValue::Null => serde_json::Value::Null,
-        etas_host::HostJsonValue::Bool(value) => serde_json::Value::Bool(*value),
-        etas_host::HostJsonValue::Number(value) => {
-            serde_json::Number::from_f64(*value).map(serde_json::Value::Number)?
-        }
-        etas_host::HostJsonValue::String(value) => serde_json::Value::String(value.clone()),
-        etas_host::HostJsonValue::Array(values) => serde_json::Value::Array(
-            values
-                .iter()
-                .map(host_json_to_serde_json)
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        etas_host::HostJsonValue::Object(entries) => serde_json::Value::Object(
-            entries
-                .iter()
-                .map(|(key, value)| Some((key.clone(), host_json_to_serde_json(value)?)))
-                .collect::<Option<serde_json::Map<_, _>>>()?,
-        ),
-    };
-    json_to_typed_interp_value(&json, expected, store)
-}
-
-fn host_json_to_serde_json(value: &etas_host::HostJsonValue) -> Option<serde_json::Value> {
-    Some(match value {
-        etas_host::HostJsonValue::Null => serde_json::Value::Null,
-        etas_host::HostJsonValue::Bool(value) => serde_json::Value::Bool(*value),
-        etas_host::HostJsonValue::Number(value) => {
-            serde_json::Value::Number(serde_json::Number::from_f64(*value)?)
-        }
-        etas_host::HostJsonValue::String(value) => serde_json::Value::String(value.clone()),
-        etas_host::HostJsonValue::Array(values) => serde_json::Value::Array(
-            values
-                .iter()
-                .map(host_json_to_serde_json)
-                .collect::<Option<Vec<_>>>()?,
-        ),
-        etas_host::HostJsonValue::Object(entries) => serde_json::Value::Object(
-            entries
-                .iter()
-                .map(|(key, value)| Some((key.clone(), host_json_to_serde_json(value)?)))
-                .collect::<Option<serde_json::Map<_, _>>>()?,
-        ),
-    })
-}
-
-fn json_to_typed_interp_value(
-    value: &serde_json::Value,
-    expected: TypeId,
-    store: &TypeStore,
-) -> Option<InterpValue> {
-    json_to_typed_interp_value_with_substitutions(
-        value,
-        expected,
-        store,
-        &std::collections::HashMap::new(),
-    )
-}
-
-fn json_to_typed_interp_value_with_substitutions(
-    value: &serde_json::Value,
-    expected: TypeId,
-    store: &TypeStore,
-    substitutions: &std::collections::HashMap<String, TypeId>,
-) -> Option<InterpValue> {
-    if let Some(Type::Named(named)) = store.get(expected)
-        && let Some(expected) = substitutions.get(&named.name).copied()
-    {
-        return json_to_typed_interp_value_with_substitutions(
-            value,
-            expected,
-            store,
-            substitutions,
-        );
-    }
-    match store.get(expected)? {
-        Type::Primitive(primitive) => json_to_primitive(value, *primitive),
-        Type::Array(elem) => json_array_to_values(value, *elem, store, substitutions)
-            .map(ArrayValue::new)
-            .map(InterpValue::Array),
-        Type::List(elem) => json_array_to_values(value, *elem, store, substitutions)
-            .map(|values| InterpValue::List(values.into())),
-        Type::Slice(elem) => json_array_to_values(value, *elem, store, substitutions)
-            .map(SliceValue::new)
-            .map(InterpValue::Slice),
-        Type::Set(elem) => json_array_to_values(value, *elem, store, substitutions)
-            .map(|values| InterpValue::Set(values.into())),
-        Type::Map { key, value: elem } => json_to_map(value, *key, *elem, store, substitutions),
-        Type::Record(record) => {
-            let object = value.as_object()?;
-            record
-                .fields
-                .iter()
-                .map(|field| {
-                    let field_value = object.get(&field.name)?;
-                    Some((
-                        field.name.clone(),
-                        json_to_typed_interp_value_with_substitutions(
-                            field_value,
-                            field.ty,
-                            store,
-                            substitutions,
-                        )?,
-                    ))
-                })
-                .collect::<Option<Vec<_>>>()
-                .map(|fields| InterpValue::Record(fields.into()))
-        }
-        Type::Nominal(nominal) => {
-            let representation = nominal.representation?;
-            json_to_typed_interp_value_with_substitutions(
-                value,
-                representation,
-                store,
-                substitutions,
-            )
-            .map(|value| InterpValue::Nominal {
-                ty: expected,
-                value: crate::value::SharedValue::new(value),
-            })
-        }
-        Type::Applied { constructor, args } => {
-            let Type::Nominal(nominal) = store.get(TypeId(constructor.0))? else {
-                return None;
-            };
-            if nominal.params.len() != args.len() {
-                return None;
-            }
-            let mut applied_substitutions = substitutions.clone();
-            applied_substitutions.extend(nominal.params.iter().cloned().zip(args.iter().copied()));
-            json_to_typed_interp_value_with_substitutions(
-                value,
-                nominal.representation?,
-                store,
-                &applied_substitutions,
-            )
-            .map(|value| InterpValue::Nominal {
-                ty: expected,
-                value: crate::value::SharedValue::new(value),
-            })
-        }
-        Type::Tuple(types) => {
-            let values = value.as_array()?;
-            if values.len() != types.len() {
-                return None;
-            }
-            values
-                .iter()
-                .zip(types.iter())
-                .map(|(value, ty)| {
-                    json_to_typed_interp_value_with_substitutions(value, *ty, store, substitutions)
-                })
-                .collect::<Option<Vec<_>>>()
-                .map(|values| InterpValue::Tuple(values.into()))
-        }
-        Type::Option(inner) => {
-            if value.is_null() {
-                Some(InterpValue::OptionNone)
-            } else {
-                json_to_typed_interp_value_with_substitutions(value, *inner, store, substitutions)
-                    .map(crate::value::SharedValue::new)
-                    .map(InterpValue::OptionSome)
-            }
-        }
-        Type::Result { ok, err } => json_to_result(value, *ok, *err, store, substitutions),
-        Type::Enum(_) => json_to_enum(value),
-        Type::Trust { wrapper, inner }
-            if matches!(wrapper, etas_types::TrustWrapper::Untrusted) =>
-        {
-            json_to_typed_interp_value_with_substitutions(value, *inner, store, substitutions).map(
-                |value| InterpValue::Trust {
-                    wrapper: *wrapper,
-                    value: crate::value::SharedValue::new(value),
-                },
-            )
-        }
-        Type::Trust { .. } => None,
-        Type::Schema(inner) | Type::Message(inner) => {
-            json_to_typed_interp_value_with_substitutions(value, *inner, store, substitutions)
-        }
-        _ => None,
-    }
-}
-
-fn json_to_primitive(value: &serde_json::Value, primitive: PrimitiveType) -> Option<InterpValue> {
-    match primitive {
-        PrimitiveType::Bool => value.as_bool().map(InterpValue::Bool),
-        PrimitiveType::String => value
-            .as_str()
-            .map(|value| InterpValue::String(value.to_owned().into())),
-        PrimitiveType::Char => value
-            .as_str()
-            .and_then(|value| {
-                let mut chars = value.chars();
-                let ch = chars.next()?;
-                chars.next().is_none().then_some(ch)
-            })
-            .map(|ch| InterpValue::String(ch.to_string().into())),
-        PrimitiveType::Unit => value.is_null().then_some(InterpValue::Unit),
-        PrimitiveType::Bytes => value
-            .as_str()
-            .map(|value| InterpValue::Bytes(value.as_bytes().to_vec().into())),
-        primitive @ (PrimitiveType::I8
-        | PrimitiveType::I16
-        | PrimitiveType::I32
-        | PrimitiveType::I64
-        | PrimitiveType::I128
-        | PrimitiveType::ISize) => signed_integer(value, primitive),
-        primitive @ (PrimitiveType::U8
-        | PrimitiveType::U16
-        | PrimitiveType::U32
-        | PrimitiveType::U64
-        | PrimitiveType::U128
-        | PrimitiveType::USize) => unsigned_integer(value, primitive),
-        primitive @ (PrimitiveType::F32 | PrimitiveType::F64) => value
-            .as_f64()
-            .and_then(|value| crate::value::NumericValue::from_float(value, primitive))
-            .map(InterpValue::Number),
-        PrimitiveType::Never => None,
-    }
-}
-
-fn signed_integer(value: &serde_json::Value, primitive: PrimitiveType) -> Option<InterpValue> {
-    let value = value.as_i64()? as i128;
-    crate::value::NumericValue::from_signed(value, primitive).map(InterpValue::Number)
-}
-
-fn unsigned_integer(value: &serde_json::Value, primitive: PrimitiveType) -> Option<InterpValue> {
-    let value = value.as_u64()? as u128;
-    crate::value::NumericValue::from_unsigned(value, primitive).map(InterpValue::Number)
-}
-
-fn json_array_to_values(
-    value: &serde_json::Value,
-    elem: TypeId,
-    store: &TypeStore,
-    substitutions: &std::collections::HashMap<String, TypeId>,
-) -> Option<Vec<InterpValue>> {
-    value
-        .as_array()?
-        .iter()
-        .map(|value| {
-            json_to_typed_interp_value_with_substitutions(value, elem, store, substitutions)
-        })
-        .collect()
-}
-
-fn json_to_map(
-    value: &serde_json::Value,
-    key_type: TypeId,
-    value_type: TypeId,
-    store: &TypeStore,
-    substitutions: &std::collections::HashMap<String, TypeId>,
-) -> Option<InterpValue> {
-    if let Some(object) = value.as_object() {
-        return object
-            .iter()
-            .map(|(key, value)| {
-                Some((
-                    json_to_typed_interp_value_with_substitutions(
-                        &serde_json::Value::String(key.clone()),
-                        key_type,
-                        store,
-                        substitutions,
-                    )?,
-                    json_to_typed_interp_value_with_substitutions(
-                        value,
-                        value_type,
-                        store,
-                        substitutions,
-                    )?,
-                ))
-            })
-            .collect::<Option<Vec<_>>>()
-            .map(MapValue::new)
-            .map(InterpValue::Map);
-    }
-    value
-        .as_array()?
-        .iter()
-        .map(|entry| {
-            if let Some(pair) = entry.as_array() {
-                let [key, value] = pair.as_slice() else {
-                    return None;
-                };
-                return Some((
-                    json_to_typed_interp_value_with_substitutions(
-                        key,
-                        key_type,
-                        store,
-                        substitutions,
-                    )?,
-                    json_to_typed_interp_value_with_substitutions(
-                        value,
-                        value_type,
-                        store,
-                        substitutions,
-                    )?,
-                ));
-            }
-            let object = entry.as_object()?;
-            Some((
-                json_to_typed_interp_value_with_substitutions(
-                    object.get("key")?,
-                    key_type,
-                    store,
-                    substitutions,
-                )?,
-                json_to_typed_interp_value_with_substitutions(
-                    object.get("value")?,
-                    value_type,
-                    store,
-                    substitutions,
-                )?,
-            ))
-        })
-        .collect::<Option<Vec<_>>>()
-        .map(MapValue::new)
-        .map(InterpValue::Map)
-}
-
-fn json_to_result(
-    value: &serde_json::Value,
-    ok: TypeId,
-    err: TypeId,
-    store: &TypeStore,
-    substitutions: &std::collections::HashMap<String, TypeId>,
-) -> Option<InterpValue> {
-    let object = value.as_object()?;
-    if let Some(value) = object.get("Ok") {
-        return json_to_typed_interp_value_with_substitutions(value, ok, store, substitutions).map(
-            |value| InterpValue::Variant {
-                name: "Ok".to_owned().into(),
-                fields: vec![value].into(),
-            },
-        );
-    }
-    object
-        .get("Err")
-        .and_then(|value| {
-            json_to_typed_interp_value_with_substitutions(value, err, store, substitutions)
-        })
-        .map(|value| InterpValue::Variant {
-            name: "Err".to_owned().into(),
-            fields: vec![value].into(),
-        })
-}
-
-fn json_to_enum(value: &serde_json::Value) -> Option<InterpValue> {
-    if let Some(name) = value.as_str() {
-        return Some(InterpValue::Variant {
-            name: name.to_owned().into(),
-            fields: Vec::new().into(),
-        });
-    }
-    let object = value.as_object()?;
-    let mut entries = object.iter();
-    let (name, fields) = entries.next()?;
-    if entries.next().is_some() {
-        return None;
-    }
-    let fields = match fields {
-        serde_json::Value::Array(values) if values.is_empty() => Vec::new(),
-        serde_json::Value::Null => Vec::new(),
-        _ => return None,
-    };
-    Some(InterpValue::Variant {
-        name: name.clone().into(),
-        fields: fields.into(),
-    })
-}
-
 fn model_response_value_from_host(response: ModelResponse) -> crate::value::ModelResponseValue {
     crate::value::ModelResponseValue {
         id: response.id.0,
@@ -722,7 +352,7 @@ fn host_json_support_value_from_host(
 
 #[cfg(test)]
 mod tests {
-    use super::{host_json_to_serde_json, json_to_typed_interp_value};
+    use super::{json_host_value_to_typed_interp_value, json_to_typed_interp_value};
     use crate::value::{InterpValue, NumericValue};
     use etas_types::{
         EnumTypeRef, FieldType, NominalTypeRef, PrimitiveType, RecordType, Type, TypeConstructorId,
@@ -731,15 +361,19 @@ mod tests {
 
     #[test]
     fn nested_non_finite_host_json_fails_closed() {
+        let mut store = TypeStore::new();
+        let float = store.intern(Type::Primitive(PrimitiveType::F64));
+        let array_ty = store.intern(Type::Array(float));
+        let empty_record = store.intern(Type::Record(RecordType { fields: vec![] }));
         let array =
             etas_host::HostJsonValue::Array(vec![etas_host::HostJsonValue::Number(f64::NAN)]);
-        assert!(host_json_to_serde_json(&array).is_none());
+        assert!(json_host_value_to_typed_interp_value(&array, array_ty, &store).is_none());
 
         let object = etas_host::HostJsonValue::Object(vec![(
             "bad".to_owned(),
             etas_host::HostJsonValue::Number(f64::INFINITY),
         )]);
-        assert!(host_json_to_serde_json(&object).is_none());
+        assert!(json_host_value_to_typed_interp_value(&object, empty_record, &store).is_none());
     }
 
     #[test]
