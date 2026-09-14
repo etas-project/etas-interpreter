@@ -34,6 +34,9 @@ pub fn execute_pure_intrinsic(
             projector,
         );
     }
+    if call.intrinsic.0 == etas_std::intrinsic::pure::TEXT_JOIN {
+        return super::text::execute_join(call, &args, projector);
+    }
     if let Some(query) = etas_builtin::text::query::TextQuery::for_intrinsic(call.intrinsic) {
         if args.len() != query.arity() {
             return Err(AdapterError::Arity {

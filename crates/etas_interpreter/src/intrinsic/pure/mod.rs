@@ -11,6 +11,8 @@ mod adt_tests;
 #[cfg(test)]
 mod bytes_tests;
 #[cfg(test)]
+mod join_tests;
+#[cfg(test)]
 mod record_tests;
 #[cfg(test)]
 mod tests;

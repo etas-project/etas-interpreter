@@ -17,7 +17,8 @@ pub(in crate::intrinsic::pure) fn shared_string_for_type<'a>(
     ty: TypeId,
     projector: &PureAbiProjector,
 ) -> Result<&'a StringValue, AdapterError> {
-    match primitive_for_type(value, ty, projector, PrimitiveType::String)? {
+    let (value, ty) = primitive_for_type(value, ty, projector, PrimitiveType::String)?;
+    match value {
         InterpValue::String(text) => Ok(text),
         other => Err(type_mismatch(ty, other)),
     }
@@ -28,28 +29,46 @@ pub(in crate::intrinsic::pure) fn bytes_for_type<'a>(
     ty: TypeId,
     projector: &PureAbiProjector,
 ) -> Result<&'a [u8], AdapterError> {
-    match primitive_for_type(value, ty, projector, PrimitiveType::Bytes)? {
+    let (value, ty) = primitive_for_type(value, ty, projector, PrimitiveType::Bytes)?;
+    match value {
         InterpValue::Bytes(bytes) => Ok(bytes),
         other => Err(type_mismatch(ty, other)),
     }
 }
 
 fn primitive_for_type<'a>(
+    value: &'a InterpValue,
+    ty: TypeId,
+    projector: &PureAbiProjector,
+    expected: PrimitiveType,
+) -> Result<(&'a InterpValue, TypeId), AdapterError> {
+    let (value, ty) = representation_for_type(value, ty, projector)?;
+    if matches!(projector.shape(ty), Some(AbiShape::Primitive(primitive)) if *primitive == expected)
+    {
+        Ok((value, ty))
+    } else {
+        Err(type_mismatch(ty, value))
+    }
+}
+
+pub(in crate::intrinsic::pure) fn representation_for_type<'a>(
     mut value: &'a InterpValue,
     mut ty: TypeId,
     projector: &PureAbiProjector,
-    expected: PrimitiveType,
-) -> Result<&'a InterpValue, AdapterError> {
+) -> Result<(&'a InterpValue, TypeId), AdapterError> {
     let mut visited = std::collections::HashSet::new();
     loop {
         let shape = projector.shape(ty).ok_or(AdapterError::MissingType(ty))?;
-        if !matches!(shape, AbiShape::Primitive(_)) && !visited.insert(ty) {
+        if matches!(
+            shape,
+            AbiShape::Nominal { .. } | AbiShape::Refined { .. } | AbiShape::Trust { .. }
+        ) && !visited.insert(ty)
+        {
             return Err(AdapterError::UnsupportedValue(
-                "cyclic checked primitive ABI".into(),
+                "cyclic checked borrowed ABI".into(),
             ));
         }
         match shape {
-            AbiShape::Primitive(primitive) if *primitive == expected => return Ok(value),
             AbiShape::Nominal { representation } => {
                 let InterpValue::Nominal {
                     ty: actual,
@@ -82,7 +101,7 @@ fn primitive_for_type<'a>(
                 ty = *inner;
                 value = payload;
             }
-            _ => return Err(type_mismatch(ty, value)),
+            _ => return Ok((value, ty)),
         }
     }
 }

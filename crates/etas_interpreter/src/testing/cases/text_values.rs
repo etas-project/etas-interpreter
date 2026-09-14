@@ -5,6 +5,70 @@ use crate::api::codec::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn borrowed_join_preserves_suspended_argument_order_and_input_aliases() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.text.join;
+import std.io.println;
+import std.runtime.checkpoint;
+flow parts() -> Array<string> {
+    println("parts");
+    checkpoint("parts");
+    return ["中", "😀", ""];
+}
+flow separator() -> string {
+    println("separator");
+    checkpoint("separator");
+    return "|";
+}
+flow main() -> bool {
+    let values = parts();
+    let alias = values;
+    let rendered = join(values, separator());
+    return rendered == "中|😀|" && join(alias, "") == "中😀";
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.stdout_text(), "parts\nseparator\n");
+    assert_eq!(result.checkpoints.len(), 2);
+    for (index, checkpoint) in result.checkpoints.iter().enumerate() {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        let host = FakeHost::new(services);
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, &decoded, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), result.value());
+        assert_eq!(
+            host.stdout_text(),
+            if index == 0 { "separator\n" } else { "" }
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn shared_text_aliases_and_queries_survive_nested_projection_and_checkpoint() {
     let checked = checked_project(
         r#"

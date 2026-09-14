@@ -4,6 +4,55 @@ use crate::{intrinsic::dispatch::CheckedPureIntrinsicCall, value::InterpValue};
 
 use super::abi::{AdapterError, PureAbiProjector, borrowed, text::from_text_output};
 
+pub(super) fn execute_join(
+    call: &CheckedPureIntrinsicCall,
+    args: &[InterpValue],
+    projector: &PureAbiProjector,
+) -> Result<InterpValue, AdapterError> {
+    use super::abi::{AbiShape, input::type_mismatch, output::from_builtin_for_type};
+    use etas_builtin::text::join::{JoinError, join_projected};
+    let [parts, separator] = args else {
+        return Err(AdapterError::Arity {
+            expected: 2,
+            actual: args.len(),
+        });
+    };
+    let (parts, ty) = borrowed::representation_for_type(parts, call.parameter_types[0], projector)?;
+    let (Some(AbiShape::Array(inner)), InterpValue::Array(parts)) = (projector.shape(ty), parts)
+    else {
+        return Err(type_mismatch(ty, parts));
+    };
+    let parts = parts.borrow();
+    let separator = match borrowed::string_for_type(separator, call.parameter_types[1], projector) {
+        Ok(separator) => separator,
+        Err(error) => {
+            // Input projection historically reports the first argument's error
+            // first. Preserve that ordering without copying its elements.
+            for part in parts.iter() {
+                borrowed::string_for_type(part, *inner, projector)?;
+            }
+            return Err(error);
+        }
+    };
+    let output = join_projected(
+        parts
+            .iter()
+            .map(|part| borrowed::string_for_type(part, *inner, projector)),
+        separator,
+    )
+    .map_err(|error| match error {
+        JoinError::Projection(error) => error,
+        JoinError::OutputTooLarge => {
+            AdapterError::Builtin(etas_builtin::BuiltinError::NumericOverflow)
+        }
+    })?;
+    from_builtin_for_type(
+        etas_builtin::BuiltinValue::String(output),
+        call.result_type,
+        projector,
+    )
+}
+
 pub(super) fn execute_transform(
     transform: TextTransform,
     call: &CheckedPureIntrinsicCall,
