@@ -12,7 +12,7 @@ use super::{
     },
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum InterpValue {
     Unit,
     Bool(bool),
@@ -93,6 +93,13 @@ pub enum InterpValue {
         limit: Option<u32>,
     },
 }
+
+impl PartialEq for InterpValue {
+    fn eq(&self, other: &Self) -> bool {
+        super::comparison::value_equal(self, other)
+    }
+}
+impl Eq for InterpValue {}
 
 impl InterpValue {
     pub(crate) fn kind_name(&self) -> &'static str {

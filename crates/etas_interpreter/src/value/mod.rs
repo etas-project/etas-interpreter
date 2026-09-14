@@ -1,8 +1,11 @@
 mod aggregate;
 mod bytes;
 pub(crate) mod codec;
+pub(crate) mod comparison;
 pub(crate) mod conversation;
 mod deque;
+#[cfg(test)]
+mod equality_tests;
 mod host_handle;
 pub(crate) mod iteration;
 pub(crate) mod membership;

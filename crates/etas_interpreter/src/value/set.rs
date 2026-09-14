@@ -42,6 +42,10 @@ impl SetValue {
             .contains(&self.0.values, value, self.0.index.fingerprint(value))
     }
 
+    pub(super) fn index(&self) -> &MembershipIndex {
+        &self.0.index
+    }
+
     pub fn insert(&mut self, value: InterpValue) -> bool {
         let hash = self.0.index.fingerprint(&value);
         if self.0.index.contains(&self.0.values, &value, hash) {
@@ -81,8 +85,7 @@ impl From<Vec<InterpValue>> for SetValue {
 
 impl PartialEq for SetValue {
     fn eq(&self, other: &Self) -> bool {
-        self.0.values.len() == other.0.values.len()
-            && self.0.values.iter().all(|value| other.contains(value))
+        super::comparison::sets_equal(self, other)
     }
 }
 impl Eq for SetValue {}

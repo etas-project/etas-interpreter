@@ -65,6 +65,15 @@ impl MembershipIndex {
             })
     }
 
+    pub(crate) fn candidate(&self, hash: u64, offset: usize) -> Option<usize> {
+        let bucket = self.buckets.get(&hash)?;
+        if offset == 0 {
+            Some(bucket.first)
+        } else {
+            bucket.collisions.get(offset - 1).copied()
+        }
+    }
+
     #[cfg(test)]
     pub(crate) fn comparison_count(&self) -> usize {
         self.comparisons.get()
