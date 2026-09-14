@@ -1,7 +1,8 @@
 use super::{
-    aggregate::{ArrayValue, MapValue, SliceValue},
+    aggregate::{ArrayValue, SliceValue},
     deque::DequeValue,
     list::ListValue,
+    map::MapValue,
     record::RecordValue,
     resource::MemorySelectionKind,
     set::SetValue,

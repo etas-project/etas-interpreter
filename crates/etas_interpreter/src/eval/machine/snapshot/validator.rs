@@ -1070,7 +1070,9 @@ impl<'a> SnapshotValidator<'a> {
             | ValueSnapshot::OrderedSet(values) => {
                 self.index_at_most(position, values.len(), context)?
             }
-            ValueSnapshot::PriorityQueue(values) | ValueSnapshot::OrderedMap(values) => {
+            ValueSnapshot::Map(values)
+            | ValueSnapshot::PriorityQueue(values)
+            | ValueSnapshot::OrderedMap(values) => {
                 self.index_at_most(position, values.len(), context)?
             }
             ValueSnapshot::Range { start, end, bounds } => {

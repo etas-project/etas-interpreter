@@ -31,6 +31,14 @@ struct Bucket {
 }
 
 impl MembershipIndex {
+    pub(crate) fn with_capacity(capacity: usize) -> Self {
+        Self {
+            buckets: HashMap::with_capacity(capacity),
+            #[cfg(test)]
+            comparisons: std::cell::Cell::new(0),
+        }
+    }
+
     pub(crate) fn fingerprint(&self, value: &impl MembershipValue) -> u64 {
         let mut state = self.buckets.hasher().build_hasher();
         value.hash_partition(&mut state);
@@ -38,14 +46,23 @@ impl MembershipIndex {
     }
 
     pub(crate) fn contains<T: MembershipValue>(&self, values: &[T], value: &T, hash: u64) -> bool {
-        self.buckets.get(&hash).is_some_and(|bucket| {
-            let matches = |index: usize| {
+        self.position(hash, |index| values[index].member_eq(value))
+            .is_some()
+    }
+
+    pub(crate) fn position(
+        &self,
+        hash: u64,
+        mut matches: impl FnMut(usize) -> bool,
+    ) -> Option<usize> {
+        let bucket = self.buckets.get(&hash)?;
+        std::iter::once(bucket.first)
+            .chain(bucket.collisions.iter().copied())
+            .find(|&index| {
                 #[cfg(test)]
                 self.comparisons.set(self.comparisons.get() + 1);
-                values[index].member_eq(value)
-            };
-            matches(bucket.first) || bucket.collisions.iter().copied().any(matches)
-        })
+                matches(index)
+            })
     }
 
     #[cfg(test)]

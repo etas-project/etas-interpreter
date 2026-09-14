@@ -70,29 +70,18 @@ impl<'a> EvalContext<'a> {
             },
             LocalPlaceSegment::MapKey(key) => match current {
                 InterpValue::Map(entries) => {
-                    let mut entries = entries.borrow_mut();
                     if tail.is_empty() {
-                        if let Some((_, slot)) = entries
-                            .iter_mut()
-                            .find(|(candidate, _)| candidate == key.as_ref())
-                        {
-                            *slot = new_value;
-                        } else {
-                            entries.push(((**key).clone(), new_value));
-                        }
+                        entries.insert((**key).clone(), new_value);
                         Ok(())
                     } else {
-                        let Some((_, slot)) = entries
-                            .iter_mut()
-                            .find(|(candidate, _)| candidate == key.as_ref())
-                        else {
+                        let Some(mut slot) = entries.value_mut(key) else {
                             return Err(ExecutionFault::new(
                                 AnalysisDiagnosticCode::InvalidArguments,
                                 span,
                                 "nested map assignment requires an existing key at runtime",
                             ));
                         };
-                        self.assign_nested_value(slot, tail, new_value, span)
+                        self.assign_nested_value(&mut slot, tail, new_value, span)
                     }
                 }
                 other => Err(ExecutionFault::new(

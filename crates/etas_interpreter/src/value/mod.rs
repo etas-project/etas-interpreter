@@ -21,13 +21,15 @@ mod text;
 pub use bytes::BytesValue;
 pub use text::StringValue;
 
-pub use aggregate::{ArrayValue, MapValue, SliceValue};
+pub use aggregate::{ArrayValue, SliceValue};
 mod set;
 pub use set::SetValue;
 mod list;
+mod map;
 pub use deque::DequeValue;
 pub use host_handle::HostHandleValue;
 pub use list::ListValue;
+pub use map::MapValue;
 pub use numeric::{NumericError, NumericValue};
 pub use primitive::InterpValue;
 pub use record::RecordValue;

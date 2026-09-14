@@ -296,7 +296,7 @@ fn borrowed_capture_preserves_nested_snapshot_independence() {
 }
 
 #[test]
-fn aggregate_queries_copy_only_the_selected_payload() {
+fn aggregate_queries_separate_index_build_from_payload_access() {
     for count in [1000, 2000, 4000] {
         let map = MapValue::new(
             strings(count)
@@ -308,6 +308,15 @@ fn aggregate_queries_copy_only_the_selected_payload() {
         let key = InterpValue::usize(count - 1);
         let (present, allocations) = measure(|| map.contains_key(&key));
         assert!(present);
+        // The first lookup allocates the hash table and its shared owner, not
+        // copied keys/values. Subsequent borrowed queries allocate nothing.
+        assert_eq!(allocations.count, 2, "n={count}: {allocations:?}");
+        assert!(
+            allocations.bytes <= count * 128,
+            "n={count}: {allocations:?}"
+        );
+        eprintln!("map first lookup n={count}: {allocations:?}");
+        let (_, allocations) = measure(|| map.contains_key(&key));
         assert_eq!(allocations.count, 0);
         let (value, allocations) = measure(|| map.get(&key));
         assert!(matches!(value, Some(InterpValue::String(_))));

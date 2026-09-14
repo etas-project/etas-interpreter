@@ -122,3 +122,61 @@ flow main() -> bool {
         assert_eq!(host.stdout_text(), expected_output);
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn indexed_map_updates_preserve_aliases_order_and_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+flow main() -> bool {
+    var values = { "a" => [1], "b" => [2] };
+    let alias = values;
+    if values.get("a") != Some([1]) { return false; }
+    values["a"][0] = 3;
+    values["c"] = [4];
+    checkpoint("indexed-map");
+    var order = "";
+    var original_b = false;
+    for (key, value) in values limit Iterations(8) {
+        order = order + key;
+        values[key] = [9];
+        if key == "a" { values["b"] = [99]; checkpoint("map-cursor"); }
+        if key == "b" { original_b = value == [2]; }
+    }
+    return original_b && order == "abc" && alias.get("a") == Some([1])
+        && alias.get("b") == Some([2]) && alias.get("c") == None
+        && values.get("a") == Some([9]) && values.get("b") == Some([9])
+        && values.get("c") == Some([9]) && values.get("missing") == None;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(result.checkpoints.len(), 2);
+    for saved in &result.checkpoints {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [saved, &decoded] {
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+        }
+    }
+}

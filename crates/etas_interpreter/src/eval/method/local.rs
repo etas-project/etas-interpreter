@@ -363,7 +363,7 @@ impl<'a> EvalContext<'a> {
 
     fn eval_ordered_map_method_values(
         &mut self,
-        entries: MapValue,
+        mut entries: MapValue,
         method: &str,
         args: EvaluatedLocalArgs,
         span: Span,
@@ -386,15 +386,8 @@ impl<'a> EvalContext<'a> {
                     .unwrap_or(InterpValue::OptionNone),
             ),
             ("insert", EvaluatedLocalArgs::Two(key, value)) => {
-                let mut next = entries.into_values();
-                if let Some((_, existing)) =
-                    next.iter_mut().find(|(candidate, _)| candidate == &key)
-                {
-                    *existing = value;
-                } else {
-                    next.push((key, value));
-                }
-                ControlSignal::Value(InterpValue::OrderedMap(MapValue::new(next)))
+                entries.insert(key, value);
+                ControlSignal::Value(InterpValue::OrderedMap(entries))
             }
             _ => unsupported_collection_method(span, "OrderedMap", method),
         }

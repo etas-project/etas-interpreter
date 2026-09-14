@@ -20,6 +20,7 @@ impl IterationSource {
             | InterpValue::Deque(_)
             | InterpValue::Queue(_)
             | InterpValue::Stack(_)
+            | InterpValue::Map(_)
             | InterpValue::PriorityQueue(_)
             | InterpValue::OrderedMap(_)
             | InterpValue::OrderedSet(_) => {}
@@ -68,7 +69,9 @@ impl IterationSource {
             InterpValue::Set(values) | InterpValue::OrderedSet(values) => {
                 values.borrow().get(index).cloned()
             }
-            InterpValue::PriorityQueue(values) | InterpValue::OrderedMap(values) => values
+            InterpValue::Map(values)
+            | InterpValue::PriorityQueue(values)
+            | InterpValue::OrderedMap(values) => values
                 .borrow()
                 .get(index)
                 .map(|(key, value)| InterpValue::Tuple(vec![key.clone(), value.clone()].into())),
@@ -129,5 +132,33 @@ mod tests {
         assert_eq!(first, Some(InterpValue::Number(NumericValue::U128(0))));
         assert_eq!(allocations.count, 0);
         assert!(IterationSource::new(InterpValue::Bool(true)).is_err());
+    }
+
+    #[test]
+    fn map_iteration_allocates_only_the_visited_pair_not_the_backing() {
+        for count in [1000, 2000, 4000] {
+            let values = crate::value::MapValue::new(
+                (0..count)
+                    .map(|n| {
+                        (
+                            InterpValue::String(format!("{n}{}", "k".repeat(1024)).into()),
+                            InterpValue::Bytes(vec![7; 1024].into()),
+                        )
+                    })
+                    .collect(),
+            );
+            let input = InterpValue::Map(values.clone());
+            let (source, setup) = measure(|| IterationSource::new(input).unwrap());
+            assert_eq!(setup.count, 0, "n={count}: {setup:?}");
+            let (first, access) = measure(|| source.get(0).unwrap());
+            assert!(matches!(first, Some(InterpValue::Tuple(_))));
+            assert_eq!(access.count, 2, "n={count}: {access:?}");
+            assert!(
+                access.bytes <= 2 * std::mem::size_of::<InterpValue>() + 128,
+                "n={count}: {access:?}"
+            );
+            let (_, drop_cost) = measure(|| drop(source));
+            assert_eq!(drop_cost.count, 0);
+        }
     }
 }
