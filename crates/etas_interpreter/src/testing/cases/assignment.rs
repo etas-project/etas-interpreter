@@ -2,6 +2,68 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn json_key_indexes_preserve_updates_and_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.json.{JsonValue, parse};
+import std.runtime.checkpoint;
+flow json(text: string) -> JsonValue {
+    return match parse(text) { Ok(value) => value, Err(_) => abort("invalid fixture JSON") };
+}
+flow main() -> bool {
+    let a = json("{\"key\":[1]}");
+    let same = json("{\"key\":[1]}");
+    let b = json("{\"key\":[2]}");
+    let missing = json("{\"key\":[3]}");
+    var values = { a => 10, b => 20 };
+    let alias = values;
+    let members = #{a, b, same};
+    if values.get(same) != Some(10) { return false; }
+    values[same] = 30;
+    checkpoint("JSON-key-index");
+    var member_count = 0;
+    for member in members limit Iterations(4) {
+        if member != a && member != b { return false; }
+        member_count = member_count + 1;
+    }
+    return a == same && a != b && values.get(a) == Some(30)
+        && values.get(b) == Some(20) && values.get(missing) == None
+        && alias.get(a) == Some(10) && member_count == 2
+        && members == #{same, b} && members != #{a, b, missing};
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let saved = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+    for checkpoint in [saved, &decoded] {
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn assignment_commit_follows_resumed_handler_index() {
     let checked = checked_project(
         r#"

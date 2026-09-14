@@ -8,6 +8,9 @@ mod deque;
 mod equality_tests;
 mod host_handle;
 pub(crate) mod iteration;
+pub(crate) mod json;
+#[cfg(test)]
+mod json_tests;
 pub(crate) mod membership;
 mod numeric;
 mod primitive;

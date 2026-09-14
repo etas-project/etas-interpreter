@@ -54,6 +54,10 @@ impl StructuralPartition for InterpValue {
                 value.hash(state);
                 return None;
             }
+            Self::Json(value) => {
+                crate::value::json::hash(value, state);
+                return None;
+            }
             Self::Nominal { ty, value } => {
                 ty.hash(state);
                 Storage::Single(value.clone())

@@ -102,7 +102,7 @@ pub enum HostSupportValue {
     Json(HostJsonSupportValue),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum HostJsonSupportValue {
     Null,
     Bool(bool),
@@ -111,6 +111,14 @@ pub enum HostJsonSupportValue {
     Array(Vec<HostJsonSupportValue>),
     Object(Vec<(String, HostJsonSupportValue)>),
 }
+
+impl PartialEq for HostJsonSupportValue {
+    fn eq(&self, other: &Self) -> bool {
+        super::json::equal(self, other)
+    }
+}
+
+impl Eq for HostJsonSupportValue {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RangeValue {
