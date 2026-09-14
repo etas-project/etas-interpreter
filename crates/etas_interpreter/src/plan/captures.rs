@@ -1,12 +1,11 @@
 use std::{
-    collections::{BTreeSet, HashMap, HashSet},
+    collections::{BTreeSet, HashMap},
     sync::Arc,
 };
 
 use etas_frontend::CheckedProject;
 use etas_hir::{
-    HirExpr, HirExprId, HirFieldInit, HirNodeRef, HirTreeView, ResolveResult, ScopeId, ScopeOwner,
-    SymbolId,
+    HirExpr, HirExprId, HirFieldInit, HirNodeRef, HirTreeView, ResolveResult, SymbolId,
 };
 use etas_utils::{Pass, PassContext, PassManager, PassResult};
 
@@ -14,6 +13,11 @@ use super::{
     SlotLayoutTable,
     context::{PlanContext, plan_pass},
 };
+
+mod scopes;
+#[cfg(test)]
+mod tests;
+use scopes::ClosureScopes;
 
 #[derive(Clone, Debug)]
 pub struct ClosureLayout {
@@ -45,6 +49,7 @@ impl ClosureLayoutTable {
         }
         let view = HirTreeView::try_new(&project.hir)
             .map_err(|error| format!("invalid closure HIR: {error:?}"))?;
+        let scope_index = ClosureScopes::build(&project.hir.scopes)?;
         let mut declarations = HashMap::new();
         for scope in project.hir.scopes.iter() {
             for symbol in scope
@@ -60,14 +65,11 @@ impl ClosureLayoutTable {
                         "local symbol {symbol:?} has multiple declaring scopes"
                     ));
                 }
-                for ancestor in scope_chain(project, scope.id)? {
-                    if let ScopeOwner::Lambda(expr) = ancestor.owner {
-                        locals
-                            .get_mut(&expr)
-                            .ok_or("lambda scope has no expression")?
-                            .insert(symbol);
-                        break;
-                    }
+                if let Some(closure) = scope_index.nearest(scope.id)? {
+                    locals
+                        .get_mut(&closure.expr)
+                        .ok_or("lambda scope has no expression")?
+                        .insert(symbol);
                 }
             }
         }
@@ -93,20 +95,25 @@ impl ClosureLayoutTable {
                 let scope = view
                     .enclosing_scope(HirNodeRef::Expr(expr))
                     .ok_or("local use has no enclosing scope")?;
-                for ancestor in scope_chain(project, scope)? {
-                    if ancestor.id == declaration {
-                        return Ok(());
-                    }
-                    if let ScopeOwner::Lambda(lambda) = ancestor.owner {
-                        captures
-                            .get_mut(&lambda)
-                            .ok_or("lambda scope has no expression")?
-                            .insert(symbol);
-                    }
+                if !scope_index.contains(declaration, scope)? {
+                    return Err(format!(
+                        "local symbol {symbol:?} is outside the lexical scope of {expr:?}"
+                    ));
                 }
-                Err(format!(
-                    "local symbol {symbol:?} is outside the lexical scope of {expr:?}"
-                ))
+                let mut nearest = scope_index.nearest(scope)?;
+                while let Some(closure) = nearest {
+                    if closure.scope == declaration
+                        || !scope_index.contains(declaration, closure.scope)?
+                    {
+                        break;
+                    }
+                    captures
+                        .get_mut(&closure.expr)
+                        .ok_or("lambda scope has no expression")?
+                        .insert(symbol);
+                    nearest = scope_index.outer(closure)?;
+                }
+                Ok(())
             };
             match data {
                 HirExpr::Path(path) => record_use(&path.resolution)?,
@@ -139,21 +146,6 @@ impl ClosureLayoutTable {
             .collect::<Result<_, String>>()?;
         Ok(Self { layouts })
     }
-}
-
-fn scope_chain(project: &CheckedProject, start: ScopeId) -> Result<Vec<&etas_hir::Scope>, String> {
-    let mut result = Vec::new();
-    let mut seen = HashSet::new();
-    let mut current = Some(start);
-    while let Some(id) = current {
-        if !seen.insert(id) {
-            return Err("cyclic closure scope ancestry".into());
-        }
-        let scope = project.hir.scopes.get(id).ok_or("missing closure scope")?;
-        result.push(scope);
-        current = scope.parent;
-    }
-    Ok(result)
 }
 
 pub(super) struct BuildClosureLayoutsPass;
