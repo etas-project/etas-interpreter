@@ -109,7 +109,7 @@ impl<'a> EvalContext<'a> {
                 Ok(Some(CallTarget::AgentItem(item))) => {
                     return self.resume_call_args(
                         CallTarget::AgentItem(item),
-                        args.to_vec(),
+                        args.into(),
                         0,
                         Vec::new(),
                         span,

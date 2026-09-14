@@ -494,7 +494,7 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     CalleeEval {
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         span: Span,
         frame: LocalsSnapshot,
     },
@@ -508,7 +508,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     CallArgs {
         target: CallTargetSnapshot,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<ValueSnapshot>,
         span: Span,

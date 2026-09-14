@@ -113,7 +113,7 @@ impl<'a> EvalContext<'a> {
             Ok(target) => target,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        self.resume_call_args(target, args.to_vec(), 0, vec![receiver], span, frame)
+        self.resume_call_args(target, args.into(), 0, vec![receiver], span, frame)
     }
 
     fn resolve_checked_spec_method_target(

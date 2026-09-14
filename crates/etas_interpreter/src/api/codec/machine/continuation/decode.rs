@@ -230,7 +230,7 @@ pub(crate) fn continuation_from_snapshot(
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "callee_eval" => ContinuationSnapshot::CalleeEval {
-            args: args_from_snapshot(required(value, "args")?)?,
+            args: args_from_snapshot(required(value, "args")?)?.into(),
             span: span_from_snapshot(required(value, "span")?)?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
@@ -244,7 +244,7 @@ pub(crate) fn continuation_from_snapshot(
         },
         "call_args" => ContinuationSnapshot::CallArgs {
             target: call_target_snapshot_from_json(limits, required(value, "target")?)?,
-            args: args_from_snapshot(required(value, "args")?)?,
+            args: args_from_snapshot(required(value, "args")?)?.into(),
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
             span: span_from_snapshot(required(value, "span")?)?,

@@ -217,7 +217,7 @@ pub enum Continuation {
         frame: Frame,
     },
     CalleeEval {
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         span: Span,
         frame: Frame,
     },
@@ -231,7 +231,7 @@ pub enum Continuation {
     },
     CallArgs {
         target: CallTarget,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<InterpValue>,
         span: Span,

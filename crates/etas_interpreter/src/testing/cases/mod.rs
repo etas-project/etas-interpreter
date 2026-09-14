@@ -4,6 +4,7 @@ mod aggregate_literals;
 mod assignment;
 mod boundary_io;
 mod byte_values;
+mod call_arguments;
 mod cancellation;
 mod checkpoint;
 mod closures;

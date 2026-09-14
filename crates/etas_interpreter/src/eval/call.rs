@@ -60,6 +60,12 @@ impl<'a> EvalContext<'a> {
         {
             return signal;
         }
+        let Some(descriptors) = self.plan.arguments.get(call) else {
+            return ControlSignal::missing_checked_fact(
+                "call is missing its checked argument descriptors",
+                span,
+            );
+        };
         let nominal_target =
             match self.resolve_nominal_constructor_call_target(call, callee, frame, span) {
                 Ok(target) => target,
@@ -94,7 +100,7 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::CalleeEval {
-                            args: args.to_vec(),
+                            args: descriptors,
                             span,
                             frame: frame.clone(),
                         },
@@ -113,7 +119,7 @@ impl<'a> EvalContext<'a> {
             Ok(target) => target,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        self.resume_call_args(target, args.to_vec(), 0, Vec::new(), span, frame)
+        self.resume_call_args(target, descriptors, 0, Vec::new(), span, frame)
     }
 
     fn eval_checked_field_method_call(
@@ -186,7 +192,7 @@ impl<'a> EvalContext<'a> {
     pub(super) fn resume_call_args(
         &mut self,
         target: CallTarget,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         start_arg_index: usize,
         mut evaluated_args: Vec<InterpValue>,
         span: Span,

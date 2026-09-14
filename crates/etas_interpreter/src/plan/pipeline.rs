@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     InterpreterPlan, action_mediation::ComputeEntryActionMediationPass,
-    captures::BuildClosureLayoutsPass, context::PlanContext,
+    arguments::BuildCallArgumentsPass, captures::BuildClosureLayoutsPass, context::PlanContext,
     dispatch::BuildIntrinsicDispatchTablePass, entry::BuildEntryPlanPass,
     globals::BuildGlobalTablePass, readiness::ComputeReachableHostRequirementsPass,
     records::BuildRecordLayoutsPass, resources::BuildResourceHandleTablePass,
@@ -39,10 +39,11 @@ pub fn build_plan(project: &CheckedProject, _options: PlanOptions) -> PlanResult
         .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
     {
         None
-    } else if let (Some(closures), Some(named_variants), Some(records)) = (
+    } else if let (Some(closures), Some(named_variants), Some(records), Some(arguments)) = (
         context.closures.take(),
         context.named_variants.take(),
         context.records.take(),
+        context.arguments.take(),
     ) {
         Some(InterpreterPlan {
             entry: context.entry.expect("entry should be available"),
@@ -55,6 +56,7 @@ pub fn build_plan(project: &CheckedProject, _options: PlanOptions) -> PlanResult
             closures,
             named_variants,
             records,
+            arguments,
             resources: context
                 .resources
                 .expect("resource table should be available"),
@@ -91,6 +93,12 @@ fn require_plan_artifacts(context: &mut PlanContext<'_>) {
         context.diagnostics.push(diagnostics::missing_checked_fact(
             span,
             "interpreter plan is missing slot layout facts",
+        ));
+    }
+    if context.arguments.is_none() {
+        context.diagnostics.push(diagnostics::missing_checked_fact(
+            span,
+            "interpreter plan is missing call argument descriptors",
         ));
     }
     if context.globals.is_none() {
@@ -148,6 +156,7 @@ fn plan_pipeline<'a>() -> Pipeline<PlanContext<'a>> {
         .pass(ValidateCheckedProjectPass)
         .pass(BuildEntryPlanPass)
         .pass(BuildSlotLayoutPass)
+        .pass(BuildCallArgumentsPass)
         .pass(BuildClosureLayoutsPass)
         .pass(BuildNamedVariantLayoutsPass)
         .pass(BuildRecordLayoutsPass)

@@ -1654,7 +1654,7 @@ flow main() -> unit {
             (
                 ContinuationSnapshot::CallArgs {
                     target: CallTargetSnapshot::ToolItem(HirItemId(u32::MAX)),
-                    args: Vec::new(),
+                    args: Vec::new().into(),
                     next_arg_index: 0,
                     evaluated_args: Vec::new(),
                     span: span(),
