@@ -1,4 +1,10 @@
-use std::io::{self, Write};
+use std::{
+    cell::RefCell,
+    collections::VecDeque,
+    io::{self, Write},
+};
+
+use serde::ser::{Error, SerializeSeq, SerializeStruct};
 
 use super::*;
 
@@ -8,72 +14,105 @@ pub fn checkpoint_file_to_bytes(
     artifact: Value,
     limits: CheckpointFileLimits,
 ) -> Result<Vec<u8>, InterpreterCodecError> {
-    let mut artifact = CheckpointDocument(artifact);
+    let artifact = CheckpointDocument(artifact);
     limits.validate()?;
     check_document_schema(&artifact)?;
-    let mut pending = JsonSlots(vec![std::mem::take(&mut artifact.0)]);
-    let mut nodes = Vec::new();
-    let mut index = 0;
-    while index < pending.0.len() {
-        let value = CheckpointDocument(std::mem::take(&mut pending.0[index]));
-        let child_count = match &value.0 {
-            Value::Array(values) => values.len(),
-            Value::Object(fields) => fields.len(),
-            _ => 0,
-        };
-        if pending
-            .0
-            .len()
-            .checked_add(child_count)
-            .is_none_or(|n| n > limits.max_nodes)
-        {
-            return Err(InterpreterCodecError::new(
-                "checkpoint file exceeds node budget",
-            ));
-        }
-        let mut value = value;
-        let node = match std::mem::take(&mut value.0) {
-            Value::Null => Node::Null,
-            Value::Bool(value) => Node::Bool(value),
-            Value::Number(value) => Node::Number(value),
-            Value::String(value) => Node::String(value),
-            Value::Array(values) => Node::Array(
-                values
-                    .into_iter()
-                    .map(|value| {
-                        let child = pending.0.len();
-                        pending.0.push(value);
-                        child
-                    })
-                    .collect(),
-            ),
-            Value::Object(fields) => Node::Object(
-                fields
-                    .into_iter()
-                    .map(|(key, value)| {
-                        let child = pending.0.len();
-                        pending.0.push(value);
-                        (key, child)
-                    })
-                    .collect(),
-            ),
-        };
-        nodes.push(node);
-        index += 1;
-    }
-    let file = File {
-        schema: FILE_SCHEMA.to_owned(),
-        root: 0,
-        nodes,
+    let nodes = FlatNodes {
+        root: RefCell::new(Some(artifact)),
+        max_nodes: limits.max_nodes,
     };
     let mut output = BoundedBytes {
         bytes: Vec::new(),
         limit: limits.max_bytes,
     };
-    serde_json::to_writer(&mut output, &file).map_err(|error| {
+    let encode = (|| -> Result<(), serde_json::Error> {
+        let mut serializer = serde_json::Serializer::new(&mut output);
+        let mut file = serde::Serializer::serialize_struct(&mut serializer, "File", 3)?;
+        file.serialize_field("schema", FILE_SCHEMA)?;
+        file.serialize_field("root", &0usize)?;
+        file.serialize_field("nodes", &nodes)?;
+        SerializeStruct::end(file)
+    })();
+    encode.map_err(|error| {
         InterpreterCodecError::new(format!("cannot encode checkpoint file: {error}"))
     })?;
     Ok(output.bytes)
+}
+
+// Serialization consumes the document once. Only the unprocessed frontier is
+// retained; node IDs count all discovered nodes, not the queue's current length.
+struct FlatNodes {
+    root: RefCell<Option<CheckpointDocument>>,
+    max_nodes: usize,
+}
+
+struct PendingValues(VecDeque<Value>);
+
+impl Drop for PendingValues {
+    fn drop(&mut self) {
+        for value in self.0.drain(..) {
+            release_json(value);
+        }
+    }
+}
+
+impl Serialize for FlatNodes {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        let mut root = self
+            .root
+            .borrow_mut()
+            .take()
+            .ok_or_else(|| S::Error::custom("checkpoint document already consumed"))?;
+        let mut pending = PendingValues(VecDeque::from([std::mem::take(&mut root.0)]));
+        let mut next_id = 1usize;
+        let mut sequence = serializer.serialize_seq(None)?;
+        while let Some(value) = pending.0.pop_front() {
+            let value = CheckpointDocument(value);
+            let child_count = match &value.0 {
+                Value::Array(values) => values.len(),
+                Value::Object(fields) => fields.len(),
+                _ => 0,
+            };
+            if next_id
+                .checked_add(child_count)
+                .is_none_or(|n| n > self.max_nodes)
+            {
+                return Err(S::Error::custom("checkpoint file exceeds node budget"));
+            }
+            pending.0.reserve(child_count);
+            let mut value = value;
+            let node = match std::mem::take(&mut value.0) {
+                Value::Null => Node::Null,
+                Value::Bool(value) => Node::Bool(value),
+                Value::Number(value) => Node::Number(value),
+                Value::String(value) => Node::String(value),
+                Value::Array(values) => Node::Array(
+                    values
+                        .into_iter()
+                        .map(|value| {
+                            let child = next_id;
+                            next_id += 1;
+                            pending.0.push_back(value);
+                            child
+                        })
+                        .collect(),
+                ),
+                Value::Object(fields) => Node::Object(
+                    fields
+                        .into_iter()
+                        .map(|(key, value)| {
+                            let child = next_id;
+                            next_id += 1;
+                            pending.0.push_back(value);
+                            (key, child)
+                        })
+                        .collect(),
+                ),
+            };
+            sequence.serialize_element(&node)?;
+        }
+        sequence.end()
+    }
 }
 
 struct BoundedBytes {

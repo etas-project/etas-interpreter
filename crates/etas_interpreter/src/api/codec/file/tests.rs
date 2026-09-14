@@ -179,3 +179,110 @@ fn node_budget_rejects_before_allocating_the_entire_table() {
         "decoder allocated the rejected table: {allocations:?}"
     );
 }
+
+#[test]
+fn encoder_streams_deep_nodes_without_retaining_processed_tables() {
+    fn document(depth: usize) -> Value {
+        let mut value = Value::String("leaf".to_owned());
+        for _ in 0..depth {
+            value = Value::Array(vec![value]);
+        }
+        artifact(value)
+    }
+
+    for depth in [1000, 2000, 4000] {
+        let bytes = checkpoint_file_to_bytes(document(depth), Default::default()).unwrap();
+        let file: File = serde_json::from_slice(&bytes).unwrap();
+        let (reference, output_cost) = crate::testing::allocation::measure(|| {
+            let mut bytes = Vec::new();
+            serde_json::to_writer(&mut bytes, &file).unwrap();
+            bytes
+        });
+        let input = document(depth);
+        let (encoded, cost) = crate::testing::allocation::measure(|| {
+            checkpoint_file_to_bytes(input, Default::default()).unwrap()
+        });
+        assert_eq!(encoded, reference);
+        eprintln!("checkpoint depth={depth}: encode={cost:?}, output={output_cost:?}");
+        // One child index per array is allowed, but not a retained JSON/Node table.
+        assert!(
+            cost.bytes <= output_cost.bytes + depth * size_of::<usize>() + 4096,
+            "encoding retained intermediate tables: {cost:?}, output={output_cost:?}"
+        );
+    }
+}
+
+#[test]
+fn encoder_preserves_flat_v1_breadth_first_wire_format() {
+    let input = artifact(json!([{"x": "escaped\n\""}, true]));
+    let reference = File {
+        schema: FILE_SCHEMA.to_owned(),
+        root: 0,
+        nodes: vec![
+            Node::Object(vec![("checkpoint".to_owned(), 1), ("schema".to_owned(), 2)]),
+            Node::Array(vec![3, 4]),
+            Node::String(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA.to_owned()),
+            Node::Object(vec![("x".to_owned(), 5)]),
+            Node::Bool(true),
+            Node::String("escaped\n\"".to_owned()),
+        ],
+    };
+    assert_eq!(
+        checkpoint_file_to_bytes(input, Default::default()).unwrap(),
+        serde_json::to_vec(&reference).unwrap()
+    );
+}
+
+#[test]
+fn encoder_wide_payloads_allocate_frontier_without_cloning_strings() {
+    for width in [1024, 2048, 4096] {
+        let input = artifact(Value::Array(
+            (0..width)
+                .map(|_| Value::String("x".repeat(1024)))
+                .collect(),
+        ));
+        let expected = input.clone();
+        let (encoded, cost) = crate::testing::allocation::measure(|| {
+            checkpoint_file_to_bytes(input, Default::default()).unwrap()
+        });
+        let file: File = serde_json::from_slice(&encoded).unwrap();
+        let (reference, output_cost) = crate::testing::allocation::measure(|| {
+            let mut bytes = Vec::new();
+            serde_json::to_writer(&mut bytes, &file).unwrap();
+            bytes
+        });
+        assert_eq!(encoded, reference);
+        assert_eq!(
+            *checkpoint_file_from_bytes(&encoded, Default::default()).unwrap(),
+            expected
+        );
+        eprintln!("checkpoint width={width}: encode={cost:?}, output={output_cost:?}");
+        // Queue growth may move Value headers, but not copy payloads or retain Node tables.
+        assert!(
+            cost.bytes <= output_cost.bytes + width * size_of::<Value>() * 3 + 4096,
+            "encoding copied payloads or retained processed nodes: {cost:?}"
+        );
+    }
+}
+
+#[test]
+fn streaming_byte_rejection_releases_unprocessed_deep_frontier() {
+    for max_bytes in [1, 128, 2048] {
+        let mut input = Value::Null;
+        for _ in 0..30_000 {
+            input = Value::Array(vec![input]);
+        }
+        let input = artifact(input);
+        let (result, cost) = crate::testing::allocation::measure(|| {
+            checkpoint_file_to_bytes(
+                input,
+                CheckpointFileLimits {
+                    max_bytes,
+                    ..Default::default()
+                },
+            )
+        });
+        assert!(result.unwrap_err().message().contains("byte budget"));
+        assert!(cost.bytes < 16 * 1024, "processed rejected input: {cost:?}");
+    }
+}
