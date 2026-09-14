@@ -220,11 +220,11 @@ impl Frame {
                 SequenceKind::Array => InterpValue::Array(ArrayValue::new(values)),
                 SequenceKind::List => InterpValue::List(ListValue::new(values)),
                 SequenceKind::Slice => InterpValue::Slice(SliceValue::new(values)),
-                SequenceKind::Set => InterpValue::Set(SetValue::new(values)),
+                SequenceKind::Set => InterpValue::Set(SetValue::from_unique(values)?),
                 SequenceKind::Deque => InterpValue::Deque(values.into()),
                 SequenceKind::Queue => InterpValue::Queue(values.into()),
                 SequenceKind::Stack => InterpValue::Stack(ArrayValue::new(values)),
-                SequenceKind::OrderedSet => InterpValue::OrderedSet(SetValue::new(values)),
+                SequenceKind::OrderedSet => InterpValue::OrderedSet(SetValue::from_unique(values)?),
                 SequenceKind::Variant(name) => InterpValue::Variant {
                     name: name.into(),
                     fields: values.into(),

@@ -1,6 +1,36 @@
 use super::*;
 use crate::{orchestration::ValueSnapshot, testing::allocation::measure};
 
+#[test]
+fn set_decoders_reject_duplicates_instead_of_changing_the_saved_iteration() {
+    for kind in ["set", "ordered_set"] {
+        let wire = json!({"kind":kind, "values":[
+            {"kind":"number", "type":"i32", "value":"1"},
+            {"kind":"number", "type":"i32", "value":"1"}
+        ]});
+        let limits = etas_host::StorageLimits::default();
+        assert!(
+            decode::<InterpValue>(&limits, &wire)
+                .unwrap_err()
+                .message()
+                .contains("duplicate set element")
+        );
+        assert!(
+            decode::<ValueSnapshot>(&limits, &wire)
+                .unwrap_err()
+                .message()
+                .contains("duplicate set element")
+        );
+    }
+    let nested = json!({"kind":"set", "values":[
+        {"kind":"set", "values":[{"kind":"bool", "value":true}, {"kind":"bool", "value":false}]},
+        {"kind":"set", "values":[{"kind":"bool", "value":false}, {"kind":"bool", "value":true}]}
+    ]});
+    let limits = etas_host::StorageLimits::default();
+    assert!(decode::<InterpValue>(&limits, &nested).is_err());
+    assert!(decode::<ValueSnapshot>(&limits, &nested).is_err());
+}
+
 // These tests start at the Value API boundary. Avoid serde Value's recursive
 // destructor so it cannot mask failures in the interpreter decoder itself.
 struct JsonTree(Value);

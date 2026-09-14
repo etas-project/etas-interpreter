@@ -58,7 +58,7 @@ fn mutable_value_operations_enforce_copy_on_write_without_caller_guards() {
 
     let mut set = SetValue::new(vec![InterpValue::i32(1)]);
     let alias = set.clone();
-    set.borrow_mut().clear();
+    set.clear();
     assert_eq!(alias.borrow().len(), 1);
 
     let mut record = RecordValue::new(vec![("field".into(), InterpValue::i32(1))]);

@@ -239,7 +239,7 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
     fn finish(self) -> Result<T, InterpreterCodecError> {
         Ok(match self {
             Self::Unary { kind, output, .. } => T::unary(kind, output.ok_or_else(invalid_builder)?),
-            Self::Sequence { kind, output, .. } => T::sequence(kind, output),
+            Self::Sequence { kind, output, .. } => T::sequence(kind, output)?,
             Self::Record { output, .. } => T::record(output),
             Self::Pairs {
                 kind, output, key, ..
@@ -265,7 +265,7 @@ pub(super) trait DecodedValue: Sized {
         value: &Value,
     ) -> Result<Self, InterpreterCodecError>;
     fn unary(kind: Unary, value: Self) -> Self;
-    fn sequence(kind: Sequence, values: Vec<Self>) -> Self;
+    fn sequence(kind: Sequence, values: Vec<Self>) -> Result<Self, InterpreterCodecError>;
     fn pairs(kind: Pairs, values: Vec<(Self, Self)>) -> Self;
     fn record(values: Vec<(String, Self)>) -> Self;
     fn range(start: Self, end: Self, bounds: crate::value::RangeBounds) -> Self;

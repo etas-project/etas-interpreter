@@ -1,5 +1,28 @@
 use crate::orchestration::{MessageSnapshot, ValueSnapshot};
 
+// Runtime Set equality is order-independent; snapshot equality below remains
+// order-sensitive so conflicting definitions of a frame cannot change iteration.
+pub(super) fn membership_equal(a: &ValueSnapshot, b: &ValueSnapshot) -> bool {
+    let mut pending = vec![(a, b)];
+    while let Some((left, right)) = pending.pop() {
+        match (left, right) {
+            (ValueSnapshot::Set(a), ValueSnapshot::Set(b))
+            | (ValueSnapshot::OrderedSet(a), ValueSnapshot::OrderedSet(b)) => {
+                if a.len() != b.len() || !a.iter().all(|a| b.iter().any(|b| membership_equal(a, b)))
+                {
+                    return false;
+                }
+            }
+            _ => {
+                if !same_node(left, right, &mut pending) {
+                    return false;
+                }
+            }
+        }
+    }
+    true
+}
+
 impl PartialEq for ValueSnapshot {
     fn eq(&self, other: &Self) -> bool {
         let mut pending = vec![(self, other)];

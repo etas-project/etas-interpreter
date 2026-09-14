@@ -5,6 +5,7 @@ pub(crate) mod conversation;
 mod deque;
 mod host_handle;
 pub(crate) mod iteration;
+pub(crate) mod membership;
 mod numeric;
 mod primitive;
 mod prompt;
@@ -20,7 +21,9 @@ mod text;
 pub use bytes::BytesValue;
 pub use text::StringValue;
 
-pub use aggregate::{ArrayValue, MapValue, SetValue, SliceValue};
+pub use aggregate::{ArrayValue, MapValue, SliceValue};
+mod set;
+pub use set::SetValue;
 mod list;
 pub use deque::DequeValue;
 pub use host_handle::HostHandleValue;

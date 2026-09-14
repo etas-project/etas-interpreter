@@ -997,6 +997,9 @@ impl<'a> SnapshotValidator<'a> {
         // Iterator frames track depth, not the width of a collection.
         for value in root.walk() {
             match value {
+                ValueSnapshot::Set(values) | ValueSnapshot::OrderedSet(values) => {
+                    crate::value::membership::MembershipIndex::require_unique(values)?;
+                }
                 ValueSnapshot::MemoryWriteIntent(value) => {
                     value.validate(self.checked, self.limits)?
                 }

@@ -418,11 +418,9 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Value(InterpValue::Bool(values.contains(&arg)))
             }
             ("insert", EvaluatedLocalArgs::One(arg)) => {
-                let mut next = values.into_values();
-                if !next.iter().any(|candidate| candidate == &arg) {
-                    next.push(arg);
-                }
-                ControlSignal::Value(InterpValue::OrderedSet(next.into()))
+                let mut next = values;
+                next.insert(arg);
+                ControlSignal::Value(InterpValue::OrderedSet(next))
             }
             _ => unsupported_collection_method(span, "OrderedSet", method),
         }

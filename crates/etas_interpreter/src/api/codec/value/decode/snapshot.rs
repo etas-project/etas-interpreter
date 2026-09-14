@@ -17,8 +17,12 @@ impl DecodedValue for ValueSnapshot {
             Unary::Some => Self::OptionSome(value),
         }
     }
-    fn sequence(kind: Sequence, values: Vec<Self>) -> Self {
-        match kind {
+    fn sequence(kind: Sequence, values: Vec<Self>) -> Result<Self, InterpreterCodecError> {
+        if matches!(kind, Sequence::Set | Sequence::OrderedSet) {
+            crate::value::membership::MembershipIndex::require_unique(&values)
+                .map_err(InterpreterCodecError::new)?;
+        }
+        Ok(match kind {
             Sequence::Tuple => Self::Tuple(values.into()),
             Sequence::Array => Self::Array(values.into()),
             Sequence::List => Self::List(values.into()),
@@ -32,7 +36,7 @@ impl DecodedValue for ValueSnapshot {
                 name,
                 fields: values.into(),
             },
-        }
+        })
     }
     fn pairs(kind: Pairs, values: Vec<(Self, Self)>) -> Self {
         match kind {

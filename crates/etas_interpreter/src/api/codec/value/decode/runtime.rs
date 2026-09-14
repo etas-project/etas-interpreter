@@ -15,22 +15,26 @@ impl DecodedValue for InterpValue {
             Unary::Some => Self::OptionSome(value),
         }
     }
-    fn sequence(kind: Sequence, values: Vec<Self>) -> Self {
-        match kind {
+    fn sequence(kind: Sequence, values: Vec<Self>) -> Result<Self, InterpreterCodecError> {
+        Ok(match kind {
             Sequence::Tuple => Self::Tuple(values.into()),
             Sequence::Array => Self::Array(values.into()),
             Sequence::List => Self::List(values.into()),
             Sequence::Slice => Self::Slice(values.into()),
-            Sequence::Set => Self::Set(values.into()),
+            Sequence::Set => Self::Set(
+                crate::value::SetValue::from_unique(values).map_err(InterpreterCodecError::new)?,
+            ),
             Sequence::Deque => Self::Deque(values.into()),
             Sequence::Queue => Self::Queue(values.into()),
             Sequence::Stack => Self::Stack(values.into()),
-            Sequence::OrderedSet => Self::OrderedSet(values.into()),
+            Sequence::OrderedSet => Self::OrderedSet(
+                crate::value::SetValue::from_unique(values).map_err(InterpreterCodecError::new)?,
+            ),
             Sequence::Variant(name) => Self::Variant {
                 name: name.into(),
                 fields: values.into(),
             },
-        }
+        })
     }
     fn pairs(kind: Pairs, values: Vec<(Self, Self)>) -> Self {
         match kind {

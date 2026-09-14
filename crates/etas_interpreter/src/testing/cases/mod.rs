@@ -28,6 +28,7 @@ mod return_control;
 mod session_commit;
 mod session_history;
 mod session_publication;
+mod sets;
 mod shared_adt;
 mod storage_outcomes;
 mod text_values;

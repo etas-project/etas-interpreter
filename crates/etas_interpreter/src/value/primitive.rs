@@ -1,9 +1,10 @@
 use super::{
-    aggregate::{ArrayValue, MapValue, SetValue, SliceValue},
+    aggregate::{ArrayValue, MapValue, SliceValue},
     deque::DequeValue,
     list::ListValue,
     record::RecordValue,
     resource::MemorySelectionKind,
+    set::SetValue,
     support::{
         ConversationValue, HostJsonSupportValue, MessageValue, ModelResponseValue, ProvenanceValue,
         RangeValue,
