@@ -526,7 +526,7 @@ pub(crate) enum ContinuationSnapshot {
         expr: HirExprId,
         action: ResolvedActionRef,
         type_args: Vec<HirTypeId>,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<ValueSnapshot>,
         span: Span,

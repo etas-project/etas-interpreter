@@ -276,7 +276,7 @@ pub(crate) fn continuation_from_snapshot(
                     .into_iter()
                     .map(HirTypeId)
                     .collect(),
-                args: args.clone(),
+                args: std::sync::Arc::from(args.as_slice()),
                 next_arg_index: required_usize(value, "next_arg_index")?,
                 evaluated_args: required_values(limits, value, "evaluated_args")?,
                 span: *span,

@@ -68,18 +68,24 @@ impl<'a> EvalContext<'a> {
             HirExpr::Perform {
                 action,
                 generic_args,
-                args,
                 span,
+                ..
             } => {
                 let Some(type_args) = self.checked_type_args_from_generic_args(generic_args) else {
                     return ControlSignal::invalid_arguments("effect-row generic argument reached runtime perform dispatch without checked instantiation facts".to_owned(), *span);
+                };
+                let Some(args) = self.plan.arguments.get(expr) else {
+                    return ControlSignal::missing_checked_fact(
+                        "perform is missing its checked argument descriptors",
+                        *span,
+                    );
                 };
                 self.resume_perform_args(
                     PerformArgsResume {
                         expr,
                         action: action.clone(),
                         type_args,
-                        args: args.to_vec(),
+                        args,
                         start_arg_index: 0,
                         evaluated_args: Vec::new(),
                         span: *span,

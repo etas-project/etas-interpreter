@@ -2,6 +2,75 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn planned_perform_arguments_keep_effect_order_across_checkpoint_restore() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+effect Probe { action combine(left: i32, right: i32) -> i32; }
+flow argument(label: string, value: i32) -> i32 {
+    println(label);
+    checkpoint(label);
+    return value;
+}
+flow main() -> i32 {
+    return handle {
+        return perform Probe.combine(left = argument("left", 4), right = argument("right", 2));
+    } with {
+        Probe.combine(left, right) => {
+            println("combine");
+            resume left * 10 + right;
+        }
+    };
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(42)));
+    assert_eq!(host.stdout_text(), "left\nright\ncombine\n");
+    assert_eq!(result.checkpoints.len(), 2);
+    for (index, checkpoint) in result.checkpoints.iter().enumerate() {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for saved in [checkpoint, &decoded] {
+            let host = FakeHost::new(services);
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, saved, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), result.value());
+            assert_eq!(
+                host.stdout_text(),
+                if index == 0 {
+                    "right\ncombine\n"
+                } else {
+                    "combine\n"
+                }
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn shared_call_descriptors_preserve_callee_argument_and_variant_order_on_resume() {
     let checked = checked_project(
         r#"

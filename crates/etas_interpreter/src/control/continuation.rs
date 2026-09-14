@@ -249,7 +249,7 @@ pub enum Continuation {
         expr: HirExprId,
         action: ResolvedActionRef,
         type_args: Vec<etas_hir::HirTypeId>,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<InterpValue>,
         span: Span,

@@ -662,6 +662,40 @@ impl<'a> SnapshotValidator<'a> {
                 ..
             } => {
                 self.expr(*expr, context)?;
+                let Some(etas_hir::HirExpr::Perform {
+                    action: checked_action,
+                    args: checked_args,
+                    ..
+                }) = self.checked.hir.exprs.get(*expr)
+                else {
+                    return Err(format!(
+                        "{context}: perform continuation does not reference a checked perform expression"
+                    ));
+                };
+                let matches_args = args.len() == checked_args.len()
+                    && args.iter().zip(checked_args).all(|(actual, expected)| {
+                        match (actual, expected) {
+                            (HirArg::Positional(a), HirArg::Positional(b)) => a == b,
+                            (
+                                HirArg::Named {
+                                    name: a,
+                                    value: av,
+                                    span: asp,
+                                },
+                                HirArg::Named {
+                                    name: b,
+                                    value: bv,
+                                    span: bsp,
+                                },
+                            ) => a == b && av == bv && asp == bsp,
+                            _ => false,
+                        }
+                    });
+                if action != checked_action || !matches_args {
+                    return Err(format!(
+                        "{context}: perform argument descriptors disagree with checked HIR"
+                    ));
+                }
                 self.action(action, context)?;
                 self.hir_types(type_args, context)?;
                 self.args(args, context)?;
