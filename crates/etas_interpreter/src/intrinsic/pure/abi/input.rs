@@ -185,38 +185,14 @@ fn sequence_into_builtin(
 fn checked_record_into_builtin(
     values: Vec<(String, InterpValue)>,
     ty: TypeId,
-    fields: &[etas_types::FieldType],
+    layout: &super::record::RecordAbiLayout,
     projector: &PureAbiProjector,
 ) -> Result<BuiltinValue, AdapterError> {
-    if values.len() != fields.len() {
-        return Err(AdapterError::TypeMismatch {
-            expected: ty,
-            actual: format!("record with {} field(s)", values.len()),
-        });
-    }
-    let mut indexed = std::collections::HashMap::with_capacity(values.len());
-    for (name, value) in values {
-        match indexed.entry(name) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(value);
-            }
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                return Err(AdapterError::TypeMismatch {
-                    expected: ty,
-                    actual: format!("record with duplicate field `{}`", entry.key()),
-                });
-            }
-        }
-    }
-    fields
-        .iter()
-        .map(|field| {
-            let Some((name, value)) = indexed.remove_entry(&field.name) else {
-                return Err(AdapterError::TypeMismatch {
-                    expected: ty,
-                    actual: format!("record missing field `{}`", field.name),
-                });
-            };
+    layout
+        .reorder(values, ty)?
+        .into_iter()
+        .zip(layout.fields())
+        .map(|((name, value), field)| {
             Ok((name, into_builtin_for_type(value, field.ty, projector)?))
         })
         .collect::<Result<Vec<_>, _>>()

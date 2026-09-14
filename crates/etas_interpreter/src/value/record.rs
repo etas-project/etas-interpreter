@@ -8,15 +8,15 @@ use std::{
 use super::InterpValue;
 
 /// A storage permutation, not a nominal type identity. Slots use lexical field order.
-#[derive(Debug)]
+#[derive(Debug, PartialEq, Eq)]
 pub(crate) struct RecordLayout {
     sorted_to_storage: Box<[usize]>,
 }
 
 impl RecordLayout {
-    pub(crate) fn from_names(names: &[String]) -> Self {
+    pub(crate) fn from_names(names: &[impl AsRef<str>]) -> Self {
         let mut slots: Vec<_> = (0..names.len()).collect();
-        slots.sort_unstable_by(|a, b| names[*a].cmp(&names[*b]).then(a.cmp(b)));
+        slots.sort_unstable_by(|a, b| names[*a].as_ref().cmp(names[*b].as_ref()).then(a.cmp(b)));
         Self {
             sorted_to_storage: slots.into_boxed_slice(),
         }

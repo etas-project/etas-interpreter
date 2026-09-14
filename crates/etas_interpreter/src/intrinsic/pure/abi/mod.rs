@@ -1,6 +1,7 @@
 mod error;
 pub(in crate::intrinsic::pure) mod input;
 pub(in crate::intrinsic::pure) mod output;
+mod record;
 mod result;
 mod shape;
 pub(super) mod text;

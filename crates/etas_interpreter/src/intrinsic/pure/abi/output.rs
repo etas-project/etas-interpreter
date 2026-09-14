@@ -153,40 +153,18 @@ fn sequence_from_builtin(
 fn checked_record_from_builtin(
     values: Vec<(String, BuiltinValue)>,
     ty: TypeId,
-    fields: &[etas_types::FieldType],
+    layout: &super::record::RecordAbiLayout,
     projector: &PureAbiProjector,
 ) -> Result<InterpValue, AdapterError> {
-    if values.len() != fields.len() {
-        return Err(AdapterError::TypeMismatch {
-            expected: ty,
-            actual: format!("builtin record with {} field(s)", values.len()),
-        });
-    }
-    let mut indexed = std::collections::HashMap::with_capacity(values.len());
-    for (name, value) in values {
-        match indexed.entry(name) {
-            std::collections::hash_map::Entry::Vacant(entry) => {
-                entry.insert(value);
-            }
-            std::collections::hash_map::Entry::Occupied(entry) => {
-                return Err(AdapterError::TypeMismatch {
-                    expected: ty,
-                    actual: format!("builtin record with duplicate field `{}`", entry.key()),
-                });
-            }
-        }
-    }
-    let mut result = Vec::with_capacity(fields.len());
-    for field in fields {
-        let Some((name, value)) = indexed.remove_entry(&field.name) else {
-            return Err(AdapterError::TypeMismatch {
-                expected: ty,
-                actual: format!("builtin record missing field `{}`", field.name),
-            });
-        };
+    let values = layout.reorder(values, ty)?;
+    let mut result = Vec::with_capacity(layout.fields().len());
+    for ((name, value), field) in values.into_iter().zip(layout.fields()) {
         result.push((name, from_builtin_for_type(value, field.ty, projector)?));
     }
-    Ok(InterpValue::Record(RecordValue::new(result)))
+    Ok(InterpValue::Record(RecordValue::with_layout(
+        result,
+        layout.runtime_layout(),
+    )))
 }
 
 fn from_builtin_primitive(
