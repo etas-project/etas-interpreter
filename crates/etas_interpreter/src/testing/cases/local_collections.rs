@@ -2,6 +2,66 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn array_concat_and_extend_preserve_aliases_and_suspended_operand_order() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+flow right(label: string) -> Array<string> {
+    println(label);
+    checkpoint(label);
+    return ["right"];
+}
+flow main() -> bool {
+    var base = ["left"];
+    let original = base;
+    let combined = base + right("plus");
+    let extended = base.extend(right("extend"));
+    base = base.push("changed");
+    checkpoint("joined");
+    return combined == ["left", "right"] && extended == combined
+        && original == ["left"] && base == ["left", "changed"];
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.stdout_text(), "plus\nextend\n");
+    assert_eq!(result.checkpoints.len(), 3);
+    for (index, checkpoint) in result.checkpoints.iter().enumerate() {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for saved in [checkpoint, &decoded] {
+            let host = FakeHost::new(services);
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, saved, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), result.value());
+            assert_eq!(host.stdout_text(), if index == 0 { "extend\n" } else { "" });
+        }
+    }
+}
+#[tokio::test(flavor = "current_thread")]
 async fn persistent_list_updates_and_iteration_survive_handler_checkpoint_and_cancel() {
     let checked = checked_project(
         r#"

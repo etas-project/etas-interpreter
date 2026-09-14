@@ -39,6 +39,36 @@ impl ArrayValue {
         }
     }
 
+    /// Consume unique buffers and clone shared elements directly into the
+    /// final buffer. In particular, a shared right operand needs no temporary Vec.
+    pub(crate) fn concat(self, other: Self) -> Self {
+        let right_len = other.borrow().len();
+        if right_len == 0 {
+            return self;
+        }
+        if self.borrow().is_empty() {
+            return other;
+        }
+        let mut values = match Rc::try_unwrap(self.0) {
+            Ok(values) => {
+                let mut values = values.into_inner();
+                values.reserve(right_len);
+                values
+            }
+            Err(shared) => {
+                let left = shared.borrow();
+                let mut values = Vec::with_capacity(left.len() + right_len);
+                values.extend(left.iter().cloned());
+                values
+            }
+        };
+        match Rc::try_unwrap(other.0) {
+            Ok(right) => values.extend(right.into_inner()),
+            Err(shared) => values.extend(shared.borrow().iter().cloned()),
+        }
+        Self::new(values)
+    }
+
     pub fn make_unique(&mut self) {
         if Rc::strong_count(&self.0) > 1 {
             self.0 = Rc::new(RefCell::new(self.snapshot()));
@@ -145,3 +175,7 @@ impl From<Vec<InterpValue>> for SliceValue {
         Self::new(values)
     }
 }
+
+#[cfg(test)]
+#[path = "aggregate/tests.rs"]
+mod tests;

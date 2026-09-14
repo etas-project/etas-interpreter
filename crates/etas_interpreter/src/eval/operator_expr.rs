@@ -3,6 +3,10 @@ use crate::control::ExecutionFault;
 use crate::value::{NumericError, NumericValue};
 use etas_hir::{HirBinaryOp, HirUnaryOp};
 
+#[cfg(test)]
+#[path = "operator_expr/tests.rs"]
+mod tests;
+
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_unary_expr(
         &mut self,
@@ -332,9 +336,7 @@ impl<'a> EvalContext<'a> {
                 Ok(InterpValue::String(lhs))
             }
             (InterpValue::Array(lhs), InterpValue::Array(rhs)) => {
-                let mut values = lhs.snapshot();
-                values.extend(rhs.snapshot());
-                Ok(InterpValue::Array(ArrayValue::new(values)))
+                Ok(InterpValue::Array(lhs.concat(rhs)))
             }
             (InterpValue::List(mut lhs), InterpValue::List(rhs)) => {
                 lhs.append(rhs);

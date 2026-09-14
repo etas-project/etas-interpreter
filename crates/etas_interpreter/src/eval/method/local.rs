@@ -138,9 +138,7 @@ impl<'a> EvalContext<'a> {
                         span,
                     );
                 };
-                let mut next = values.into_values();
-                next.extend(other.into_values());
-                ControlSignal::Value(InterpValue::Array(ArrayValue::new(next)))
+                ControlSignal::Value(InterpValue::Array(values.concat(other)))
             }
             _ => unsupported_collection_method(span, "Array", method),
         }
