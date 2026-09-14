@@ -1,14 +1,17 @@
 use std::{
     collections::HashMap,
-    hash::{BuildHasher, Hash, Hasher},
+    hash::{BuildHasher, Hasher},
 };
 
-use super::InterpValue;
+mod runtime;
+pub(crate) mod structure;
+#[cfg(test)]
+mod tests;
 
 /// A partition only narrows equality candidates; it is never equality evidence.
 /// Equal values must share a partition. Collisions always use the value's Eq.
 pub(crate) trait MembershipValue: PartialEq {
-    fn hash_partition(&self, state: &mut impl Hasher);
+    fn hash_partition(&self, state: &mut (impl Hasher + Clone));
     fn member_eq(&self, other: &Self) -> bool {
         self == other
     }
@@ -70,41 +73,5 @@ impl MembershipIndex {
             index.insert(hash, position);
         }
         Ok(index)
-    }
-}
-
-impl MembershipValue for InterpValue {
-    fn hash_partition(&self, state: &mut impl Hasher) {
-        let mut value = self;
-        loop {
-            std::mem::discriminant(value).hash(state);
-            match value {
-                Self::Bool(value) => value.hash(state),
-                Self::Number(value) => value.hash(state),
-                Self::String(value) => value.hash(state),
-                Self::Bytes(value) => value.hash(state),
-                Self::Nominal { ty, value: inner } => {
-                    ty.hash(state);
-                    value = inner;
-                    continue;
-                }
-                Self::Trust {
-                    wrapper,
-                    value: inner,
-                } => {
-                    wrapper.hash(state);
-                    value = inner;
-                    continue;
-                }
-                Self::OptionSome(inner) => {
-                    value = inner;
-                    continue;
-                }
-                // Compound and opaque values use exact equality inside their
-                // kind's bucket; no rendering, serialization or erased identity.
-                _ => {}
-            }
-            break;
-        }
     }
 }

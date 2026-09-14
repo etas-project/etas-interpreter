@@ -123,3 +123,49 @@ fn scalar_deduplication_and_membership_use_linear_candidate_comparisons() {
         eprintln!("set n={count}: dedup + membership equality candidates={comparisons}");
     }
 }
+
+#[test]
+fn compound_keys_use_linear_membership_candidate_comparisons() {
+    use crate::value::{RecordValue, membership::MembershipIndex};
+
+    for count in [1000, 2000, 4000] {
+        let key = |n| {
+            InterpValue::Tuple(
+                vec![
+                    InterpValue::Record(RecordValue::new(vec![(
+                        "value".into(),
+                        InterpValue::Array(vec![InterpValue::i32(n)].into()),
+                    )])),
+                    InterpValue::Set(vec![InterpValue::i32(n), InterpValue::i32(-1)].into()),
+                ]
+                .into(),
+            )
+        };
+        let values: Vec<_> = (0..count).flat_map(|n| [key(n), key(n)]).collect();
+        let set = SetValue::new(values);
+        assert_eq!(set.borrow().len(), count as usize);
+        for n in 0..count {
+            assert!(set.contains(&key(n)));
+        }
+        let comparisons = set.0.index.comparison_count();
+        assert!(
+            comparisons <= count as usize * 3,
+            "n={count}: {comparisons} comparisons"
+        );
+        let saved: Vec<_> = set
+            .borrow()
+            .iter()
+            .map(|value| ValueSnapshot::capture(value).unwrap())
+            .collect();
+        let index = MembershipIndex::require_unique(&saved).unwrap();
+        for value in &saved {
+            assert!(index.contains(&saved, value, index.fingerprint(value)));
+        }
+        let snapshot_comparisons = index.comparison_count();
+        assert!(
+            snapshot_comparisons <= count as usize * 2,
+            "snapshot n={count}: {snapshot_comparisons} comparisons"
+        );
+        eprintln!("compound set n={count}: runtime={comparisons}, snapshot={snapshot_comparisons}");
+    }
+}

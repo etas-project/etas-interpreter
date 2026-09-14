@@ -3,45 +3,6 @@ use crate::orchestration::SnapshotBox;
 use crate::orchestration::{ConversationSnapshot, MessageSnapshot, ValueSnapshot};
 use crate::value::{ConversationValue, InterpValue, MessageValue, RangeValue};
 
-impl crate::value::membership::MembershipValue for ValueSnapshot {
-    fn member_eq(&self, other: &Self) -> bool {
-        super::value_compare::membership_equal(self, other)
-    }
-
-    fn hash_partition(&self, state: &mut impl std::hash::Hasher) {
-        use std::hash::Hash;
-        let mut value = self;
-        loop {
-            std::mem::discriminant(value).hash(state);
-            match value {
-                Self::Bool(value) => value.hash(state),
-                Self::Number(value) => value.hash(state),
-                Self::String(value) => value.hash(state),
-                Self::Bytes(value) => value.hash(state),
-                Self::Nominal { ty, value: inner } => {
-                    ty.hash(state);
-                    value = inner;
-                    continue;
-                }
-                Self::Trust {
-                    wrapper,
-                    value: inner,
-                } => {
-                    wrapper.hash(state);
-                    value = inner;
-                    continue;
-                }
-                Self::OptionSome(inner) => {
-                    value = inner;
-                    continue;
-                }
-                _ => {}
-            }
-            break;
-        }
-    }
-}
-
 #[cfg(test)]
 #[path = "value_capture_tests.rs"]
 mod capture_tests;
