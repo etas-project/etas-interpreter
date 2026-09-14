@@ -10,10 +10,7 @@ use crate::{
 use etas_host::{HostError, HostValue, ModelResponse, PolicySubject, ToolRequest, ToolResponse};
 
 use super::frame::EvalFrame;
-use crate::orchestration::{
-    ContinuationSnapshot, MachineFrameSnapshot, MachineSnapshot, ModelLoopFrameSnapshot,
-    SourceToolReturnFrameSnapshot,
-};
+use crate::orchestration::{MachineFrameSnapshot, MachineSnapshot};
 
 pub(crate) enum PendingBoundary {
     Perform(Box<PendingPerform>),
@@ -141,48 +138,11 @@ impl EvalMachine {
     }
 
     pub(crate) fn snapshot(&self) -> Result<MachineSnapshot, String> {
-        Ok(MachineSnapshot {
-            frames: self
-                .stack
-                .iter()
-                .cloned()
-                .map(|frame| -> Result<_, String> {
-                    Ok(match frame {
-                        EvalFrame::Block(frame) => MachineFrameSnapshot::Block {
-                            continuation: ContinuationSnapshot::capture(&frame.continuation)?,
-                        },
-                        EvalFrame::Expr(frame) => MachineFrameSnapshot::Expr {
-                            continuation: ContinuationSnapshot::capture(&frame.continuation)?,
-                        },
-                        EvalFrame::Call(frame) => MachineFrameSnapshot::Call {
-                            continuation: ContinuationSnapshot::capture(&frame.continuation)?,
-                            span: frame.span,
-                        },
-                        EvalFrame::Continuation(frame) => MachineFrameSnapshot::Continuation {
-                            continuation: ContinuationSnapshot::capture(&frame.continuation)?,
-                        },
-                        frame @ EvalFrame::Handler(_) => MachineFrameSnapshot::Handler {
-                            continuation: ContinuationSnapshot::capture(
-                                &frame.into_continuation(),
-                            )?,
-                        },
-                        frame @ EvalFrame::Retry(_) => MachineFrameSnapshot::Retry {
-                            continuation: ContinuationSnapshot::capture(
-                                &frame.into_continuation(),
-                            )?,
-                        },
-                        EvalFrame::ModelLoop(frame) => MachineFrameSnapshot::ModelLoop(Box::new(
-                            ModelLoopFrameSnapshot::capture(&frame)?,
-                        )),
-                        EvalFrame::SourceToolReturn(frame) => {
-                            MachineFrameSnapshot::SourceToolReturn(
-                                SourceToolReturnFrameSnapshot::capture(&frame)?,
-                            )
-                        }
-                    })
-                })
-                .collect::<Result<Vec<_>, _>>()?,
-        })
+        let mut frames = Vec::with_capacity(self.stack.len());
+        for frame in &self.stack {
+            frames.push(MachineFrameSnapshot::capture(frame)?);
+        }
+        Ok(MachineSnapshot { frames })
     }
 
     pub(super) fn push_frame(&mut self, frame: EvalFrame) {

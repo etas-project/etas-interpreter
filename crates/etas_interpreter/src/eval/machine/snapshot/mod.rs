@@ -1,6 +1,7 @@
 mod call_target;
 mod continuation;
 mod frame;
+mod machine_frame;
 mod model;
 mod validator;
 mod value;
