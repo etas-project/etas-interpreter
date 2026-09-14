@@ -399,7 +399,7 @@ fn stable_json_key(value: &crate::value::HostJsonSupportValue) -> String {
         crate::value::HostJsonSupportValue::Bool(value) => value.to_string(),
         crate::value::HostJsonSupportValue::NumberBits(value) => f64::from_bits(*value).to_string(),
         crate::value::HostJsonSupportValue::String(value) => {
-            serde_json::Value::String(value.clone()).to_string()
+            serde_json::Value::String(value.to_string()).to_string()
         }
         crate::value::HostJsonSupportValue::Array(values) => {
             let values = values

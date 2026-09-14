@@ -742,13 +742,13 @@ pub(super) fn host_json_support_value_from_json(
             required_u64(value, "value")?,
         )),
         "string" => Ok(crate::value::HostJsonSupportValue::String(
-            required_str(value, "value")?.to_owned(),
+            required_str(value, "value")?.into(),
         )),
         "array" => Ok(crate::value::HostJsonSupportValue::Array(
             required_array(value, "values")?
                 .iter()
                 .map(host_json_support_value_from_json)
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
+                .collect::<Result<crate::value::JsonArray, InterpreterCodecError>>()?,
         )),
         "object" => Ok(crate::value::HostJsonSupportValue::Object(
             required_array(value, "entries")?
@@ -759,7 +759,7 @@ pub(super) fn host_json_support_value_from_json(
                         host_json_support_value_from_json(required_obj(entry, "value")?)?,
                     ))
                 })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
+                .collect::<Result<crate::value::JsonObject, InterpreterCodecError>>()?,
         )),
         other => Err(InterpreterCodecError::new(format!(
             "unsupported host json support value `{other}`"

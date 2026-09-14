@@ -107,9 +107,9 @@ pub enum HostJsonSupportValue {
     Null,
     Bool(bool),
     NumberBits(u64),
-    String(String),
-    Array(Vec<HostJsonSupportValue>),
-    Object(Vec<(String, HostJsonSupportValue)>),
+    String(super::StringValue),
+    Array(super::JsonArray),
+    Object(super::JsonObject),
 }
 
 impl PartialEq for HostJsonSupportValue {

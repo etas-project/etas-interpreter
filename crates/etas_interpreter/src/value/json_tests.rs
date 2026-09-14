@@ -2,10 +2,106 @@ use super::{HostJsonSupportValue as Json, InterpValue, membership::MembershipInd
 use crate::{orchestration::ValueSnapshot, testing::allocation::measure};
 
 fn key(n: usize) -> Json {
-    Json::Object(vec![(
-        "key".into(),
-        Json::Array(vec![Json::String(n.to_string())]),
-    )])
+    Json::Object(
+        vec![(
+            "key".into(),
+            Json::Array(vec![Json::String(n.to_string().into())].into()),
+        )]
+        .into(),
+    )
+}
+
+#[test]
+fn json_clone_and_snapshot_capture_share_immutable_payloads() {
+    for count in [1000, 2000, 4000] {
+        let value = InterpValue::Json(Json::Object(
+            (0..count)
+                .map(|n| (n.to_string(), Json::String("x".repeat(1024).into())))
+                .collect(),
+        ));
+        let (alias, cloned) = measure(|| value.clone());
+        let (snapshot, captured) = measure(|| ValueSnapshot::capture(&value).unwrap());
+        let (snapshot_alias, snapshot_cloned) = measure(|| snapshot.clone());
+        let (restored, restored_allocations) = measure(|| snapshot_alias.restore().unwrap());
+        assert!(value == alias && alias == restored);
+        eprintln!(
+            "JSON clone n={count}: {cloned:?}, capture={captured:?}, snapshot_clone={snapshot_cloned:?}, restore={restored_allocations:?}"
+        );
+        assert_eq!(cloned.count, 0);
+        assert_eq!(captured.count, 0);
+        assert_eq!(snapshot_cloned.count, 0);
+        assert_eq!(restored_allocations.count, 0);
+    }
+}
+
+#[test]
+fn json_text_clone_is_constant_cost_and_cow_preserves_snapshot() {
+    for count in [1000, 2000, 4000] {
+        let mut value = InterpValue::Json(Json::String("x".repeat(count).into()));
+        let (alias, allocations) = measure(|| value.clone());
+        assert_eq!(allocations.count, 0);
+        let saved = ValueSnapshot::capture(&value).unwrap();
+        let InterpValue::Json(Json::String(text)) = &mut value else {
+            panic!("text");
+        };
+        text.push_str("new");
+        assert_eq!(saved.restore().unwrap(), alias);
+        assert_ne!(value, alias);
+    }
+}
+
+#[test]
+fn deep_json_clone_and_drop_preserve_shared_and_unique_lifetimes() {
+    if std::env::var("ETAS_JSON_SUBPROCESS").as_deref() != Ok("lifetime") {
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args([
+                "--exact",
+                "value::json_tests::deep_json_clone_and_drop_preserve_shared_and_unique_lifetimes",
+                "--nocapture",
+            ])
+            .env("ETAS_JSON_SUBPROCESS", "lifetime")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    for branching in [false, true] {
+        let value = (0..30_000).fold(Json::Bool(true), |child, n| {
+            if n % 2 == 0 {
+                let mut children = vec![child];
+                if branching {
+                    children.push(Json::Null);
+                }
+                Json::Array(children.into())
+            } else {
+                let mut fields = vec![("child".into(), child)];
+                if branching {
+                    fields.push(("sibling".into(), Json::Null));
+                }
+                Json::Object(fields.into())
+            }
+        });
+        let (alias, allocations) = measure(|| value.clone());
+        assert_eq!(allocations.count, 0, "{allocations:?}");
+        drop(value);
+        let (_, released) = measure(|| drop(alias));
+        if branching {
+            assert!(
+                released.count < 32,
+                "only pending cursor stack growth: {released:?}"
+            );
+        } else {
+            assert_eq!(
+                released.count, 0,
+                "unique chain reuses detached buffers: {released:?}"
+            );
+        }
+    }
 }
 
 #[test]
@@ -43,19 +139,6 @@ fn json_membership_queries_use_structural_partitions() {
     }
 }
 
-// This test isolates comparison/hash from the still separately owned JSON drop
-// path. Drain the tree explicitly, without leaking it or increasing stack size.
-fn release(value: Json) {
-    let mut pending = vec![value];
-    while let Some(value) = pending.pop() {
-        match value {
-            Json::Array(values) => pending.extend(values),
-            Json::Object(fields) => pending.extend(fields.into_iter().map(|(_, v)| v)),
-            _ => {}
-        }
-    }
-}
-
 #[test]
 fn deep_json_comparison_is_stack_safe() {
     if std::env::var("ETAS_JSON_SUBPROCESS").as_deref() != Ok("equality") {
@@ -79,9 +162,9 @@ fn deep_json_comparison_is_stack_safe() {
     let chain = |leaf| {
         (0..30_000).fold(Json::Bool(leaf), |child, n| {
             if n % 2 == 0 {
-                Json::Array(vec![child])
+                Json::Array(vec![child].into())
             } else {
-                Json::Object(vec![("child".into(), child)])
+                Json::Object(vec![("child".into(), child)].into())
             }
         })
     };
@@ -99,11 +182,11 @@ fn deep_json_comparison_is_stack_safe() {
     let (ha, hash_allocations) = measure(|| fingerprint(&a));
     assert_eq!(ha, fingerprint(&b));
     assert_ne!(ha, fingerprint(&c));
-    let early_a = Json::Array(vec![Json::Bool(false), a]);
-    let early_b = Json::Array(vec![Json::Bool(true), b]);
+    let early_a = Json::Array(vec![Json::Bool(false), a].into());
+    let early_b = Json::Array(vec![Json::Bool(true), b].into());
     let (short_circuit, short_allocations) = measure(|| early_a != early_b);
     for value in [early_a, early_b, c] {
-        release(value);
+        drop(value);
     }
     assert!(equal && unequal);
     assert!(
@@ -121,7 +204,7 @@ fn flat_json_comparison_and_hash_borrow_large_payloads() {
     for count in [1000, 2000, 4000] {
         let fields = || {
             (0..count)
-                .map(|n| (n.to_string(), Json::String("x".repeat(1024))))
+                .map(|n| (n.to_string(), Json::String("x".repeat(1024).into())))
                 .collect()
         };
         let a = Json::Object(fields());
@@ -165,21 +248,19 @@ fn json_equality_retains_tags_order_labels_and_numeric_bits() {
         Json::NumberBits((-0.0f64).to_bits()),
         Json::NumberBits(0x7ff8_0000_0000_0001),
         Json::NumberBits(0x7ff8_0000_0000_0002),
-        Json::Array(vec![]),
-        Json::Object(vec![]),
+        Json::Array(vec![].into()),
+        Json::Object(vec![].into()),
     ];
     for _ in 0..2 {
         let previous = values.clone();
         for value in previous {
-            values.push(Json::Array(vec![value.clone()]));
-            values.push(Json::Object(vec![
-                ("a".into(), value.clone()),
-                ("b".into(), Json::Null),
-            ]));
-            values.push(Json::Object(vec![
-                ("b".into(), Json::Null),
-                ("a".into(), value),
-            ]));
+            values.push(Json::Array(vec![value.clone()].into()));
+            values.push(Json::Object(
+                vec![("a".into(), value.clone()), ("b".into(), Json::Null)].into(),
+            ));
+            values.push(Json::Object(
+                vec![("b".into(), Json::Null), ("a".into(), value)].into(),
+            ));
         }
     }
     let index = MembershipIndex::default();

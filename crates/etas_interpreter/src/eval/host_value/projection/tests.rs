@@ -37,19 +37,21 @@ fn borrowed_projection_preserves_scalar_aggregate_nominal_and_trust_encoding() {
         InterpValue::OptionSome(crate::value::SharedValue::new(InterpValue::String(
             "value".into(),
         ))),
-        InterpValue::Json(HostJsonSupportValue::Object(vec![
-            (
-                "z".into(),
-                HostJsonSupportValue::Array(vec![
-                    HostJsonSupportValue::Null,
-                    HostJsonSupportValue::Bool(true),
-                ]),
-            ),
-            (
-                "a".into(),
-                HostJsonSupportValue::NumberBits(1.25_f64.to_bits()),
-            ),
-        ])),
+        InterpValue::Json(HostJsonSupportValue::Object(
+            vec![
+                (
+                    "z".into(),
+                    HostJsonSupportValue::Array(
+                        vec![HostJsonSupportValue::Null, HostJsonSupportValue::Bool(true)].into(),
+                    ),
+                ),
+                (
+                    "a".into(),
+                    HostJsonSupportValue::NumberBits(1.25_f64.to_bits()),
+                ),
+            ]
+            .into(),
+        )),
     ];
     for value in values {
         let encoded = interp_to_host_json_string(&value).unwrap();
@@ -135,10 +137,13 @@ fn invalid_projection_and_json_values_fail_without_partial_output() {
             ]
             .into(),
         ),
-        InterpValue::Json(HostJsonSupportValue::Object(vec![
-            ("a".into(), HostJsonSupportValue::Null),
-            ("a".into(), HostJsonSupportValue::Null),
-        ])),
+        InterpValue::Json(HostJsonSupportValue::Object(
+            vec![
+                ("a".into(), HostJsonSupportValue::Null),
+                ("a".into(), HostJsonSupportValue::Null),
+            ]
+            .into(),
+        )),
         InterpValue::Slice(vec![InterpValue::i32(1)].into()),
         InterpValue::Set(vec![InterpValue::i32(1)].into()),
     ] {

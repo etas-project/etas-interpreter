@@ -659,18 +659,20 @@ pub(crate) fn host_json_support_value_from_serde(
             };
             crate::value::HostJsonSupportValue::NumberBits(value.to_bits())
         }
-        serde_json::Value::String(value) => crate::value::HostJsonSupportValue::String(value),
+        serde_json::Value::String(value) => {
+            crate::value::HostJsonSupportValue::String(value.into())
+        }
         serde_json::Value::Array(values) => crate::value::HostJsonSupportValue::Array(
             values
                 .into_iter()
                 .map(host_json_support_value_from_serde)
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<crate::value::JsonArray, _>>()?,
         ),
         serde_json::Value::Object(entries) => crate::value::HostJsonSupportValue::Object(
             entries
                 .into_iter()
                 .map(|(name, value)| Ok((name, host_json_support_value_from_serde(value)?)))
-                .collect::<Result<Vec<_>, etas_host::HostError>>()?,
+                .collect::<Result<crate::value::JsonObject, etas_host::HostError>>()?,
         ),
     })
 }

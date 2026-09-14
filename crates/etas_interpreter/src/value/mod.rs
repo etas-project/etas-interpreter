@@ -28,6 +28,7 @@ pub use bytes::BytesValue;
 pub use text::StringValue;
 
 pub use aggregate::{ArrayValue, SliceValue};
+pub use json::{JsonArray, JsonObject};
 mod set;
 pub use set::SetValue;
 mod list;

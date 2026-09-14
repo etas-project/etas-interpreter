@@ -1,5 +1,8 @@
 use std::hash::{Hash, Hasher};
 
+mod storage;
+pub use storage::{JsonArray, JsonObject};
+
 use super::{
     HostJsonSupportValue as Json,
     comparison::{Comparison, CursorStep, EqualityCursor, compare},

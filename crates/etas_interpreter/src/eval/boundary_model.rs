@@ -703,7 +703,7 @@ fn host_json_support_value_from_host(
             crate::value::HostJsonSupportValue::NumberBits(value.to_bits())
         }
         etas_host::HostJsonValue::String(value) => {
-            crate::value::HostJsonSupportValue::String(value)
+            crate::value::HostJsonSupportValue::String(value.into())
         }
         etas_host::HostJsonValue::Array(values) => crate::value::HostJsonSupportValue::Array(
             values
