@@ -35,9 +35,9 @@ impl<'a> EvalContext<'a> {
         &mut self,
         continuation: Continuation,
         span: Span,
-        message: String,
+        message: &str,
     ) -> Option<ControlSignal> {
-        self.retry_failure_from_continuation(continuation, span, &message)
+        self.retry_failure_from_continuation(continuation, span, message)
     }
 
     fn retry_failure_from_continuation(

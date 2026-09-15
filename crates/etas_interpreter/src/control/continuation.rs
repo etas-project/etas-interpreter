@@ -409,6 +409,24 @@ pub enum Continuation {
 }
 
 impl Continuation {
+    // Retry lookup follows sequencing only; nested boundary wrappers stay opaque.
+    pub(crate) fn find_retry_attempt(&self) -> Option<&Self> {
+        let mut current = self;
+        let mut pending = Vec::new();
+        loop {
+            match current {
+                Self::RetryAttempt { .. } => return Some(current),
+                Self::Chain { inner, outer } => {
+                    pending.push(outer.as_ref());
+                    current = inner;
+                    continue;
+                }
+                _ => {}
+            }
+            current = pending.pop()?;
+        }
+    }
+
     pub(crate) fn handler_scope_occurrences(&self, scope_id: HandlerScopeId) -> usize {
         let mut count = 0;
         let mut pending = vec![self];
