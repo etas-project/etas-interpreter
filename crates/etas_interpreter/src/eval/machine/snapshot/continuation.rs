@@ -1,4 +1,7 @@
 use super::RestoreContext;
+mod capture;
+#[cfg(test)]
+mod tests;
 use std::collections::HashSet;
 
 use crate::api::{ModelExecutionPolicy, ModelResponseDecodePolicy};
@@ -11,7 +14,7 @@ use crate::orchestration::{
 };
 
 impl ContinuationSnapshot {
-    pub(crate) fn capture(continuation: &Continuation) -> Result<Self, String> {
+    fn capture_leaf(continuation: &Continuation) -> Result<Self, String> {
         Ok(match continuation {
             Continuation::ContinueBlock {
                 block,
@@ -495,13 +498,6 @@ impl ContinuationSnapshot {
                     .collect::<Result<Vec<_>, _>>()?,
                 span: *span,
             },
-            Continuation::RestoreModelPolicy { previous, inner } => Self::RestoreModelPolicy {
-                previous: Box::new(capture_model_policy(previous)),
-                inner: Self::capture(inner)?.into(),
-            },
-            Continuation::CallBoundary { outer } => Self::CallBoundary {
-                outer: Self::capture(outer)?.into(),
-            },
             Continuation::ForLoop {
                 pat,
                 source,
@@ -588,22 +584,6 @@ impl ContinuationSnapshot {
                 next_index: *next_index,
                 span: *span,
             },
-            Continuation::HandlerDispatch { outer } => Self::HandlerDispatch {
-                outer: Self::capture(outer)?.into(),
-            },
-            Continuation::HandleBoundary {
-                scope_id,
-                inner,
-                handlers,
-                span,
-                frame,
-            } => Self::HandleBoundary {
-                scope_id: *scope_id,
-                inner: Self::capture(inner)?.into(),
-                handlers: handlers.clone(),
-                span: *span,
-                frame: super::frame::capture_frame(frame)?,
-            },
             Continuation::AgentPromptBody {
                 item,
                 span,
@@ -616,14 +596,14 @@ impl ContinuationSnapshot {
                     .map(capture_model_policy)
                     .map(Box::new),
             },
-            Continuation::ScopedModelPolicy { policy, inner } => Self::ScopedModelPolicy {
-                policy: Box::new(capture_model_policy(policy)),
-                inner: Self::capture(inner)?.into(),
-            },
-            Continuation::Chain { inner, outer } => Self::Chain {
-                inner: Self::capture(inner)?.into(),
-                outer: Self::capture(outer)?.into(),
-            },
+            Continuation::RestoreModelPolicy { .. }
+            | Continuation::CallBoundary { .. }
+            | Continuation::HandlerDispatch { .. }
+            | Continuation::HandleBoundary { .. }
+            | Continuation::ScopedModelPolicy { .. }
+            | Continuation::Chain { .. } => {
+                return Err("continuation capture expected a leaf, not an owned edge".into());
+            }
             Continuation::Return => Self::Return,
             Continuation::Resume => Self::Resume,
             Continuation::Finish => Self::Finish,
