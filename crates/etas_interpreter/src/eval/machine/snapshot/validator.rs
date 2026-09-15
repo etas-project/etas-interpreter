@@ -1,5 +1,10 @@
 use std::collections::BTreeSet;
 
+mod traversal;
+
+#[cfg(test)]
+mod traversal_tests;
+
 use etas_frontend::CheckedProject;
 use etas_hir::{
     HirArg, HirBlockId, HirEffectArg, HirElseBranch, HirExprId, HirFieldInit, HirItemId,
@@ -296,31 +301,6 @@ impl<'a> SnapshotValidator<'a> {
         scopes
     }
 
-    fn continuation_scope_unwind_order(
-        continuation: &ContinuationSnapshot,
-        scopes: &mut Vec<HandlerScopeId>,
-    ) {
-        match continuation {
-            ContinuationSnapshot::HandleBoundary {
-                scope_id, inner, ..
-            } => {
-                Self::continuation_scope_unwind_order(inner, scopes);
-                scopes.push(*scope_id);
-            }
-            ContinuationSnapshot::RestoreModelPolicy { inner, .. }
-            | ContinuationSnapshot::CallBoundary { outer: inner }
-            | ContinuationSnapshot::HandlerDispatch { outer: inner }
-            | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => {
-                Self::continuation_scope_unwind_order(inner, scopes);
-            }
-            ContinuationSnapshot::Chain { inner, outer } => {
-                Self::continuation_scope_unwind_order(inner, scopes);
-                Self::continuation_scope_unwind_order(outer, scopes);
-            }
-            _ => {}
-        }
-    }
-
     fn handler_arm(&self, arm: &ActiveHandlerArmRecord, context: &str) -> Result<(), String> {
         if let Some(symbol) = arm.action_symbol {
             self.symbol(symbol, &format!("{context} action symbol"))?;
@@ -338,7 +318,7 @@ impl<'a> SnapshotValidator<'a> {
         self.scope(arm.scope, &format!("{context} scope"))
     }
 
-    fn continuation(
+    fn continuation_node(
         &self,
         continuation: &ContinuationSnapshot,
         context: &str,
@@ -794,12 +774,10 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 Ok(())
             }
-            ContinuationSnapshot::RestoreModelPolicy { inner, .. }
-            | ContinuationSnapshot::CallBoundary { outer: inner }
-            | ContinuationSnapshot::HandlerDispatch { outer: inner }
-            | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => {
-                self.continuation(inner, context, boundary_scopes)
-            }
+            ContinuationSnapshot::RestoreModelPolicy { .. }
+            | ContinuationSnapshot::CallBoundary { .. }
+            | ContinuationSnapshot::HandlerDispatch { .. }
+            | ContinuationSnapshot::ScopedModelPolicy { .. } => Ok(()),
             ContinuationSnapshot::ForLoop {
                 pat,
                 source,
@@ -859,30 +837,17 @@ impl<'a> SnapshotValidator<'a> {
                 self.index_at_most(*next_index, remaining_keys.len(), context)?;
                 self.snapshot_values(remaining_keys)
             }
-            ContinuationSnapshot::HandleBoundary {
-                scope_id,
-                inner,
-                handlers,
-                frame,
-                ..
-            } => {
+            ContinuationSnapshot::HandleBoundary { scope_id, .. } => {
                 if !boundary_scopes.insert(*scope_id) {
                     return Err(format!(
                         "{context} contains duplicate handle boundary scope {}",
                         scope_id.0
                     ));
                 }
-                self.continuation(inner, context, boundary_scopes)?;
-                for (index, handler) in handlers.iter().enumerate() {
-                    self.handler_arm(handler, &format!("{context} handler arm {index}"))?;
-                }
-                self.frame(frame, context)
+                Ok(())
             }
             ContinuationSnapshot::AgentPromptBody { item, .. } => self.item(*item, context),
-            ContinuationSnapshot::Chain { inner, outer } => {
-                self.continuation(inner, context, boundary_scopes)?;
-                self.continuation(outer, context, boundary_scopes)
-            }
+            ContinuationSnapshot::Chain { .. } => Ok(()),
         }
     }
 
