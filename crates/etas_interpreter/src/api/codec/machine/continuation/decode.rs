@@ -1,6 +1,6 @@
 use super::support::*;
 use super::*;
-use crate::orchestration::HandlerScopeId;
+use crate::orchestration::{ContinuationSnapshotLink, HandlerScopeId};
 
 pub(crate) fn continuation_from_snapshot(
     limits: &etas_host::StorageLimits,
@@ -365,7 +365,7 @@ pub(crate) fn continuation_from_snapshot(
         },
         "restore_model_policy" => ContinuationSnapshot::RestoreModelPolicy {
             previous: Box::new(model_policy_from_snapshot(required(value, "previous")?)?),
-            inner: Box::new(continuation_from_snapshot(
+            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
@@ -423,7 +423,7 @@ pub(crate) fn continuation_from_snapshot(
         },
         "handle_boundary" => ContinuationSnapshot::HandleBoundary {
             scope_id: HandlerScopeId(required_u32(value, "scope_id")?),
-            inner: Box::new(continuation_from_snapshot(
+            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
@@ -438,7 +438,7 @@ pub(crate) fn continuation_from_snapshot(
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "handler_dispatch" => ContinuationSnapshot::HandlerDispatch {
-            outer: Box::new(continuation_from_snapshot(
+            outer: ContinuationSnapshotLink::new(continuation_from_snapshot(
                 limits,
                 required(value, "outer")?,
                 checked,
@@ -451,26 +451,26 @@ pub(crate) fn continuation_from_snapshot(
         },
         "scoped_model_policy" => ContinuationSnapshot::ScopedModelPolicy {
             policy: Box::new(model_policy_from_snapshot(required(value, "policy")?)?),
-            inner: Box::new(continuation_from_snapshot(
+            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
             )?),
         },
         "call_boundary" => ContinuationSnapshot::CallBoundary {
-            outer: Box::new(continuation_from_snapshot(
+            outer: ContinuationSnapshotLink::new(continuation_from_snapshot(
                 limits,
                 required(value, "outer")?,
                 checked,
             )?),
         },
         "chain" => ContinuationSnapshot::Chain {
-            inner: Box::new(continuation_from_snapshot(
+            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
                 limits,
                 required(value, "inner")?,
                 checked,
             )?),
-            outer: Box::new(continuation_from_snapshot(
+            outer: ContinuationSnapshotLink::new(continuation_from_snapshot(
                 limits,
                 required(value, "outer")?,
                 checked,

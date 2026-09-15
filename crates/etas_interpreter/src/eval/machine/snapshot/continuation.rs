@@ -497,10 +497,10 @@ impl ContinuationSnapshot {
             },
             Continuation::RestoreModelPolicy { previous, inner } => Self::RestoreModelPolicy {
                 previous: Box::new(capture_model_policy(previous)),
-                inner: Box::new(Self::capture(inner)?),
+                inner: Self::capture(inner)?.into(),
             },
             Continuation::CallBoundary { outer } => Self::CallBoundary {
-                outer: Box::new(Self::capture(outer)?),
+                outer: Self::capture(outer)?.into(),
             },
             Continuation::ForLoop {
                 pat,
@@ -589,7 +589,7 @@ impl ContinuationSnapshot {
                 span: *span,
             },
             Continuation::HandlerDispatch { outer } => Self::HandlerDispatch {
-                outer: Box::new(Self::capture(outer)?),
+                outer: Self::capture(outer)?.into(),
             },
             Continuation::HandleBoundary {
                 scope_id,
@@ -599,7 +599,7 @@ impl ContinuationSnapshot {
                 frame,
             } => Self::HandleBoundary {
                 scope_id: *scope_id,
-                inner: Box::new(Self::capture(inner)?),
+                inner: Self::capture(inner)?.into(),
                 handlers: handlers.clone(),
                 span: *span,
                 frame: super::frame::capture_frame(frame)?,
@@ -618,11 +618,11 @@ impl ContinuationSnapshot {
             },
             Continuation::ScopedModelPolicy { policy, inner } => Self::ScopedModelPolicy {
                 policy: Box::new(capture_model_policy(policy)),
-                inner: Box::new(Self::capture(inner)?),
+                inner: Self::capture(inner)?.into(),
             },
             Continuation::Chain { inner, outer } => Self::Chain {
-                inner: Box::new(Self::capture(inner)?),
-                outer: Box::new(Self::capture(outer)?),
+                inner: Self::capture(inner)?.into(),
+                outer: Self::capture(outer)?.into(),
             },
             Continuation::Return => Self::Return,
             Continuation::Resume => Self::Resume,
@@ -1120,10 +1120,10 @@ impl ContinuationSnapshot {
             },
             Self::RestoreModelPolicy { previous, inner } => Continuation::RestoreModelPolicy {
                 previous: Box::new(restore_model_policy(*previous)),
-                inner: Box::new(inner.restore_with(context)?),
+                inner: Box::new(inner.into_value().restore_with(context)?),
             },
             Self::CallBoundary { outer } => Continuation::CallBoundary {
-                outer: Box::new(outer.restore_with(context)?),
+                outer: Box::new(outer.into_value().restore_with(context)?),
             },
             Self::ForLoop {
                 pat,
@@ -1206,7 +1206,7 @@ impl ContinuationSnapshot {
                 span,
             },
             Self::HandlerDispatch { outer } => Continuation::HandlerDispatch {
-                outer: Box::new(outer.restore_with(context)?),
+                outer: Box::new(outer.into_value().restore_with(context)?),
             },
             Self::HandleBoundary {
                 scope_id,
@@ -1216,7 +1216,7 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::HandleBoundary {
                 scope_id,
-                inner: Box::new(inner.restore_with(context)?),
+                inner: Box::new(inner.into_value().restore_with(context)?),
                 handlers,
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
@@ -1234,11 +1234,11 @@ impl ContinuationSnapshot {
             },
             Self::ScopedModelPolicy { policy, inner } => Continuation::ScopedModelPolicy {
                 policy: Box::new(restore_model_policy(*policy)),
-                inner: Box::new(inner.restore_with(context)?),
+                inner: Box::new(inner.into_value().restore_with(context)?),
             },
             Self::Chain { inner, outer } => Continuation::Chain {
-                inner: Box::new(inner.restore_with(context)?),
-                outer: Box::new(outer.restore_with(context)?),
+                inner: Box::new(inner.into_value().restore_with(context)?),
+                outer: Box::new(outer.into_value().restore_with(context)?),
             },
             Self::Return => Continuation::Return,
             Self::Resume => Continuation::Resume,

@@ -25,7 +25,7 @@ impl MachineFrameSnapshot {
             EvalFrame::Handler(frame) => Self::Handler {
                 continuation: ContinuationSnapshot::HandleBoundary {
                     scope_id: frame.scope_id,
-                    inner: Box::new(ContinuationSnapshot::capture(&frame.inner)?),
+                    inner: ContinuationSnapshot::capture(&frame.inner)?.into(),
                     handlers: frame.handlers.clone(),
                     span: frame.span,
                     frame: super::frame::capture_frame(&frame.frame)?,

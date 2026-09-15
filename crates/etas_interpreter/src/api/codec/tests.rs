@@ -372,7 +372,7 @@ flow main() -> unit {
             frames: vec![MachineFrameSnapshot::Handler {
                 continuation: ContinuationSnapshot::HandleBoundary {
                     scope_id,
-                    inner: Box::new(ContinuationSnapshot::BlockValue),
+                    inner: ContinuationSnapshot::BlockValue.into(),
                     handlers: vec![handler_arm.clone()],
                     span: test_span(1, 10),
                     frame: LocalsSnapshot {

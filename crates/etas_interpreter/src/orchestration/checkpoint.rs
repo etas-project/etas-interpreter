@@ -5,7 +5,7 @@ use etas_hir::{
 };
 use etas_types::TypeId;
 
-use super::{SnapshotBox, SnapshotChildren};
+use super::{ContinuationSnapshotLink, SnapshotBox, SnapshotChildren};
 use crate::api::ExecutionLimits;
 use crate::value::{
     HostJsonSupportValue, InterpValue, MemorySelectionKind, MessageRoleValue, ModelResponseValue,
@@ -607,10 +607,10 @@ pub(crate) enum ContinuationSnapshot {
     },
     RestoreModelPolicy {
         previous: Box<ModelExecutionPolicySnapshot>,
-        inner: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
     },
     CallBoundary {
-        outer: Box<ContinuationSnapshot>,
+        outer: ContinuationSnapshotLink,
     },
     ForLoop {
         pat: HirPatId,
@@ -657,11 +657,11 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
     },
     HandlerDispatch {
-        outer: Box<ContinuationSnapshot>,
+        outer: ContinuationSnapshotLink,
     },
     HandleBoundary {
         scope_id: HandlerScopeId,
-        inner: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
         handlers: Vec<ActiveHandlerArmRecord>,
         span: Span,
         frame: LocalsSnapshot,
@@ -673,11 +673,11 @@ pub(crate) enum ContinuationSnapshot {
     },
     ScopedModelPolicy {
         policy: Box<ModelExecutionPolicySnapshot>,
-        inner: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
     },
     Chain {
-        inner: Box<ContinuationSnapshot>,
-        outer: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
+        outer: ContinuationSnapshotLink,
     },
     Return,
     Resume,

@@ -8,6 +8,74 @@ use crate::{
 };
 
 #[test]
+fn shared_continuation_edges_preserve_wire_and_checked_identity_validation() {
+    use crate::eval::machine::snapshot::{RestoreContext, SnapshotValidator};
+    use crate::orchestration::{LocalsSnapshot, MachineFrameSnapshot, MachineSnapshot};
+    let checked = crate::testing::project::checked_project(
+        "module app.main; flow main() -> unit { return; }",
+    );
+    let plan = crate::Interpreter
+        .plan(&checked, crate::api::PlanOptions)
+        .plan
+        .unwrap();
+    let limits = etas_host::StorageLimits::default();
+    let wire = json!({"kind":"chain", "inner":{"kind":"return"},
+        "outer":{"kind":"call_boundary", "outer":{"kind":"block_value"}}});
+    let original = continuation_from_snapshot(&limits, &wire, &checked).unwrap();
+    assert_eq!(codec::snapshot::continuation_json(&original), wire);
+    let runtime = original
+        .clone()
+        .restore_with(&mut RestoreContext::default())
+        .unwrap();
+    let recaptured = ContinuationSnapshot::capture(&runtime).unwrap();
+    assert_eq!(codec::snapshot::continuation_json(&recaptured), wire);
+    let validator = SnapshotValidator::new(
+        &checked,
+        &plan.slots,
+        &plan.dispatch,
+        &plan.closures,
+        &limits,
+    );
+    let machine = |continuation| MachineSnapshot {
+        frames: vec![MachineFrameSnapshot::Continuation { continuation }],
+    };
+    validator
+        .validate_machine(&machine(original.clone()))
+        .unwrap();
+    let mut changed = original.clone();
+    let ContinuationSnapshot::Chain { outer, .. } = &mut changed else {
+        panic!("chain")
+    };
+    let ContinuationSnapshot::CallBoundary { outer } = outer.as_mut() else {
+        panic!("call boundary")
+    };
+    *outer.as_mut() = ContinuationSnapshot::ContinueBlock {
+        block: HirBlockId(u32::MAX),
+        next_stmt_index: 0,
+        frame: LocalsSnapshot {
+            id: 1,
+            locals: Default::default(),
+            type_bindings: vec![],
+        },
+    };
+    assert!(
+        validator
+            .validate_machine(&machine(changed))
+            .unwrap_err()
+            .contains("block")
+    );
+    assert_eq!(codec::snapshot::continuation_json(&original), wire);
+    validator.validate_machine(&machine(original)).unwrap();
+    let mut invalid = wire;
+    invalid["outer"]["outer"]["kind"] = json!("invalid-continuation");
+    assert!(
+        continuation_from_snapshot(&limits, &invalid, &checked)
+            .unwrap_err()
+            .contains("unknown machine continuation")
+    );
+}
+
+#[test]
 fn continuation_decode_builds_snapshot_locals_without_a_temporary_runtime_frame() {
     let checked = crate::testing::project::checked_project(
         "module app.main; flow main() -> unit { return; }",

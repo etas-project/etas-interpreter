@@ -1,4 +1,6 @@
 mod checkpoint;
+mod continuation_storage;
+pub(crate) use continuation_storage::ContinuationSnapshotLink;
 mod snapshot_storage;
 mod snapshot_walk;
 pub use checkpoint::{StorageSnapshot, StorageWriteRecord};
