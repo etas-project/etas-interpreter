@@ -263,6 +263,23 @@ impl FakeHost {
             .push_back(HostError::new(code, message));
     }
 
+    pub(super) fn seed_model_response_value(&self, value: HostValue) {
+        self.model_responses
+            .lock()
+            .expect("model responses lock")
+            .push_back(ModelResponse {
+                id: etas_host::HostRequestId(0),
+                message: ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: vec![ModelContent::Value(value)],
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            });
+    }
+
     pub(super) fn force_next_model_response_id(&self, id: etas_host::HostRequestId) {
         self.model_responses
             .lock()

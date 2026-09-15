@@ -36,11 +36,12 @@ fn model_snapshot_budget_rejects_host_fanout_and_bytes_before_allocation() {
         max_nodes: 32,
         ..Default::default()
     };
-    let small = model(HostSupportValue::List(vec![HostSupportValue::Unit; 128]));
-    let large = model(HostSupportValue::List(vec![
-        HostSupportValue::Unit;
-        100_000
-    ]));
+    let small = model(HostSupportValue::List(
+        vec![HostSupportValue::Unit; 128].into(),
+    ));
+    let large = model(HostSupportValue::List(
+        vec![HostSupportValue::Unit; 100_000].into(),
+    ));
     let small = reject(&small, limits, "node");
     let large = reject(&large, limits, "node");
     assert_eq!(small.bytes, large.bytes, "allocated rejected fanout");
@@ -50,7 +51,7 @@ fn model_snapshot_budget_rejects_host_fanout_and_bytes_before_allocation() {
     );
     assert_eq!(large.bytes, large.released_bytes);
     let bytes = reject(
-        &model(HostSupportValue::Bytes(vec![0; 100_000])),
+        &model(HostSupportValue::Bytes(vec![0; 100_000].into())),
         limits,
         "node",
     );
@@ -68,14 +69,14 @@ fn model_snapshot_budget_charges_host_payloads_and_labels_before_copying() {
         ..Default::default()
     };
     let values = [
-        HostSupportValue::String("x".repeat(100_000)),
-        HostSupportValue::Int("1".repeat(100_000)),
-        HostSupportValue::UInt("1".repeat(100_000)),
-        HostSupportValue::Bytes(vec![0; 100_000]),
-        HostSupportValue::Record(vec![("x".repeat(100_000), HostSupportValue::Unit)]),
+        HostSupportValue::String("x".repeat(100_000).into()),
+        HostSupportValue::Int("1".repeat(100_000).into()),
+        HostSupportValue::UInt("1".repeat(100_000).into()),
+        HostSupportValue::Bytes(vec![0; 100_000].into()),
+        HostSupportValue::Record(vec![("x".repeat(100_000), HostSupportValue::Unit)].into()),
         HostSupportValue::Variant {
-            name: "x".repeat(100_000),
-            fields: vec![],
+            name: "x".repeat(100_000).into(),
+            fields: vec![].into(),
         },
     ];
     for payload in values {
@@ -234,15 +235,14 @@ fn model_response_snapshot_preserves_nested_host_payloads_without_reserializing(
             id: 19,
             message: ModelMessageValue {
                 role: ModelRoleValue::Assistant,
-                content: vec![ModelContentValue::Value(HostSupportValue::Record(vec![(
-                    "body".into(),
-                    HostSupportValue::Json(payload.clone()),
-                )]))],
+                content: vec![ModelContentValue::Value(HostSupportValue::Record(
+                    vec![("body".into(), HostSupportValue::Json(payload.clone()))].into(),
+                ))],
             },
             tool_calls: vec![ModelToolCallValue {
                 id: "call-1".into(),
                 tool: "inspect".into(),
-                args: HostSupportValue::List(vec![HostSupportValue::Json(payload)]),
+                args: HostSupportValue::List(vec![HostSupportValue::Json(payload)].into()),
             }],
             usage: Some(ModelUsageValue {
                 input_tokens: 3,

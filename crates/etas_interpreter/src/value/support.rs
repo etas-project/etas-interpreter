@@ -1,4 +1,7 @@
 use super::primitive::InterpValue;
+mod host;
+mod ingress;
+pub use host::{HostFields, HostPairs, HostValues};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageValue {
@@ -83,24 +86,32 @@ pub struct ModelUsageValue {
     pub output_tokens: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum HostSupportValue {
     Unit,
     Bool(bool),
-    Int(String),
-    UInt(String),
+    Int(super::StringValue),
+    UInt(super::StringValue),
     FloatBits(u64),
-    String(String),
-    Bytes(Vec<u8>),
-    List(Vec<HostSupportValue>),
-    Map(Vec<(HostSupportValue, HostSupportValue)>),
-    Record(Vec<(String, HostSupportValue)>),
+    String(super::StringValue),
+    Bytes(super::BytesValue),
+    List(HostValues),
+    Map(HostPairs),
+    Record(HostFields),
     Variant {
-        name: String,
-        fields: Vec<HostSupportValue>,
+        name: super::StringValue,
+        fields: HostValues,
     },
     Json(HostJsonSupportValue),
 }
+
+impl PartialEq for HostSupportValue {
+    fn eq(&self, other: &Self) -> bool {
+        host::equal(self, other)
+    }
+}
+
+impl Eq for HostSupportValue {}
 
 #[derive(Clone, Debug)]
 pub enum HostJsonSupportValue {

@@ -245,7 +245,7 @@ fn model_response_value_from_host(response: ModelResponse) -> crate::value::Mode
             .map(|call| crate::value::ModelToolCallValue {
                 id: call.id,
                 tool: call.tool,
-                args: host_support_value_from_host(call.args),
+                args: call.args.into(),
             })
             .collect(),
         usage: response.usage.map(|usage| crate::value::ModelUsageValue {
@@ -270,83 +270,9 @@ fn model_message_value_from_host(
             .into_iter()
             .map(|content| match content {
                 ModelContent::Text(text) => crate::value::ModelContentValue::Text(text),
-                ModelContent::Value(value) => {
-                    crate::value::ModelContentValue::Value(host_support_value_from_host(value))
-                }
+                ModelContent::Value(value) => crate::value::ModelContentValue::Value(value.into()),
             })
             .collect(),
-    }
-}
-
-fn host_support_value_from_host(value: HostValue) -> crate::value::HostSupportValue {
-    match value {
-        HostValue::Unit => crate::value::HostSupportValue::Unit,
-        HostValue::Bool(value) => crate::value::HostSupportValue::Bool(value),
-        HostValue::Int(value) => crate::value::HostSupportValue::Int(value.to_string()),
-        HostValue::UInt(value) => crate::value::HostSupportValue::UInt(value.to_string()),
-        HostValue::Float(value) => crate::value::HostSupportValue::FloatBits(value.to_bits()),
-        HostValue::String(value) => crate::value::HostSupportValue::String(value),
-        HostValue::Bytes(value) => crate::value::HostSupportValue::Bytes(value),
-        HostValue::List(values) => crate::value::HostSupportValue::List(
-            values
-                .into_iter()
-                .map(host_support_value_from_host)
-                .collect(),
-        ),
-        HostValue::Map(entries) => crate::value::HostSupportValue::Map(
-            entries
-                .into_iter()
-                .map(|(key, value)| {
-                    (
-                        host_support_value_from_host(key),
-                        host_support_value_from_host(value),
-                    )
-                })
-                .collect(),
-        ),
-        HostValue::Record(fields) => crate::value::HostSupportValue::Record(
-            fields
-                .into_iter()
-                .map(|(name, value)| (name, host_support_value_from_host(value)))
-                .collect(),
-        ),
-        HostValue::Variant { name, fields } => crate::value::HostSupportValue::Variant {
-            name,
-            fields: fields
-                .into_iter()
-                .map(host_support_value_from_host)
-                .collect(),
-        },
-        HostValue::Json(value) => {
-            crate::value::HostSupportValue::Json(host_json_support_value_from_host(value))
-        }
-    }
-}
-
-fn host_json_support_value_from_host(
-    value: etas_host::HostJsonValue,
-) -> crate::value::HostJsonSupportValue {
-    match value {
-        etas_host::HostJsonValue::Null => crate::value::HostJsonSupportValue::Null,
-        etas_host::HostJsonValue::Bool(value) => crate::value::HostJsonSupportValue::Bool(value),
-        etas_host::HostJsonValue::Number(value) => {
-            crate::value::HostJsonSupportValue::NumberBits(value.to_bits())
-        }
-        etas_host::HostJsonValue::String(value) => {
-            crate::value::HostJsonSupportValue::String(value.into())
-        }
-        etas_host::HostJsonValue::Array(values) => crate::value::HostJsonSupportValue::Array(
-            values
-                .into_iter()
-                .map(host_json_support_value_from_host)
-                .collect(),
-        ),
-        etas_host::HostJsonValue::Object(entries) => crate::value::HostJsonSupportValue::Object(
-            entries
-                .into_iter()
-                .map(|(name, value)| (name, host_json_support_value_from_host(value)))
-                .collect(),
-        ),
     }
 }
 

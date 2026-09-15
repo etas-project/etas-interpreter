@@ -284,72 +284,7 @@ pub(super) fn model_response_from_json(
 pub(super) fn host_support_value_from_json(
     value: &Value,
 ) -> Result<crate::value::HostSupportValue, InterpreterCodecError> {
-    match required_str(value, "kind")? {
-        "unit" => Ok(crate::value::HostSupportValue::Unit),
-        "bool" => Ok(crate::value::HostSupportValue::Bool(required_bool(
-            value, "value",
-        )?)),
-        "int" => Ok(crate::value::HostSupportValue::Int(
-            required_str(value, "value")?.to_owned(),
-        )),
-        "uint" => Ok(crate::value::HostSupportValue::UInt(
-            required_str(value, "value")?.to_owned(),
-        )),
-        "float_bits" => Ok(crate::value::HostSupportValue::FloatBits(required_u64(
-            value, "value",
-        )?)),
-        "string" => Ok(crate::value::HostSupportValue::String(
-            required_str(value, "value")?.to_owned(),
-        )),
-        "bytes" => Ok(crate::value::HostSupportValue::Bytes(byte_array(
-            value, "value",
-        )?)),
-        "list" => Ok(crate::value::HostSupportValue::List(
-            host_support_values_from_array(value, "values")?,
-        )),
-        "map" => Ok(crate::value::HostSupportValue::Map(
-            required_array(value, "entries")?
-                .iter()
-                .map(|entry| {
-                    Ok((
-                        host_support_value_from_json(required_obj(entry, "key")?)?,
-                        host_support_value_from_json(required_obj(entry, "value")?)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
-        )),
-        "record" => Ok(crate::value::HostSupportValue::Record(
-            required_array(value, "fields")?
-                .iter()
-                .map(|field| {
-                    Ok((
-                        required_str(field, "name")?.to_owned(),
-                        host_support_value_from_json(required_obj(field, "value")?)?,
-                    ))
-                })
-                .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
-        )),
-        "variant" => Ok(crate::value::HostSupportValue::Variant {
-            name: required_str(value, "name")?.to_owned(),
-            fields: host_support_values_from_array(value, "fields")?,
-        }),
-        "json" => Ok(crate::value::HostSupportValue::Json(
-            host_json_support_value_from_json(required_obj(value, "value")?)?,
-        )),
-        other => Err(InterpreterCodecError::new(format!(
-            "unsupported host support value `{other}`"
-        ))),
-    }
-}
-
-pub(super) fn host_support_values_from_array(
-    value: &Value,
-    field: &'static str,
-) -> Result<Vec<crate::value::HostSupportValue>, InterpreterCodecError> {
-    required_array(value, field)?
-        .iter()
-        .map(host_support_value_from_json)
-        .collect()
+    decode::host::decode(value)
 }
 
 pub(super) fn values_from_array(

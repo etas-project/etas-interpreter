@@ -22,6 +22,7 @@ mod memory_intent;
 mod memory_paging;
 mod memory_source_commit;
 mod message_session;
+mod model_payload;
 mod prompt_data;
 mod pure_queries;
 mod records;

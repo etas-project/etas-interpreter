@@ -1,5 +1,6 @@
 use super::*;
 
+pub(super) mod host;
 pub(super) mod json;
 
 #[cfg(test)]

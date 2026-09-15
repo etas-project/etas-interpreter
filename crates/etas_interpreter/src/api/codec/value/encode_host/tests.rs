@@ -31,12 +31,12 @@ fn legacy(value: &Support) -> Value {
 
 fn chain(depth: usize, leaf: Support) -> Support {
     (0..depth).fold(leaf, |value, n| match n % 4 {
-        0 => Support::List(vec![value]),
-        1 => Support::Record(vec![("child".into(), value)]),
-        2 => Support::Map(vec![(Support::String("key".into()), value)]),
+        0 => Support::List(vec![value].into()),
+        1 => Support::Record(vec![("child".into(), value)].into()),
+        2 => Support::Map(vec![(Support::String("key".into()), value)].into()),
         _ => Support::Variant {
             name: "Next".into(),
-            fields: vec![value],
+            fields: vec![value].into(),
         },
     })
 }
@@ -44,7 +44,7 @@ fn chain(depth: usize, leaf: Support) -> Support {
 #[test]
 fn host_container_encoding_removes_repeated_descendant_materialization() {
     for depth in [16, 32, 64] {
-        let support = chain(depth, Support::String("p".repeat(1024)));
+        let support = chain(depth, Support::String("p".repeat(1024).into()));
         let (expected, old) = measure(|| CheckpointDocument::from_value(legacy(&support)));
         let host = codec::host_value_from_json(&expected).unwrap();
         let (actual, cost) = measure(|| CheckpointDocument::from_value(super::encode(&support)));
@@ -74,45 +74,54 @@ fn host_container_encoding_removes_repeated_descendant_materialization() {
 
 #[test]
 fn host_container_encoding_preserves_all_wire_kinds_and_order() {
-    let value = Support::Record(vec![
-        (
-            "z".into(),
-            Support::List(vec![
-                Support::Unit,
-                Support::Bool(true),
-                Support::Int(i128::MIN.to_string()),
-                Support::UInt(u128::MAX.to_string()),
-                Support::FloatBits(0x7ff8_0000_0000_0007),
-                Support::FloatBits((-0.0f64).to_bits()),
-                Support::String("\"\\\n\t".into()),
-                Support::Bytes(vec![0, 127, 255]),
-                Support::List(vec![]),
-                Support::Map(vec![]),
-                Support::Record(vec![]),
-                Support::Variant {
-                    name: "Nullary".into(),
-                    fields: vec![],
-                },
-            ]),
-        ),
-        (
-            "a".into(),
-            Support::Map(vec![
-                (
-                    Support::Bytes(vec![1]),
-                    Support::Json(Json::String("json".into())),
+    let value = Support::Record(
+        vec![
+            (
+                "z".into(),
+                Support::List(
+                    vec![
+                        Support::Unit,
+                        Support::Bool(true),
+                        Support::Int(i128::MIN.to_string().into()),
+                        Support::UInt(u128::MAX.to_string().into()),
+                        Support::FloatBits(0x7ff8_0000_0000_0007),
+                        Support::FloatBits((-0.0f64).to_bits()),
+                        Support::String("\"\\\n\t".into()),
+                        Support::Bytes(vec![0, 127, 255].into()),
+                        Support::List(vec![].into()),
+                        Support::Map(vec![].into()),
+                        Support::Record(vec![].into()),
+                        Support::Variant {
+                            name: "Nullary".into(),
+                            fields: vec![].into(),
+                        },
+                    ]
+                    .into(),
                 ),
-                (
-                    Support::Bytes(vec![1]),
-                    Support::Variant {
-                        name: "V".into(),
-                        fields: vec![Support::Bool(false)],
-                    },
+            ),
+            (
+                "a".into(),
+                Support::Map(
+                    vec![
+                        (
+                            Support::Bytes(vec![1].into()),
+                            Support::Json(Json::String("json".into())),
+                        ),
+                        (
+                            Support::Bytes(vec![1].into()),
+                            Support::Variant {
+                                name: "V".into(),
+                                fields: vec![Support::Bool(false)].into(),
+                            },
+                        ),
+                    ]
+                    .into(),
                 ),
-            ]),
-        ),
-        ("z".into(), Support::Unit),
-    ]);
+            ),
+            ("z".into(), Support::Unit),
+        ]
+        .into(),
+    );
     let expected = legacy(&value);
     assert_eq!(super::encode(&value), expected);
     let host = codec::host_value_from_json(&expected).unwrap();
@@ -134,9 +143,10 @@ fn wide_host_container_encoding_only_materializes_the_output_graph() {
                         Support::Variant {
                             name: "Payload".into(),
                             fields: vec![
-                                Support::String("x".repeat(1024)),
-                                Support::Bytes(vec![7; 64]),
-                            ],
+                                Support::String("x".repeat(1024).into()),
+                                Support::Bytes(vec![7; 64].into()),
+                            ]
+                            .into(),
                         },
                     )
                 })
@@ -167,7 +177,7 @@ fn wide_host_container_encoding_only_materializes_the_output_graph() {
 
 #[test]
 fn host_encoding_does_not_coerce_invalid_abi_values_or_change_decode_errors() {
-    let malformed = Support::Record(vec![("child".into(), Support::UInt("-1".into()))]);
+    let malformed = Support::Record(vec![("child".into(), Support::UInt("-1".into()))].into());
     let wire = super::encode(&malformed);
     assert_eq!(wire, legacy(&malformed));
     assert!(
@@ -177,7 +187,7 @@ fn host_encoding_does_not_coerce_invalid_abi_values_or_change_decode_errors() {
             .contains("u128")
     );
 
-    let mut wire = super::encode(&chain(2, Support::Bytes(vec![1])));
+    let mut wire = super::encode(&chain(2, Support::Bytes(vec![1].into())));
     wire["fields"][0]["value"]["values"][0]["value"] = json!([256]);
     assert!(codec::host_value_from_json(&wire).is_err());
     assert!(super::super::host_support_value_from_json(&wire).is_err());
