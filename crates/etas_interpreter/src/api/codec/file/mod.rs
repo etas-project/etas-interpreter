@@ -47,6 +47,20 @@ impl CheckpointFileLimits {
 /// Borrow it for checked decoding; it never aliases a live evaluator frame.
 pub struct CheckpointDocument(Value);
 
+impl CheckpointDocument {
+    pub(in crate::api::codec) fn from_value(value: Value) -> Self {
+        Self(value)
+    }
+
+    pub(in crate::api::codec) fn value_mut(&mut self) -> &mut Value {
+        &mut self.0
+    }
+
+    pub(in crate::api::codec) fn into_value(mut self) -> Value {
+        std::mem::take(&mut self.0)
+    }
+}
+
 impl Deref for CheckpointDocument {
     type Target = Value;
     fn deref(&self) -> &Value {

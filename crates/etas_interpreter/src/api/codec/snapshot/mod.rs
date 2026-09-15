@@ -3,13 +3,23 @@ use crate::orchestration::{
 };
 use serde_json::{Value, json};
 
+mod budget;
 mod call_target;
 #[cfg(test)]
 mod tests;
 mod value;
+pub(super) use budget::EncodingBudget;
 
+#[cfg(test)]
 pub(super) fn continuation_json(value: &ContinuationSnapshot) -> Value {
     encode(Node::Continuation(value))
+}
+
+pub(super) fn continuation_json_with_budget(
+    value: &ContinuationSnapshot,
+    budget: &mut EncodingBudget,
+) -> Result<Value, super::InterpreterCodecError> {
+    encode_with_budget(Node::Continuation(value), budget)
 }
 
 #[derive(Clone, Copy)]
@@ -27,10 +37,20 @@ pub(super) enum Node<'a> {
 }
 pub(super) type Pending<'a> = Vec<(Node<'a>, &'a mut Value)>;
 
+#[cfg(test)]
 fn encode(node: Node<'_>) -> Value {
-    let mut output = Value::Null;
-    let mut pending = vec![(node, &mut output)];
+    encode_with_budget(node, &mut EncodingBudget::default())
+        .expect("test snapshot fits encoding budget")
+}
+
+fn encode_with_budget(
+    node: Node<'_>,
+    budget: &mut EncodingBudget,
+) -> Result<Value, super::InterpreterCodecError> {
+    let mut output = super::CheckpointDocument::from_value(Value::Null);
+    let mut pending = vec![(node, output.value_mut())];
     while let Some((node, slot)) = pending.pop() {
+        budget.admit(node, pending.len())?;
         match node {
             Node::Value(value) => value::encode(value, slot, &mut pending),
             Node::Message(message) => value::message(message, slot, &mut pending),
@@ -84,7 +104,7 @@ fn encode(node: Node<'_>) -> Value {
             }
         }
     }
-    output
+    Ok(output.into_value())
 }
 
 fn array(slot: &mut Value, count: usize) -> impl Iterator<Item = &mut Value> {

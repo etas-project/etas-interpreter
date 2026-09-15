@@ -9,6 +9,7 @@ use etas_hir::{HirExprId, SymbolId};
 use etas_types::{TrustWrapper, TypeId};
 use std::rc::Rc;
 
+mod budget;
 mod call_target;
 
 #[test]
