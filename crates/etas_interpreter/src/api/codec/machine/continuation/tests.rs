@@ -1,4 +1,5 @@
 use super::*;
+mod decode;
 use crate::{
     api::codec::{self, CheckpointFileLimits},
     control::Continuation,

@@ -1,13 +1,14 @@
 use super::support::*;
 use super::*;
-use crate::orchestration::{ContinuationSnapshotLink, HandlerScopeId};
+mod traversal;
+pub(crate) use traversal::continuation_from_snapshot;
 
-pub(crate) fn continuation_from_snapshot(
+fn continuation_leaf_from_snapshot(
     limits: &etas_host::StorageLimits,
     value: &Value,
     checked: &etas_frontend::CheckedProject,
+    kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
-    let kind = required_str(value, "kind")?;
     Ok(match kind {
         "continue_block" => ContinuationSnapshot::ContinueBlock {
             block: HirBlockId(required_u32(value, "block")?),
@@ -363,14 +364,6 @@ pub(crate) fn continuation_from_snapshot(
             remaining: call_target_snapshots_from_json(limits, required(value, "remaining")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "restore_model_policy" => ContinuationSnapshot::RestoreModelPolicy {
-            previous: Box::new(model_policy_from_snapshot(required(value, "previous")?)?),
-            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
-                limits,
-                required(value, "inner")?,
-                checked,
-            )?),
-        },
         "try_expr" => ContinuationSnapshot::TryExpr {
             expr: HirExprId(required_u32(value, "expr")?),
             span: span_from_snapshot(required(value, "span")?)?,
@@ -421,61 +414,19 @@ pub(crate) fn continuation_from_snapshot(
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "handle_boundary" => ContinuationSnapshot::HandleBoundary {
-            scope_id: HandlerScopeId(required_u32(value, "scope_id")?),
-            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
-                limits,
-                required(value, "inner")?,
-                checked,
-            )?),
-            handlers: required(value, "handlers")?
-                .as_array()
-                .ok_or_else(|| "machine snapshot `handlers` must be an array".to_owned())?
-                .iter()
-                .map(handler_arm_from_snapshot)
-                .collect::<Result<Vec<_>, _>>()?,
-            span: span_from_snapshot(required(value, "span")?)?,
-            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
-        },
-        "handler_dispatch" => ContinuationSnapshot::HandlerDispatch {
-            outer: ContinuationSnapshotLink::new(continuation_from_snapshot(
-                limits,
-                required(value, "outer")?,
-                checked,
-            )?),
-        },
         "agent_prompt_body" => ContinuationSnapshot::AgentPromptBody {
             item: etas_hir::HirItemId(required_u32(value, "item")?),
             span: span_from_snapshot(required(value, "span")?)?,
             model_policy: optional_model_policy(value, "model_policy")?.map(Box::new),
         },
-        "scoped_model_policy" => ContinuationSnapshot::ScopedModelPolicy {
-            policy: Box::new(model_policy_from_snapshot(required(value, "policy")?)?),
-            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
-                limits,
-                required(value, "inner")?,
-                checked,
-            )?),
-        },
-        "call_boundary" => ContinuationSnapshot::CallBoundary {
-            outer: ContinuationSnapshotLink::new(continuation_from_snapshot(
-                limits,
-                required(value, "outer")?,
-                checked,
-            )?),
-        },
-        "chain" => ContinuationSnapshot::Chain {
-            inner: ContinuationSnapshotLink::new(continuation_from_snapshot(
-                limits,
-                required(value, "inner")?,
-                checked,
-            )?),
-            outer: ContinuationSnapshotLink::new(continuation_from_snapshot(
-                limits,
-                required(value, "outer")?,
-                checked,
-            )?),
-        },
+        "restore_model_policy"
+        | "handle_boundary"
+        | "handler_dispatch"
+        | "scoped_model_policy"
+        | "call_boundary"
+        | "chain" => {
+            return Err("continuation decoder expected a leaf, not an owned edge".into());
+        }
         "return" => ContinuationSnapshot::Return,
         "resume" => ContinuationSnapshot::Resume,
         "finish" => ContinuationSnapshot::Finish,

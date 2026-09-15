@@ -5,6 +5,7 @@ use std::cell::Cell;
 pub(crate) struct Allocations {
     pub count: usize,
     pub bytes: usize,
+    pub released_bytes: usize,
 }
 
 thread_local! {
@@ -26,6 +27,15 @@ fn record(bytes: usize) {
     });
 }
 
+fn record_release(bytes: usize) {
+    let _ = ACTIVE.try_with(|active| {
+        if let Some(mut stats) = active.get() {
+            stats.released_bytes = stats.released_bytes.saturating_add(bytes);
+            active.set(Some(stats));
+        }
+    });
+}
+
 // Forward every allocation unchanged; only this test thread's measured region is counted.
 unsafe impl GlobalAlloc for CountingAllocator {
     unsafe fn alloc(&self, layout: Layout) -> *mut u8 {
@@ -39,12 +49,17 @@ unsafe impl GlobalAlloc for CountingAllocator {
     }
 
     unsafe fn dealloc(&self, ptr: *mut u8, layout: Layout) {
+        record_release(layout.size());
         unsafe { System.dealloc(ptr, layout) }
     }
 
     unsafe fn realloc(&self, ptr: *mut u8, layout: Layout, size: usize) -> *mut u8 {
         record(size);
-        unsafe { System.realloc(ptr, layout, size) }
+        let result = unsafe { System.realloc(ptr, layout, size) };
+        if !result.is_null() {
+            record_release(layout.size());
+        }
+        result
     }
 }
 
@@ -64,4 +79,26 @@ pub(crate) fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
     let stats = ACTIVE.with(|active| active.get().unwrap());
     drop(reset);
     (result, stats)
+}
+
+#[test]
+fn allocation_counter_distinguishes_retained_output_from_released_temporaries() {
+    let (retained, retained_cost) = measure(|| std::hint::black_box(vec![7u8; 1024]));
+    assert_eq!(retained_cost.bytes, 1024);
+    assert_eq!(retained_cost.released_bytes, 0);
+    let (_, released_cost) = measure(|| drop(retained));
+    assert_eq!(released_cost.bytes, 0);
+    assert_eq!(released_cost.released_bytes, 1024);
+}
+
+#[test]
+fn allocation_counter_includes_reallocated_old_storage_in_releases() {
+    let (_, cost) = measure(|| {
+        let mut buffer = Vec::<u8>::with_capacity(8);
+        buffer.resize(1024, 7);
+        drop(std::hint::black_box(buffer));
+    });
+    assert!(cost.count >= 2);
+    assert!(cost.bytes >= 1032);
+    assert_eq!(cost.released_bytes, cost.bytes);
 }
