@@ -6,6 +6,8 @@ use crate::control::CallTarget;
 use serde_json::{Value, json};
 mod decode;
 mod target;
+#[cfg(test)]
+mod tests;
 pub(super) use decode::call_target_snapshots_from_json;
 pub(crate) use decode::{call_target_from_artifact_snapshot, call_target_snapshot_from_json};
 

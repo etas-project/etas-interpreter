@@ -12,6 +12,7 @@ pub(super) trait TargetValue: Sized {
     type Frame;
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String>;
     fn build(target: DecodedTarget<Self::Frame, Self>) -> Self;
+    fn release(targets: impl IntoIterator<Item = Self>);
 }
 
 pub(super) enum DecodedTarget<F, T> {
@@ -37,11 +38,11 @@ pub(super) enum DecodedTarget<F, T> {
         result_type: TypeId,
     },
     Specialized {
-        target: Box<T>,
+        target: T,
         type_bindings: Vec<(String, TypeId)>,
     },
     Limited {
-        target: Box<T>,
+        target: T,
         limits: Vec<crate::eval::limit::RuntimeLimit>,
     },
     Composed(Vec<T>),
@@ -49,6 +50,11 @@ pub(super) enum DecodedTarget<F, T> {
 
 impl TargetValue for CallTargetSnapshot {
     type Frame = LocalsSnapshot;
+    fn release(targets: impl IntoIterator<Item = Self>) {
+        for target in targets {
+            drop(target);
+        }
+    }
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
         locals_from_snapshot(limits, value)
     }
@@ -66,11 +72,11 @@ impl TargetValue for CallTargetSnapshot {
                 target,
                 type_bindings,
             } => Self::Specialized {
-                target: (*target).into(),
+                target: target.into(),
                 type_bindings,
             },
             DecodedTarget::Limited { target, limits } => Self::Limited {
-                target: (*target).into(),
+                target: target.into(),
                 limits,
             },
 
@@ -100,6 +106,9 @@ impl TargetValue for CallTargetSnapshot {
 
 impl TargetValue for CallTarget {
     type Frame = Frame;
+    fn release(targets: impl IntoIterator<Item = Self>) {
+        crate::control::release_call_targets(targets);
+    }
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
         runtime_frame_from_snapshot(limits, value)
     }
@@ -117,10 +126,13 @@ impl TargetValue for CallTarget {
                 target,
                 type_bindings,
             } => Self::Specialized {
-                target,
+                target: Box::new(target),
                 type_bindings,
             },
-            DecodedTarget::Limited { target, limits } => Self::Limited { target, limits },
+            DecodedTarget::Limited { target, limits } => Self::Limited {
+                target: Box::new(target),
+                limits,
+            },
 
             DecodedTarget::PureIntrinsic {
                 intrinsic,

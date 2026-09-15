@@ -84,36 +84,6 @@ struct RestoredTargets(Vec<CallTarget>);
 
 impl Drop for RestoredTargets {
     fn drop(&mut self) {
-        let mut siblings = std::mem::take(&mut self.0).into_iter();
-        let mut next = siblings.next();
-        let mut pending = Vec::new();
-        if siblings.len() > 0 {
-            pending.push(siblings);
-        }
-        loop {
-            if let Some(node) = next.take() {
-                match node {
-                    CallTarget::Specialized { target, .. } | CallTarget::Limited { target, .. } => {
-                        next = Some(*target)
-                    }
-                    CallTarget::Composed(targets) => {
-                        let mut children = targets.into_iter();
-                        next = children.next();
-                        if children.len() > 0 {
-                            pending.push(children);
-                        }
-                    }
-                    _ => {}
-                }
-                continue;
-            }
-            let Some(siblings) = pending.last_mut() else {
-                return;
-            };
-            next = siblings.next();
-            if siblings.len() == 0 {
-                pending.pop();
-            }
-        }
+        crate::control::release_call_targets(std::mem::take(&mut self.0));
     }
 }

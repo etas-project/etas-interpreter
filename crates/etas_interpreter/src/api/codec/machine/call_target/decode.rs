@@ -33,16 +33,141 @@ fn decode_many<T: TargetValue>(
     limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<Vec<T>, String> {
-    value
-        .as_array()
-        .ok_or_else(|| "machine snapshot call targets must be an array".to_owned())?
-        .iter()
-        .map(|value| decode(limits, value))
-        .collect()
+    let children = target_array(value)?;
+    let mut output = DecodedTargets(Vec::with_capacity(children.len()));
+    for child in children {
+        output.0.push(decode(limits, child)?);
+    }
+    Ok(std::mem::take(&mut output.0))
 }
 
-fn decode<T: TargetValue>(limits: &etas_host::StorageLimits, value: &Value) -> Result<T, String> {
-    Ok(T::build(match required_str(value, "kind")? {
+enum PendingParent<'a, T: TargetValue> {
+    Specialized(&'a Value),
+    Limited(&'a Value),
+    Composed {
+        remaining: &'a [Value],
+        values: DecodedTargets<T>,
+    },
+}
+
+struct DecodedTargets<T: TargetValue>(Vec<T>);
+
+impl<T: TargetValue> Drop for DecodedTargets<T> {
+    fn drop(&mut self) {
+        T::release(std::mem::take(&mut self.0));
+    }
+}
+
+// Parent metadata is checked after its child, in wire order. Keep the child
+// guarded until all fallible metadata parsing has succeeded.
+struct DecodedValue<T: TargetValue>(Option<T>);
+
+impl<T: TargetValue> DecodedValue<T> {
+    fn into_value(mut self) -> T {
+        self.0
+            .take()
+            .expect("decoded value is consumed exactly once")
+    }
+}
+
+impl<T: TargetValue> Drop for DecodedValue<T> {
+    fn drop(&mut self) {
+        T::release(self.0.take());
+    }
+}
+
+fn target_array(value: &Value) -> Result<&[Value], String> {
+    value
+        .as_array()
+        .map(Vec::as_slice)
+        .ok_or_else(|| "machine snapshot call targets must be an array".to_owned())
+}
+
+fn decode<T: TargetValue>(
+    limits: &etas_host::StorageLimits,
+    mut current: &Value,
+) -> Result<T, String> {
+    let mut pending = Vec::new();
+    loop {
+        let kind = required_str(current, "kind")?;
+        let mut value = match kind {
+            "specialized" | "limited" => {
+                let child = required(current, "target")?;
+                pending.push(if kind == "specialized" {
+                    PendingParent::Specialized(current)
+                } else {
+                    PendingParent::Limited(current)
+                });
+                current = child;
+                continue;
+            }
+            "composed" => {
+                let children = target_array(required(current, "targets")?)?;
+                if let Some((first, remaining)) = children.split_first() {
+                    pending.push(PendingParent::Composed {
+                        remaining,
+                        values: DecodedTargets(Vec::with_capacity(children.len())),
+                    });
+                    current = first;
+                    continue;
+                }
+                DecodedValue(Some(T::build(DecodedTarget::Composed(vec![]))))
+            }
+            _ => DecodedValue(Some(T::build(decode_leaf::<T>(limits, current, kind)?))),
+        };
+        loop {
+            let target = match pending.pop() {
+                Some(PendingParent::Specialized(parent)) => {
+                    let type_bindings = required(parent, "type_bindings")?
+                        .as_array()
+                        .ok_or_else(|| {
+                            "specialized call target type_bindings must be an array".to_owned()
+                        })?
+                        .iter()
+                        .map(|binding| {
+                            Ok((
+                                required_str(binding, "name")?.to_owned(),
+                                etas_types::TypeId(required_u32(binding, "type")?),
+                            ))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    DecodedTarget::Specialized {
+                        target: value.into_value(),
+                        type_bindings,
+                    }
+                }
+                Some(PendingParent::Limited(parent)) => {
+                    let limits = runtime_limits_from_snapshot(required(parent, "limits")?)?;
+                    DecodedTarget::Limited {
+                        target: value.into_value(),
+                        limits,
+                    }
+                }
+                Some(PendingParent::Composed {
+                    remaining,
+                    mut values,
+                }) => {
+                    values.0.push(value.into_value());
+                    if let Some((first, remaining)) = remaining.split_first() {
+                        pending.push(PendingParent::Composed { remaining, values });
+                        current = first;
+                        break;
+                    }
+                    DecodedTarget::Composed(std::mem::take(&mut values.0))
+                }
+                None => return Ok(value.into_value()),
+            };
+            value = DecodedValue(Some(T::build(target)));
+        }
+    }
+}
+
+fn decode_leaf<T: TargetValue>(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+    kind: &str,
+) -> Result<DecodedTarget<T::Frame, T>, String> {
+    Ok(match kind {
         "flow" => DecodedTarget::FlowItem(etas_hir::HirItemId(required_u32(value, "item")?)),
         "agent" => DecodedTarget::AgentItem(etas_hir::HirItemId(required_u32(value, "item")?)),
         "tool" => DecodedTarget::ToolItem(etas_hir::HirItemId(required_u32(value, "item")?)),
@@ -96,25 +221,6 @@ fn decode<T: TargetValue>(limits: &etas_host::StorageLimits, value: &Value) -> R
                 .collect::<Result<Vec<_>, _>>()?,
             result_type: etas_types::TypeId(required_u32(value, "result_type")?),
         },
-        "specialized" => DecodedTarget::Specialized {
-            target: Box::new(decode(limits, required(value, "target")?)?),
-            type_bindings: required(value, "type_bindings")?
-                .as_array()
-                .ok_or_else(|| "specialized call target type_bindings must be an array".to_owned())?
-                .iter()
-                .map(|binding| {
-                    Ok((
-                        required_str(binding, "name")?.to_owned(),
-                        etas_types::TypeId(required_u32(binding, "type")?),
-                    ))
-                })
-                .collect::<Result<Vec<_>, String>>()?,
-        },
-        "limited" => DecodedTarget::Limited {
-            target: Box::new(decode(limits, required(value, "target")?)?),
-            limits: runtime_limits_from_snapshot(required(value, "limits")?)?,
-        },
-        "composed" => DecodedTarget::Composed(decode_many(limits, required(value, "targets")?)?),
         other => return Err(format!("unknown machine call target `{other}`")),
-    }))
+    })
 }
