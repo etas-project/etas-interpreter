@@ -27,6 +27,7 @@ enum Cursor<'a> {
         index: usize,
     },
     Pairs(std::vec::IntoIter<(&'a V, &'a V)>),
+    Range(std::array::IntoIter<(&'a V, &'a V), 2>),
     Set {
         a: &'a [V],
         b: &'a [V],
@@ -150,6 +151,23 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                     index: 0,
                 }
             }
+            (
+                V::Range {
+                    start: a,
+                    end: c,
+                    bounds: x,
+                },
+                V::Range {
+                    start: b,
+                    end: d,
+                    bounds: y,
+                },
+            ) => {
+                if x != y {
+                    return Comparison::Ready(false);
+                }
+                Cursor::Range([(a.as_ref(), b.as_ref()), (c.as_ref(), d.as_ref())].into_iter())
+            }
             _ => {
                 let mut pairs = Vec::new();
                 if !super::same_node(a, b, &mut pairs) {
@@ -222,6 +240,7 @@ impl<'a> EqualityCursor for Cursor<'a> {
                     })
             }
             Self::Pairs(pairs) => pairs.next().map(|(a, b)| node(a, b)),
+            Self::Range(pairs) => pairs.next().map(|(a, b)| node(a, b)),
             Self::Set { .. } => unreachable!("set searches handled above"),
         };
         next.map(CursorStep::Child)

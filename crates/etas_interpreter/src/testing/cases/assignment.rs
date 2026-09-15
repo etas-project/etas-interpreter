@@ -2,6 +2,72 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn range_key_indexes_preserve_bounds_aliases_and_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+flow main() -> bool {
+    let a: Range<u64> = Range.closed(0, 18446744073709551615);
+    let same: Range<u64> = Range.closed(0, 18446744073709551615);
+    let b: Range<u64> = Range.closed(1, 18446744073709551615);
+    let missing: Range<u64> = Range.closed(2, 18446744073709551615);
+    let open: Range<u64> = [0, 18446744073709551615);
+    var values = { a => 10, b => 20, open => 40 };
+    let alias = values;
+    let members = #{a, b, same, open};
+    if values.get(same) != Some(10) { return false; }
+    checkpoint("Range-key-before-update");
+    values[same] = 30;
+    checkpoint("Range-key-after-update");
+    var count = 0;
+    for member in members limit Iterations(4) {
+        if member != a && member != b && member != open { return false; }
+        count = count + 1;
+    }
+    return a == same && a != b && a != open
+        && values.get(a) == Some(30) && values.get(b) == Some(20)
+        && values.get(open) == Some(40) && values.get(missing) == None
+        && alias.get(a) == Some(10) && count == 3
+        && members == #{open, same, b} && members != #{a, b, missing};
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(result.checkpoints.len(), 2);
+    for saved in &result.checkpoints {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [saved, &decoded] {
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+        }
+        assert_eq!(
+            checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap(),
+            artifact
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn json_key_indexes_preserve_updates_and_checkpoint_resume() {
     let checked = checked_project(
         r#"

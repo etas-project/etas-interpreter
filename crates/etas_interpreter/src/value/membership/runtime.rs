@@ -58,6 +58,14 @@ impl StructuralPartition for InterpValue {
                 crate::value::json::hash(value, state);
                 return None;
             }
+            Self::Range(value) => {
+                std::mem::discriminant(&value.bounds).hash(state);
+                // Checked ranges have numeric endpoints; hashing never iterates
+                // the represented interval or substitutes iteration equivalence.
+                value.start.as_number().hash(state);
+                value.end.as_number().hash(state);
+                return None;
+            }
             Self::Nominal { ty, value } => {
                 ty.hash(state);
                 Storage::Single(value.clone())

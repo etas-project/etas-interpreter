@@ -57,6 +57,19 @@ impl StructuralPartition for ValueSnapshot {
                 crate::value::json::hash(value, state);
                 return None;
             }
+            Self::Range { start, end, bounds } => {
+                std::mem::discriminant(bounds).hash(state);
+                // This only partitions numeric endpoints, not validates them;
+                // unvalidated snapshots still require exact candidate equality.
+                for endpoint in [start, end] {
+                    let numeric = match endpoint.as_ref() {
+                        Self::Number(value) => Some(*value),
+                        _ => None,
+                    };
+                    numeric.hash(state);
+                }
+                return None;
+            }
             Self::Nominal { ty, value } => {
                 ty.hash(state);
                 Storage::Single(value)
