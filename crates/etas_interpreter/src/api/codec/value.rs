@@ -1,7 +1,7 @@
 use super::*;
 mod decode;
-mod encode_host;
-mod encode_model;
+pub(super) mod encode_host;
+pub(super) mod encode_model;
 mod scalar;
 pub(super) mod session;
 mod snapshot_support;
@@ -493,10 +493,6 @@ pub(super) fn model_response_from_json(
             }),
         },
     })
-}
-
-pub(super) fn host_support_value_json(value: &crate::value::HostSupportValue) -> Value {
-    encode_host::encode(value)
 }
 
 pub(super) fn host_support_value_from_json(

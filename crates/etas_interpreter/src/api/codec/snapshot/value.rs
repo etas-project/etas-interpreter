@@ -12,6 +12,9 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
             *slot = json!({"kind":"nominal", "ty":ty.0, "value":null});
             pending.push((Node::Value(value), &mut slot["value"]));
         }
+        V::ModelResponse(value) => {
+            super::model(super::encode_model::Part::Response(value), slot, pending)
+        }
         V::Trust { wrapper, value } => {
             *slot = json!({"kind":"trust", "wrapper":value_codec::trust_wrapper_json(*wrapper), "value":null});
             pending.push((Node::Value(value), &mut slot["value"]));
@@ -163,7 +166,6 @@ fn leaf(value: &ValueSnapshot) -> Value {
             json!({"kind":"prompt", "messages":messages.iter().map(|message| json!({"role":value_codec::prompt_role_json(message.role),"text":message.text,"trust":message.trust.map(value_codec::trust_wrapper_json)})).collect::<Vec<_>>()})
         }
         V::Provenance(value) => json!({"kind":"provenance","value":provenance_json(value)}),
-        V::ModelResponse(value) => model_response_json(value),
         V::Command {
             argv,
             env,
@@ -221,6 +223,7 @@ fn leaf(value: &ValueSnapshot) -> Value {
         | V::Conversation(_)
         | V::Callable(_)
         | V::Json(_)
+        | V::ModelResponse(_)
         | V::MemorySelection { .. } => unreachable!("compound value must fill child slots"),
     }
 }

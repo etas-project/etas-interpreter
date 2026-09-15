@@ -114,7 +114,7 @@ fn all_json_encoding_boundaries_preserve_wire_bits_labels_and_order() {
     ]);
     let expected = legacy_wrapped(&shared);
     let runtime = codec::value_json(&InterpValue::Json(shared.clone()));
-    let support = codec::value::host_support_value_json(&HostSupportValue::Json(shared.clone()));
+    let support = codec::value::encode_host::encode(&HostSupportValue::Json(shared.clone()));
     let external = codec::host_value_json(&HostValue::Json(host));
     assert_eq!(runtime, expected);
     assert_eq!(support, expected);
@@ -146,9 +146,8 @@ fn host_and_support_json_encoders_remove_intermediate_payload_copies() {
         let (expected, old) = measure(|| CheckpointDocument::from_value(legacy_wrapped(&shared)));
         let (external, host_cost) =
             measure(|| CheckpointDocument::from_value(codec::host_value_json(&host)));
-        let (internal, support_cost) = measure(|| {
-            CheckpointDocument::from_value(codec::value::host_support_value_json(&support))
-        });
+        let (internal, support_cost) =
+            measure(|| CheckpointDocument::from_value(codec::value::encode_host::encode(&support)));
         assert_eq!(*external, *expected);
         assert_eq!(*internal, *expected);
         for cost in [host_cost, support_cost] {

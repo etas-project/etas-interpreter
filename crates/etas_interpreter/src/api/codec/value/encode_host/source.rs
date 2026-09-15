@@ -3,7 +3,7 @@ use crate::value::{HostJsonSupportValue, HostSupportValue};
 use etas_host::{HostJsonValue, HostValue};
 use serde_json::{Value, json};
 
-pub(in crate::api::codec::value) enum HostView<'a, T: HostSource> {
+pub(in crate::api::codec) enum HostView<'a, T: HostSource> {
     Leaf(Value),
     List(&'a [T]),
     Map(&'a [(T, T)]),
@@ -12,7 +12,7 @@ pub(in crate::api::codec::value) enum HostView<'a, T: HostSource> {
     Json(&'a T::Json),
 }
 
-pub(in crate::api::codec::value) trait HostSource: Sized {
+pub(in crate::api::codec) trait HostSource: Sized {
     type Json: JsonSource;
     fn view(&self) -> HostView<'_, Self>;
 }

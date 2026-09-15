@@ -47,9 +47,7 @@ fn host_container_encoding_removes_repeated_descendant_materialization() {
         let support = chain(depth, Support::String("p".repeat(1024)));
         let (expected, old) = measure(|| CheckpointDocument::from_value(legacy(&support)));
         let host = codec::host_value_from_json(&expected).unwrap();
-        let (actual, cost) = measure(|| {
-            CheckpointDocument::from_value(super::super::host_support_value_json(&support))
-        });
+        let (actual, cost) = measure(|| CheckpointDocument::from_value(super::encode(&support)));
         let (external, host_cost) =
             measure(|| CheckpointDocument::from_value(codec::host_value_json(&host)));
         assert_eq!(*actual, *expected);
@@ -116,7 +114,7 @@ fn host_container_encoding_preserves_all_wire_kinds_and_order() {
         ("z".into(), Support::Unit),
     ]);
     let expected = legacy(&value);
-    assert_eq!(super::super::host_support_value_json(&value), expected);
+    assert_eq!(super::encode(&value), expected);
     let host = codec::host_value_from_json(&expected).unwrap();
     assert_eq!(codec::host_value_json(&host), expected);
     assert_eq!(
@@ -146,9 +144,7 @@ fn wide_host_container_encoding_only_materializes_the_output_graph() {
         );
         let (expected, old) = measure(|| CheckpointDocument::from_value(legacy(&support)));
         let host = codec::host_value_from_json(&expected).unwrap();
-        let (actual, cost) = measure(|| {
-            CheckpointDocument::from_value(super::super::host_support_value_json(&support))
-        });
+        let (actual, cost) = measure(|| CheckpointDocument::from_value(super::encode(&support)));
         let (external, host_cost) =
             measure(|| CheckpointDocument::from_value(codec::host_value_json(&host)));
         assert_eq!(*actual, *expected);
@@ -172,7 +168,7 @@ fn wide_host_container_encoding_only_materializes_the_output_graph() {
 #[test]
 fn host_encoding_does_not_coerce_invalid_abi_values_or_change_decode_errors() {
     let malformed = Support::Record(vec![("child".into(), Support::UInt("-1".into()))]);
-    let wire = super::super::host_support_value_json(&malformed);
+    let wire = super::encode(&malformed);
     assert_eq!(wire, legacy(&malformed));
     assert!(
         codec::host_value_from_json(&wire)
@@ -181,7 +177,7 @@ fn host_encoding_does_not_coerce_invalid_abi_values_or_change_decode_errors() {
             .contains("u128")
     );
 
-    let mut wire = super::super::host_support_value_json(&chain(2, Support::Bytes(vec![1])));
+    let mut wire = super::encode(&chain(2, Support::Bytes(vec![1])));
     wire["fields"][0]["value"]["values"][0]["value"] = json!([256]);
     assert!(codec::host_value_from_json(&wire).is_err());
     assert!(super::super::host_support_value_from_json(&wire).is_err());

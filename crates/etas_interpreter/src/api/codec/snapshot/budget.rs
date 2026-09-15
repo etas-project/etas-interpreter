@@ -1,7 +1,9 @@
 use super::Node;
+use crate::api::codec::value::encode_model::Part;
 use crate::api::codec::{CheckpointFileLimits, InterpreterCodecError};
 use crate::orchestration::{CallTargetSnapshot, ValueSnapshot};
 use crate::value::HostJsonSupportValue as Json;
+use crate::value::{HostSupportValue as Host, ModelContentValue};
 
 // A lower bound on logical JSON work. Charge each expanded occurrence, not
 // each shared backing once. The file writer still checks exact JSON nodes and
@@ -62,6 +64,7 @@ impl EncodingBudget {
                 ValueSnapshot::Bytes(bytes) => (0, bytes.len()),
                 ValueSnapshot::Prompt(messages) => (0, messages.len()),
                 ValueSnapshot::Json(_) => (1, 0),
+                ValueSnapshot::ModelResponse(value) => model_work(Part::Response(value))?,
                 _ => (0, 0),
             },
             Node::Json(value) => match value {
@@ -69,6 +72,20 @@ impl EncodingBudget {
                 Json::Object(entries) => (entries.len(), 0),
                 _ => (0, 0),
             },
+            Node::Host(value) => match value {
+                Host::List(values) | Host::Variant { fields: values, .. } => (values.len(), 0),
+                Host::Map(entries) => (entries.len().checked_mul(2).ok_or_else(exhausted)?, 0),
+                Host::Record(fields) => (fields.len(), 0),
+                Host::Bytes(bytes) => (0, bytes.len()),
+                Host::Json(_) => (1, 0),
+                Host::Unit
+                | Host::Bool(_)
+                | Host::Int(_)
+                | Host::UInt(_)
+                | Host::FloatBits(_)
+                | Host::String(_) => (0, 0),
+            },
+            Node::Model(part) => model_work(part)?,
             Node::Frame(frame) => (frame.locals.len(), frame.type_bindings.len()),
             Node::CallTarget(CallTargetSnapshot::Composed(targets)) => (targets.len(), 0),
             Node::CallTarget(CallTargetSnapshot::Specialized { type_bindings, .. }) => {
@@ -125,6 +142,23 @@ impl EncodingBudget {
                     self.charge_bytes(key.len())?;
                 }
             }
+            Node::Host(Host::String(value) | Host::Int(value) | Host::UInt(value)) => {
+                self.charge_bytes(value.len())?
+            }
+            Node::Host(Host::Bytes(value)) => self.charge_bytes(value.len())?,
+            Node::Host(Host::Variant { name, .. }) => self.charge_bytes(name.len())?,
+            Node::Host(Host::Record(fields)) => {
+                for (name, _) in fields {
+                    self.charge_bytes(name.len())?;
+                }
+            }
+            Node::Model(Part::Content(ModelContentValue::Text(text))) => {
+                self.charge_bytes(text.len())?
+            }
+            Node::Model(Part::ToolCall(call)) => {
+                self.charge_bytes(call.id.len())?;
+                self.charge_bytes(call.tool.len())?;
+            }
             _ => {}
         }
         Ok(())
@@ -136,6 +170,22 @@ impl EncodingBudget {
         })?;
         Ok(())
     }
+}
+
+fn model_work(part: Part<'_>) -> Result<(usize, usize), InterpreterCodecError> {
+    Ok(match part {
+        Part::Response(value) => (
+            value
+                .tool_calls
+                .len()
+                .checked_add(1)
+                .ok_or_else(exhausted)?,
+            usize::from(value.usage.is_some()) * 2,
+        ),
+        Part::Message(value) => (value.content.len(), 0),
+        Part::Content(ModelContentValue::Text(_)) => (0, 0),
+        Part::Content(ModelContentValue::Value(_)) | Part::ToolCall(_) => (1, 0),
+    })
 }
 
 fn exhausted() -> InterpreterCodecError {

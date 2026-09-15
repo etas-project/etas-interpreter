@@ -1,3 +1,4 @@
+use super::value::{encode_host, encode_model};
 use crate::orchestration::{
     CallTargetSnapshot, ContinuationSnapshot, LocalsSnapshot, MessageSnapshot, ValueSnapshot,
 };
@@ -26,6 +27,8 @@ pub(super) fn continuation_json_with_budget(
 pub(super) enum Node<'a> {
     Value(&'a ValueSnapshot),
     Json(&'a crate::value::HostJsonSupportValue),
+    Host(&'a crate::value::HostSupportValue),
+    Model(encode_model::Part<'a>),
     Message(&'a MessageSnapshot),
     Frame(&'a LocalsSnapshot),
     CallTarget(&'a CallTargetSnapshot),
@@ -57,6 +60,16 @@ fn encode_with_budget(
             Node::Json(value) => super::json::write(value, slot, |value, slot| {
                 pending.push((Node::Json(value), slot));
             }),
+            Node::Host(value) => {
+                encode_host::write(encode_host::Node::Host(value), slot, |node, slot| {
+                    let node = match node {
+                        encode_host::Node::Host(value) => Node::Host(value),
+                        encode_host::Node::Json(value) => Node::Json(value),
+                    };
+                    pending.push((node, slot));
+                })
+            }
+            Node::Model(part) => model(part, slot, &mut pending),
             Node::Message(message) => value::message(message, slot, &mut pending),
             Node::Frame(frame) => call_target::frame(frame, slot, &mut pending),
             Node::CallTarget(target) => call_target::encode(target, slot, &mut pending),
@@ -109,6 +122,16 @@ fn encode_with_budget(
         }
     }
     Ok(output.into_value())
+}
+
+fn model<'a>(part: encode_model::Part<'a>, slot: &'a mut Value, pending: &mut Pending<'a>) {
+    encode_model::write(part, slot, |child, slot| {
+        let node = match child {
+            encode_model::Child::Model(part) => Node::Model(part),
+            encode_model::Child::Host(value) => Node::Host(value),
+        };
+        pending.push((node, slot));
+    });
 }
 
 fn array(slot: &mut Value, count: usize) -> impl Iterator<Item = &mut Value> {
