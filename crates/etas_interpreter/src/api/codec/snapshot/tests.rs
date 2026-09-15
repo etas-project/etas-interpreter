@@ -11,6 +11,7 @@ use std::rc::Rc;
 
 mod budget;
 mod call_target;
+mod json;
 
 #[test]
 fn captured_value_json_preserves_the_runtime_wire_contract() {

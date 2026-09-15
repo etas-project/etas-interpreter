@@ -107,6 +107,10 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
             *slot = json!({"kind":"callable", "target":null});
             pending.push((Node::CallTarget(target), &mut slot["target"]));
         }
+        V::Json(value) => {
+            *slot = json!({"kind":"json","value":null});
+            pending.push((Node::Json(value), &mut slot["value"]));
+        }
         V::MemorySelection {
             region_stable_id,
             path,
@@ -155,7 +159,6 @@ fn leaf(value: &ValueSnapshot) -> Value {
         V::Number(value) => numeric_value_json(*value),
         V::String(value) => json!({"kind":"string","value":value}),
         V::Bytes(value) => json!({"kind":"bytes","value":value}),
-        V::Json(value) => json!({"kind":"json","value":host_json_support_value_json(value)}),
         V::Prompt(messages) => {
             json!({"kind":"prompt", "messages":messages.iter().map(|message| json!({"role":value_codec::prompt_role_json(message.role),"text":message.text,"trust":message.trust.map(value_codec::trust_wrapper_json)})).collect::<Vec<_>>()})
         }
@@ -219,6 +222,7 @@ fn leaf(value: &ValueSnapshot) -> Value {
         | V::Message(_)
         | V::Conversation(_)
         | V::Callable(_)
+        | V::Json(_)
         | V::MemorySelection { .. } => unreachable!("compound value must fill child slots"),
     }
 }

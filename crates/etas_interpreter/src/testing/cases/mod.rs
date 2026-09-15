@@ -12,6 +12,7 @@ mod conversation;
 mod handler;
 mod http_framing;
 mod iteration;
+mod json_values;
 mod language_control;
 mod local_collections;
 mod memory;

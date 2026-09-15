@@ -4,6 +4,8 @@ mod scalar;
 pub(super) mod session;
 mod snapshot_support;
 
+pub(super) use decode::json::decode as host_json_support_value_from_json;
+
 pub(super) fn numeric_value_json(value: crate::value::NumericValue) -> Value {
     use crate::value::NumericValue;
 
@@ -727,43 +729,6 @@ pub(super) fn host_json_support_value_json(value: &crate::value::HostJsonSupport
                 json!({ "key": key, "value": host_json_support_value_json(value) })
             }).collect::<Vec<_>>(),
         }),
-    }
-}
-
-pub(super) fn host_json_support_value_from_json(
-    value: &Value,
-) -> Result<crate::value::HostJsonSupportValue, InterpreterCodecError> {
-    match required_str(value, "kind")? {
-        "null" => Ok(crate::value::HostJsonSupportValue::Null),
-        "bool" => Ok(crate::value::HostJsonSupportValue::Bool(required_bool(
-            value, "value",
-        )?)),
-        "number_bits" => Ok(crate::value::HostJsonSupportValue::NumberBits(
-            required_u64(value, "value")?,
-        )),
-        "string" => Ok(crate::value::HostJsonSupportValue::String(
-            required_str(value, "value")?.into(),
-        )),
-        "array" => Ok(crate::value::HostJsonSupportValue::Array(
-            required_array(value, "values")?
-                .iter()
-                .map(host_json_support_value_from_json)
-                .collect::<Result<crate::value::JsonArray, InterpreterCodecError>>()?,
-        )),
-        "object" => Ok(crate::value::HostJsonSupportValue::Object(
-            required_array(value, "entries")?
-                .iter()
-                .map(|entry| {
-                    Ok((
-                        required_str(entry, "key")?.to_owned(),
-                        host_json_support_value_from_json(required_obj(entry, "value")?)?,
-                    ))
-                })
-                .collect::<Result<crate::value::JsonObject, InterpreterCodecError>>()?,
-        )),
-        other => Err(InterpreterCodecError::new(format!(
-            "unsupported host json support value `{other}`"
-        ))),
     }
 }
 

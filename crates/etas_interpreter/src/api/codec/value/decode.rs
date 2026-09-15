@@ -1,5 +1,7 @@
 use super::*;
 
+pub(super) mod json;
+
 #[cfg(test)]
 mod tests;
 
