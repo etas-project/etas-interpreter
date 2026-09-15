@@ -7,12 +7,7 @@ pub fn run_report_json(
     result: &RunResult,
 ) -> Result<Value, InterpreterCodecError> {
     let report = &result.termination;
-    let checkpoints = result
-        .checkpoints
-        .iter()
-        .map(checkpoint_json)
-        .collect::<Result<Vec<_>, _>>()?;
-    let mut report = json!({
+    let mut report = CheckpointDocument::from_value(json!({
         "schema": "etas.cli.interpreter-report.v1",
         "command": command,
         "sources": sources,
@@ -47,13 +42,21 @@ pub fn run_report_json(
                 "cleanup_errors": operation.cleanup_errors().iter().map(|error| format!("{:?}", error.code)).collect::<Vec<_>>(),
             })).collect::<Vec<_>>(),
         },
-        "value": result.value().map(value_json),
-        "events": result.events.iter().map(event_json).collect::<Vec<_>>(),
-        "checkpoints": null,
+        "value": null,
+        "events": null,
+        "checkpoints": [],
         "diagnostics": result.diagnostics.iter().map(diagnostic_summary_json).collect::<Vec<_>>(),
-    });
-    report["checkpoints"] = Value::Array(checkpoints);
-    Ok(report)
+    }));
+    report.value_mut()["value"] = result.value().map_or(Value::Null, value_json);
+    report.value_mut()["events"] = Value::Array(result.events.iter().map(event_json).collect());
+    for checkpoint in &result.checkpoints {
+        let checkpoint = checkpoint_json(checkpoint)?;
+        report.value_mut()["checkpoints"]
+            .as_array_mut()
+            .expect("report checkpoint array was initialized above")
+            .push(checkpoint);
+    }
+    Ok(report.into_value())
 }
 
 fn failure_json(failure: &crate::api::RunFailure) -> Value {

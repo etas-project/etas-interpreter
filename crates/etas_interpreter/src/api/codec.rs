@@ -25,6 +25,7 @@ use crate::{
 
 mod checkpoint;
 mod file;
+mod json;
 mod json_helpers;
 mod machine;
 mod report;

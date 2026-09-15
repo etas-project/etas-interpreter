@@ -87,10 +87,7 @@ pub fn value_json(value: &InterpValue) -> Value {
         InterpValue::Number(value) => numeric_value_json(*value),
         InterpValue::String(value) => json!({ "kind": "string", "value": value }),
         InterpValue::Bytes(value) => json!({ "kind": "bytes", "value": value }),
-        InterpValue::Json(value) => json!({
-            "kind": "json",
-            "value": host_json_support_value_json(value),
-        }),
+        InterpValue::Json(value) => super::json::wrapped(value),
         InterpValue::Nominal { ty, value } => json!({
             "kind": "nominal",
             "ty": ty.0,
@@ -342,10 +339,7 @@ pub(crate) fn host_value_json(value: &HostValue) -> Value {
             "name": name,
             "fields": fields.iter().map(host_value_json).collect::<Vec<_>>(),
         }),
-        HostValue::Json(value) => json!({
-            "kind": "json",
-            "value": host_json_value_json(value),
-        }),
+        HostValue::Json(value) => super::json::wrapped(value),
     }
 }
 
@@ -412,25 +406,6 @@ pub(super) fn host_values_from_array(
         .iter()
         .map(host_value_from_json)
         .collect()
-}
-
-pub(super) fn host_json_value_json(value: &HostJsonValue) -> Value {
-    match value {
-        HostJsonValue::Null => json!({ "kind": "null" }),
-        HostJsonValue::Bool(value) => json!({ "kind": "bool", "value": value }),
-        HostJsonValue::Number(value) => json!({ "kind": "number_bits", "value": value.to_bits() }),
-        HostJsonValue::String(value) => json!({ "kind": "string", "value": value }),
-        HostJsonValue::Array(values) => json!({
-            "kind": "array",
-            "values": values.iter().map(host_json_value_json).collect::<Vec<_>>(),
-        }),
-        HostJsonValue::Object(entries) => json!({
-            "kind": "object",
-            "entries": entries.iter().map(|(key, value)| {
-                json!({ "key": key, "value": host_json_value_json(value) })
-            }).collect::<Vec<_>>(),
-        }),
-    }
 }
 
 pub(super) fn host_json_value_from_json(
@@ -629,10 +604,7 @@ pub(super) fn host_support_value_json(value: &crate::value::HostSupportValue) ->
             "name": name,
             "fields": fields.iter().map(host_support_value_json).collect::<Vec<_>>(),
         }),
-        crate::value::HostSupportValue::Json(value) => json!({
-            "kind": "json",
-            "value": host_json_support_value_json(value),
-        }),
+        crate::value::HostSupportValue::Json(value) => super::json::wrapped(value),
     }
 }
 
@@ -705,31 +677,6 @@ pub(super) fn host_support_values_from_array(
         .iter()
         .map(host_support_value_from_json)
         .collect()
-}
-
-pub(super) fn host_json_support_value_json(value: &crate::value::HostJsonSupportValue) -> Value {
-    match value {
-        crate::value::HostJsonSupportValue::Null => json!({ "kind": "null" }),
-        crate::value::HostJsonSupportValue::Bool(value) => {
-            json!({ "kind": "bool", "value": value })
-        }
-        crate::value::HostJsonSupportValue::NumberBits(value) => {
-            json!({ "kind": "number_bits", "value": value })
-        }
-        crate::value::HostJsonSupportValue::String(value) => {
-            json!({ "kind": "string", "value": value })
-        }
-        crate::value::HostJsonSupportValue::Array(values) => json!({
-            "kind": "array",
-            "values": values.iter().map(host_json_support_value_json).collect::<Vec<_>>(),
-        }),
-        crate::value::HostJsonSupportValue::Object(entries) => json!({
-            "kind": "object",
-            "entries": entries.iter().map(|(key, value)| {
-                json!({ "key": key, "value": host_json_support_value_json(value) })
-            }).collect::<Vec<_>>(),
-        }),
-    }
 }
 
 pub(super) fn values_from_array(

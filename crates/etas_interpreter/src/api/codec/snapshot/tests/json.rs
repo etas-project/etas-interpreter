@@ -17,10 +17,9 @@ fn snapshot_json_encoding_does_not_reserialize_descendants() {
         let saved = ValueSnapshot::Json(json.clone());
         let (actual, direct) =
             measure(|| CheckpointDocument::from_value(encode(Node::Value(&saved))));
-        // Reference the former snapshot path through the existing runtime codec:
-        // each nested helper materializes JSON and serde copies its descendants.
+        // Keep the former production algorithm as an explicit test-only baseline.
         let (expected, legacy) =
-            measure(|| CheckpointDocument::from_value(codec::value_json(&InterpValue::Json(json))));
+            measure(|| CheckpointDocument::from_value(codec::json::tests::legacy_wrapped(&json)));
         assert_eq!(*actual, *expected);
         assert!(
             legacy.bytes > direct.bytes + depth * 2048,

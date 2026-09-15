@@ -5,7 +5,6 @@ use serde_json::{Value, json};
 
 mod budget;
 mod call_target;
-mod json;
 #[cfg(test)]
 mod tests;
 mod value;
@@ -55,7 +54,9 @@ fn encode_with_budget(
         budget.admit(node, pending.len())?;
         match node {
             Node::Value(value) => value::encode(value, slot, &mut pending),
-            Node::Json(value) => json::encode(value, slot, &mut pending),
+            Node::Json(value) => super::json::write(value, slot, |value, slot| {
+                pending.push((Node::Json(value), slot));
+            }),
             Node::Message(message) => value::message(message, slot, &mut pending),
             Node::Frame(frame) => call_target::frame(frame, slot, &mut pending),
             Node::CallTarget(target) => call_target::encode(target, slot, &mut pending),

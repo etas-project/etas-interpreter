@@ -45,7 +45,7 @@ pub(super) enum SessionContextFault {
     ForeignReceipt,
 }
 
-pub(super) struct FakeHost {
+pub(crate) struct FakeHost {
     pub(super) session_context_fault: Option<SessionContextFault>,
     pub(super) storage: Option<TestMemoryBackend>,
     console_gate: Option<Arc<ConsoleGate>>,
@@ -88,7 +88,7 @@ pub(super) struct FakeHost {
 }
 
 impl FakeHost {
-    pub(super) fn new(availability: HostServiceAvailability) -> Self {
+    pub(crate) fn new(availability: HostServiceAvailability) -> Self {
         Self {
             storage: None,
             console_gate: None,

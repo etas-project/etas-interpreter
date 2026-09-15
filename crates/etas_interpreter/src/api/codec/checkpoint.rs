@@ -182,7 +182,8 @@ pub fn event_json(event: &WorkflowEvent) -> Value {
             created_at,
             payload,
             provenance,
-        } => json!({
+        } => {
+            let mut event = json!({
             "kind": "message_created",
             "id": id,
             "from": from,
@@ -190,9 +191,12 @@ pub fn event_json(event: &WorkflowEvent) -> Value {
             "session": session,
             "role": role,
             "created_at": created_at,
-            "payload": value_json(payload),
+            "payload": null,
             "provenance": provenance.as_ref().map(provenance_json),
-        }),
+            });
+            event["payload"] = value_json(payload);
+            event
+        }
         WorkflowEvent::MessageSessionAttached {
             id,
             session,
@@ -424,7 +428,7 @@ pub(super) fn checkpoint_json(
         "label": checkpoint.label,
         "compilation": compilation_identity_json(&checkpoint.compilation),
         "entry_item": checkpoint.entry_item.0,
-        "args": checkpoint.args.iter().map(value_json).collect::<Vec<_>>(),
+        "args": null,
         "machine": null,
         "handlers": checkpoint.handlers.handlers.iter().map(|handler| {
             json!({
@@ -458,6 +462,7 @@ pub(super) fn checkpoint_json(
             })
         }).collect::<Vec<_>>(),
     }));
+    artifact.value_mut()["args"] = Value::Array(checkpoint.args.iter().map(value_json).collect());
     artifact.value_mut()["machine"] = machine_json(&checkpoint.machine)?;
     Ok(artifact.into_value())
 }
