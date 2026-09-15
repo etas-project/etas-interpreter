@@ -13,9 +13,15 @@ use crate::{plan::SlotLayoutTable, value::InterpValue};
 pub struct Frame {
     snapshot_id: u64,
     layout: Arc<SlotLayoutTable>,
-    slots: Rc<RefCell<Vec<Option<InterpValue>>>>,
+    slots: Rc<RefCell<SlotStorage>>,
     restored: Option<Rc<RefCell<HashMap<SymbolId, InterpValue>>>>,
     type_bindings: Arc<HashMap<String, etas_types::TypeId>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct SlotStorage {
+    values: Vec<Option<InterpValue>>,
+    additional: HashMap<SymbolId, usize>,
 }
 
 static NEXT_FRAME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
@@ -43,7 +49,10 @@ impl Frame {
         Self {
             snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             layout,
-            slots: Rc::new(RefCell::new(vec![None; slot_count])),
+            slots: Rc::new(RefCell::new(SlotStorage {
+                values: vec![None; slot_count],
+                additional: HashMap::new(),
+            })),
             restored: None,
             type_bindings,
         }
@@ -89,7 +98,10 @@ impl Frame {
         Ok(Self {
             snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             layout: Arc::new(SlotLayoutTable::default()),
-            slots: Rc::new(RefCell::new(Vec::new())),
+            slots: Rc::new(RefCell::new(SlotStorage {
+                values: Vec::new(),
+                additional: HashMap::new(),
+            })),
             restored: Some(Rc::new(RefCell::new(restored))),
             type_bindings: Arc::new(HashMap::new()),
         })
@@ -131,8 +143,9 @@ impl Frame {
     }
 
     pub fn get(&self, symbol: SymbolId) -> Option<InterpValue> {
-        if let Some(slot) = self.layout.resolve(symbol) {
-            return self.slots.borrow()[slot.0 as usize].clone();
+        let slots = self.slots.borrow();
+        if let Some(slot) = self.resolve(&slots, symbol) {
+            return slots.values[slot].clone();
         }
         self.restored
             .as_ref()
@@ -140,8 +153,9 @@ impl Frame {
     }
 
     pub fn insert(&mut self, symbol: SymbolId, value: InterpValue) {
-        if let Some(slot) = self.layout.resolve(symbol) {
-            self.slots.borrow_mut()[slot.0 as usize] = Some(value);
+        let mut slots = self.slots.borrow_mut();
+        if let Some(slot) = self.resolve(&slots, symbol) {
+            slots.values[slot] = Some(value);
             return;
         }
         if let Some(locals) = &self.restored {
@@ -152,11 +166,10 @@ impl Frame {
     }
 
     pub fn set(&mut self, symbol: SymbolId, value: InterpValue) -> bool {
-        if let Some(slot) = self.layout.resolve(symbol) {
-            let mut slots = self.slots.borrow_mut();
-            let index = slot.0 as usize;
-            if slots[index].is_some() {
-                slots[index] = Some(value);
+        let mut slots = self.slots.borrow_mut();
+        if let Some(index) = self.resolve(&slots, symbol) {
+            if slots.values[index].is_some() {
+                slots.values[index] = Some(value);
                 return true;
             }
             return false;
@@ -178,21 +191,19 @@ impl Frame {
         symbol: SymbolId,
         update: impl FnOnce(&mut InterpValue) -> R,
     ) -> Option<R> {
-        if let Some(slot) = self.layout.resolve(symbol) {
-            let mut slots = self.slots.borrow_mut();
-            return slots.get_mut(slot.0 as usize)?.as_mut().map(update);
+        let mut slots = self.slots.borrow_mut();
+        if let Some(slot) = self.resolve(&slots, symbol) {
+            return slots.values.get_mut(slot)?.as_mut().map(update);
         }
         let mut locals = self.restored.as_ref()?.borrow_mut();
         locals.get_mut(&symbol).map(update)
     }
 
     pub fn snapshot_symbols(&self) -> HashSet<SymbolId> {
+        let slots = self.slots.borrow();
         let mut symbols = self
-            .layout
-            .symbols()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, symbol)| self.slots.borrow()[index].as_ref().map(|_| *symbol))
+            .slot_symbols(&slots)
+            .filter_map(|(symbol, index)| slots.values[index].as_ref().map(|_| symbol))
             .collect::<HashSet<_>>();
         if let Some(restored) = &self.restored {
             symbols.extend(restored.borrow().keys().copied());
@@ -202,9 +213,18 @@ impl Frame {
 
     pub fn cleanup_to(&mut self, keep: &HashSet<SymbolId>) {
         let mut slots = self.slots.borrow_mut();
-        for (index, symbol) in self.layout.symbols().iter().enumerate() {
-            if !keep.contains(symbol) {
-                slots[index] = None;
+        let SlotStorage { values, additional } = &mut *slots;
+        for (symbol, index) in self
+            .layout
+            .symbols()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, symbol)| (symbol, index))
+            .chain(additional.iter().map(|(symbol, index)| (*symbol, *index)))
+        {
+            if !keep.contains(&symbol) {
+                values[index] = None;
             }
         }
         if let Some(restored) = &self.restored {
@@ -217,11 +237,8 @@ impl Frame {
     pub fn sorted_locals(&self) -> Vec<(SymbolId, InterpValue)> {
         let slots = self.slots.borrow();
         let mut locals = self
-            .layout
-            .symbols()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, symbol)| slots[index].clone().map(|value| (*symbol, value)))
+            .slot_symbols(&slots)
+            .filter_map(|(symbol, index)| slots.values[index].clone().map(|value| (symbol, value)))
             .collect::<Vec<_>>();
         if let Some(restored) = &self.restored {
             locals.extend(
@@ -241,12 +258,12 @@ impl Frame {
     ) -> Result<Vec<(SymbolId, T)>, E> {
         let slots = self.slots.borrow();
         let restored = self.restored.as_ref().map(|locals| locals.borrow());
-        let count = slots.iter().filter(|value| value.is_some()).count()
+        let count = slots.values.iter().filter(|value| value.is_some()).count()
             + restored.as_ref().map_or(0, |locals| locals.len());
         let mut output = Vec::with_capacity(count);
-        for (symbol, value) in self.layout.symbols().iter().zip(slots.iter()) {
-            if let Some(value) = value {
-                output.push((*symbol, map(value)?));
+        for (symbol, index) in self.slot_symbols(&slots) {
+            if let Some(value) = &slots.values[index] {
+                output.push((symbol, map(value)?));
             }
         }
         if let Some(restored) = restored {
@@ -256,5 +273,55 @@ impl Frame {
         }
         output.sort_unstable_by_key(|(symbol, _)| symbol.0);
         Ok(output)
+    }
+
+    fn resolve(&self, slots: &SlotStorage, symbol: SymbolId) -> Option<usize> {
+        self.layout
+            .resolve(symbol)
+            .map(|slot| slot.0 as usize)
+            .or_else(|| slots.additional.get(&symbol).copied())
+    }
+
+    fn slot_symbols<'a>(
+        &'a self,
+        slots: &'a SlotStorage,
+    ) -> impl Iterator<Item = (SymbolId, usize)> + 'a {
+        self.layout
+            .symbols()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, symbol)| (symbol, index))
+            .chain(
+                slots
+                    .additional
+                    .iter()
+                    .map(|(symbol, index)| (*symbol, *index)),
+            )
+    }
+
+    /// A first-class handler may be defined outside the applying callable.
+    /// Install only its planned bindings, in shared storage so every alias keeps
+    /// the same frame identity and observes the same symbol-to-slot mapping.
+    pub(crate) fn install_scope_layout(&mut self, layout: &SlotLayoutTable) {
+        // Restored frames already use symbolic locals rather than dense slots.
+        if self.restored.is_some() {
+            return;
+        }
+        let mut slots = self.slots.borrow_mut();
+        let missing = layout
+            .symbols()
+            .iter()
+            .filter(|symbol| self.resolve(&slots, **symbol).is_none())
+            .count();
+        slots.values.reserve(missing);
+        slots.additional.reserve(missing);
+        for symbol in layout.symbols() {
+            if self.resolve(&slots, *symbol).is_none() {
+                let index = slots.values.len();
+                slots.additional.insert(*symbol, index);
+                slots.values.push(None);
+            }
+        }
     }
 }

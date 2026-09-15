@@ -431,7 +431,7 @@ impl<'a> EvalContext<'a> {
         match target {
             CallTarget::FlowItem(item) => match self.checked.hir.items.get(item) {
                 Some(HirItem::Flow(flow)) => {
-                    let (signal, _) =
+                    let signal =
                         self.execute_flow_with_type_bindings(item, flow, &call_args, bindings);
                     match signal {
                         ControlSignal::Value(value) | ControlSignal::Return(value) => {

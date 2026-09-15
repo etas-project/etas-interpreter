@@ -1,6 +1,70 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn first_class_handler_slots_preserve_caller_locals_across_checkpoint() {
+    use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+effect Select { action choose(value: i32) -> i32; }
+let Increment: ![Select => []] = handler {
+    Select.choose(value) => {
+        let updated = value + 1;
+        checkpoint("handler-slots");
+        resume updated;
+    }
+};
+flow apply(selected: ![Select => []], initial: i32) -> i32 {
+    var value = initial;
+    handle {
+        let chosen = perform Select.choose(value);
+        value = chosen;
+    } with selected;
+    return value;
+}
+flow main() -> i32 {
+    let result = apply(Increment, 10);
+    checkpoint("caller-slots");
+    return result;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(11)));
+    assert_eq!(result.checkpoints.len(), 2);
+    for saved in &result.checkpoints {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [saved, &decoded] {
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), Some(&InterpValue::i32(11)));
+        }
+        assert_eq!(
+            checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap(),
+            artifact
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_records_checkpoint_event_and_snapshot() {
     let checked = checked_project(
         r#"

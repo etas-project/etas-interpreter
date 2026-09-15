@@ -344,6 +344,13 @@ impl<'a> EvalContext<'a> {
             .iter()
             .find(|handler| self.handler_matches_perform(&perform, handler))?;
         let mut handler_frame = frame.clone();
+        let Some(layout) = self.plan.frames.get(handler.scope) else {
+            return Some(ControlSignal::missing_checked_fact(
+                "handler arm is missing its checked frame layout",
+                handler.span,
+            ));
+        };
+        handler_frame.install_scope_layout(layout);
         if let Err(fault) = self.bind_handler_patterns(
             &handler.patterns,
             &perform.args,

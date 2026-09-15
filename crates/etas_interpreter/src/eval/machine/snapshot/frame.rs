@@ -62,6 +62,49 @@ mod tests {
     use crate::value::{ArrayValue, InterpValue};
 
     #[test]
+    fn installed_scope_slots_are_shared_reused_and_captured_without_identity_conflicts() {
+        use crate::{plan::SlotLayoutTable, testing::allocation::measure};
+        use std::sync::Arc;
+        for count in [1000, 2000, 4000] {
+            let mut frame = Frame::new(Arc::new(SlotLayoutTable::from_symbols(vec![SymbolId(0)])));
+            frame.insert(SymbolId(0), InterpValue::i32(42));
+            let keep = frame.snapshot_symbols();
+            let alias = frame.clone();
+            let layout = SlotLayoutTable::from_symbols((1..=count).map(SymbolId).collect());
+            let (_, cost) = measure(|| frame.install_scope_layout(&layout));
+            eprintln!("install {count} handler slots: {cost:?}");
+            assert!(cost.count <= 2, "{cost:?}");
+            let (_, repeat) = measure(|| frame.install_scope_layout(&layout));
+            assert_eq!(repeat.count, 0, "{repeat:?}");
+            frame.insert(
+                SymbolId(count),
+                InterpValue::Array(vec![InterpValue::i32(1)].into()),
+            );
+            assert_eq!(alias.get(SymbolId(count)), frame.get(SymbolId(count)));
+            let saved = capture_frame(&frame).unwrap();
+            assert_eq!(saved, capture_frame(&alias).unwrap());
+            let mut context = RestoreContext::default();
+            let mut restored = restore_frame(saved.clone(), &mut context).unwrap();
+            let restored_alias =
+                restore_frame(capture_frame(&alias).unwrap(), &mut context).unwrap();
+            restored.install_scope_layout(&layout);
+            assert!(restored.set(SymbolId(count), InterpValue::i32(99)));
+            assert_eq!(
+                restored_alias.get(SymbolId(count)),
+                Some(InterpValue::i32(99))
+            );
+            frame.cleanup_to(&keep);
+            assert_eq!(alias.get(SymbolId(count)), None);
+            assert_eq!(alias.get(SymbolId(0)), Some(InterpValue::i32(42)));
+            let old = restore_frame(saved, &mut RestoreContext::default()).unwrap();
+            assert_eq!(
+                old.get(SymbolId(count)),
+                Some(InterpValue::Array(vec![InterpValue::i32(1)].into()))
+            );
+        }
+    }
+
+    #[test]
     fn capturing_frame_shares_strings_and_only_allocates_the_local_table() {
         for count in [1000, 2000, 4000] {
             let frame = Frame::from_snapshot(

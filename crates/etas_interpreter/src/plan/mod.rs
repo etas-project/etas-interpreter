@@ -4,6 +4,7 @@ mod captures;
 mod context;
 mod dispatch;
 mod entry;
+mod frames;
 mod globals;
 mod pipeline;
 mod readiness;

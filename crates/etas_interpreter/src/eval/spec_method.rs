@@ -226,7 +226,10 @@ impl<'a> EvalContext<'a> {
             );
             return ControlSignal::invalid_arguments(message, span);
         }
-        let mut frame = Frame::new(self.plan.slots.clone());
+        let mut frame = match self.callable_frame(flow.scope, Default::default(), span) {
+            Ok(frame) => frame,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
         for (symbol, arg) in flow.params.iter().zip(call_args.into_iter()) {
             frame.insert(*symbol, arg);
         }

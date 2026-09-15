@@ -12,10 +12,10 @@ use super::{
     InterpreterPlan, action_mediation::ComputeEntryActionMediationPass,
     arguments::BuildCallArgumentsPass, captures::BuildClosureLayoutsPass, context::PlanContext,
     dispatch::BuildIntrinsicDispatchTablePass, entry::BuildEntryPlanPass,
-    globals::BuildGlobalTablePass, readiness::ComputeReachableHostRequirementsPass,
-    records::BuildRecordLayoutsPass, resources::BuildResourceHandleTablePass,
-    slots::BuildSlotLayoutPass, validate::ValidateCheckedProjectPass,
-    variants::BuildNamedVariantLayoutsPass,
+    frames::BuildFrameLayoutsPass, globals::BuildGlobalTablePass,
+    readiness::ComputeReachableHostRequirementsPass, records::BuildRecordLayoutsPass,
+    resources::BuildResourceHandleTablePass, slots::BuildSlotLayoutPass,
+    validate::ValidateCheckedProjectPass, variants::BuildNamedVariantLayoutsPass,
 };
 
 pub fn build_plan(project: &CheckedProject, _options: PlanOptions) -> PlanResult {
@@ -39,11 +39,18 @@ pub fn build_plan(project: &CheckedProject, _options: PlanOptions) -> PlanResult
         .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error)
     {
         None
-    } else if let (Some(closures), Some(named_variants), Some(records), Some(arguments)) = (
+    } else if let (
+        Some(closures),
+        Some(named_variants),
+        Some(records),
+        Some(arguments),
+        Some(frames),
+    ) = (
         context.closures.take(),
         context.named_variants.take(),
         context.records.take(),
         context.arguments.take(),
+        context.frames.take(),
     ) {
         Some(InterpreterPlan {
             entry: context.entry.expect("entry should be available"),
@@ -54,6 +61,7 @@ pub fn build_plan(project: &CheckedProject, _options: PlanOptions) -> PlanResult
             ),
             globals: context.globals.expect("global table should be available"),
             closures,
+            frames,
             named_variants,
             records,
             arguments,
@@ -99,6 +107,12 @@ fn require_plan_artifacts(context: &mut PlanContext<'_>) {
         context.diagnostics.push(diagnostics::missing_checked_fact(
             span,
             "interpreter plan is missing call argument descriptors",
+        ));
+    }
+    if context.frames.is_none() {
+        context.diagnostics.push(diagnostics::missing_checked_fact(
+            span,
+            "interpreter plan is missing callable frame layouts",
         ));
     }
     if context.globals.is_none() {
@@ -156,6 +170,7 @@ fn plan_pipeline<'a>() -> Pipeline<PlanContext<'a>> {
         .pass(ValidateCheckedProjectPass)
         .pass(BuildEntryPlanPass)
         .pass(BuildSlotLayoutPass)
+        .pass(BuildFrameLayoutsPass)
         .pass(BuildCallArgumentsPass)
         .pass(BuildClosureLayoutsPass)
         .pass(BuildNamedVariantLayoutsPass)
