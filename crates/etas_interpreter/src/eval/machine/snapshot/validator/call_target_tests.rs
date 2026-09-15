@@ -1,35 +1,25 @@
 use super::*;
 
-// Isolate borrowed validation from the separate owned call-target Drop audit.
+// Owning these targets also exercises the production snapshot edge release path.
 struct TargetTree(Option<CallTargetSnapshot>);
-
-impl Drop for TargetTree {
-    fn drop(&mut self) {
-        let mut pending: Vec<_> = self.0.take().into_iter().collect();
-        while let Some(node) = pending.pop() {
-            match node {
-                CallTargetSnapshot::Limited { target, .. }
-                | CallTargetSnapshot::Specialized { target, .. } => pending.push(*target),
-                CallTargetSnapshot::Composed(targets) => pending.extend(targets),
-                _ => {}
-            }
-        }
-    }
-}
 
 fn tree(mut leaf: CallTargetSnapshot, depth: usize, mode: usize) -> TargetTree {
     for _ in 0..depth {
         leaf = match mode {
             0 => CallTargetSnapshot::Limited {
-                target: Box::new(leaf),
+                target: leaf.into(),
                 limits: vec![],
             },
             1 => CallTargetSnapshot::Specialized {
-                target: Box::new(leaf),
+                target: leaf.into(),
                 type_bindings: vec![],
             },
-            2 => CallTargetSnapshot::Composed(vec![leaf, CallTargetSnapshot::Composed(vec![])]),
-            _ => CallTargetSnapshot::Composed(vec![CallTargetSnapshot::Composed(vec![]), leaf]),
+            2 => CallTargetSnapshot::Composed(
+                (vec![leaf, CallTargetSnapshot::Composed((vec![]).into())]).into(),
+            ),
+            _ => CallTargetSnapshot::Composed(
+                (vec![CallTargetSnapshot::Composed((vec![]).into()), leaf]).into(),
+            ),
         };
     }
     TargetTree(Some(leaf))
@@ -96,6 +86,26 @@ fn deep_call_target_validation_borrows_graph_without_recursive_descent() {
 }
 
 #[test]
+fn cloning_checkpoint_call_target_does_not_copy_all_descendants() {
+    for depth in [32, 1000, 4000, 30_000] {
+        let root = tree(CallTargetSnapshot::FlowItem(HirItemId(1)), depth, 0);
+        let (retained, cost) =
+            crate::testing::allocation::measure(|| root.0.as_ref().unwrap().clone());
+        let retained = TargetTree(Some(retained));
+        assert_eq!(
+            cost.count, 0,
+            "copied target graph at depth {depth}: {cost:?}"
+        );
+        drop(root);
+        let (_, release) = crate::testing::allocation::measure(|| drop(retained));
+        assert!(
+            release.count <= 1,
+            "unary release allocated per node: {release:?}"
+        );
+    }
+}
+
+#[test]
 fn call_target_validation_preserves_child_binding_and_sibling_error_order() {
     let checked = crate::testing::project::checked_project(
         "module app.main; flow main() -> unit { return; }",
@@ -114,8 +124,8 @@ fn call_target_validation_preserves_child_binding_and_sibling_error_order() {
     );
     let good = || CallTargetSnapshot::FlowItem(checked.entry.unwrap());
     let bad = || CallTargetSnapshot::FlowItem(HirItemId(u32::MAX));
-    let specialize = |target, name: &str| CallTargetSnapshot::Specialized {
-        target: Box::new(target),
+    let specialize = |target: CallTargetSnapshot, name: &str| CallTargetSnapshot::Specialized {
+        target: target.into(),
         type_bindings: vec![(name.to_owned(), TypeId(u32::MAX))],
     };
     for (node, message) in [
@@ -126,11 +136,11 @@ fn call_target_validation_preserves_child_binding_and_sibling_error_order() {
         ),
         (specialize(good(), "T"), "missing checked type"),
         (
-            CallTargetSnapshot::Composed(vec![bad(), specialize(good(), "")]),
+            CallTargetSnapshot::Composed((vec![bad(), specialize(good(), "")]).into()),
             "missing HIR item",
         ),
         (
-            CallTargetSnapshot::Composed(vec![specialize(good(), ""), bad()]),
+            CallTargetSnapshot::Composed((vec![specialize(good(), ""), bad()]).into()),
             "invalid or duplicate type parameter",
         ),
     ] {
@@ -167,9 +177,10 @@ fn wide_composed_call_target_validation_does_not_copy_or_queue_all_siblings() {
     );
     for width in [1000, 4000, 30_000] {
         let root = TargetTree(Some(CallTargetSnapshot::Composed(
-            (0..width)
+            ((0..width)
                 .map(|_| CallTargetSnapshot::FlowItem(checked.entry.unwrap()))
-                .collect(),
+                .collect::<Vec<_>>())
+            .into(),
         )));
         let (result, cost) = crate::testing::allocation::measure(|| {
             validator.call_target(root.0.as_ref().unwrap(), "wide target")
@@ -205,7 +216,7 @@ fn deep_specialized_target_validates_every_nonempty_binding_after_its_child() {
         let mut target = CallTargetSnapshot::FlowItem(checked.entry.unwrap());
         for index in 0..30_000 {
             target = CallTargetSnapshot::Specialized {
-                target: Box::new(target),
+                target: target.into(),
                 type_bindings: if invalid_at == Some(index) {
                     vec![("T".into(), ty), ("T".into(), ty)]
                 } else {
@@ -272,7 +283,7 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
             &limits,
         )
         .validate_machine(&machine);
-        // Move the owned graph back to the iterative test guard before assertions.
+        // Return the target to its owning test value before checking the result.
         let MachineFrameSnapshot::Continuation {
             continuation: ContinuationSnapshot::CallArgs { target, .. },
         } = machine.frames.pop().unwrap()

@@ -1,4 +1,6 @@
+mod call_target_storage;
 mod checkpoint;
+pub(crate) use call_target_storage::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 mod continuation_storage;
 pub(crate) use continuation_storage::ContinuationSnapshotLink;
 mod snapshot_storage;

@@ -60,16 +60,19 @@ impl TargetValue for CallTargetSnapshot {
             DecodedTarget::SpecImplMethod(value) => Self::SpecImplMethod(value),
             DecodedTarget::EnumVariant(value) => Self::EnumVariant(value),
             DecodedTarget::NominalConstructor(value) => Self::NominalConstructor(value),
-            DecodedTarget::Composed(value) => Self::Composed(value),
+            DecodedTarget::Composed(value) => Self::Composed(value.into()),
             DecodedTarget::Lambda { expr, captured } => Self::Lambda { expr, captured },
             DecodedTarget::Specialized {
                 target,
                 type_bindings,
             } => Self::Specialized {
-                target,
+                target: (*target).into(),
                 type_bindings,
             },
-            DecodedTarget::Limited { target, limits } => Self::Limited { target, limits },
+            DecodedTarget::Limited { target, limits } => Self::Limited {
+                target: (*target).into(),
+                limits,
+            },
 
             DecodedTarget::PureIntrinsic {
                 intrinsic,

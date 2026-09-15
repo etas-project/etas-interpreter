@@ -9,6 +9,8 @@ use etas_hir::{HirExprId, SymbolId};
 use etas_types::{TrustWrapper, TypeId};
 use std::rc::Rc;
 
+mod call_target;
+
 #[test]
 fn captured_value_json_preserves_the_runtime_wire_contract() {
     let leaf = InterpValue::i32(7);

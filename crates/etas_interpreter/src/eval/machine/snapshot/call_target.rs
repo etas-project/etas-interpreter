@@ -29,18 +29,19 @@ pub(super) fn capture_call_target(target: &CallTarget) -> Result<CallTargetSnaps
             target,
             type_bindings,
         } => CallTargetSnapshot::Specialized {
-            target: Box::new(capture_call_target(target)?),
+            target: capture_call_target(target)?.into(),
             type_bindings: type_bindings.clone(),
         },
         CallTarget::Limited { target, limits } => CallTargetSnapshot::Limited {
-            target: Box::new(capture_call_target(target)?),
+            target: capture_call_target(target)?.into(),
             limits: limits.clone(),
         },
         CallTarget::Composed(targets) => CallTargetSnapshot::Composed(
             targets
                 .iter()
                 .map(capture_call_target)
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
         ),
     })
 }
@@ -86,15 +87,16 @@ pub(super) fn restore_call_target(
             target,
             type_bindings,
         } => CallTarget::Specialized {
-            target: Box::new(restore_call_target(*target, context)?),
+            target: Box::new(restore_call_target(target.into_value(), context)?),
             type_bindings,
         },
         CallTargetSnapshot::Limited { target, limits } => CallTarget::Limited {
-            target: Box::new(restore_call_target(*target, context)?),
+            target: Box::new(restore_call_target(target.into_value(), context)?),
             limits,
         },
         CallTargetSnapshot::Composed(targets) => CallTarget::Composed(
             targets
+                .into_values()
                 .into_iter()
                 .map(|target| restore_call_target(target, context))
                 .collect::<Result<Vec<_>, _>>()?,

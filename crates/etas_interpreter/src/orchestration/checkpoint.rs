@@ -5,7 +5,10 @@ use etas_hir::{
 };
 use etas_types::TypeId;
 
-use super::{ContinuationSnapshotLink, SnapshotBox, SnapshotChildren};
+use super::{
+    CallTargetSnapshotChildren, CallTargetSnapshotLink, ContinuationSnapshotLink, SnapshotBox,
+    SnapshotChildren,
+};
 use crate::api::ExecutionLimits;
 use crate::value::{
     HostJsonSupportValue, InterpValue, MemorySelectionKind, MessageRoleValue, ModelResponseValue,
@@ -132,14 +135,14 @@ pub(crate) enum CallTargetSnapshot {
         result_type: etas_types::TypeId,
     },
     Specialized {
-        target: Box<CallTargetSnapshot>,
+        target: CallTargetSnapshotLink,
         type_bindings: Vec<(String, etas_types::TypeId)>,
     },
     Limited {
-        target: Box<CallTargetSnapshot>,
+        target: CallTargetSnapshotLink,
         limits: Vec<crate::eval::limit::RuntimeLimit>,
     },
-    Composed(Vec<CallTargetSnapshot>),
+    Composed(CallTargetSnapshotChildren),
 }
 
 #[derive(Clone, Debug)]
