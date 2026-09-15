@@ -1,5 +1,6 @@
 use super::RestoreContext;
 mod capture;
+mod restore;
 #[cfg(test)]
 mod tests;
 use std::collections::HashSet;
@@ -611,7 +612,7 @@ impl ContinuationSnapshot {
         })
     }
 
-    pub(crate) fn restore_with(self, context: &mut RestoreContext) -> Result<Continuation, String> {
+    fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
             Self::ContinueBlock {
                 block,
@@ -1098,13 +1099,6 @@ impl ContinuationSnapshot {
                     .collect::<Result<Vec<_>, _>>()?,
                 span,
             },
-            Self::RestoreModelPolicy { previous, inner } => Continuation::RestoreModelPolicy {
-                previous: Box::new(restore_model_policy(*previous)),
-                inner: Box::new(inner.into_value().restore_with(context)?),
-            },
-            Self::CallBoundary { outer } => Continuation::CallBoundary {
-                outer: Box::new(outer.into_value().restore_with(context)?),
-            },
             Self::ForLoop {
                 pat,
                 source,
@@ -1185,22 +1179,6 @@ impl ContinuationSnapshot {
                 next_index,
                 span,
             },
-            Self::HandlerDispatch { outer } => Continuation::HandlerDispatch {
-                outer: Box::new(outer.into_value().restore_with(context)?),
-            },
-            Self::HandleBoundary {
-                scope_id,
-                inner,
-                handlers,
-                span,
-                frame,
-            } => Continuation::HandleBoundary {
-                scope_id,
-                inner: Box::new(inner.into_value().restore_with(context)?),
-                handlers,
-                span,
-                frame: super::frame::restore_frame(frame, context)?,
-            },
             Self::AgentPromptBody {
                 item,
                 span,
@@ -1212,14 +1190,14 @@ impl ContinuationSnapshot {
                     .map(|policy| restore_model_policy(*policy))
                     .map(Box::new),
             },
-            Self::ScopedModelPolicy { policy, inner } => Continuation::ScopedModelPolicy {
-                policy: Box::new(restore_model_policy(*policy)),
-                inner: Box::new(inner.into_value().restore_with(context)?),
-            },
-            Self::Chain { inner, outer } => Continuation::Chain {
-                inner: Box::new(inner.into_value().restore_with(context)?),
-                outer: Box::new(outer.into_value().restore_with(context)?),
-            },
+            Self::RestoreModelPolicy { .. }
+            | Self::CallBoundary { .. }
+            | Self::HandlerDispatch { .. }
+            | Self::HandleBoundary { .. }
+            | Self::ScopedModelPolicy { .. }
+            | Self::Chain { .. } => {
+                return Err("continuation restore expected a leaf, not an owned edge".into());
+            }
             Self::Return => Continuation::Return,
             Self::Resume => Continuation::Resume,
             Self::Finish => Continuation::Finish,

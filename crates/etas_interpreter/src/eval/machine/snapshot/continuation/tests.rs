@@ -2,6 +2,8 @@ use crate::{
     control::Continuation, orchestration::ContinuationSnapshot, testing::allocation::measure,
 };
 
+mod restore;
+
 // Runtime edge destruction is a separate audit. Isolate the capture algorithm.
 struct RuntimeTree(Option<Continuation>);
 
