@@ -163,9 +163,7 @@ fn leaf(value: &ValueSnapshot) -> Value {
             json!({"kind":"prompt", "messages":messages.iter().map(|message| json!({"role":value_codec::prompt_role_json(message.role),"text":message.text,"trust":message.trust.map(value_codec::trust_wrapper_json)})).collect::<Vec<_>>()})
         }
         V::Provenance(value) => json!({"kind":"provenance","value":provenance_json(value)}),
-        V::ModelResponse(value) => {
-            json!({"kind":"model_response","id":value.id,"message":model_message_json(&value.message),"tool_calls":value.tool_calls.iter().map(model_tool_call_json).collect::<Vec<_>>(),"usage":value.usage.as_ref().map(|usage|json!({"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens}))})
-        }
+        V::ModelResponse(value) => model_response_json(value),
         V::Command {
             argv,
             env,

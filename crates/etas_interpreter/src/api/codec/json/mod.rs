@@ -1,7 +1,7 @@
 use super::CheckpointDocument;
 use serde_json::{Value, json};
 
-mod view;
+pub(super) mod view;
 use view::{JsonSource, JsonView};
 
 #[cfg(test)]

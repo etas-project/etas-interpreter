@@ -1,10 +1,13 @@
 use super::*;
 mod decode;
+mod encode_host;
+mod encode_model;
 mod scalar;
 pub(super) mod session;
 mod snapshot_support;
 
 pub(super) use decode::json::decode as host_json_support_value_from_json;
+pub(super) use encode_model::model_response_json;
 
 pub(super) fn numeric_value_json(value: crate::value::NumericValue) -> Value {
     use crate::value::NumericValue;
@@ -133,18 +136,7 @@ pub fn value_json(value: &InterpValue) -> Value {
             "kind": "provenance",
             "value": provenance_json(provenance),
         }),
-        InterpValue::ModelResponse(response) => json!({
-            "kind": "model_response",
-            "id": response.id,
-            "message": model_message_json(&response.message),
-            "tool_calls": response.tool_calls.iter().map(model_tool_call_json).collect::<Vec<_>>(),
-            "usage": response.usage.as_ref().map(|usage| {
-                json!({
-                    "input_tokens": usage.input_tokens,
-                    "output_tokens": usage.output_tokens,
-                })
-            }),
-        }),
+        InterpValue::ModelResponse(response) => model_response_json(response),
         InterpValue::Command {
             argv,
             env,
@@ -310,37 +302,7 @@ pub fn value_json(value: &InterpValue) -> Value {
 }
 
 pub(crate) fn host_value_json(value: &HostValue) -> Value {
-    match value {
-        HostValue::Unit => json!({ "kind": "unit" }),
-        HostValue::Bool(value) => json!({ "kind": "bool", "value": value }),
-        HostValue::Int(value) => json!({ "kind": "int", "value": value.to_string() }),
-        HostValue::UInt(value) => json!({ "kind": "uint", "value": value.to_string() }),
-        HostValue::Float(value) => json!({ "kind": "float_bits", "value": value.to_bits() }),
-        HostValue::String(value) => json!({ "kind": "string", "value": value }),
-        HostValue::Bytes(value) => json!({ "kind": "bytes", "value": value }),
-        HostValue::List(values) => json!({
-            "kind": "list",
-            "values": values.iter().map(host_value_json).collect::<Vec<_>>(),
-        }),
-        HostValue::Map(entries) => json!({
-            "kind": "map",
-            "entries": entries.iter().map(|(key, value)| {
-                json!({ "key": host_value_json(key), "value": host_value_json(value) })
-            }).collect::<Vec<_>>(),
-        }),
-        HostValue::Record(fields) => json!({
-            "kind": "record",
-            "fields": fields.iter().map(|(name, value)| {
-                json!({ "name": name, "value": host_value_json(value) })
-            }).collect::<Vec<_>>(),
-        }),
-        HostValue::Variant { name, fields } => json!({
-            "kind": "variant",
-            "name": name,
-            "fields": fields.iter().map(host_value_json).collect::<Vec<_>>(),
-        }),
-        HostValue::Json(value) => super::json::wrapped(value),
-    }
+    encode_host::encode(value)
 }
 
 pub(crate) fn host_value_from_json(value: &Value) -> Result<HostValue, InterpreterCodecError> {
@@ -474,13 +436,6 @@ pub(super) fn session_config_json(session: &crate::value::SessionConfigValue) ->
     })
 }
 
-pub(super) fn model_message_json(message: &crate::value::ModelMessageValue) -> Value {
-    json!({
-        "role": value_codec::model_role_json(message.role),
-        "content": message.content.iter().map(model_content_json).collect::<Vec<_>>(),
-    })
-}
-
 pub(super) fn model_message_from_json(
     value: &Value,
 ) -> Result<crate::value::ModelMessageValue, InterpreterCodecError> {
@@ -492,17 +447,6 @@ pub(super) fn model_message_from_json(
             .map(model_content_from_json)
             .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
     })
-}
-
-pub(super) fn model_content_json(content: &crate::value::ModelContentValue) -> Value {
-    match content {
-        crate::value::ModelContentValue::Text(text) => {
-            json!({ "kind": "text", "text": text })
-        }
-        crate::value::ModelContentValue::Value(value) => {
-            json!({ "kind": "value", "value": host_support_value_json(value) })
-        }
-    }
 }
 
 pub(super) fn model_content_from_json(
@@ -519,14 +463,6 @@ pub(super) fn model_content_from_json(
             "unsupported model content `{other}`"
         ))),
     }
-}
-
-pub(super) fn model_tool_call_json(call: &crate::value::ModelToolCallValue) -> Value {
-    json!({
-        "id": call.id,
-        "tool": call.tool,
-        "args": host_support_value_json(&call.args),
-    })
 }
 
 pub(super) fn model_tool_call_from_json(
@@ -560,52 +496,7 @@ pub(super) fn model_response_from_json(
 }
 
 pub(super) fn host_support_value_json(value: &crate::value::HostSupportValue) -> Value {
-    match value {
-        crate::value::HostSupportValue::Unit => json!({ "kind": "unit" }),
-        crate::value::HostSupportValue::Bool(value) => {
-            json!({ "kind": "bool", "value": value })
-        }
-        crate::value::HostSupportValue::Int(value) => {
-            json!({ "kind": "int", "value": value })
-        }
-        crate::value::HostSupportValue::UInt(value) => {
-            json!({ "kind": "uint", "value": value })
-        }
-        crate::value::HostSupportValue::FloatBits(value) => {
-            json!({ "kind": "float_bits", "value": value })
-        }
-        crate::value::HostSupportValue::String(value) => {
-            json!({ "kind": "string", "value": value })
-        }
-        crate::value::HostSupportValue::Bytes(value) => {
-            json!({ "kind": "bytes", "value": value })
-        }
-        crate::value::HostSupportValue::List(values) => json!({
-            "kind": "list",
-            "values": values.iter().map(host_support_value_json).collect::<Vec<_>>(),
-        }),
-        crate::value::HostSupportValue::Map(entries) => json!({
-            "kind": "map",
-            "entries": entries.iter().map(|(key, value)| {
-                json!({
-                    "key": host_support_value_json(key),
-                    "value": host_support_value_json(value),
-                })
-            }).collect::<Vec<_>>(),
-        }),
-        crate::value::HostSupportValue::Record(fields) => json!({
-            "kind": "record",
-            "fields": fields.iter().map(|(name, value)| {
-                json!({ "name": name, "value": host_support_value_json(value) })
-            }).collect::<Vec<_>>(),
-        }),
-        crate::value::HostSupportValue::Variant { name, fields } => json!({
-            "kind": "variant",
-            "name": name,
-            "fields": fields.iter().map(host_support_value_json).collect::<Vec<_>>(),
-        }),
-        crate::value::HostSupportValue::Json(value) => super::json::wrapped(value),
-    }
+    encode_host::encode(value)
 }
 
 pub(super) fn host_support_value_from_json(
