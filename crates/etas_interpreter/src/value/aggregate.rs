@@ -39,9 +39,33 @@ impl ArrayValue {
         }
     }
 
+    pub(crate) fn push(&mut self, value: InterpValue) {
+        self.prepare_growth(1);
+        self.0.borrow_mut().push(value);
+    }
+
+    fn prepare_growth(&mut self, additional: usize) {
+        if Rc::strong_count(&self.0) > 1 {
+            let current = self.0.borrow();
+            // Clone shared headers directly into the final capacity, rather
+            // than cloning a full buffer and immediately growing it again.
+            let mut next = Vec::with_capacity(current.len() + additional);
+            next.extend(current.iter().cloned());
+            drop(current);
+            self.0 = Rc::new(RefCell::new(next));
+        }
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<InterpValue> {
+        if self.borrow().is_empty() {
+            return None;
+        }
+        self.borrow_mut().pop()
+    }
+
     /// Consume unique buffers and clone shared elements directly into the
     /// final buffer. In particular, a shared right operand needs no temporary Vec.
-    pub(crate) fn concat(self, other: Self) -> Self {
+    pub(crate) fn concat(mut self, other: Self) -> Self {
         let right_len = other.borrow().len();
         if right_len == 0 {
             return self;
@@ -49,24 +73,15 @@ impl ArrayValue {
         if self.borrow().is_empty() {
             return other;
         }
-        let mut values = match Rc::try_unwrap(self.0) {
-            Ok(values) => {
-                let mut values = values.into_inner();
-                values.reserve(right_len);
-                values
-            }
-            Err(shared) => {
-                let left = shared.borrow();
-                let mut values = Vec::with_capacity(left.len() + right_len);
-                values.extend(left.iter().cloned());
-                values
-            }
-        };
+        self.prepare_growth(right_len);
+        let mut values = self.0.borrow_mut();
+        values.reserve(right_len);
         match Rc::try_unwrap(other.0) {
             Ok(right) => values.extend(right.into_inner()),
             Err(shared) => values.extend(shared.borrow().iter().cloned()),
         }
-        Self::new(values)
+        drop(values);
+        self
     }
 
     pub fn make_unique(&mut self) {

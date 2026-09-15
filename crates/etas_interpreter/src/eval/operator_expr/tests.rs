@@ -70,8 +70,8 @@ fn array_operator_and_extend_reuse_unique_left_without_copying_shared_right() {
                 }
             });
             eprintln!("array concat method={method} n={count}: {cost:?}");
-            assert_eq!(cost.count, 1, "only output owner should allocate: {cost:?}");
-            assert!(cost.bytes < 128, "temporary input/output copy: {cost:?}");
+            assert_eq!(cost.count, 0, "reuse the existing output owner: {cost:?}");
+            assert_eq!(cost.bytes, 0, "temporary input/output copy: {cost:?}");
             let InterpValue::Array(result) = result else {
                 panic!("array")
             };

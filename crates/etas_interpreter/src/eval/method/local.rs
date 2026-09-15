@@ -89,7 +89,7 @@ impl<'a> EvalContext<'a> {
     fn eval_array_method_values(
         &mut self,
         expr: HirExprId,
-        values: ArrayValue,
+        mut values: ArrayValue,
         method: &str,
         args: EvaluatedLocalArgs,
         span: Span,
@@ -119,17 +119,12 @@ impl<'a> EvalContext<'a> {
                 self.eval_index_value(expr, InterpValue::Array(values), arg, span)
             }
             ("push", EvaluatedLocalArgs::One(arg)) => {
-                let mut next = values.into_values();
-                next.push(arg);
-                ControlSignal::Value(InterpValue::Array(ArrayValue::new(next)))
+                values.push(arg);
+                ControlSignal::Value(InterpValue::Array(values))
             }
             ("pop", EvaluatedLocalArgs::None) => {
-                let mut next = values.into_values();
-                let popped = next.pop();
-                ControlSignal::Value(collection_pop_result(
-                    InterpValue::Array(ArrayValue::new(next)),
-                    popped,
-                ))
+                let popped = values.pop();
+                ControlSignal::Value(collection_pop_result(InterpValue::Array(values), popped))
             }
             ("extend", EvaluatedLocalArgs::One(arg)) => {
                 let InterpValue::Array(other) = arg else {
@@ -299,7 +294,7 @@ impl<'a> EvalContext<'a> {
 
     fn eval_stack_method_values(
         &mut self,
-        values: ArrayValue,
+        mut values: ArrayValue,
         method: &str,
         args: EvaluatedLocalArgs,
         span: Span,
@@ -312,17 +307,12 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
             }
             ("push", EvaluatedLocalArgs::One(arg)) => {
-                let mut next = values.into_values();
-                next.push(arg);
-                ControlSignal::Value(InterpValue::Stack(ArrayValue::new(next)))
+                values.push(arg);
+                ControlSignal::Value(InterpValue::Stack(values))
             }
             ("pop", EvaluatedLocalArgs::None) => {
-                let mut next = values.into_values();
-                let popped = next.pop();
-                ControlSignal::Value(collection_pop_result(
-                    InterpValue::Stack(ArrayValue::new(next)),
-                    popped,
-                ))
+                let popped = values.pop();
+                ControlSignal::Value(collection_pop_result(InterpValue::Stack(values), popped))
             }
             _ => unsupported_collection_method(span, "Stack", method),
         }

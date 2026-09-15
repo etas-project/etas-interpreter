@@ -3,6 +3,54 @@ use super::*;
 use crate::{orchestration::ValueSnapshot, testing::allocation::measure};
 
 #[test]
+fn empty_array_pop_is_a_noop_even_when_backing_is_shared() {
+    for capacity in [0, 4096] {
+        let mut values = ArrayValue::new(Vec::with_capacity(capacity));
+        let alias = values.clone();
+        let (_, cost) = measure(|| assert_eq!(values.pop(), None));
+        assert_eq!(cost.count, 0);
+        assert!(Rc::ptr_eq(&values.0, &alias.0));
+        assert_eq!(
+            values.borrow().capacity(),
+            capacity,
+            "no-op keeps existing capacity, not compacted storage"
+        );
+    }
+}
+
+#[test]
+fn shared_array_pop_copies_one_buffer_and_preserves_slice_and_snapshot_versions() {
+    for count in [1000, 2000, 4000] {
+        let mut values = ArrayValue::new(
+            (0..count)
+                .map(|_| InterpValue::String("payload".repeat(128).into()))
+                .collect(),
+        );
+        let alias = values.clone();
+        let slice = SliceValue::from_array(values.clone(), 0..count).unwrap();
+        let snapshot = ValueSnapshot::capture(&InterpValue::Array(values.clone())).unwrap();
+        let (popped, cost) = measure(|| values.pop().unwrap());
+        assert_eq!(cost.count, 2, "one COW buffer and header: {cost:?}");
+        assert!(
+            cost.bytes <= count * std::mem::size_of::<InterpValue>() + 128,
+            "copied nested payload: {cost:?}"
+        );
+        let (_, push_cost) = measure(|| values.push(popped));
+        assert_eq!(
+            push_cost.count, 0,
+            "reuse capacity after pop: {push_cost:?}"
+        );
+        values.borrow_mut()[0] = InterpValue::String("changed".into());
+        assert_eq!(alias.borrow().len(), count);
+        assert_eq!(slice.borrow().len(), count);
+        assert_eq!(slice.borrow()[0], alias.borrow()[0]);
+        assert_ne!(values.borrow()[0], alias.borrow()[0]);
+        assert_eq!(snapshot.restore().unwrap(), InterpValue::Array(alias));
+        eprintln!("shared Array pop n={count}: {cost:?}");
+    }
+}
+
+#[test]
 fn concat_preserves_all_ownership_combinations_and_snapshot_versions() {
     for left_shared in [false, true] {
         for right_shared in [false, true] {
@@ -20,7 +68,7 @@ fn concat_preserves_all_ownership_combinations_and_snapshot_versions() {
                 let (mut joined, cost) = measure(|| left.concat(right));
                 assert_eq!(
                     cost.count,
-                    if left_shared { 2 } else { 1 },
+                    if left_shared { 2 } else { 0 },
                     "{left_shared}/{right_shared} {count}: {cost:?}"
                 );
                 let output_bytes = if left_shared {

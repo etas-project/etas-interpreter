@@ -19,19 +19,35 @@ impl DequeValue {
     }
 
     pub fn push_front(&mut self, value: InterpValue) {
+        self.prepare_push();
         Rc::make_mut(&mut self.0).push_front(value);
     }
 
     pub fn push_back(&mut self, value: InterpValue) {
+        self.prepare_push();
         Rc::make_mut(&mut self.0).push_back(value);
     }
 
     pub fn pop_front(&mut self) -> Option<InterpValue> {
+        if self.0.is_empty() {
+            return None;
+        }
         Rc::make_mut(&mut self.0).pop_front()
     }
 
     pub fn pop_back(&mut self) -> Option<InterpValue> {
+        if self.0.is_empty() {
+            return None;
+        }
         Rc::make_mut(&mut self.0).pop_back()
+    }
+
+    fn prepare_push(&mut self) {
+        if Rc::strong_count(&self.0) > 1 {
+            let mut next = VecDeque::with_capacity(self.0.len() + 1);
+            next.extend(self.0.iter().cloned());
+            self.0 = Rc::new(next);
+        }
     }
 }
 
@@ -56,6 +72,75 @@ mod tests {
         orchestration::ValueSnapshot, testing::allocation::measure,
         value::iteration::IterationSource,
     };
+
+    #[test]
+    fn shared_ring_push_copies_directly_into_the_final_capacity() {
+        for count in [1000, 2000, 4000] {
+            for front in [false, true] {
+                let mut values = DequeValue::new(
+                    (0..count)
+                        .map(|n| InterpValue::String(format!("{n:04}{}", "x".repeat(1024)).into()))
+                        .collect(),
+                );
+                let first = values.pop_front().unwrap();
+                values.push_back(first);
+                assert!(!values.borrow().as_slices().1.is_empty());
+                let alias = values.clone();
+                let arg = InterpValue::String("new".into());
+                let (_, cost) = measure(|| {
+                    if front {
+                        values.push_front(arg)
+                    } else {
+                        values.push_back(arg)
+                    }
+                });
+                assert_eq!(
+                    cost.count, 2,
+                    "shared ring copied then grown, n={count} front={front}: {cost:?}"
+                );
+                assert!(
+                    cost.bytes <= (count + 1) * std::mem::size_of::<InterpValue>() + 128,
+                    "duplicate buffer: {cost:?}"
+                );
+                assert_eq!(values.borrow().len(), count + 1);
+                assert_eq!(alias.borrow().len(), count);
+                let old_index = usize::from(front);
+                for (old, new) in alias
+                    .borrow()
+                    .iter()
+                    .zip(values.borrow().iter().skip(old_index))
+                {
+                    let (InterpValue::String(old), InterpValue::String(new)) = (old, new) else {
+                        panic!("string")
+                    };
+                    assert_eq!(old.as_ptr(), new.as_ptr());
+                }
+                eprintln!("shared ring push front={front} n={count}: {cost:?}");
+            }
+        }
+    }
+
+    #[test]
+    fn empty_shared_ring_pop_keeps_the_same_backing() {
+        for capacity in [0, 4096] {
+            let mut values = DequeValue::new(Vec::with_capacity(capacity));
+            let alias = values.clone();
+            let (_, cost) = measure(|| {
+                assert_eq!(values.pop_front(), None);
+                assert_eq!(values.pop_back(), None);
+            });
+            assert_eq!(
+                cost.count, 0,
+                "empty pop detached an unchanged value: {cost:?}"
+            );
+            assert!(Rc::ptr_eq(&values.0, &alias.0));
+            assert_eq!(
+                values.borrow().capacity(),
+                capacity,
+                "no-op preserves existing capacity"
+            );
+        }
+    }
 
     #[test]
     fn unique_ring_end_operations_do_not_shift_or_copy_payloads() {

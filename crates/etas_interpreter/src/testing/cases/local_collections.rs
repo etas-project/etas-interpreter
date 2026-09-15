@@ -2,6 +2,107 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn vector_and_ring_updates_preserve_nested_aliases_and_suspended_arguments() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+flow payload(label: string) -> Array<string> {
+    println(label);
+    checkpoint(label);
+    return [label];
+}
+flow main() -> bool {
+    var array = [["base"]];
+    let original_array = array;
+    let pushed_array = array.push(payload("array"));
+    let stack = Stack.new<Array<string>>().push(["base"]);
+    let pushed_stack = stack.push(payload("stack"));
+    let queue = Queue.new<Array<string>>().push(["base"]);
+    let pushed_queue = queue.push(payload("queue"));
+    let deque = Deque.new<Array<string>>().push_back(["base"]);
+    let pushed_deque = deque.push_front(payload("deque"));
+    array[0][0] = "changed";
+    checkpoint("updated");
+    let (array_tail, array_item) = pushed_array.pop();
+    let (stack_tail, stack_item) = pushed_stack.pop();
+    let (_, stack_base) = stack_tail.pop();
+    let (_, old_stack_base) = stack.pop();
+    let (queue_tail, queue_base) = pushed_queue.pop();
+    let (_, queue_item) = queue_tail.pop();
+    let (_, old_queue_base) = queue.pop();
+    let (deque_tail, deque_item) = pushed_deque.pop_front();
+    let (_, deque_base) = deque_tail.pop_back();
+    let (_, old_deque_base) = deque.pop_back();
+    return array == [["changed"]] && original_array == [["base"]]
+        && array_tail == original_array && array_item == Some(["array"])
+        && stack_item == Some(["stack"]) && stack_base == Some(["base"]) && old_stack_base == stack_base
+        && queue_item == Some(["queue"]) && queue_base == Some(["base"]) && old_queue_base == queue_base
+        && deque_item == Some(["deque"]) && deque_base == Some(["base"]) && old_deque_base == deque_base;
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.stdout_text(), "array\nstack\nqueue\ndeque\n");
+    assert_eq!(result.checkpoints.len(), 5);
+    for (checkpoint, expected) in result.checkpoints.iter().zip([
+        "stack\nqueue\ndeque\n",
+        "queue\ndeque\n",
+        "deque\n",
+        "",
+        "",
+    ]) {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let restored = checkpoint_from_json(&artifact, &checked).unwrap();
+        for saved in [checkpoint, &restored] {
+            let host = FakeHost::new(services);
+            let invocation =
+                Interpreter.create_resume(&checked, saved, &host, RunOptions::default());
+            invocation
+                .control()
+                .stop(etas_host::execution::CancellationReason::Requested)
+                .unwrap();
+            let cancelled = invocation.execute().await.unwrap();
+            assert!(matches!(
+                cancelled.outcome,
+                crate::api::RunOutcome::Cancelled(_)
+            ));
+            assert_eq!(host.stdout_text(), "");
+            assert_eq!(
+                checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap(),
+                artifact
+            );
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, saved, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+            assert_eq!(host.stdout_text(), expected);
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn array_concat_and_extend_preserve_aliases_and_suspended_operand_order() {
     let checked = checked_project(
         r#"
