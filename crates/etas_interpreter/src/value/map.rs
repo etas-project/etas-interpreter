@@ -50,9 +50,12 @@ impl MapValue {
     }
 
     pub fn get(&self, key: &InterpValue) -> Option<InterpValue> {
+        self.get_ref(key).cloned()
+    }
+
+    pub(crate) fn get_ref(&self, key: &InterpValue) -> Option<&InterpValue> {
         let data = &self.0;
-        data.position(key)
-            .map(|position| data.entries[position].1.clone())
+        data.position(key).map(|position| &data.entries[position].1)
     }
 
     /// Only values are writable through this reference; key positions remain valid.

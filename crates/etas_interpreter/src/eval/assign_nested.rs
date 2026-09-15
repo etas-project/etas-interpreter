@@ -1,95 +1,53 @@
 use super::*;
 use crate::control::ExecutionFault;
+mod validate;
 
-impl<'a> EvalContext<'a> {
-    pub(super) fn assign_nested_value(
-        &mut self,
-        current: &mut InterpValue,
-        segments: &[LocalPlaceSegment],
-        new_value: InterpValue,
-        span: Span,
-    ) -> Result<(), ExecutionFault> {
+// The caller holds the local slot exclusively. Evaluation/suspension has already
+// finished, so a successful borrowed preflight stays valid throughout commit.
+pub(super) fn commit(
+    mut current: &mut InterpValue,
+    mut segments: &[LocalPlaceSegment],
+    new_value: InterpValue,
+    span: Span,
+) -> Result<(), ExecutionFault> {
+    validate::path(current, segments, span)?;
+    loop {
         let Some((head, tail)) = segments.split_first() else {
             *current = new_value;
             return Ok(());
         };
         if let InterpValue::Nominal { value, .. } = current {
-            return self.assign_nested_value(value.make_mut(), segments, new_value, span);
+            current = value.make_mut();
+            continue;
         }
-        match head {
-            LocalPlaceSegment::Field(field) => match current {
-                InterpValue::Record(fields) => {
-                    let Some(field_value) = fields.field_mut(field) else {
-                        return Err(ExecutionFault::new(
-                            AnalysisDiagnosticCode::InvalidArguments,
-                            span,
-                            format!("record field `{field}` does not exist at runtime"),
-                        ));
-                    };
-                    self.assign_nested_value(field_value, tail, new_value, span)
+        current = match (head, current) {
+            (LocalPlaceSegment::Field(field), InterpValue::Record(fields)) => {
+                fields.field_mut(field).ok_or_else(|| invalidated(span))?
+            }
+            (LocalPlaceSegment::Index(index), InterpValue::Array(values)) => values
+                .borrow_mut()
+                .get_mut(*index)
+                .ok_or_else(|| invalidated(span))?,
+            (LocalPlaceSegment::Index(index), InterpValue::List(values)) => {
+                values.get_mut(*index).ok_or_else(|| invalidated(span))?
+            }
+            (LocalPlaceSegment::MapKey(key), InterpValue::Map(entries)) => {
+                if tail.is_empty() {
+                    entries.insert((**key).clone(), new_value);
+                    return Ok(());
                 }
-                other => Err(ExecutionFault::new(
-                    AnalysisDiagnosticCode::InvalidArguments,
-                    span,
-                    format!(
-                        "field assignment requires a local record value, got {:?}",
-                        other
-                    ),
-                )),
-            },
-            LocalPlaceSegment::Index(index) => match current {
-                InterpValue::Array(values) => {
-                    let values = values.borrow_mut();
-                    let Some(slot) = values.get_mut(*index) else {
-                        return Err(ExecutionFault::new(
-                            AnalysisDiagnosticCode::InvalidArguments,
-                            span,
-                            format!("array index {index} is out of bounds at runtime"),
-                        ));
-                    };
-                    self.assign_nested_value(slot, tail, new_value, span)
-                }
-                InterpValue::List(values) => {
-                    let Some(slot) = values.get_mut(*index) else {
-                        return Err(ExecutionFault::new(
-                            AnalysisDiagnosticCode::InvalidArguments,
-                            span,
-                            format!("list index {index} is out of bounds at runtime"),
-                        ));
-                    };
-                    self.assign_nested_value(slot, tail, new_value, span)
-                }
-                other => Err(ExecutionFault::new(
-                    AnalysisDiagnosticCode::InvalidArguments,
-                    span,
-                    format!(
-                        "indexed assignment requires a local array or list value, got {:?}",
-                        other
-                    ),
-                )),
-            },
-            LocalPlaceSegment::MapKey(key) => match current {
-                InterpValue::Map(entries) => {
-                    if tail.is_empty() {
-                        entries.insert((**key).clone(), new_value);
-                        Ok(())
-                    } else {
-                        let Some(slot) = entries.value_mut(key) else {
-                            return Err(ExecutionFault::new(
-                                AnalysisDiagnosticCode::InvalidArguments,
-                                span,
-                                "nested map assignment requires an existing key at runtime",
-                            ));
-                        };
-                        self.assign_nested_value(slot, tail, new_value, span)
-                    }
-                }
-                other => Err(ExecutionFault::new(
-                    AnalysisDiagnosticCode::InvalidArguments,
-                    span,
-                    format!("map assignment requires a local map value, got {:?}", other),
-                )),
-            },
-        }
+                entries.value_mut(key).ok_or_else(|| invalidated(span))?
+            }
+            _ => return Err(invalidated(span)),
+        };
+        segments = tail;
     }
+}
+
+fn invalidated(span: Span) -> ExecutionFault {
+    ExecutionFault::new(
+        AnalysisDiagnosticCode::MissingCheckedFact,
+        span,
+        "validated local assignment path changed during synchronous commit",
+    )
 }

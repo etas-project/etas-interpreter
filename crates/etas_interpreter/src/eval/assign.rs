@@ -49,7 +49,7 @@ impl<'a> EvalContext<'a> {
             return Err(Box::new(ControlSignal::invalid_arguments(message, span)));
         }
         let Some(result) = frame.with_local_mut(root_symbol, |root| {
-            self.assign_nested_value(root, segments, value, span)
+            super::assign_nested::commit(root, segments, value, span)
         }) else {
             let message = "assignment target root local is missing at runtime".to_owned();
             return Err(Box::new(ControlSignal::invalid_arguments(message, span)));

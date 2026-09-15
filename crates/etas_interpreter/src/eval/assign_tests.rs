@@ -175,7 +175,7 @@ fn assignment_commit_reuses_unique_local_and_copies_only_live_aliases() {
             assert!(allocations.bytes >= count * std::mem::size_of::<InterpValue>());
             assert_ne!(Some(&alias), frame.get(symbol).as_ref());
             let before_error = frame.get(symbol).unwrap();
-            assert!(
+            let (failed, rejected_cost) = measure(|| {
                 eval.assign_resolved_local_place(
                     symbol,
                     &[LocalPlaceSegment::Index(count)],
@@ -183,7 +183,11 @@ fn assignment_commit_reuses_unique_local_and_copies_only_live_aliases() {
                     &mut frame,
                     span,
                 )
-                .is_err()
+            });
+            assert!(failed.is_err());
+            assert!(
+                rejected_cost.bytes < 2048,
+                "invalid shared index copied backing: {rejected_cost:?}"
             );
             assert_eq!(frame.get(symbol), Some(before_error));
         }
@@ -223,4 +227,175 @@ fn assignment_commit_reuses_unique_local_and_copies_only_live_aliases() {
         );
         assert_eq!(frame.get(nested), Some(alias));
     }
+}
+
+fn with_assignment_frame(test: impl FnOnce(&mut EvalContext<'_>, &mut Frame, SymbolId, Span)) {
+    let checked = crate::testing::project::checked_project(
+        "module app.main; flow main() -> unit { var root = [0]; return; }",
+    );
+    let plan = crate::Interpreter
+        .plan(&checked, crate::api::PlanOptions)
+        .plan
+        .unwrap();
+    let symbol = checked
+        .symbols
+        .iter()
+        .find(|s| s.name == "root")
+        .unwrap()
+        .id;
+    let span = checked.symbols.get(symbol).unwrap().definition_span;
+    let options = RunOptions::default();
+    let mut eval = EvalContext::new(EvalContextInput {
+        storage_limits: Default::default(),
+        event_observer: None,
+        execution: etas_host::execution::ExecutionScope::new_owned(),
+        checked: &checked,
+        plan: &plan,
+        host_context: options.host_context,
+        model_policy: options.model_policy,
+        execution_limits: options.execution_limits,
+        consumed_steps: 0,
+        current_session: None,
+        entry_item: checked.entry.unwrap(),
+        entry_args: &[],
+    });
+    let mut frame = Frame::new(plan.slots.clone());
+    test(&mut eval, &mut frame, symbol, span);
+}
+
+#[test]
+fn nested_assignment_commit_is_stack_safe() {
+    const WORKER: &str = "ETAS_NESTED_ASSIGNMENT_WORKER";
+    if std::env::var_os(WORKER).is_none() {
+        let thread = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", thread.name().unwrap(), "--nocapture"])
+            .env(WORKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    with_assignment_frame(|eval, frame, symbol, span| {
+        let value = (0..30_000).fold(InterpValue::i32(0), |child, _| InterpValue::Nominal {
+            ty: etas_types::TypeId(17),
+            value: InterpValue::Array(vec![child].into()).into(),
+        });
+        let path = vec![LocalPlaceSegment::Index(0); 30_000];
+        frame.insert(symbol, value);
+        let (result, cost) = measure(|| {
+            eval.assign_resolved_local_place(symbol, &path, InterpValue::i32(1), frame, span)
+        });
+        result.unwrap();
+        assert_eq!(cost.count, 0, "unique deep commit allocated: {cost:?}");
+        let root = frame.get(symbol).unwrap();
+        let mut leaf = &root;
+        for _ in &path {
+            let InterpValue::Nominal { ty, value } = leaf else {
+                panic!("nominal");
+            };
+            assert_eq!(*ty, etas_types::TypeId(17));
+            let InterpValue::Array(values) = &**value else {
+                panic!("array");
+            };
+            leaf = &values.borrow()[0];
+        }
+        assert_eq!(*leaf, InterpValue::i32(1));
+    });
+}
+
+#[test]
+fn mixed_assignment_preflight_rejects_without_detaching_shared_ancestors() {
+    with_assignment_frame(|eval, frame, symbol, span| {
+        for count in [1000, 2000, 4000] {
+            let key = InterpValue::String("entry".into());
+            let array = InterpValue::Array(
+                (0..count)
+                    .map(|_| InterpValue::i32(0))
+                    .collect::<Vec<_>>()
+                    .into(),
+            );
+            let map = crate::value::MapValue::new(vec![(
+                key.clone(),
+                InterpValue::List(vec![array].into()),
+            )]);
+            // Index/layout creation is a separate one-time cost, not COW copying.
+            assert!(map.get_ref(&key).is_some());
+            let mut fields: Vec<_> = (0..count)
+                .map(|i| (format!("field{i}"), InterpValue::Unit))
+                .collect();
+            fields.push(("map".into(), InterpValue::Map(map)));
+            let record = crate::value::RecordValue::new(fields);
+            assert!(record.get_ref("map").is_some());
+            let original = InterpValue::Nominal {
+                ty: etas_types::TypeId(17),
+                value: InterpValue::Record(record).into(),
+            };
+            frame.insert(symbol, original.clone());
+            let prefix = vec![
+                LocalPlaceSegment::Field("map".into()),
+                LocalPlaceSegment::MapKey(Box::new(key)),
+                LocalPlaceSegment::Index(0),
+            ];
+            let mut bad_index = prefix.clone();
+            bad_index.push(LocalPlaceSegment::Index(count));
+            let mut bad_field = prefix.clone();
+            bad_field.push(LocalPlaceSegment::Field("missing".into()));
+            let bad_key = vec![
+                LocalPlaceSegment::Field("map".into()),
+                LocalPlaceSegment::MapKey(Box::new(InterpValue::String("missing".into()))),
+                LocalPlaceSegment::Index(0),
+            ];
+            let bad_list = vec![
+                prefix[0].clone(),
+                prefix[1].clone(),
+                LocalPlaceSegment::Index(1),
+            ];
+            let bad_root_field = vec![LocalPlaceSegment::Field("missing".into())];
+            for path in [bad_index, bad_field, bad_key, bad_list, bad_root_field] {
+                let (error, cost) = measure(|| {
+                    eval.assign_resolved_local_place(
+                        symbol,
+                        &path,
+                        InterpValue::i32(1),
+                        frame,
+                        span,
+                    )
+                });
+                let Err(signal) = error else {
+                    panic!("invalid path accepted")
+                };
+                let ControlSignal::Fault(fault) = *signal else {
+                    panic!("structured fault")
+                };
+                assert_eq!(fault.code, AnalysisDiagnosticCode::InvalidArguments);
+                assert!(
+                    cost.bytes < 2048,
+                    "invalid path detached ancestors at n={count}: {cost:?}"
+                );
+                assert_eq!(frame.get(symbol).as_ref(), Some(&original));
+            }
+            let mut valid = prefix;
+            valid.push(LocalPlaceSegment::Index(count - 1));
+            let (result, cost) = measure(|| {
+                eval.assign_resolved_local_place(symbol, &valid, InterpValue::i32(2), frame, span)
+            });
+            result.unwrap();
+            assert!(
+                cost.bytes >= count * std::mem::size_of::<InterpValue>(),
+                "live alias requires COW: {cost:?}"
+            );
+            assert_ne!(frame.get(symbol).as_ref(), Some(&original));
+            let (result, cost) = measure(|| {
+                eval.assign_resolved_local_place(symbol, &valid, InterpValue::i32(3), frame, span)
+            });
+            result.unwrap();
+            assert_eq!(cost.count, 0, "second commit is unique: {cost:?}");
+        }
+    });
 }

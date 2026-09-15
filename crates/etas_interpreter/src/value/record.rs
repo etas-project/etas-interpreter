@@ -72,14 +72,18 @@ impl RecordValue {
     }
 
     pub fn get(&self, field: &str) -> Option<InterpValue> {
+        self.get_ref(field).cloned()
+    }
+
+    pub(crate) fn get_ref(&self, field: &str) -> Option<&InterpValue> {
         let data = &self.0;
         let storage = data.field_storage(field)?;
-        Some(data.fields[storage].1.clone())
+        Some(&data.fields[storage].1)
     }
 
     pub(crate) fn field_mut(&mut self, field: &str) -> Option<&mut InterpValue> {
+        let storage = self.0.field_storage(field)?;
         let data = Rc::make_mut(&mut self.0);
-        let storage = data.field_storage(field)?;
         Some(&mut data.fields[storage].1)
     }
 
