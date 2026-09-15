@@ -2,7 +2,13 @@ use super::RestoreContext;
 use crate::control::CallTarget;
 use crate::orchestration::CallTargetSnapshot;
 
-pub(super) fn capture_call_target(target: &CallTarget) -> Result<CallTargetSnapshot, String> {
+mod capture;
+pub(super) use capture::capture_call_target;
+
+#[cfg(test)]
+mod tests;
+
+fn capture_leaf(target: &CallTarget) -> Result<CallTargetSnapshot, String> {
     Ok(match target {
         CallTarget::FlowItem(item) => CallTargetSnapshot::FlowItem(*item),
         CallTarget::AgentItem(item) => CallTargetSnapshot::AgentItem(*item),
@@ -25,24 +31,9 @@ pub(super) fn capture_call_target(target: &CallTarget) -> Result<CallTargetSnaps
             parameter_types: call.parameter_types.clone(),
             result_type: call.result_type,
         },
-        CallTarget::Specialized {
-            target,
-            type_bindings,
-        } => CallTargetSnapshot::Specialized {
-            target: capture_call_target(target)?.into(),
-            type_bindings: type_bindings.clone(),
-        },
-        CallTarget::Limited { target, limits } => CallTargetSnapshot::Limited {
-            target: capture_call_target(target)?.into(),
-            limits: limits.clone(),
-        },
-        CallTarget::Composed(targets) => CallTargetSnapshot::Composed(
-            targets
-                .iter()
-                .map(capture_call_target)
-                .collect::<Result<Vec<_>, _>>()?
-                .into(),
-        ),
+        CallTarget::Specialized { .. } | CallTarget::Limited { .. } | CallTarget::Composed(_) => {
+            return Err("compound call target must use its capture builder".into());
+        }
     })
 }
 
