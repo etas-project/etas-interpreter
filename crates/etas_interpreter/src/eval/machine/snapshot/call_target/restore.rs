@@ -1,13 +1,19 @@
 use super::{CallTarget, CallTargetSnapshot, RestoreContext, restore_leaf};
 use crate::eval::limit::RuntimeLimit;
+use crate::{
+    control::{CallTargetChildren, CallTargetLink},
+    orchestration::{CallTargetSnapshotChildren, CallTargetSnapshotLink},
+};
 use etas_types::TypeId;
+use std::collections::HashMap;
 
 enum PendingParent {
-    Specialized(Vec<(String, TypeId)>),
-    Limited(Vec<RuntimeLimit>),
+    Specialized(Vec<(String, TypeId)>, Option<CallTargetSnapshotLink>),
+    Limited(Vec<RuntimeLimit>, Option<CallTargetSnapshotLink>),
     Composed {
         remaining: std::vec::IntoIter<CallTargetSnapshot>,
-        values: RestoredTargets,
+        values: Vec<CallTarget>,
+        source: Option<(*const Vec<CallTargetSnapshot>, CallTargetSnapshotChildren)>,
     },
 }
 
@@ -16,74 +22,115 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
     context: &mut RestoreContext,
 ) -> Result<CallTarget, String> {
     let mut pending = Vec::new();
+    // Keep source owners beside cached results so pointer keys cannot be reused
+    // during consuming restore. Never reuse a partially restored target.
+    let mut nodes =
+        HashMap::<*const CallTargetSnapshot, (CallTargetSnapshotLink, CallTargetLink)>::new();
+    let mut tables = HashMap::<
+        *const Vec<CallTargetSnapshot>,
+        (CallTargetSnapshotChildren, CallTargetChildren),
+    >::new();
     loop {
         let mut value = match current {
             CallTargetSnapshot::Specialized {
                 target,
                 type_bindings,
             } => {
-                pending.push(PendingParent::Specialized(type_bindings));
-                current = target.into_value();
-                continue;
-            }
-            CallTargetSnapshot::Limited { target, limits } => {
-                pending.push(PendingParent::Limited(limits));
-                current = target.into_value();
-                continue;
-            }
-            CallTargetSnapshot::Composed(targets) => {
-                let mut remaining = targets.into_values().into_iter();
-                let count = remaining.len();
-                if let Some(first) = remaining.next() {
-                    pending.push(PendingParent::Composed {
-                        remaining,
-                        values: RestoredTargets(Vec::with_capacity(count)),
-                    });
-                    current = first;
+                let identity = target.shared_identity();
+                if let Some((_, restored)) = identity.and_then(|key| nodes.get(&key)) {
+                    CallTarget::Specialized {
+                        target: restored.clone(),
+                        type_bindings,
+                    }
+                } else {
+                    pending.push(PendingParent::Specialized(
+                        type_bindings,
+                        identity.map(|_| target.clone()),
+                    ));
+                    current = target.into_value();
                     continue;
                 }
-                CallTarget::Composed(vec![])
+            }
+            CallTargetSnapshot::Limited { target, limits } => {
+                let identity = target.shared_identity();
+                if let Some((_, restored)) = identity.and_then(|key| nodes.get(&key)) {
+                    CallTarget::Limited {
+                        target: restored.clone(),
+                        limits,
+                    }
+                } else {
+                    pending.push(PendingParent::Limited(
+                        limits,
+                        identity.map(|_| target.clone()),
+                    ));
+                    current = target.into_value();
+                    continue;
+                }
+            }
+            CallTargetSnapshot::Composed(targets) => {
+                let identity = targets.shared_identity();
+                if let Some((_, restored)) = identity.and_then(|key| tables.get(&key)) {
+                    CallTarget::Composed(restored.clone())
+                } else {
+                    let source = identity.map(|key| (key, targets.clone()));
+                    let mut remaining = targets.into_values().into_iter();
+                    let count = remaining.len();
+                    if let Some(first) = remaining.next() {
+                        pending.push(PendingParent::Composed {
+                            remaining,
+                            values: Vec::with_capacity(count),
+                            source,
+                        });
+                        current = first;
+                        continue;
+                    }
+                    CallTarget::Composed(vec![].into())
+                }
             }
             leaf => restore_leaf(leaf, context)?,
         };
         loop {
             match pending.pop() {
-                Some(PendingParent::Specialized(type_bindings)) => {
+                Some(PendingParent::Specialized(type_bindings, source)) => {
+                    let target: CallTargetLink = value.into();
+                    if let Some(source) = source {
+                        nodes.insert((&*source) as *const _, (source, target.clone()));
+                    }
                     value = CallTarget::Specialized {
-                        target: Box::new(value),
+                        target,
                         type_bindings,
                     };
                 }
-                Some(PendingParent::Limited(limits)) => {
-                    value = CallTarget::Limited {
-                        target: Box::new(value),
-                        limits,
-                    };
+                Some(PendingParent::Limited(limits, source)) => {
+                    let target: CallTargetLink = value.into();
+                    if let Some(source) = source {
+                        nodes.insert((&*source) as *const _, (source, target.clone()));
+                    }
+                    value = CallTarget::Limited { target, limits };
                 }
                 Some(PendingParent::Composed {
                     mut remaining,
                     mut values,
+                    source,
                 }) => {
-                    values.0.push(value);
+                    values.push(value);
                     if let Some(first) = remaining.next() {
-                        pending.push(PendingParent::Composed { remaining, values });
+                        pending.push(PendingParent::Composed {
+                            remaining,
+                            values,
+                            source,
+                        });
                         current = first;
                         break;
                     }
-                    value = CallTarget::Composed(std::mem::take(&mut values.0));
+                    let children: CallTargetChildren = values.into();
+                    if let Some((key, source)) = source {
+                        tables.insert(key, (source, children.clone()));
+                    }
+                    value = CallTarget::Composed(children);
                 }
                 None => return Ok(value),
             }
         }
-    }
-}
-
-// This becomes the final runtime composition on success. On failure it owns
-// completed siblings and releases their edges without recursive runtime Drop.
-struct RestoredTargets(Vec<CallTarget>);
-
-impl Drop for RestoredTargets {
-    fn drop(&mut self) {
-        crate::control::release_call_targets(std::mem::take(&mut self.0));
     }
 }

@@ -1170,6 +1170,52 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn shared_composed_call_targets_keep_aliases_after_execution_and_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+flow increment(value: i32) -> i32 { return value + 1; }
+flow double(value: i32) -> i32 { return value * 2; }
+flow main() -> i32 {
+  let pipeline = increment | double;
+  let alias = pipeline;
+  let first = alias(10);
+  checkpoint("retained-pipeline");
+  return first + pipeline(20) + alias(30);
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(126)));
+    let saved = result.checkpoints.first().expect("checkpoint");
+    let wire = crate::api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, saved, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::i32(126)));
+    assert_eq!(
+        crate::api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap(),
+        wire
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_string_index_and_list_pop_without_host() {
     let checked = checked_project(
         r#"

@@ -1,4 +1,5 @@
 use super::{BTreeSet, CallTargetSnapshot, SnapshotValidator, TypeId};
+use std::collections::HashSet;
 
 enum Pending<'a> {
     Bindings(&'a [(String, TypeId)]),
@@ -13,6 +14,10 @@ impl SnapshotValidator<'_> {
     ) -> Result<(), String> {
         let mut next = Some(root);
         let mut pending = Vec::new();
+        // Snapshot edges are immutable and acyclic. Repeated aliases need the
+        // same checks once, while each enclosing wrapper keeps its own bindings.
+        let mut nodes = HashSet::new();
+        let mut tables = HashSet::new();
         loop {
             if let Some(node) = next.take() {
                 match node {
@@ -24,10 +29,22 @@ impl SnapshotValidator<'_> {
                         if !type_bindings.is_empty() {
                             pending.push(Pending::Bindings(type_bindings));
                         }
-                        next = Some(target);
+                        if target.shared_identity().is_none_or(|key| nodes.insert(key)) {
+                            next = Some(target);
+                        }
                     }
-                    CallTargetSnapshot::Limited { target, .. } => next = Some(target),
+                    CallTargetSnapshot::Limited { target, .. } => {
+                        if target.shared_identity().is_none_or(|key| nodes.insert(key)) {
+                            next = Some(target);
+                        }
+                    }
                     CallTargetSnapshot::Composed(targets) => {
+                        if targets
+                            .shared_identity()
+                            .is_some_and(|key| !tables.insert(key))
+                        {
+                            continue;
+                        }
                         if let Some((first, remaining)) = targets.split_first() {
                             if !remaining.is_empty() {
                                 pending.push(Pending::Siblings(remaining));

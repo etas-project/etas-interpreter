@@ -403,11 +403,18 @@ impl<'a> EvalContext<'a> {
             CallTarget::Specialized {
                 target,
                 type_bindings,
-            } => self.execute_specialized_call_target(*target, type_bindings, call_args, span),
+            } => self.execute_specialized_call_target(
+                target.into_value(),
+                type_bindings,
+                call_args,
+                span,
+            ),
             CallTarget::Limited { target, limits } => {
-                self.execute_limited_call_target(*target, limits, call_args, span)
+                self.execute_limited_call_target(target.into_value(), limits, call_args, span)
             }
-            CallTarget::Composed(stages) => self.execute_composed_call(stages, call_args, span),
+            CallTarget::Composed(stages) => {
+                self.execute_composed_call(stages.into_values(), call_args, span)
+            }
         }
     }
 
@@ -511,7 +518,7 @@ impl<'a> EvalContext<'a> {
                 }
             }
             has_limits = true;
-            target = *inner;
+            target = inner.into_value();
         }
         if has_limits {
             let previous = std::mem::replace(&mut self.model_policy, policy);

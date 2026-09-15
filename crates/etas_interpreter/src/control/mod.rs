@@ -1,12 +1,16 @@
+mod call_target;
 mod continuation;
 mod fault;
 mod frame;
 mod signal;
-mod target_release;
 
-pub(crate) use target_release::release_call_targets;
+pub use call_target::CallTarget;
+pub(crate) use call_target::{CallTargetChildren, CallTargetLink};
 
-pub use continuation::{CallTarget, Continuation, StaticMethodKind};
+#[cfg(test)]
+mod call_target_tests;
+
+pub use continuation::{Continuation, StaticMethodKind};
 pub use fault::ExecutionFault;
 pub use frame::Frame;
 pub use signal::{

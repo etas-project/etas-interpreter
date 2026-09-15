@@ -32,24 +32,8 @@ fn wire(depth: usize, mode: usize) -> Value {
     value
 }
 
-// General runtime CallTarget Drop is a separate audit. Isolate decoding from
-// success teardown; decoder error cleanup must use its own production path.
+// No custom cleanup: both successful and failed decodes use production Drop.
 struct RuntimeTree(Option<CallTarget>);
-
-impl Drop for RuntimeTree {
-    fn drop(&mut self) {
-        let mut pending: Vec<_> = self.0.take().into_iter().collect();
-        while let Some(target) = pending.pop() {
-            match target {
-                CallTarget::Specialized { target, .. } | CallTarget::Limited { target, .. } => {
-                    pending.push(*target);
-                }
-                CallTarget::Composed(children) => pending.extend(children),
-                _ => {}
-            }
-        }
-    }
-}
 
 fn check_snapshot(mut target: &CallTargetSnapshot, depth: usize, mode: usize) {
     for _ in 0..depth {
@@ -159,7 +143,10 @@ fn deep_call_target_json_decode_uses_a_worklist_for_both_representations() {
                 ))
             });
             eprintln!("call target runtime decode depth={depth} mode={mode}: {cost:?}");
-            assert!(cost.count <= depth + 32, "intermediate graph: {cost:?}");
+            assert!(
+                cost.count <= depth * if mode < 2 { 1 } else { 2 } + 32,
+                "intermediate graph: {cost:?}"
+            );
             check_runtime(runtime.0.as_ref().unwrap(), depth, mode);
         }
     }
@@ -268,7 +255,10 @@ fn wide_call_target_decode_only_allocates_the_output_table_and_frontier() {
         let (runtime, cost) =
             measure(|| call_target_from_artifact_snapshot(&limits, &wire).unwrap());
         eprintln!("wide runtime decode width={width}: {cost:?}");
-        assert_eq!(cost.count, 2, "output table and traversal frontier");
+        assert_eq!(
+            cost.count, 3,
+            "output table, shared owner and traversal frontier"
+        );
         assert!(cost.bytes <= width * size_of::<CallTarget>() + 512);
         let CallTarget::Composed(targets) = runtime else {
             panic!("composed")

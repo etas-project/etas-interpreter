@@ -54,14 +54,18 @@ fn deep_call_target_restore_consumes_snapshot_edges_without_recursive_descent() 
                 eprintln!(
                     "call target restore depth={depth} mode={mode} shared={shared}: {cost:?}"
                 );
-                let tables = if mode >= 2 && shared { 2 } else { 1 };
+                let tables = if mode >= 2 {
+                    2 + usize::from(shared)
+                } else {
+                    1
+                };
                 assert!(
                     cost.count <= depth * tables + 32,
                     "intermediate graph allocation: {cost:?}"
                 );
                 assert!(
-                    cost.bytes <= depth * 384 + 4096,
-                    "unexpected restore frontier cost: {cost:?}"
+                    cost.bytes <= depth * (384 + usize::from(shared) * 256) + 4096,
+                    "unexpected output/frontier/aliased-identity cache cost: {cost:?}"
                 );
                 let mut cursor = runtime.0.as_ref().unwrap();
                 for _ in 0..depth {
@@ -318,7 +322,7 @@ fn wide_call_target_restore_allocates_only_output_and_shared_header_copy() {
             let (runtime, cost) =
                 measure(|| RuntimeTree(Some(restore_call_target(saved, &mut context).unwrap())));
             eprintln!("wide call target restore width={width} shared={shared}: {cost:?}");
-            assert_eq!(cost.count, 2 + usize::from(shared));
+            assert_eq!(cost.count, 3 + 2 * usize::from(shared));
             assert!(
                 cost.bytes
                     <= width

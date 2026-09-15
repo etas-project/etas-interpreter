@@ -12,7 +12,6 @@ pub(super) trait TargetValue: Sized {
     type Frame;
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String>;
     fn build(target: DecodedTarget<Self::Frame, Self>) -> Self;
-    fn release(targets: impl IntoIterator<Item = Self>);
 }
 
 pub(super) enum DecodedTarget<F, T> {
@@ -50,11 +49,6 @@ pub(super) enum DecodedTarget<F, T> {
 
 impl TargetValue for CallTargetSnapshot {
     type Frame = LocalsSnapshot;
-    fn release(targets: impl IntoIterator<Item = Self>) {
-        for target in targets {
-            drop(target);
-        }
-    }
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
         locals_from_snapshot(limits, value)
     }
@@ -106,9 +100,6 @@ impl TargetValue for CallTargetSnapshot {
 
 impl TargetValue for CallTarget {
     type Frame = Frame;
-    fn release(targets: impl IntoIterator<Item = Self>) {
-        crate::control::release_call_targets(targets);
-    }
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
         runtime_frame_from_snapshot(limits, value)
     }
@@ -120,17 +111,17 @@ impl TargetValue for CallTarget {
             DecodedTarget::SpecImplMethod(value) => Self::SpecImplMethod(value),
             DecodedTarget::EnumVariant(value) => Self::EnumVariant(value),
             DecodedTarget::NominalConstructor(value) => Self::NominalConstructor(value),
-            DecodedTarget::Composed(value) => Self::Composed(value),
+            DecodedTarget::Composed(value) => Self::Composed(value.into()),
             DecodedTarget::Lambda { expr, captured } => Self::Lambda { expr, captured },
             DecodedTarget::Specialized {
                 target,
                 type_bindings,
             } => Self::Specialized {
-                target: Box::new(target),
+                target: target.into(),
                 type_bindings,
             },
             DecodedTarget::Limited { target, limits } => Self::Limited {
-                target: Box::new(target),
+                target: target.into(),
                 limits,
             },
 

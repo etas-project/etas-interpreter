@@ -47,7 +47,7 @@ impl<'a> EvalContext<'a> {
             return Ok(target);
         }
         Ok(CallTarget::Specialized {
-            target: Box::new(target),
+            target: target.into(),
             type_bindings: bindings,
         })
     }

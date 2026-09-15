@@ -34,11 +34,11 @@ fn decode_many<T: TargetValue>(
     value: &Value,
 ) -> Result<Vec<T>, String> {
     let children = target_array(value)?;
-    let mut output = DecodedTargets(Vec::with_capacity(children.len()));
+    let mut output = Vec::with_capacity(children.len());
     for child in children {
-        output.0.push(decode(limits, child)?);
+        output.push(decode(limits, child)?);
     }
-    Ok(std::mem::take(&mut output.0))
+    Ok(output)
 }
 
 enum PendingParent<'a, T: TargetValue> {
@@ -46,34 +46,8 @@ enum PendingParent<'a, T: TargetValue> {
     Limited(&'a Value),
     Composed {
         remaining: &'a [Value],
-        values: DecodedTargets<T>,
+        values: Vec<T>,
     },
-}
-
-struct DecodedTargets<T: TargetValue>(Vec<T>);
-
-impl<T: TargetValue> Drop for DecodedTargets<T> {
-    fn drop(&mut self) {
-        T::release(std::mem::take(&mut self.0));
-    }
-}
-
-// Parent metadata is checked after its child, in wire order. Keep the child
-// guarded until all fallible metadata parsing has succeeded.
-struct DecodedValue<T: TargetValue>(Option<T>);
-
-impl<T: TargetValue> DecodedValue<T> {
-    fn into_value(mut self) -> T {
-        self.0
-            .take()
-            .expect("decoded value is consumed exactly once")
-    }
-}
-
-impl<T: TargetValue> Drop for DecodedValue<T> {
-    fn drop(&mut self) {
-        T::release(self.0.take());
-    }
 }
 
 fn target_array(value: &Value) -> Result<&[Value], String> {
@@ -106,14 +80,14 @@ fn decode<T: TargetValue>(
                 if let Some((first, remaining)) = children.split_first() {
                     pending.push(PendingParent::Composed {
                         remaining,
-                        values: DecodedTargets(Vec::with_capacity(children.len())),
+                        values: Vec::with_capacity(children.len()),
                     });
                     current = first;
                     continue;
                 }
-                DecodedValue(Some(T::build(DecodedTarget::Composed(vec![]))))
+                T::build(DecodedTarget::Composed(vec![]))
             }
-            _ => DecodedValue(Some(T::build(decode_leaf::<T>(limits, current, kind)?))),
+            _ => T::build(decode_leaf::<T>(limits, current, kind)?),
         };
         loop {
             let target = match pending.pop() {
@@ -132,14 +106,14 @@ fn decode<T: TargetValue>(
                         })
                         .collect::<Result<Vec<_>, String>>()?;
                     DecodedTarget::Specialized {
-                        target: value.into_value(),
+                        target: value,
                         type_bindings,
                     }
                 }
                 Some(PendingParent::Limited(parent)) => {
                     let limits = runtime_limits_from_snapshot(required(parent, "limits")?)?;
                     DecodedTarget::Limited {
-                        target: value.into_value(),
+                        target: value,
                         limits,
                     }
                 }
@@ -147,17 +121,17 @@ fn decode<T: TargetValue>(
                     remaining,
                     mut values,
                 }) => {
-                    values.0.push(value.into_value());
+                    values.push(value);
                     if let Some((first, remaining)) = remaining.split_first() {
                         pending.push(PendingParent::Composed { remaining, values });
                         current = first;
                         break;
                     }
-                    DecodedTarget::Composed(std::mem::take(&mut values.0))
+                    DecodedTarget::Composed(values)
                 }
-                None => return Ok(value.into_value()),
+                None => return Ok(value),
             };
-            value = DecodedValue(Some(T::build(target)));
+            value = T::build(target);
         }
     }
 }

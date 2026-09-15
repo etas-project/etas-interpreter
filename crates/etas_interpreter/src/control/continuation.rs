@@ -5,36 +5,10 @@ use etas_hir::{
 };
 
 use crate::{
-    control::Frame,
-    intrinsic::dispatch::{CheckedPureIntrinsicCall, CheckedStdIntrinsicCall},
+    control::{CallTarget, Frame},
     orchestration::{ActiveHandlerArmRecord, HandlerScopeId, RetryAttemptRecord},
     value::InterpValue,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CallTarget {
-    FlowItem(HirItemId),
-    AgentItem(HirItemId),
-    ToolItem(HirItemId),
-    SpecImplMethod(SymbolId),
-    Lambda {
-        expr: HirExprId,
-        captured: Frame,
-    },
-    EnumVariant(SymbolId),
-    NominalConstructor(etas_types::TypeId),
-    PureIntrinsic(CheckedPureIntrinsicCall),
-    StdIntrinsic(CheckedStdIntrinsicCall),
-    Specialized {
-        target: Box<CallTarget>,
-        type_bindings: Vec<(String, etas_types::TypeId)>,
-    },
-    Limited {
-        target: Box<CallTarget>,
-        limits: Vec<crate::eval::limit::RuntimeLimit>,
-    },
-    Composed(Vec<CallTarget>),
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StaticMethodKind {

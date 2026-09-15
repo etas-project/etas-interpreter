@@ -17,12 +17,20 @@ pub(crate) struct CallTargetSnapshotLink(Option<Rc<CallTargetSnapshot>>);
 pub(crate) struct CallTargetSnapshotChildren(Option<Rc<Vec<CallTargetSnapshot>>>);
 
 impl CallTargetSnapshotLink {
+    pub(crate) fn shared_identity(&self) -> Option<*const CallTargetSnapshot> {
+        let node = self.0.as_ref().expect("live call target snapshot link");
+        (Rc::strong_count(node) > 1).then_some(Rc::as_ptr(node))
+    }
     pub(crate) fn into_value(mut self) -> CallTargetSnapshot {
         Rc::unwrap_or_clone(self.0.take().expect("live call target snapshot link"))
     }
 }
 
 impl CallTargetSnapshotChildren {
+    pub(crate) fn shared_identity(&self) -> Option<*const Vec<CallTargetSnapshot>> {
+        let nodes = self.0.as_ref().expect("live call target snapshot children");
+        (Rc::strong_count(nodes) > 1).then_some(Rc::as_ptr(nodes))
+    }
     pub(crate) fn into_values(mut self) -> Vec<CallTargetSnapshot> {
         Rc::unwrap_or_clone(self.0.take().expect("live call target snapshot children"))
     }

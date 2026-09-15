@@ -4,38 +4,23 @@ use etas_hir::HirItemId;
 
 mod restore;
 
-// Runtime CallTarget destruction remains a separate audit. This guard isolates
-// borrowed capture; saved targets use their normal production release path.
+// Optional ownership lets tests transfer targets out of machines. All targets
+// use their normal production release path, with no test-only Drop guard.
 struct RuntimeTree(Option<CallTarget>);
-
-impl Drop for RuntimeTree {
-    fn drop(&mut self) {
-        let mut pending: Vec<_> = self.0.take().into_iter().collect();
-        while let Some(node) = pending.pop() {
-            match node {
-                CallTarget::Specialized { target, .. } | CallTarget::Limited { target, .. } => {
-                    pending.push(*target)
-                }
-                CallTarget::Composed(targets) => pending.extend(targets),
-                _ => {}
-            }
-        }
-    }
-}
 
 fn tree(mut node: CallTarget, depth: usize, mode: usize) -> RuntimeTree {
     for _ in 0..depth {
         node = match mode {
             0 => CallTarget::Limited {
-                target: Box::new(node),
+                target: node.into(),
                 limits: vec![],
             },
             1 => CallTarget::Specialized {
-                target: Box::new(node),
+                target: node.into(),
                 type_bindings: vec![],
             },
-            2 => CallTarget::Composed(vec![node, CallTarget::FlowItem(HirItemId(2))]),
-            _ => CallTarget::Composed(vec![CallTarget::FlowItem(HirItemId(2)), node]),
+            2 => CallTarget::Composed(vec![node, CallTarget::FlowItem(HirItemId(2))].into()),
+            _ => CallTarget::Composed(vec![CallTarget::FlowItem(HirItemId(2)), node].into()),
         };
     }
     RuntimeTree(Some(node))
@@ -124,7 +109,8 @@ fn wide_call_target_capture_allocates_one_final_child_table() {
         let runtime = RuntimeTree(Some(CallTarget::Composed(
             (0..width)
                 .map(|i| CallTarget::FlowItem(HirItemId(i as u32)))
-                .collect(),
+                .collect::<Vec<_>>()
+                .into(),
         )));
         let (snapshot, cost) =
             measure(|| capture_call_target(runtime.0.as_ref().unwrap()).unwrap());
@@ -144,7 +130,7 @@ fn wide_call_target_capture_allocates_one_final_child_table() {
         );
         assert!(cost.bytes <= width * size_of::<CallTargetSnapshot>() + 512);
     }
-    let empty = capture_call_target(&CallTarget::Composed(vec![])).unwrap();
+    let empty = capture_call_target(&CallTarget::Composed(vec![].into())).unwrap();
     assert!(matches!(empty, CallTargetSnapshot::Composed(targets) if targets.is_empty()));
 }
 
@@ -175,12 +161,12 @@ fn mixed_call_target_capture_preserves_metadata_and_detaches_live_frame() {
     for i in 0..depth {
         node = if i % 2 == 0 {
             CallTarget::Specialized {
-                target: Box::new(node),
+                target: node.into(),
                 type_bindings: vec![(format!("T{i}"), TypeId(i as u32))],
             }
         } else {
             CallTarget::Limited {
-                target: Box::new(node),
+                target: node.into(),
                 limits: vec![RuntimeLimit {
                     kind: etas_std::StdLimitKind::Attempts,
                     value: RuntimeLimitValue::Count(i as u64),
@@ -261,11 +247,14 @@ fn late_call_target_capture_failure_releases_deep_siblings_and_preserves_error_o
         for browser_first in [false, true] {
             let mut completed = tree(CallTarget::FlowItem(HirItemId(1)), 30_000, mode);
             let runtime = tree(
-                CallTarget::Composed(vec![
-                    completed.0.take().unwrap(),
-                    bad(browser_first),
-                    bad(!browser_first),
-                ]),
+                CallTarget::Composed(
+                    vec![
+                        completed.0.take().unwrap(),
+                        bad(browser_first),
+                        bad(!browser_first),
+                    ]
+                    .into(),
+                ),
                 30_000,
                 0,
             );
