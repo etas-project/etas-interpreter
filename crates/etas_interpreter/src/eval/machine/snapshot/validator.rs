@@ -1,7 +1,10 @@
 use std::collections::BTreeSet;
 
+mod call_target;
 mod traversal;
 
+#[cfg(test)]
+mod call_target_tests;
 #[cfg(test)]
 mod traversal_tests;
 
@@ -848,111 +851,6 @@ impl<'a> SnapshotValidator<'a> {
             }
             ContinuationSnapshot::AgentPromptBody { item, .. } => self.item(*item, context),
             ContinuationSnapshot::Chain { .. } => Ok(()),
-        }
-    }
-
-    fn call_target(&self, target: &CallTargetSnapshot, context: &str) -> Result<(), String> {
-        match target {
-            CallTargetSnapshot::FlowItem(item)
-            | CallTargetSnapshot::AgentItem(item)
-            | CallTargetSnapshot::ToolItem(item) => self.item(*item, context),
-            CallTargetSnapshot::SpecImplMethod(symbol) => self.symbol(*symbol, context),
-            CallTargetSnapshot::EnumVariant(symbol) => {
-                self.symbol(*symbol, context)?;
-                if self.dispatch.enum_constructor(*symbol).is_some()
-                    || self.checked.symbols.get(*symbol).is_some_and(|symbol| {
-                        matches!(symbol.def, etas_hir::SymbolDef::EnumVariant { .. })
-                    })
-                {
-                    Ok(())
-                } else {
-                    Err(format!(
-                        "{context}: call target is not a checked enum constructor"
-                    ))
-                }
-            }
-            CallTargetSnapshot::NominalConstructor(ty) => self.type_id(*ty, context),
-            CallTargetSnapshot::PureIntrinsic {
-                intrinsic,
-                parameter_types,
-                result_type,
-            } => {
-                self.dispatch
-                    .validate_pure_intrinsic(*intrinsic)
-                    .map_err(|error| format!("{context}: {error}"))?;
-                for parameter_type in parameter_types {
-                    self.type_id(*parameter_type, context)?;
-                }
-                self.type_id(*result_type, context)
-            }
-            CallTargetSnapshot::Lambda { expr, captured } => {
-                self.expr(*expr, context)?;
-                let layout = self
-                    .closures
-                    .get(*expr)
-                    .ok_or_else(|| format!("{context}: lambda has no checked capture layout"))?;
-                let symbols = captured
-                    .locals
-                    .iter()
-                    .map(|(symbol, _)| *symbol)
-                    .collect::<BTreeSet<_>>();
-                if !layout
-                    .captures
-                    .iter()
-                    .all(|symbol| symbols.contains(symbol))
-                {
-                    return Err(format!("{context}: lambda is missing a required capture"));
-                }
-                if symbols
-                    .iter()
-                    .any(|symbol| layout.slots.resolve(*symbol).is_none())
-                {
-                    return Err(format!(
-                        "{context}: lambda contains a binding outside its checked layout"
-                    ));
-                }
-                self.frame(captured, context)
-            }
-            CallTargetSnapshot::StdIntrinsic {
-                intrinsic,
-                dispatch,
-                parameter_types,
-                result_type,
-            } => {
-                self.dispatch
-                    .resolve_std_callable(crate::intrinsic::dispatch::StdIntrinsicIdentity {
-                        intrinsic: *intrinsic,
-                        dispatch: *dispatch,
-                    })
-                    .map_err(|error| format!("{context}: {error}"))?;
-                for parameter_type in parameter_types {
-                    self.type_id(*parameter_type, context)?;
-                }
-                self.type_id(*result_type, context)
-            }
-            CallTargetSnapshot::Specialized {
-                target,
-                type_bindings,
-            } => {
-                self.call_target(target, context)?;
-                let mut names = std::collections::BTreeSet::new();
-                for (name, ty) in type_bindings {
-                    if name.is_empty() || !names.insert(name) {
-                        return Err(format!(
-                            "{context}: specialized call target contains an invalid or duplicate type parameter"
-                        ));
-                    }
-                    self.type_id(*ty, context)?;
-                }
-                Ok(())
-            }
-            CallTargetSnapshot::Limited { target, .. } => self.call_target(target, context),
-            CallTargetSnapshot::Composed(targets) => {
-                for target in targets {
-                    self.call_target(target, context)?;
-                }
-                Ok(())
-            }
         }
     }
 
