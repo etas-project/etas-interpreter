@@ -168,16 +168,9 @@ impl<'a> EvalContext<'a> {
                         "record field differs from checked projection",
                     ));
                 }
-                layout
-                    .borrow(&fields)
-                    .map(|value| value.clone())
-                    .map_err(|message| {
-                        ExecutionFault::new(
-                            AnalysisDiagnosticCode::MissingCheckedFact,
-                            span,
-                            message,
-                        )
-                    })
+                layout.borrow(&fields).cloned().map_err(|message| {
+                    ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+                })
             }
             InterpValue::ResourceHandle { stable_id, ty, .. } => {
                 let (key_type, value_type) =

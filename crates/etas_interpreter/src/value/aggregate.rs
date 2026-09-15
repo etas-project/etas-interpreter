@@ -1,30 +1,25 @@
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    fmt,
-    rc::Rc,
-};
+use std::{fmt, rc::Rc};
 
 use super::primitive::InterpValue;
 
 #[derive(Clone)]
-pub struct ArrayValue(Rc<RefCell<Vec<InterpValue>>>);
+pub struct ArrayValue(Rc<Vec<InterpValue>>);
 
 impl ArrayValue {
     pub(super) fn into_unique_values(self) -> Option<Vec<InterpValue>> {
-        Rc::try_unwrap(self.0).ok().map(RefCell::into_inner)
+        Rc::try_unwrap(self.0).ok()
     }
 
     pub fn new(values: Vec<InterpValue>) -> Self {
-        Self(Rc::new(RefCell::new(values)))
+        Self(Rc::new(values))
     }
 
-    pub fn borrow(&self) -> Ref<'_, Vec<InterpValue>> {
-        self.0.borrow()
+    pub fn borrow(&self) -> &Vec<InterpValue> {
+        &self.0
     }
 
-    pub fn borrow_mut(&mut self) -> RefMut<'_, Vec<InterpValue>> {
-        self.make_unique();
-        self.0.borrow_mut()
+    pub fn borrow_mut(&mut self) -> &mut Vec<InterpValue> {
+        Rc::make_mut(&mut self.0)
     }
 
     pub fn snapshot(&self) -> Vec<InterpValue> {
@@ -34,25 +29,24 @@ impl ArrayValue {
     /// Reuse unique backing; shared values retain their original snapshot.
     pub fn into_values(self) -> Vec<InterpValue> {
         match Rc::try_unwrap(self.0) {
-            Ok(values) => values.into_inner(),
-            Err(shared) => shared.borrow().clone(),
+            Ok(values) => values,
+            Err(shared) => shared.as_ref().clone(),
         }
     }
 
     pub(crate) fn push(&mut self, value: InterpValue) {
         self.prepare_growth(1);
-        self.0.borrow_mut().push(value);
+        Rc::make_mut(&mut self.0).push(value);
     }
 
     fn prepare_growth(&mut self, additional: usize) {
         if Rc::strong_count(&self.0) > 1 {
-            let current = self.0.borrow();
+            let current = self.0.as_ref();
             // Clone shared headers directly into the final capacity, rather
             // than cloning a full buffer and immediately growing it again.
             let mut next = Vec::with_capacity(current.len() + additional);
             next.extend(current.iter().cloned());
-            drop(current);
-            self.0 = Rc::new(RefCell::new(next));
+            self.0 = Rc::new(next);
         }
     }
 
@@ -74,19 +68,18 @@ impl ArrayValue {
             return other;
         }
         self.prepare_growth(right_len);
-        let mut values = self.0.borrow_mut();
+        let values = Rc::make_mut(&mut self.0);
         values.reserve(right_len);
         match Rc::try_unwrap(other.0) {
-            Ok(right) => values.extend(right.into_inner()),
-            Err(shared) => values.extend(shared.borrow().iter().cloned()),
+            Ok(right) => values.extend(right),
+            Err(shared) => values.extend(shared.iter().cloned()),
         }
-        drop(values);
         self
     }
 
     pub fn make_unique(&mut self) {
         if Rc::strong_count(&self.0) > 1 {
-            self.0 = Rc::new(RefCell::new(self.snapshot()));
+            self.0 = Rc::new(self.snapshot());
         }
     }
 }
@@ -113,19 +106,19 @@ impl From<Vec<InterpValue>> for ArrayValue {
 
 #[derive(Clone)]
 pub struct SliceValue {
-    backing: Rc<RefCell<Vec<InterpValue>>>,
+    backing: Rc<Vec<InterpValue>>,
     range: std::ops::Range<usize>,
 }
 
 impl SliceValue {
     pub(super) fn into_unique_backing(self) -> Option<Vec<InterpValue>> {
-        Rc::try_unwrap(self.backing).ok().map(RefCell::into_inner)
+        Rc::try_unwrap(self.backing).ok()
     }
 
     pub fn new(values: Vec<InterpValue>) -> Self {
         Self {
             range: 0..values.len(),
-            backing: Rc::new(RefCell::new(values)),
+            backing: Rc::new(values),
         }
     }
 
@@ -149,8 +142,8 @@ impl SliceValue {
         })
     }
 
-    pub fn borrow(&self) -> Ref<'_, [InterpValue]> {
-        Ref::map(self.backing.borrow(), |values| &values[self.range.clone()])
+    pub fn borrow(&self) -> &[InterpValue] {
+        &self.backing[self.range.clone()]
     }
 
     pub fn snapshot(&self) -> Vec<InterpValue> {
@@ -160,13 +153,12 @@ impl SliceValue {
     /// Reuse unique backing; shared values retain their original snapshot.
     pub fn into_values(self) -> Vec<InterpValue> {
         match Rc::try_unwrap(self.backing) {
-            Ok(values) => {
-                let mut values = values.into_inner();
+            Ok(mut values) => {
                 values.truncate(self.range.end);
                 values.drain(..self.range.start);
                 values
             }
-            Err(shared) => shared.borrow()[self.range].to_vec(),
+            Err(shared) => shared[self.range].to_vec(),
         }
     }
 }

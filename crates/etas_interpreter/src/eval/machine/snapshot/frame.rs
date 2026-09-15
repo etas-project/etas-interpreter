@@ -172,7 +172,7 @@ mod tests {
                 let InterpValue::Array(values) = value else {
                     panic!("array")
                 };
-                let mut values = values.borrow_mut();
+                let values = values.borrow_mut();
                 let InterpValue::Record(fields) = &mut values[0] else {
                     panic!("record")
                 };

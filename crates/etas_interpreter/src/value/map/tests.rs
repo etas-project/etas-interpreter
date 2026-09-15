@@ -37,9 +37,9 @@ fn unique_map_updates_preserve_buffer_and_index_with_linear_comparisons() {
         let pointer = entries.as_ptr();
         let mut map = MapValue::new(entries);
         assert_eq!(map.borrow().as_ptr(), pointer);
-        assert!(map.0.borrow().index.get().is_none());
+        assert!(map.0.index.get().is_none());
         assert!(map.contains_key(&InterpValue::i32(0)));
-        let index = Rc::as_ptr(map.0.borrow().index.get().unwrap());
+        let index = Rc::as_ptr(map.0.index.get().unwrap());
         KEY_COMPARISONS.set(0);
         let (_, allocations) = crate::testing::allocation::measure(|| {
             for n in 0..count {
@@ -49,7 +49,7 @@ fn unique_map_updates_preserve_buffer_and_index_with_linear_comparisons() {
         });
         assert_eq!(allocations.count, 0, "n={count}: {allocations:?}");
         assert_eq!(map.borrow().as_ptr(), pointer);
-        assert_eq!(Rc::as_ptr(map.0.borrow().index.get().unwrap()), index);
+        assert_eq!(Rc::as_ptr(map.0.index.get().unwrap()), index);
         let comparisons = KEY_COMPARISONS.get();
         assert!(
             comparisons <= count as usize * 3,
@@ -67,17 +67,17 @@ fn map_cow_shares_value_only_index_but_isolates_key_changes_and_restore() {
         InterpValue::Array(ArrayValue::new(vec![key(10)])),
     )]);
     assert!(map.contains_key(&key(1)));
-    let index = Rc::as_ptr(map.0.borrow().index.get().unwrap());
+    let index = Rc::as_ptr(map.0.index.get().unwrap());
     let alias = map.clone();
     let snapshot = ValueSnapshot::capture(&InterpValue::Map(alias.clone())).unwrap();
     {
-        let mut value = map.value_mut(&key(1)).unwrap();
+        let value = map.value_mut(&key(1)).unwrap();
         let InterpValue::Array(values) = &mut *value else {
             panic!("array value");
         };
         values.borrow_mut()[0] = key(20);
     }
-    assert_eq!(Rc::as_ptr(map.0.borrow().index.get().unwrap()), index);
+    assert_eq!(Rc::as_ptr(map.0.index.get().unwrap()), index);
     assert_eq!(
         alias.get(&key(1)),
         Some(InterpValue::Array(vec![key(10)].into()))
@@ -87,13 +87,13 @@ fn map_cow_shares_value_only_index_but_isolates_key_changes_and_restore() {
         Some(InterpValue::Array(vec![key(20)].into()))
     );
     map.insert(key(2), key(30));
-    assert_ne!(Rc::as_ptr(map.0.borrow().index.get().unwrap()), index);
-    assert_eq!(Rc::as_ptr(alias.0.borrow().index.get().unwrap()), index);
+    assert_ne!(Rc::as_ptr(map.0.index.get().unwrap()), index);
+    assert_eq!(Rc::as_ptr(alias.0.index.get().unwrap()), index);
     assert!(!alias.contains_key(&key(2)));
     assert_eq!(map.get(&key(2)), Some(key(30)));
 
     map.borrow_mut().swap(0, 1);
-    assert!(map.0.borrow().index.get().is_none());
+    assert!(map.0.index.get().is_none());
     assert_eq!(map.get(&key(2)), Some(key(30)));
     map.borrow_mut()[0].0 = key(3);
     assert!(!map.contains_key(&key(2)));
@@ -106,7 +106,7 @@ fn map_cow_shares_value_only_index_but_isolates_key_changes_and_restore() {
         panic!("map snapshot");
     };
     assert!(
-        restored.0.borrow().index.get().is_none(),
+        restored.0.index.get().is_none(),
         "cache must not enter snapshots"
     );
     assert_eq!(restored.get(&key(1)), alias.get(&key(1)));

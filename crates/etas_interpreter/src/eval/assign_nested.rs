@@ -19,14 +19,14 @@ impl<'a> EvalContext<'a> {
         match head {
             LocalPlaceSegment::Field(field) => match current {
                 InterpValue::Record(fields) => {
-                    let Some(mut field_value) = fields.field_mut(field) else {
+                    let Some(field_value) = fields.field_mut(field) else {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             span,
                             format!("record field `{field}` does not exist at runtime"),
                         ));
                     };
-                    self.assign_nested_value(&mut field_value, tail, new_value, span)
+                    self.assign_nested_value(field_value, tail, new_value, span)
                 }
                 other => Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::InvalidArguments,
@@ -39,7 +39,7 @@ impl<'a> EvalContext<'a> {
             },
             LocalPlaceSegment::Index(index) => match current {
                 InterpValue::Array(values) => {
-                    let mut values = values.borrow_mut();
+                    let values = values.borrow_mut();
                     let Some(slot) = values.get_mut(*index) else {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
@@ -74,14 +74,14 @@ impl<'a> EvalContext<'a> {
                         entries.insert((**key).clone(), new_value);
                         Ok(())
                     } else {
-                        let Some(mut slot) = entries.value_mut(key) else {
+                        let Some(slot) = entries.value_mut(key) else {
                             return Err(ExecutionFault::new(
                                 AnalysisDiagnosticCode::InvalidArguments,
                                 span,
                                 "nested map assignment requires an existing key at runtime",
                             ));
                         };
-                        self.assign_nested_value(&mut slot, tail, new_value, span)
+                        self.assign_nested_value(slot, tail, new_value, span)
                     }
                 }
                 other => Err(ExecutionFault::new(

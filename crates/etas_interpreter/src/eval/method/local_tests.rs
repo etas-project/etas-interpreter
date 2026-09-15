@@ -106,7 +106,6 @@ fn collection_kernels_move_owned_arguments_and_preserve_live_aliases() {
                 panic!("string")
             };
             assert_eq!(first_right.as_ptr(), pointer);
-            drop(values);
 
             let alias = result.clone();
             let rhs = "owned argument".repeat(128);

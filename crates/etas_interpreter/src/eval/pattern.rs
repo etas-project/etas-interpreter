@@ -128,7 +128,7 @@ impl<'a> EvalContext<'a> {
                                 )
                             })?;
                             if let Some(pat) = field.pat
-                                && !self.match_pattern(pat, &field_value, frame, field.span)?
+                                && !self.match_pattern(pat, field_value, frame, field.span)?
                             {
                                 return Ok(false);
                             }

@@ -1,9 +1,4 @@
-use std::{
-    cell::{OnceCell, Ref, RefCell, RefMut},
-    fmt,
-    rc::Rc,
-    sync::Arc,
-};
+use std::{cell::OnceCell, fmt, rc::Rc, sync::Arc};
 
 use super::InterpValue;
 
@@ -52,43 +47,40 @@ impl RecordData {
 }
 
 #[derive(Clone)]
-pub struct RecordValue(Rc<RefCell<RecordData>>);
+pub struct RecordValue(Rc<RecordData>);
 
 impl RecordValue {
     pub(super) fn into_unique_values(self) -> Option<Vec<(String, InterpValue)>> {
-        Rc::try_unwrap(self.0)
-            .ok()
-            .map(|data| data.into_inner().fields)
+        Rc::try_unwrap(self.0).ok().map(|data| data.fields)
     }
 
     pub fn new(fields: Vec<(String, InterpValue)>) -> Self {
-        Self(Rc::new(RefCell::new(RecordData {
+        Self(Rc::new(RecordData {
             fields,
             layout: OnceCell::new(),
-        })))
+        }))
     }
 
     pub(crate) fn with_layout(
         fields: Vec<(String, InterpValue)>,
         layout: Arc<RecordLayout>,
     ) -> Self {
-        Self(Rc::new(RefCell::new(RecordData {
+        Self(Rc::new(RecordData {
             fields,
             layout: OnceCell::from(layout),
-        })))
+        }))
     }
 
     pub fn get(&self, field: &str) -> Option<InterpValue> {
-        let data = self.0.borrow();
+        let data = &self.0;
         let storage = data.field_storage(field)?;
         Some(data.fields[storage].1.clone())
     }
 
-    pub(crate) fn field_mut(&mut self, field: &str) -> Option<RefMut<'_, InterpValue>> {
-        self.make_unique();
-        let data = self.0.borrow_mut();
+    pub(crate) fn field_mut(&mut self, field: &str) -> Option<&mut InterpValue> {
+        let data = Rc::make_mut(&mut self.0);
         let storage = data.field_storage(field)?;
-        Some(RefMut::map(data, |data| &mut data.fields[storage].1))
+        Some(&mut data.fields[storage].1)
     }
 
     pub(crate) fn borrow_checked_field(
@@ -96,8 +88,8 @@ impl RecordValue {
         slot: usize,
         expected_name: &str,
         arity: usize,
-    ) -> Result<Ref<'_, InterpValue>, &'static str> {
-        let data = self.0.borrow();
+    ) -> Result<&InterpValue, &'static str> {
+        let data = &self.0;
         if data.fields.len() != arity {
             return Err("record field count differs from checked layout");
         }
@@ -113,20 +105,18 @@ impl RecordValue {
         {
             return Err("record field name differs from checked layout slot");
         }
-        Ok(Ref::map(data, |data| &data.fields[storage].1))
+        Ok(&data.fields[storage].1)
     }
 
-    pub fn borrow(&self) -> Ref<'_, Vec<(String, InterpValue)>> {
-        Ref::map(self.0.borrow(), |data| &data.fields)
+    pub fn borrow(&self) -> &Vec<(String, InterpValue)> {
+        &self.0.fields
     }
 
-    pub fn borrow_mut(&mut self) -> RefMut<'_, Vec<(String, InterpValue)>> {
-        self.make_unique();
-        RefMut::map(self.0.borrow_mut(), |data| {
-            // Public mutation can change field names/order as well as values.
-            data.layout.take();
-            &mut data.fields
-        })
+    pub fn borrow_mut(&mut self) -> &mut Vec<(String, InterpValue)> {
+        let data = Rc::make_mut(&mut self.0);
+        // Public mutation can change field names/order as well as values.
+        data.layout.take();
+        &mut data.fields
     }
 
     pub fn snapshot(&self) -> Vec<(String, InterpValue)> {
@@ -135,15 +125,14 @@ impl RecordValue {
 
     pub fn into_values(self) -> Vec<(String, InterpValue)> {
         match Rc::try_unwrap(self.0) {
-            Ok(data) => data.into_inner().fields,
-            Err(shared) => shared.borrow().fields.clone(),
+            Ok(data) => data.fields,
+            Err(shared) => shared.fields.clone(),
         }
     }
 
     pub fn make_unique(&mut self) {
         if Rc::strong_count(&self.0) > 1 {
-            let data = self.0.borrow().clone();
-            self.0 = Rc::new(RefCell::new(data));
+            self.0 = Rc::new(self.0.as_ref().clone());
         }
     }
 }

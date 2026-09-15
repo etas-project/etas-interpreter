@@ -25,7 +25,7 @@ impl CheckedRecordField {
     pub(crate) fn borrow<'a>(
         &self,
         value: &'a RecordValue,
-    ) -> Result<std::cell::Ref<'a, InterpValue>, &'static str> {
+    ) -> Result<&'a InterpValue, &'static str> {
         value.borrow_checked_field(self.slot, &self.names[self.slot], self.names.len())
     }
 
@@ -417,7 +417,7 @@ mod tests {
             let (_, allocations) = measure(|| {
                 for (field, pointer) in fields.iter().zip(pointers) {
                     let value = field.borrow(&value).unwrap();
-                    let InterpValue::String(value) = &*value else {
+                    let InterpValue::String(value) = value else {
                         panic!("string");
                     };
                     assert_eq!(value.as_ptr(), pointer);
