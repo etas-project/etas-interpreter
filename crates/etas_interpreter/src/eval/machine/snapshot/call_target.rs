@@ -4,6 +4,8 @@ use crate::orchestration::CallTargetSnapshot;
 
 mod capture;
 pub(super) use capture::capture_call_target;
+mod restore;
+pub(super) use restore::restore_call_target;
 
 #[cfg(test)]
 mod tests;
@@ -37,7 +39,7 @@ fn capture_leaf(target: &CallTarget) -> Result<CallTargetSnapshot, String> {
     })
 }
 
-pub(super) fn restore_call_target(
+fn restore_leaf(
     snapshot: CallTargetSnapshot,
     context: &mut RestoreContext,
 ) -> Result<CallTarget, String> {
@@ -74,23 +76,10 @@ pub(super) fn restore_call_target(
             parameter_types,
             result_type,
         }),
-        CallTargetSnapshot::Specialized {
-            target,
-            type_bindings,
-        } => CallTarget::Specialized {
-            target: Box::new(restore_call_target(target.into_value(), context)?),
-            type_bindings,
-        },
-        CallTargetSnapshot::Limited { target, limits } => CallTarget::Limited {
-            target: Box::new(restore_call_target(target.into_value(), context)?),
-            limits,
-        },
-        CallTargetSnapshot::Composed(targets) => CallTarget::Composed(
-            targets
-                .into_values()
-                .into_iter()
-                .map(|target| restore_call_target(target, context))
-                .collect::<Result<Vec<_>, _>>()?,
-        ),
+        CallTargetSnapshot::Specialized { .. }
+        | CallTargetSnapshot::Limited { .. }
+        | CallTargetSnapshot::Composed(_) => {
+            return Err("compound call target must use its restore builder".into());
+        }
     })
 }

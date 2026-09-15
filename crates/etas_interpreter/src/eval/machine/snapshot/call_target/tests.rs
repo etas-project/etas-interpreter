@@ -2,6 +2,8 @@ use super::*;
 use crate::testing::allocation::measure;
 use etas_hir::HirItemId;
 
+mod restore;
+
 // Runtime CallTarget destruction remains a separate audit. This guard isolates
 // borrowed capture; saved targets use their normal production release path.
 struct RuntimeTree(Option<CallTarget>);
