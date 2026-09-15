@@ -11,6 +11,7 @@ enum Children {
     },
     Deque(vec_deque::IntoIter<Value>),
     List(ListValue),
+    Messages(std::vec::IntoIter<crate::value::MessageValue>),
     Range {
         start: Option<Box<Value>>,
         end: Option<Box<Value>>,
@@ -29,6 +30,7 @@ impl Children {
             Self::Entries { entries, value } => entries.len() == 0 && value.is_none(),
             Self::Deque(values) => values.len() == 0,
             Self::List(values) => values.is_empty(),
+            Self::Messages(values) => values.len() == 0,
             Self::Range { start, end } => start.is_none() && end.is_none(),
         }
     }
@@ -51,12 +53,13 @@ impl Iterator for Children {
             }
             Self::Deque(values) => values.next(),
             Self::List(values) => values.pop_unique_front_for_drop(),
+            Self::Messages(values) => values.next().map(Value::Message),
             Self::Range { start, end } => start.take().or_else(|| end.take()).map(|value| *value),
         }
     }
 }
 
-pub(super) fn release_value(mut current: Value) {
+pub(crate) fn release_value(mut current: Value) {
     // Own iterators over detached storage, not copies of all pending children.
     // Unary paths are tail-processed; additional state scales with branching
     // depth rather than collection width. Shared subtrees terminate the walk.
@@ -96,9 +99,16 @@ pub(super) fn release_value(mut current: Value) {
                 })
             }
             Value::Message(message) => {
-                current = *message.payload;
-                continue;
+                if let Ok(mut node) = Rc::try_unwrap(message.payload.0) {
+                    current = std::mem::replace(&mut node.0, Value::Unit);
+                    continue;
+                }
+                None
             }
+            Value::Conversation(conversation) => conversation
+                .messages
+                .into_unique_messages()
+                .map(|messages| Children::Messages(messages.into_iter())),
             Value::Range(range) => Some(Children::Range {
                 start: Some(range.start),
                 end: Some(range.end),

@@ -1,6 +1,79 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn message_payload_aliases_preserve_value_semantics_across_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.message.Message;
+import std.runtime.checkpoint;
+
+flow main(input: Array<i32>) -> (i32, i32, i32, i32) {
+    let original = Message.new(input);
+    let alias = original;
+    var changed = alias.body;
+    checkpoint("shared-message");
+    changed[0] = 42;
+    return (input[0], original.body[0], alias.body[0], changed[0]);
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![value::InterpValue::Array(
+                vec![value::InterpValue::i32(7); 1000].into(),
+            )],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let expected = value::InterpValue::Tuple(
+        vec![
+            value::InterpValue::i32(7),
+            value::InterpValue::i32(7),
+            value::InterpValue::i32(7),
+            value::InterpValue::i32(42),
+        ]
+        .into(),
+    );
+    assert_eq!(result.value(), Some(&expected));
+    assert_eq!(result.checkpoints.len(), 1);
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &checked,
+            &result.checkpoints[0],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&expected));
+    let artifact =
+        api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let bytes =
+        api::codec::checkpoint_file_to_bytes(artifact, api::codec::CheckpointFileLimits::default())
+            .unwrap();
+    let document =
+        api::codec::checkpoint_file_from_bytes(&bytes, api::codec::CheckpointFileLimits::default())
+            .unwrap();
+    let checkpoint = api::codec::checkpoint_from_json(&document, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &checkpoint, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&expected));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_message_new_and_checked_cast_without_host() {
     let checked = checked_project(
         r#"
@@ -73,7 +146,7 @@ flow main(input: Message<string>) -> Option<Message<string>> {
         role: value::MessageRoleValue::User,
         session: None,
         created_at: "external-boundary".to_owned(),
-        payload: Box::new(value::InterpValue::i32(42)),
+        payload: value::InterpValue::i32(42).into(),
         provenance: None,
     });
 

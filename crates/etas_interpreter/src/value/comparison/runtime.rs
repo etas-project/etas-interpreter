@@ -2,12 +2,25 @@ mod node;
 
 use super::{Comparison, CursorStep, EqualityCursor, SetSearch, compare};
 use crate::value::{
-    ArrayValue, DequeValue, InterpValue, ListValue, MapValue, RecordValue, SetValue, SharedFields,
-    SliceValue,
+    ArrayValue, DequeValue, InterpValue, ListValue, MapValue, MessageList, RecordValue, SetValue,
+    SharedFields, SliceValue,
 };
 
 pub(in crate::value) fn value_equal(left: &InterpValue, right: &InterpValue) -> bool {
     compare(node::compare_node(left, right))
+}
+
+pub(in crate::value) fn messages_equal(left: &MessageList, right: &MessageList) -> bool {
+    if left.len() != right.len() {
+        return false;
+    }
+    if std::ptr::eq(left.as_ptr(), right.as_ptr()) {
+        return true;
+    }
+    compare(Comparison::Pending(Cursor {
+        children: Children::Messages(left.clone(), right.clone()),
+        index: 0,
+    }))
 }
 
 pub(in crate::value) fn sets_equal(left: &SetValue, right: &SetValue) -> bool {
@@ -41,6 +54,7 @@ pub(super) struct Cursor {
 }
 
 enum Children {
+    Messages(MessageList, MessageList),
     Fields(SharedFields, SharedFields),
     Array(ArrayValue, ArrayValue),
     Slice(SliceValue, SliceValue),
@@ -90,6 +104,13 @@ impl EqualityCursor for Cursor {
         let position = self.index;
         self.index += 1;
         let child = match &mut self.children {
+            Children::Messages(a, b) => a.get(position).zip(b.get(position)).map(|(a, b)| {
+                if node::message_headers_equal(a, b) {
+                    compare_node(&a.payload, &b.payload)
+                } else {
+                    Comparison::Ready(false)
+                }
+            }),
             Children::Fields(a, b) => a
                 .get(position)
                 .zip(b.get(position))

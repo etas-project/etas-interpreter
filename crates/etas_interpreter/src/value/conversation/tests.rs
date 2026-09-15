@@ -17,10 +17,17 @@ fn view() -> ConversationValue {
             role: MessageRoleValue::User,
             session: Some("session".into()),
             created_at: "time".into(),
-            payload: Box::new(InterpValue::String("data".into())),
+            payload: InterpValue::String("data".into()).into(),
             provenance: None,
-        }],
+        }]
+        .into(),
     }
+}
+
+fn edit_message(value: &mut ConversationValue, edit: impl FnOnce(&mut MessageValue)) {
+    let mut messages = std::mem::take(&mut value.messages).into_messages();
+    edit(&mut messages[0]);
+    value.messages = messages.into();
 }
 
 fn check_all(value: &ConversationValue, limits: &StorageLimits, valid: bool) {
@@ -59,9 +66,8 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
     for field in ["payload", "id", "from", "to", "time", "provenance"] {
         let mut value = view();
         let large = "x".repeat(2048);
-        let message = &mut value.messages[0];
-        match field {
-            "payload" => *message.payload = InterpValue::String(large.into()),
+        edit_message(&mut value, |message| match field {
+            "payload" => message.payload = InterpValue::String(large.into()).into(),
             "id" => message.id = large,
             "from" => message.from = Some(large),
             "to" => message.to = Some(large),
@@ -73,15 +79,17 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
                 })
             }
             _ => unreachable!(),
-        }
+        });
         check_all(&value, &limits, false);
     }
     let mut value = view();
-    value.messages[0].from = Some("x".repeat(550));
-    value.messages[0].to = Some("x".repeat(550));
+    edit_message(&mut value, |message| {
+        message.from = Some("x".repeat(550));
+        message.to = Some("x".repeat(550));
+    });
     check_all(&value, &limits, false);
     let mut value = view();
-    value.messages = vec![value.messages[0].clone(); 30];
+    value.messages = vec![value.messages[0].clone(); 30].into();
     check_all(
         &value,
         &StorageLimits {
@@ -99,7 +107,9 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
         false,
     );
     let mut value = view();
-    *value.messages[0].payload = InterpValue::Array(vec![InterpValue::Bool(true); 20].into());
+    edit_message(&mut value, |message| {
+        message.payload = InterpValue::Array(vec![InterpValue::Bool(true); 20].into()).into();
+    });
     check_all(
         &value,
         &StorageLimits {
@@ -110,9 +120,9 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
     );
     let mut value = view();
     for _ in 0..20 {
-        *value.messages[0].payload = InterpValue::OptionSome(crate::value::SharedValue::new(
-            value.messages[0].payload.as_ref().clone(),
-        ));
+        edit_message(&mut value, |message| {
+            message.payload = InterpValue::OptionSome(message.payload.clone()).into();
+        });
     }
     check_all(
         &value,
@@ -127,7 +137,9 @@ fn storage_view_limits_cover_envelope_payload_provenance_count_bytes_nodes_and_d
 #[test]
 fn json_preflight_rejects_size_before_decoding_payloads() {
     let mut value = view();
-    *value.messages[0].payload = InterpValue::String("x".repeat(65536).into());
+    edit_message(&mut value, |message| {
+        message.payload = InterpValue::String("x".repeat(65536).into()).into();
+    });
     let mut encoded = crate::api::codec::value_json(&InterpValue::Conversation(value));
     // A later invalid runtime value must never be reached before the size rejection.
     let mut bad = encoded["messages"][0].clone();

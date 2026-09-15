@@ -76,7 +76,7 @@ impl<'a> EvalContext<'a> {
             role: crate::value::MessageRoleValue::User,
             session: self.current_session.clone(),
             created_at,
-            payload: Box::new(payload.clone()),
+            payload: payload.clone().into(),
             provenance: Some(crate::value::ProvenanceValue {
                 trace_id: Some(format!("{:?}", self.host_context.trace.trace_id)),
                 source: Some("Message.new".to_owned()),
@@ -90,7 +90,7 @@ impl<'a> EvalContext<'a> {
                 session: message.session.clone(),
                 role: crate::value::codec::message_role_json(message.role).to_owned(),
                 created_at: message.created_at.clone(),
-                payload: message.payload.clone(),
+                payload: Box::new(message.payload.clone().into_value()),
                 provenance: message.provenance.clone(),
             });
         ControlSignal::Value(InterpValue::Message(message))
@@ -145,7 +145,7 @@ impl<'a> EvalContext<'a> {
         ) else {
             return ControlSignal::Value(InterpValue::OptionNone);
         };
-        message.payload = Box::new(payload);
+        message.payload = payload.into();
         ControlSignal::Value(InterpValue::OptionSome(crate::value::SharedValue::new(
             InterpValue::Message(message),
         )))

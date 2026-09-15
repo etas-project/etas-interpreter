@@ -43,8 +43,8 @@ pub use record::RecordValue;
 pub use resource::MemorySelectionKind;
 pub use storage::MemoryWriteIntentValue;
 pub use support::{
-    ConversationValue, HostJsonSupportValue, HostSupportValue, MessageRoleValue, MessageValue,
-    ModelContentValue, ModelMessageValue, ModelResponseValue, ModelRoleValue, ModelToolCallValue,
-    ModelUsageValue, PromptMessage, PromptRole, ProvenanceValue, RangeBounds, RangeValue,
-    SessionConfigValue,
+    ConversationValue, HostJsonSupportValue, HostSupportValue, MessageList, MessageRoleValue,
+    MessageValue, ModelContentValue, ModelMessageValue, ModelResponseValue, ModelRoleValue,
+    ModelToolCallValue, ModelUsageValue, PromptMessage, PromptRole, ProvenanceValue, RangeBounds,
+    RangeValue, SessionConfigValue,
 };

@@ -130,7 +130,7 @@ impl From<MessageParts<InterpValue>> for crate::value::MessageValue {
             role: parts.role,
             session: parts.session,
             created_at: parts.created_at,
-            payload: Box::new(parts.payload),
+            payload: parts.payload.into(),
             provenance: parts.provenance,
         }
     }
@@ -222,7 +222,7 @@ pub(super) fn conversation_from_json(
         selected_context: parts.selected_context.map(Box::new),
         history_fence: parts.history_fence,
         session: parts.session,
-        messages: parts.messages,
+        messages: parts.messages.into(),
         cursor: parts.cursor,
     };
     crate::value::conversation::validate(&conversation, limits)
@@ -262,7 +262,7 @@ mod tests {
                 role: crate::value::MessageRoleValue::User,
                 session: Some("session".into()),
                 created_at: "42".into(),
-                payload: Box::new(InterpValue::Nominal {
+                payload: crate::value::SharedValue::new(InterpValue::Nominal {
                     ty: etas_types::TypeId(27),
                     value: crate::value::SharedValue::new(InterpValue::String("payload".into())),
                 }),
@@ -270,7 +270,8 @@ mod tests {
                     trace_id: Some("trace".into()),
                     source: None,
                 }),
-            }],
+            }]
+            .into(),
             cursor: Some("opaque cursor".into()),
         })
     }
@@ -283,7 +284,7 @@ mod tests {
             selected_context: None,
             session: "empty".into(),
             history_fence: None,
-            messages: Vec::new(),
+            messages: Vec::new().into(),
             cursor: None,
         });
         assert_eq!(value_from_json(&value_json(&empty)).unwrap(), empty);

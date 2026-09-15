@@ -80,7 +80,7 @@ fn message() -> MessageValue {
         role: MessageRoleValue::Assistant,
         session: Some("s1".into()),
         created_at: "now".into(),
-        payload: Box::new(InterpValue::Array(
+        payload: crate::value::SharedValue::new(InterpValue::Array(
             vec![InterpValue::String("payload".into())].into(),
         )),
         provenance: Some(ProvenanceValue {
@@ -105,7 +105,7 @@ fn message_projection_matches_canonical_envelope_and_conversation_context() {
     let value = InterpValue::Conversation(ConversationValue {
         session: "s1".into(),
         history_fence: None,
-        messages: vec![message],
+        messages: vec![message].into(),
         cursor: Some("cursor".into()),
         selected_context: None,
     });
@@ -199,7 +199,7 @@ async fn conversation_projection_preserves_selected_context_evidence() {
     let value = InterpValue::Conversation(ConversationValue {
         session: "s".into(),
         history_fence: Some(fence.clone()),
-        messages: vec![],
+        messages: vec![].into(),
         cursor: None,
         selected_context: Some(Box::new(etas_host::session::SessionPublishedContext {
             content: etas_host::session::SessionContextContent {

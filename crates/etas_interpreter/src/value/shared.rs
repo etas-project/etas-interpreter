@@ -2,7 +2,7 @@ use std::{fmt, ops::Deref, rc::Rc};
 
 use super::InterpValue;
 mod release;
-use release::release_value;
+pub(crate) use release::release_value;
 
 #[cfg(test)]
 mod tests;

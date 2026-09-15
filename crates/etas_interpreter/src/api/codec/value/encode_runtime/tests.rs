@@ -69,7 +69,7 @@ fn conversation_encodes_borrowed_message_contract_without_changing_the_wire() {
         role: MessageRoleValue::User,
         session: Some("s".into()),
         created_at: "step-1".into(),
-        payload: Box::new(V::Array(vec![V::Bool(true)].into())),
+        payload: V::Array(vec![V::Bool(true)].into()).into(),
         provenance: Some(ProvenanceValue {
             trace_id: Some("trace".into()),
             source: Some("source".into()),
@@ -81,7 +81,7 @@ fn conversation_encodes_borrowed_message_contract_without_changing_the_wire() {
         selected_context: None,
         history_fence: None,
         session: "s".into(),
-        messages: vec![message],
+        messages: vec![message].into(),
         cursor: Some("next".into()),
     });
     let wire = codec::value_json(&value);

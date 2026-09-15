@@ -1,6 +1,19 @@
 use super::{Children, Cursor, set_comparison};
 use crate::value::{InterpValue as V, comparison::Comparison};
 
+pub(super) fn message_headers_equal(
+    a: &crate::value::MessageValue,
+    b: &crate::value::MessageValue,
+) -> bool {
+    a.id == b.id
+        && a.from == b.from
+        && a.to == b.to
+        && a.role == b.role
+        && a.session == b.session
+        && a.created_at == b.created_at
+        && a.provenance == b.provenance
+}
+
 pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
     let children = loop {
         match (a, b) {
@@ -32,18 +45,25 @@ pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
                 b = bv;
             }
             (V::Message(av), V::Message(bv)) => {
-                if av.id != bv.id
-                    || av.from != bv.from
-                    || av.to != bv.to
-                    || av.role != bv.role
-                    || av.session != bv.session
-                    || av.created_at != bv.created_at
-                    || av.provenance != bv.provenance
-                {
+                if !message_headers_equal(av, bv) {
                     return Comparison::Ready(false);
                 }
                 a = &av.payload;
                 b = &bv.payload;
+            }
+            (V::Conversation(av), V::Conversation(bv)) => {
+                if av.session != bv.session
+                    || av.history_fence != bv.history_fence
+                    || av.cursor != bv.cursor
+                    || av.selected_context != bv.selected_context
+                    || av.messages.len() != bv.messages.len()
+                {
+                    return Comparison::Ready(false);
+                }
+                if std::ptr::eq(av.messages.as_ptr(), bv.messages.as_ptr()) {
+                    return Comparison::Ready(true);
+                }
+                break Children::Messages(av.messages.clone(), bv.messages.clone());
             }
             (V::Tuple(av), V::Tuple(bv)) => {
                 if av.len() != bv.len() {
@@ -122,7 +142,6 @@ fn leaf_equal(a: &V, b: &V) -> bool {
         (V::Bytes(a), V::Bytes(b)) => a == b,
         (V::Json(a), V::Json(b)) => a == b,
         (V::Prompt(a), V::Prompt(b)) => a == b,
-        (V::Conversation(a), V::Conversation(b)) => a == b,
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
         (V::Range(a), V::Range(b)) => a == b,

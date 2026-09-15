@@ -359,7 +359,7 @@ impl<'a> EvalContext<'a> {
             }
             InterpValue::Message(message) => self.prompt_channel_content(
                 method,
-                *message.payload,
+                message.payload.into_value(),
                 span,
                 allow_plain_system_content,
             ),

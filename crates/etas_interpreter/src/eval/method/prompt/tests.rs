@@ -82,7 +82,7 @@ fn prompt_data_streams_borrowed_payloads_and_rejects_nested_secrets() {
         role: crate::value::MessageRoleValue::User,
         session: None,
         created_at: "now".into(),
-        payload: Box::new(secret.clone()),
+        payload: secret.clone().into(),
         provenance: None,
     };
     for value in [
@@ -96,7 +96,7 @@ fn prompt_data_streams_borrowed_payloads_and_rejects_nested_secrets() {
             selected_context: None,
             session: "s".into(),
             history_fence: None,
-            messages: vec![message],
+            messages: vec![message].into(),
             cursor: None,
         }),
     ] {

@@ -618,7 +618,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                 role: message_role_from_host(message.role),
                 session: message.session.map(|session| session.id),
                 created_at: message.created_at,
-                payload: Box::new(payload),
+                payload: payload.into(),
                 provenance,
             }))
         }
@@ -1019,7 +1019,7 @@ mod tests {
             role: crate::value::MessageRoleValue::Assistant,
             session: None,
             created_at: "2026-07-18T00:00:00Z".to_owned(),
-            payload: Box::new(InterpValue::String("hello".to_owned().into())),
+            payload: InterpValue::String("hello".to_owned().into()).into(),
             provenance: None,
         });
 

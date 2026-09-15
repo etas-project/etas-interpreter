@@ -1260,7 +1260,7 @@ fn value_codec_round_trips_canonical_message_contract() {
         role: crate::value::MessageRoleValue::User,
         session: Some("session-7".to_owned()),
         created_at: "step-4".to_owned(),
-        payload: Box::new(InterpValue::String("hello".to_owned().into())),
+        payload: InterpValue::String("hello".to_owned().into()).into(),
         provenance: Some(crate::value::ProvenanceValue {
             trace_id: Some("trace-7".to_owned()),
             source: Some("test".to_owned()),

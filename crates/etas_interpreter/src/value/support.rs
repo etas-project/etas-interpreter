@@ -1,6 +1,10 @@
 use super::primitive::InterpValue;
 mod host;
 mod ingress;
+mod messages;
+pub use messages::MessageList;
+#[cfg(test)]
+mod message_tests;
 pub use host::{HostFields, HostPairs, HostValues};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -11,7 +15,7 @@ pub struct MessageValue {
     pub role: MessageRoleValue,
     pub session: Option<String>,
     pub created_at: String,
-    pub payload: Box<InterpValue>,
+    pub payload: super::SharedValue,
     pub provenance: Option<ProvenanceValue>,
 }
 
@@ -27,7 +31,7 @@ pub struct ConversationValue {
     pub selected_context: Option<Box<etas_host::session::SessionPublishedContext>>,
     pub session: String,
     pub history_fence: Option<etas_host::session::SessionHistoryFence>,
-    pub messages: Vec<MessageValue>,
+    pub messages: MessageList,
     pub cursor: Option<String>,
 }
 

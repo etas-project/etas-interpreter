@@ -292,7 +292,7 @@ impl MessageSnapshot {
             role: self.role,
             session: self.session,
             created_at: self.created_at,
-            payload: Box::new(self.payload.into_value().restore_with(context)?),
+            payload: self.payload.into_value().restore_with(context)?.into(),
             provenance: self.provenance,
         })
     }
@@ -322,7 +322,8 @@ impl ConversationSnapshot {
                 .messages
                 .into_iter()
                 .map(|message| message.restore_with(context))
-                .collect::<Result<Vec<_>, _>>()?,
+                .collect::<Result<Vec<_>, _>>()?
+                .into(),
             cursor: self.cursor,
         })
     }

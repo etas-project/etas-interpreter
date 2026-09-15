@@ -1,7 +1,7 @@
 mod engine;
 mod runtime;
 pub(crate) use engine::{Comparison, CursorStep, EqualityCursor, compare};
-pub(super) use runtime::{sets_equal, value_equal};
+pub(super) use runtime::{messages_equal, sets_equal, value_equal};
 
 /// Matching continuations retain failed candidates instead of recursing into
 /// equality. Every right member can satisfy at most one left member.

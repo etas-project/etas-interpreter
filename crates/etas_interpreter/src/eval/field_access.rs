@@ -197,7 +197,7 @@ impl<'a> EvalContext<'a> {
                 })
             }
             InterpValue::Message(message) => match field {
-                "body" | "content" => Ok(*message.payload),
+                "body" | "content" => Ok(message.payload.into_value()),
                 "id" => Ok(InterpValue::String(message.id.into())),
                 "from" => Ok(option_string(message.from)),
                 "to" => Ok(option_string(message.to)),

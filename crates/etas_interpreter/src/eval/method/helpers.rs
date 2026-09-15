@@ -401,9 +401,10 @@ mod tests {
                 role: MessageRoleValue::User,
                 session: None,
                 created_at: "0".into(),
-                payload: Box::new(secret),
+                payload: secret.into(),
                 provenance: None,
-            }],
+            }]
+            .into(),
         });
         let (found, allocations) = measure(|| prompt_data_contains_secret(&conversation));
         assert!(found);
