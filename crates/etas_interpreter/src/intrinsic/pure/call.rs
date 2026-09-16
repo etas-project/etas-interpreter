@@ -6,7 +6,7 @@ use crate::value::InterpValue;
 use super::abi::input::into_builtin_for_type;
 use super::abi::output::from_builtin_for_type;
 use super::abi::{AdapterError, PureAbiProjector};
-use super::fast_path::{FastPathResult, checked_container_fast_path, interpreter_fast_path};
+use super::fast_path::{FastPathResult, checked_container_fast_path};
 
 pub fn execute_pure_intrinsic(
     call: &CheckedPureIntrinsicCall,
@@ -18,6 +18,10 @@ pub fn execute_pure_intrinsic(
             expected: call.parameter_types.len(),
             actual: args.len(),
         });
+    }
+    if let Some(query) = etas_builtin::collections::count::CountQuery::for_intrinsic(call.intrinsic)
+    {
+        return super::count::execute_count(query, call, &args, projector);
     }
     if call.intrinsic.0 == etas_std::intrinsic::pure::BYTES_LEN {
         let [value] = args.as_slice() else {
@@ -62,9 +66,6 @@ pub fn execute_pure_intrinsic(
         FastPathResult::Value(value) => return Ok(value),
         FastPathResult::Kernel(args) => args,
     };
-    if let Some(value) = interpreter_fast_path(call.intrinsic, &args) {
-        return from_builtin_for_type(value, call.result_type, projector);
-    }
     let builtin_args = args
         .into_iter()
         .zip(call.parameter_types.iter().copied())

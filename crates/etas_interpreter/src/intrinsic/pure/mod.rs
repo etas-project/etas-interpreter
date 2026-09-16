@@ -1,5 +1,6 @@
 mod abi;
 mod call;
+mod count;
 mod fast_path;
 mod text;
 
@@ -10,6 +11,8 @@ pub use call::execute_pure_intrinsic;
 mod adt_tests;
 #[cfg(test)]
 mod bytes_tests;
+#[cfg(test)]
+mod count_tests;
 #[cfg(test)]
 mod join_tests;
 #[cfg(test)]

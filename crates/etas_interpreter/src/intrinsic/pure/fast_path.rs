@@ -1,4 +1,3 @@
-use etas_builtin::{BuiltinValue, collections};
 use etas_std::intrinsic;
 use etas_types::PrimitiveType;
 
@@ -18,38 +17,6 @@ pub(super) fn checked_container_fast_path(
     mut args: Vec<InterpValue>,
     projector: &PureAbiProjector,
 ) -> Result<FastPathResult, AdapterError> {
-    if matches!(
-        call.intrinsic.0,
-        intrinsic::pure::LIST_LEN | intrinsic::pure::LIST_IS_EMPTY
-    ) && let [ty] = call.parameter_types.as_slice()
-        && matches!(projector.shape(*ty), Some(AbiShape::Map { .. }))
-    {
-        let [value] = args.as_slice() else {
-            return Err(invalid_checked_abi(call, projector));
-        };
-        let InterpValue::Map(entries) = value else {
-            return Err(type_mismatch(*ty, value));
-        };
-        let count = entries.borrow().len();
-        let value = if call.intrinsic.0 == intrinsic::pure::LIST_LEN {
-            if !matches!(
-                projector.shape(call.result_type),
-                Some(AbiShape::Primitive(PrimitiveType::USize))
-            ) {
-                return Err(invalid_checked_abi(call, projector));
-            }
-            InterpValue::usize(count)
-        } else {
-            if !matches!(
-                projector.shape(call.result_type),
-                Some(AbiShape::Primitive(PrimitiveType::Bool))
-            ) {
-                return Err(invalid_checked_abi(call, projector));
-            }
-            InterpValue::Bool(count == 0)
-        };
-        return Ok(FastPathResult::Value(value));
-    }
     if args.len() != 1
         || !matches!(
             call.intrinsic.0,
@@ -206,59 +173,4 @@ fn invalid_checked_abi(
             .collect::<Vec<_>>(),
         (call.result_type, projector.shape(call.result_type))
     ))
-}
-
-pub(super) fn interpreter_fast_path(
-    intrinsic: etas_std::StdIntrinsicId,
-    args: &[InterpValue],
-) -> Option<BuiltinValue> {
-    match (intrinsic.0, args) {
-        (intrinsic::pure::LIST_LEN, [InterpValue::Array(values)]) => {
-            Some(collections::list::len_from_count(values.borrow().len()))
-        }
-        (intrinsic::pure::LIST_LEN, [InterpValue::List(values)]) => {
-            Some(collections::list::len_from_count(values.len()))
-        }
-        (intrinsic::pure::LIST_LEN, [InterpValue::Slice(values)]) => {
-            Some(collections::list::len_from_count(values.borrow().len()))
-        }
-        (intrinsic::pure::LIST_LEN, [InterpValue::Deque(values)])
-        | (intrinsic::pure::LIST_LEN, [InterpValue::Queue(values)]) => {
-            Some(collections::list::len_from_count(values.borrow().len()))
-        }
-        (intrinsic::pure::LIST_LEN, [InterpValue::Stack(values)]) => {
-            Some(collections::list::len_from_count(values.borrow().len()))
-        }
-        (intrinsic::pure::LIST_LEN, [InterpValue::PriorityQueue(entries)])
-        | (intrinsic::pure::LIST_LEN, [InterpValue::OrderedMap(entries)]) => {
-            Some(collections::list::len_from_count(entries.borrow().len()))
-        }
-        (intrinsic::pure::LIST_LEN, [InterpValue::OrderedSet(values)]) => {
-            Some(collections::list::len_from_count(values.borrow().len()))
-        }
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Array(values)]) => Some(
-            collections::list::is_empty_from_count(values.borrow().len()),
-        ),
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::List(values)]) => {
-            Some(collections::list::is_empty_from_count(values.len()))
-        }
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Slice(values)]) => Some(
-            collections::list::is_empty_from_count(values.borrow().len()),
-        ),
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Deque(values)])
-        | (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Queue(values)]) => Some(
-            collections::list::is_empty_from_count(values.borrow().len()),
-        ),
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::Stack(values)]) => Some(
-            collections::list::is_empty_from_count(values.borrow().len()),
-        ),
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::PriorityQueue(entries)])
-        | (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::OrderedMap(entries)]) => Some(
-            collections::list::is_empty_from_count(entries.borrow().len()),
-        ),
-        (intrinsic::pure::LIST_IS_EMPTY, [InterpValue::OrderedSet(values)]) => Some(
-            collections::list::is_empty_from_count(values.borrow().len()),
-        ),
-        _ => None,
-    }
 }
