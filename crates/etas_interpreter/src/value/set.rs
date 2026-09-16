@@ -12,6 +12,10 @@ struct SetStorage {
 }
 
 impl SetValue {
+    pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {
+        (Rc::strong_count(&self.0) > 1).then(|| Rc::as_ptr(&self.0).cast())
+    }
+
     pub fn new(mut values: Vec<InterpValue>) -> Self {
         let mut index = MembershipIndex::default();
         let mut retained = 0;

@@ -6,6 +6,10 @@ use super::primitive::InterpValue;
 pub struct ArrayValue(Rc<Vec<InterpValue>>);
 
 impl ArrayValue {
+    pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {
+        (Rc::strong_count(&self.0) > 1).then(|| Rc::as_ptr(&self.0).cast())
+    }
+
     pub(super) fn into_unique_values(self) -> Option<Vec<InterpValue>> {
         Rc::try_unwrap(self.0).ok()
     }
@@ -111,6 +115,16 @@ pub struct SliceValue {
 }
 
 impl SliceValue {
+    pub(crate) fn shared_capture_identity(&self) -> Option<(*const (), usize, usize)> {
+        (Rc::strong_count(&self.backing) > 1).then(|| {
+            (
+                Rc::as_ptr(&self.backing).cast(),
+                self.range.start,
+                self.range.end,
+            )
+        })
+    }
+
     pub(super) fn into_unique_backing(self) -> Option<Vec<InterpValue>> {
         Rc::try_unwrap(self.backing).ok()
     }

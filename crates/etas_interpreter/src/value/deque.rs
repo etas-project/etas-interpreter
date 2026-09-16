@@ -6,6 +6,10 @@ use super::InterpValue;
 pub struct DequeValue(Rc<VecDeque<InterpValue>>);
 
 impl DequeValue {
+    pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {
+        (Rc::strong_count(&self.0) > 1).then(|| Rc::as_ptr(&self.0).cast())
+    }
+
     pub(super) fn into_unique_values(self) -> Option<VecDeque<InterpValue>> {
         Rc::try_unwrap(self.0).ok()
     }

@@ -38,6 +38,11 @@ impl Drop for Link {
 }
 
 impl ListValue {
+    pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {
+        let head = self.head.0.as_ref()?;
+        (Rc::strong_count(head) > 1).then(|| Rc::as_ptr(head).cast())
+    }
+
     pub(super) fn pop_unique_front_for_drop(&mut self) -> Option<InterpValue> {
         let head = self.head.0.take()?;
         match Rc::try_unwrap(head) {

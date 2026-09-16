@@ -40,9 +40,7 @@ impl RestoreContext {
 pub(super) fn capture_frame(frame: &Frame) -> Result<LocalsSnapshot, String> {
     Ok(LocalsSnapshot {
         id: frame.snapshot_id(),
-        locals: std::rc::Rc::new(
-            frame.try_map_locals(crate::orchestration::ValueSnapshot::capture)?,
-        ),
+        locals: std::rc::Rc::new(super::value_capture::capture_locals(frame)?),
         type_bindings: frame.sorted_type_bindings(),
     })
 }
