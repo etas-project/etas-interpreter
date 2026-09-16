@@ -5,6 +5,7 @@ mod record;
 mod result;
 mod shape;
 pub(super) mod text;
+mod wrapper_walk;
 
 pub use error::AdapterError;
 pub(super) use shape::AbiShape;

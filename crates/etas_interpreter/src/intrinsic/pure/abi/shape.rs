@@ -5,6 +5,7 @@ use etas_types::{
 };
 
 use super::record::RecordAbiLayout;
+use super::wrapper_walk::WrapperWalkLimits;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AbiShape {
@@ -42,6 +43,7 @@ pub enum AbiShape {
 #[derive(Clone, Debug, Default)]
 pub struct PureAbiProjector {
     shapes: HashMap<TypeId, AbiShape>,
+    wrapper_walks: WrapperWalkLimits,
 }
 
 impl PureAbiProjector {
@@ -106,10 +108,18 @@ impl PureAbiProjector {
                 (id, shape)
             })
             .collect();
-        Ok(Self { shapes })
+        let wrapper_walks = WrapperWalkLimits::build(&shapes);
+        Ok(Self {
+            shapes,
+            wrapper_walks,
+        })
     }
 
     pub fn shape(&self, ty: TypeId) -> Option<&AbiShape> {
         self.shapes.get(&ty)
+    }
+
+    pub(super) fn wrapper_steps(&self, ty: TypeId) -> Option<usize> {
+        self.wrapper_walks.get(ty)
     }
 }

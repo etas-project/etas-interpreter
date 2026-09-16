@@ -8,6 +8,57 @@ use etas_std::{StdIntrinsicId, intrinsic::pure};
 use etas_types::{PrimitiveType, Type, TypeInterner};
 
 #[test]
+fn join_wrapped_elements_reuses_prepared_projection_without_per_element_allocations() {
+    use crate::value::SharedValue;
+    use etas_types::{NominalTypeRef, TrustWrapper};
+    let mut types = TypeInterner::new();
+    let string = types.primitive(PrimitiveType::String);
+    let nominal = types.intern(Type::Nominal(NominalTypeRef {
+        name: "Text".into(),
+        params: vec![],
+        representation: Some(string),
+    }));
+    let trusted = types.intern(Type::Trust {
+        wrapper: TrustWrapper::Trusted,
+        inner: nominal,
+    });
+    let array = types.intern(Type::Array(trusted));
+    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let call = CheckedPureIntrinsicCall {
+        intrinsic: StdIntrinsicId(pure::TEXT_JOIN),
+        parameter_types: vec![array, string],
+        result_type: string,
+    };
+    for count in [1000, 2000, 4000] {
+        let payload = "x".repeat(1024);
+        let item = InterpValue::Trust {
+            wrapper: TrustWrapper::Trusted,
+            value: SharedValue::new(InterpValue::Nominal {
+                ty: nominal,
+                value: SharedValue::new(InterpValue::String(payload.into())),
+            }),
+        };
+        let input = InterpValue::Array(ArrayValue::new(vec![item; count]));
+        let args = vec![input.clone(), InterpValue::String("|".into())];
+        let (output, cost) = measure(|| execute_pure_intrinsic(&call, args, &projector).unwrap());
+        let bytes = count * 1024 + count - 1;
+        assert!(
+            cost.count <= 2,
+            "wrapper projection allocated per element: n={count}, {cost:?}"
+        );
+        assert!(
+            cost.bytes <= bytes + 128,
+            "intermediate allocation: {cost:?}"
+        );
+        let InterpValue::String(output) = output else {
+            panic!("string")
+        };
+        assert_eq!(output.len(), bytes);
+        assert_eq!(output.split('|').count(), count);
+    }
+}
+
+#[test]
 fn join_borrows_shared_input_and_allocates_only_the_rendered_output() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);

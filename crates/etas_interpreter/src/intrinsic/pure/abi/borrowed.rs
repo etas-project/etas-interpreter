@@ -4,6 +4,9 @@ use crate::value::{InterpValue, StringValue};
 
 use super::{AbiShape, AdapterError, PureAbiProjector, input::type_mismatch};
 
+#[cfg(test)]
+mod tests;
+
 pub(in crate::intrinsic::pure) fn string_for_type<'a>(
     value: &'a InterpValue,
     ty: TypeId,
@@ -56,17 +59,27 @@ pub(in crate::intrinsic::pure) fn representation_for_type<'a>(
     mut ty: TypeId,
     projector: &PureAbiProjector,
 ) -> Result<(&'a InterpValue, TypeId), AdapterError> {
-    let mut visited = std::collections::HashSet::new();
+    let mut remaining_steps = None;
     loop {
         let shape = projector.shape(ty).ok_or(AdapterError::MissingType(ty))?;
         if matches!(
             shape,
             AbiShape::Nominal { .. } | AbiShape::Refined { .. } | AbiShape::Trust { .. }
-        ) && !visited.insert(ty)
-        {
-            return Err(AdapterError::UnsupportedValue(
-                "cyclic checked borrowed ABI".into(),
-            ));
+        ) {
+            let remaining = match remaining_steps {
+                Some(remaining) => remaining,
+                None => projector.wrapper_steps(ty).ok_or_else(|| {
+                    AdapterError::UnsupportedValue(
+                        "checked borrowed ABI is missing its prepared wrapper walk".into(),
+                    )
+                })?,
+            };
+            if remaining == 0 {
+                return Err(AdapterError::UnsupportedValue(
+                    "cyclic checked borrowed ABI".into(),
+                ));
+            }
+            remaining_steps = Some(remaining - 1);
         }
         match shape {
             AbiShape::Nominal { representation } => {
