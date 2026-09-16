@@ -207,7 +207,7 @@ impl EvalMachine {
                     let continuation = match frame {
                         EvalFrame::Block(frame) => frame.continuation,
                         EvalFrame::Call(frame) => Continuation::CallBoundary {
-                            outer: Box::new(frame.continuation),
+                            outer: frame.continuation.into(),
                         },
                         EvalFrame::Continuation(frame) => frame.continuation,
                         EvalFrame::Expr(frame) => frame.continuation,
@@ -388,8 +388,8 @@ fn flatten_continuation(continuation: Continuation) -> std::vec::IntoIter<Contin
     while let Some(continuation) = pending.pop() {
         match continuation {
             Continuation::Chain { inner, outer } => {
-                pending.push(*outer);
-                pending.push(*inner);
+                pending.push(outer.into_value());
+                pending.push(inner.into_value());
             }
             continuation => flattened.push(continuation),
         }

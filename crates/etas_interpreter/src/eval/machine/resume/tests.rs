@@ -84,8 +84,8 @@ fn retry(id: u32) -> Continuation {
 
 fn chain(inner: Continuation, outer: Continuation) -> Continuation {
     Continuation::Chain {
-        inner: Box::new(inner),
-        outer: Box::new(outer),
+        inner: inner.into(),
+        outer: outer.into(),
     }
 }
 
@@ -124,7 +124,7 @@ fn retry_lookup_preserves_chain_order_and_boundary_opacity() {
         (
             chain(
                 Continuation::CallBoundary {
-                    outer: Box::new(retry(1)),
+                    outer: retry(1).into(),
                 },
                 retry(2),
             ),
@@ -133,7 +133,7 @@ fn retry_lookup_preserves_chain_order_and_boundary_opacity() {
         (
             chain(
                 Continuation::HandlerDispatch {
-                    outer: Box::new(retry(1)),
+                    outer: retry(1).into(),
                 },
                 retry(2),
             ),
@@ -142,21 +142,21 @@ fn retry_lookup_preserves_chain_order_and_boundary_opacity() {
         (
             Continuation::RestoreModelPolicy {
                 previous: Box::default(),
-                inner: Box::new(retry(1)),
+                inner: retry(1).into(),
             },
             None,
         ),
         (
             Continuation::ScopedModelPolicy {
                 policy: Box::default(),
-                inner: Box::new(retry(1)),
+                inner: retry(1).into(),
             },
             None,
         ),
         (
             Continuation::HandleBoundary {
                 scope_id: crate::orchestration::HandlerScopeId(7),
-                inner: Box::new(retry(1)),
+                inner: retry(1).into(),
                 handlers: vec![],
                 span: Span::empty(etas_core::SourceId(7), etas_core::TextSize::ZERO),
                 frame: crate::control::Frame::from_snapshot(vec![]).unwrap(),
@@ -199,14 +199,7 @@ fn retry_lookup_walks_deep_chains_without_cloning_or_recursing() {
                 cost.bytes < 4096 + frontier_budget && cost.count < 32,
                 "copied deep continuation: {cost:?}"
             );
-            // Isolate lookup: recursive Continuation drop is a separate outstanding audit.
-            let mut pending = vec![frame.into_continuation()];
-            while let Some(continuation) = pending.pop() {
-                if let Continuation::Chain { inner, outer } = continuation {
-                    pending.push(*outer);
-                    pending.push(*inner);
-                }
-            }
+            drop(frame);
         }
     }
 }

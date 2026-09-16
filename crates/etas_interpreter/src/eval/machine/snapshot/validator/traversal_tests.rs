@@ -295,14 +295,15 @@ fn deep_machine_snapshot_passes_checked_validation_then_restores() {
         )
         .unwrap();
         assert_eq!(restored.frames().len(), 1);
-        let mut node = restored.pop_frame().unwrap().into_continuation();
-        // General runtime Drop remains a separate audit; isolate validate -> restore.
+        let root = restored.pop_frame().unwrap().into_continuation();
+        let mut node = &root;
         let mut edges = 0;
         while let Continuation::CallBoundary { outer } = node {
-            node = *outer;
+            node = outer;
             edges += 1;
         }
         assert_eq!(edges, depth);
         assert!(matches!(node, Continuation::Return));
+        drop(root);
     }
 }

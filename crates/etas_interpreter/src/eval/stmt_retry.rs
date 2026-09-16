@@ -73,8 +73,8 @@ impl<'a> EvalContext<'a> {
                     ));
                 }
                 Continuation::Chain { inner, outer } => {
-                    work.push(*outer);
-                    work.push(*inner);
+                    work.push(outer.into_value());
+                    work.push(inner.into_value());
                 }
                 _ => {}
             }

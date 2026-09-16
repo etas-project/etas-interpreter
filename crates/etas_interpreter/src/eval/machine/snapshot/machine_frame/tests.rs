@@ -98,7 +98,7 @@ fn machine_snapshot_borrows_wide_continuations_without_cloning_runtime_frames() 
             if kind == "handler" {
                 continuation = Continuation::HandleBoundary {
                     scope_id: HandlerScopeId(11),
-                    inner: Box::new(continuation),
+                    inner: continuation.into(),
                     handlers: vec![],
                     span: span(),
                     frame: Frame::from_snapshot(vec![]).unwrap(),
@@ -170,7 +170,7 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
     let mut machine = EvalMachine::new();
     machine.push_frame(EvalFrame::from_continuation(Continuation::HandleBoundary {
         scope_id: HandlerScopeId(11),
-        inner: Box::new(Continuation::Return),
+        inner: Continuation::Return.into(),
         handlers: vec![arm.clone()],
         span: span(),
         frame: locals.clone(),

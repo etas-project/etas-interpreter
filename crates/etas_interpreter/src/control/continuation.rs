@@ -1,8 +1,10 @@
 use etas_core::Span;
+mod storage;
 use etas_hir::{
     HirArg, HirBlockId, HirElseBranch, HirExprId, HirItemId, HirMatchArm, HirPatId, HirStage,
     ResolvedActionRef, SymbolId,
 };
+pub use storage::ContinuationLink;
 
 use crate::{
     control::{CallTarget, Frame},
@@ -304,10 +306,10 @@ pub enum Continuation {
     },
     RestoreModelPolicy {
         previous: Box<crate::api::ModelExecutionPolicy>,
-        inner: Box<Continuation>,
+        inner: ContinuationLink,
     },
     CallBoundary {
-        outer: Box<Continuation>,
+        outer: ContinuationLink,
     },
     ForLoop {
         pat: HirPatId,
@@ -354,11 +356,11 @@ pub enum Continuation {
         span: Span,
     },
     HandlerDispatch {
-        outer: Box<Continuation>,
+        outer: ContinuationLink,
     },
     HandleBoundary {
         scope_id: HandlerScopeId,
-        inner: Box<Continuation>,
+        inner: ContinuationLink,
         handlers: Vec<ActiveHandlerArmRecord>,
         span: Span,
         frame: Frame,
@@ -370,11 +372,11 @@ pub enum Continuation {
     },
     ScopedModelPolicy {
         policy: Box<crate::api::ModelExecutionPolicy>,
-        inner: Box<Continuation>,
+        inner: ContinuationLink,
     },
     Chain {
-        inner: Box<Continuation>,
-        outer: Box<Continuation>,
+        inner: ContinuationLink,
+        outer: ContinuationLink,
     },
     Return,
     Resume,

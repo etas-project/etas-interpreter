@@ -2,7 +2,7 @@ use etas_core::Span;
 use etas_hir::HirBlockId;
 
 use crate::{
-    control::{Continuation, Frame, PendingModel, SourceToolBinding},
+    control::{Continuation, ContinuationLink, Frame, PendingModel, SourceToolBinding},
     orchestration::{ActiveHandlerArmRecord, HandlerScopeId, RetryAttemptRecord},
 };
 use etas_host::{HostSchema, HostValue, ModelToolCall};
@@ -31,7 +31,7 @@ pub(crate) struct ContinuationFrame {
 #[derive(Clone, Debug)]
 pub(crate) struct HandlerFrame {
     pub scope_id: HandlerScopeId,
-    pub inner: Box<Continuation>,
+    pub inner: ContinuationLink,
     pub handlers: Vec<ActiveHandlerArmRecord>,
     pub span: Span,
     pub frame: Frame,

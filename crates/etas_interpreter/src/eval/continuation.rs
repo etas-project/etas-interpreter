@@ -29,8 +29,8 @@ impl<'a> EvalContext<'a> {
         while let Some(continuation) = work.pop() {
             match continuation {
                 Continuation::Chain { inner, outer } => {
-                    work.push(*outer);
-                    work.push(*inner);
+                    work.push(outer.into_value());
+                    work.push(inner.into_value());
                 }
                 Continuation::HandleBoundary {
                     scope_id,
@@ -41,12 +41,12 @@ impl<'a> EvalContext<'a> {
                 } if !matches!(*inner, Continuation::BlockValue) => {
                     work.push(Continuation::HandleBoundary {
                         scope_id,
-                        inner: Box::new(Continuation::BlockValue),
+                        inner: Continuation::BlockValue.into(),
                         handlers,
                         span,
                         frame,
                     });
-                    work.push(*inner);
+                    work.push(inner.into_value());
                 }
                 continuation => {
                     signal = match signal {
@@ -176,7 +176,9 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::CallBoundary { outer } => self.apply_continuation(*outer, value),
+            Continuation::CallBoundary { outer } => {
+                self.apply_continuation(outer.into_value(), value)
+            }
             continuation @ Continuation::AgentPromptBody { .. } => {
                 self.apply_continuation(continuation, value)
             }
@@ -192,17 +194,17 @@ impl<'a> EvalContext<'a> {
             }
             Continuation::RestoreModelPolicy { previous, inner } => {
                 self.model_policy = *previous;
-                self.propagate_return_to_continuation(value, *inner)
+                self.propagate_return_to_continuation(value, inner.into_value())
             }
             Continuation::ScopedModelPolicy { policy, inner } => {
                 let previous = std::mem::replace(&mut self.model_policy, *policy);
                 self.propagate_return_to_continuation(
                     value,
                     compose_continuation(
-                        *inner,
+                        inner.into_value(),
                         Continuation::RestoreModelPolicy {
                             previous: Box::new(previous),
-                            inner: Box::new(Continuation::BlockValue),
+                            inner: Continuation::BlockValue.into(),
                         },
                     ),
                 )
@@ -228,7 +230,9 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::HandlerDispatch { outer } => self.apply_continuation(*outer, value),
+            Continuation::HandlerDispatch { outer } => {
+                self.apply_continuation(outer.into_value(), value)
+            }
             Continuation::HandleBoundary {
                 scope_id,
                 inner,
@@ -247,20 +251,20 @@ impl<'a> EvalContext<'a> {
                 } else {
                     let boundary = Continuation::HandleBoundary {
                         scope_id,
-                        inner: Box::new(Continuation::BlockValue),
+                        inner: Continuation::BlockValue.into(),
                         handlers,
                         span,
                         frame,
                     };
                     self.propagate_resume_to_continuation(
                         value,
-                        compose_continuation(*inner, boundary),
+                        compose_continuation(inner.into_value(), boundary),
                     )
                 }
             }
             Continuation::RestoreModelPolicy { previous, inner } => {
                 self.model_policy = *previous;
-                self.propagate_resume_to_continuation(value, *inner)
+                self.propagate_resume_to_continuation(value, inner.into_value())
             }
             _ => ControlSignal::Resume(value),
         }
@@ -296,7 +300,7 @@ impl<'a> EvalContext<'a> {
             }
             Continuation::RestoreModelPolicy { previous, inner } => {
                 self.model_policy = *previous;
-                self.propagate_finish_to_continuation(value, *inner)
+                self.propagate_finish_to_continuation(value, inner.into_value())
             }
             _ => ControlSignal::Finish(value),
         }
@@ -859,9 +863,11 @@ impl<'a> EvalContext<'a> {
             }
             Continuation::RestoreModelPolicy { previous, inner } => {
                 self.model_policy = *previous;
-                self.apply_continuation(*inner, value)
+                self.apply_continuation(inner.into_value(), value)
             }
-            Continuation::CallBoundary { outer } => self.apply_continuation(*outer, value),
+            Continuation::CallBoundary { outer } => {
+                self.apply_continuation(outer.into_value(), value)
+            }
             Continuation::ForLoop {
                 pat,
                 source,
@@ -959,7 +965,9 @@ impl<'a> EvalContext<'a> {
                 next_index,
                 span,
             ),
-            Continuation::HandlerDispatch { outer } => self.apply_continuation(*outer, value),
+            Continuation::HandlerDispatch { outer } => {
+                self.apply_continuation(outer.into_value(), value)
+            }
             Continuation::HandleBoundary {
                 scope_id,
                 inner,
@@ -978,12 +986,15 @@ impl<'a> EvalContext<'a> {
                 } else {
                     let boundary = Continuation::HandleBoundary {
                         scope_id,
-                        inner: Box::new(Continuation::BlockValue),
+                        inner: Continuation::BlockValue.into(),
                         handlers,
                         span,
                         frame,
                     };
-                    self.apply_continuation(compose_continuation(*inner, boundary), value)
+                    self.apply_continuation(
+                        compose_continuation(inner.into_value(), boundary),
+                        value,
+                    )
                 }
             }
             Continuation::AgentPromptBody {
@@ -1000,10 +1011,10 @@ impl<'a> EvalContext<'a> {
                 let previous = std::mem::replace(&mut self.model_policy, *policy);
                 self.apply_continuation(
                     compose_continuation(
-                        *inner,
+                        inner.into_value(),
                         Continuation::RestoreModelPolicy {
                             previous: Box::new(previous),
-                            inner: Box::new(Continuation::BlockValue),
+                            inner: Continuation::BlockValue.into(),
                         },
                     ),
                     value,
@@ -1112,6 +1123,6 @@ fn scoped_model_policy_continuation(
 ) -> Continuation {
     Continuation::ScopedModelPolicy {
         policy: Box::new(policy),
-        inner: Box::new(inner),
+        inner: inner.into(),
     }
 }

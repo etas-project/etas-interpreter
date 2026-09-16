@@ -17,12 +17,13 @@ fn continuation_capture_reuses_shared_frames_across_chain_nodes() {
         let mut root = Continuation::Return;
         for i in 0..count {
             root = Continuation::Chain {
-                inner: Box::new(Continuation::ContinueBlock {
+                inner: Continuation::ContinueBlock {
                     block: HirBlockId(i),
                     next_stmt_index: i as usize,
                     frame: frame.clone(),
-                }),
-                outer: Box::new(root),
+                }
+                .into(),
+                outer: root.into(),
             };
         }
         let runtime = RuntimeTree(Some(root));
@@ -54,32 +55,8 @@ fn continuation_capture_reuses_shared_frames_across_chain_nodes() {
     }
 }
 
-// Runtime edge destruction is a separate audit. Isolate the capture algorithm.
+// Tests retain normal runtime ownership, including its production Drop path.
 struct RuntimeTree(Option<Continuation>);
-
-impl Drop for RuntimeTree {
-    fn drop(&mut self) {
-        let mut pending = Vec::new();
-        if let Some(root) = self.0.take() {
-            pending.push(root);
-        }
-        while let Some(node) = pending.pop() {
-            match node {
-                Continuation::CallBoundary { outer } | Continuation::HandlerDispatch { outer } => {
-                    pending.push(*outer)
-                }
-                Continuation::RestoreModelPolicy { inner, .. }
-                | Continuation::ScopedModelPolicy { inner, .. }
-                | Continuation::HandleBoundary { inner, .. } => pending.push(*inner),
-                Continuation::Chain { inner, outer } => {
-                    pending.push(*outer);
-                    pending.push(*inner);
-                }
-                _ => {}
-            }
-        }
-    }
-}
 
 #[test]
 fn deep_continuation_capture_uses_explicit_traversal_without_stack_overflow() {
@@ -106,16 +83,14 @@ fn deep_continuation_capture_uses_explicit_traversal_without_stack_overflow() {
             let mut node = Continuation::Return;
             for _ in 0..depth {
                 node = match mode {
-                    0 => Continuation::CallBoundary {
-                        outer: Box::new(node),
-                    },
+                    0 => Continuation::CallBoundary { outer: node.into() },
                     1 => Continuation::Chain {
-                        inner: Box::new(node),
-                        outer: Box::new(Continuation::Finish),
+                        inner: node.into(),
+                        outer: Continuation::Finish.into(),
                     },
                     _ => Continuation::Chain {
-                        inner: Box::new(Continuation::Resume),
-                        outer: Box::new(node),
+                        inner: Continuation::Resume.into(),
+                        outer: node.into(),
                     },
                 };
             }
@@ -165,9 +140,7 @@ fn machine_capture_preserves_its_deep_runtime_continuation_stack() {
     for depth in [1000, 4000, 30_000] {
         let mut root = Continuation::Return;
         for _ in 0..depth {
-            root = Continuation::CallBoundary {
-                outer: Box::new(root),
-            };
+            root = Continuation::CallBoundary { outer: root.into() };
         }
         let mut runtime = RuntimeTree(None);
         let mut machine = EvalMachine::new();
@@ -202,15 +175,11 @@ fn mixed_capture_preserves_wrapper_metadata_and_detaches_live_frames() {
     let depth = 30_000;
     for i in 0..depth {
         node = match i % 5 {
-            0 => Continuation::CallBoundary {
-                outer: Box::new(node),
-            },
-            1 => Continuation::HandlerDispatch {
-                outer: Box::new(node),
-            },
+            0 => Continuation::CallBoundary { outer: node.into() },
+            1 => Continuation::HandlerDispatch { outer: node.into() },
             2 => Continuation::HandleBoundary {
                 scope_id: HandlerScopeId(i as u32),
-                inner: Box::new(node),
+                inner: node.into(),
                 handlers: vec![],
                 span: span(),
                 frame: frame.clone(),
@@ -220,14 +189,14 @@ fn mixed_capture_preserves_wrapper_metadata_and_detaches_live_frames() {
                     max_tool_rounds: i,
                     ..Default::default()
                 }),
-                inner: Box::new(node),
+                inner: node.into(),
             },
             _ => Continuation::ScopedModelPolicy {
                 policy: Box::new(ModelExecutionPolicy {
                     max_tool_rounds: i,
                     ..Default::default()
                 }),
-                inner: Box::new(node),
+                inner: node.into(),
             },
         };
     }
@@ -289,7 +258,7 @@ fn capture_rejects_late_live_handles_and_releases_completed_deep_subtrees() {
         let mut inner = Continuation::Return;
         for _ in 0..30_000 {
             inner = Continuation::CallBoundary {
-                outer: Box::new(inner),
+                outer: inner.into(),
             };
         }
         let handle = InterpValue::HostHandle(HostHandleValue::browser_session(
@@ -299,18 +268,19 @@ fn capture_rejects_late_live_handles_and_releases_completed_deep_subtrees() {
         let root = if in_parent {
             Continuation::HandleBoundary {
                 scope_id: HandlerScopeId(1),
-                inner: Box::new(inner),
+                inner: inner.into(),
                 handlers: vec![],
                 span: span(),
                 frame: Frame::from_snapshot(vec![(SymbolId(1), handle)]).unwrap(),
             }
         } else {
             Continuation::Chain {
-                inner: Box::new(inner),
-                outer: Box::new(Continuation::PipelineTarget {
+                inner: inner.into(),
+                outer: Continuation::PipelineTarget {
                     input: handle,
                     span: span(),
-                }),
+                }
+                .into(),
             }
         };
         let runtime = RuntimeTree(Some(root));

@@ -1,4 +1,5 @@
 use super::{Continuation, ContinuationSnapshot, RestoreContext, restore_model_policy};
+use crate::control::ContinuationLink;
 use crate::orchestration::{
     ActiveHandlerArmRecord, ContinuationSnapshotLink, HandlerScopeId, LocalsSnapshot,
     ModelExecutionPolicySnapshot,
@@ -19,7 +20,7 @@ enum PendingParent {
         outer: ContinuationSnapshotLink,
     },
     ChainOuter {
-        inner: RestoredEdge,
+        inner: ContinuationLink,
     },
 }
 
@@ -81,14 +82,14 @@ impl ContinuationSnapshot {
                     Some(PendingParent::RestoreModelPolicy(previous)) => {
                         Continuation::RestoreModelPolicy {
                             previous: Box::new(restore_model_policy(*previous)),
-                            inner: Box::new(value),
+                            inner: value.into(),
                         }
                     }
                     Some(PendingParent::CallBoundary) => Continuation::CallBoundary {
-                        outer: Box::new(value),
+                        outer: value.into(),
                     },
                     Some(PendingParent::HandlerDispatch) => Continuation::HandlerDispatch {
-                        outer: Box::new(value),
+                        outer: value.into(),
                     },
                     Some(PendingParent::HandleBoundary {
                         scope_id,
@@ -96,13 +97,13 @@ impl ContinuationSnapshot {
                         span,
                         frame,
                     }) => {
-                        // Frame identity reconciliation can fail after the inner tree
-                        // was restored. Keep that tree guarded until it succeeds.
-                        let inner = RestoredEdge::new(value);
+                        // Normal link ownership also releases the inner tree if
+                        // frame identity reconciliation fails.
+                        let inner: ContinuationLink = value.into();
                         let frame = super::super::frame::restore_frame(frame, context)?;
                         Continuation::HandleBoundary {
                             scope_id,
-                            inner: inner.into_box(),
+                            inner,
                             handlers,
                             span,
                             frame,
@@ -111,58 +112,22 @@ impl ContinuationSnapshot {
                     Some(PendingParent::ScopedModelPolicy(policy)) => {
                         Continuation::ScopedModelPolicy {
                             policy: Box::new(restore_model_policy(*policy)),
-                            inner: Box::new(value),
+                            inner: value.into(),
                         }
                     }
                     Some(PendingParent::ChainInner { outer }) => {
                         pending.push(PendingParent::ChainOuter {
-                            inner: RestoredEdge::new(value),
+                            inner: value.into(),
                         });
                         self = outer.into_value();
                         break;
                     }
                     Some(PendingParent::ChainOuter { inner }) => Continuation::Chain {
-                        inner: inner.into_box(),
-                        outer: Box::new(value),
+                        inner,
+                        outer: value.into(),
                     },
                     None => return Ok(value),
                 };
-            }
-        }
-    }
-}
-
-// The Box becomes the final runtime edge on success. On an error, this owner
-// releases completed continuation branches without relying on recursive Drop.
-struct RestoredEdge(Option<Box<Continuation>>);
-
-impl RestoredEdge {
-    fn new(value: Continuation) -> Self {
-        Self(Some(Box::new(value)))
-    }
-
-    fn into_box(mut self) -> Box<Continuation> {
-        self.0.take().expect("live restored continuation edge")
-    }
-}
-
-impl Drop for RestoredEdge {
-    fn drop(&mut self) {
-        let mut next = self.0.take();
-        let mut pending = Vec::new();
-        while let Some(node) = next.take().or_else(|| pending.pop()) {
-            match *node {
-                Continuation::CallBoundary { outer } | Continuation::HandlerDispatch { outer } => {
-                    next = Some(outer)
-                }
-                Continuation::RestoreModelPolicy { inner, .. }
-                | Continuation::HandleBoundary { inner, .. }
-                | Continuation::ScopedModelPolicy { inner, .. } => next = Some(inner),
-                Continuation::Chain { inner, outer } => {
-                    next = Some(inner);
-                    pending.push(outer);
-                }
-                _ => {}
             }
         }
     }

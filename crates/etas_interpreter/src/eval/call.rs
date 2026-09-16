@@ -524,7 +524,7 @@ impl<'a> EvalContext<'a> {
             let previous = std::mem::replace(&mut self.model_policy, policy);
             continuation = Continuation::RestoreModelPolicy {
                 previous: Box::new(previous),
-                inner: Box::new(continuation),
+                inner: continuation.into(),
             };
         }
         Ok((target, continuation))

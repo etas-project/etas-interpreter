@@ -369,8 +369,8 @@ pub(crate) fn compose_continuation(inner: Continuation, outer: Continuation) -> 
     match inner {
         Continuation::BlockValue => outer,
         inner => Continuation::Chain {
-            inner: Box::new(inner),
-            outer: Box::new(outer),
+            inner: inner.into(),
+            outer: outer.into(),
         },
     }
 }
