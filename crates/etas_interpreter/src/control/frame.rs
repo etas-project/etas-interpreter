@@ -124,6 +124,13 @@ impl Frame {
         self.snapshot_id
     }
 
+    // Frame aliases share slots, restored locals, layout and immutable type bindings.
+    // Include the wire identity separately: decoding may assign a different ID.
+    pub(crate) fn shared_capture_identity(&self) -> Option<(*const (), u64)> {
+        (Rc::strong_count(&self.slots) > 1)
+            .then(|| (Rc::as_ptr(&self.slots).cast(), self.snapshot_id))
+    }
+
     pub(crate) fn set_snapshot_id(&mut self, id: u64) -> Result<(), String> {
         if id == 0 {
             return Err("snapshot frame identity must be nonzero".into());

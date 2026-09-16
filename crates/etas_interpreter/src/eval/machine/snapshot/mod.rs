@@ -1,6 +1,7 @@
 mod call_target;
 #[cfg(test)]
 mod capture_alias_tests;
+mod capture_context;
 mod capture_identity;
 mod continuation;
 mod frame;

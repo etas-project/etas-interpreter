@@ -1,8 +1,8 @@
+use super::super::capture_context::CaptureContext;
 use super::{CallTarget, CallTargetSnapshot, capture_leaf};
 use crate::eval::limit::RuntimeLimit;
 use crate::orchestration::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 use etas_types::TypeId;
-use std::collections::HashMap;
 
 enum PendingParent<'a> {
     Specialized(&'a [(String, TypeId)], Option<*const CallTarget>),
@@ -15,11 +15,16 @@ enum PendingParent<'a> {
 }
 
 pub(in crate::eval::machine::snapshot) fn capture_call_target(
+    current: &CallTarget,
+) -> Result<CallTargetSnapshot, String> {
+    capture_call_target_with(current, &mut CaptureContext::default())
+}
+
+pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
     mut current: &CallTarget,
+    context: &mut CaptureContext,
 ) -> Result<CallTargetSnapshot, String> {
     let mut pending = Vec::new();
-    let mut nodes = HashMap::<*const CallTarget, CallTargetSnapshotLink>::new();
-    let mut tables = HashMap::<*const Vec<CallTarget>, CallTargetSnapshotChildren>::new();
     loop {
         let mut value = match current {
             CallTarget::Specialized {
@@ -27,7 +32,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target(
                 type_bindings,
             } => {
                 let identity = target.shared_identity();
-                if let Some(saved) = identity.and_then(|key| nodes.get(&key)) {
+                if let Some(saved) = identity.and_then(|key| context.call_nodes.get(&key)) {
                     CallTargetSnapshot::Specialized {
                         target: saved.clone(),
                         type_bindings: type_bindings.clone(),
@@ -40,7 +45,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target(
             }
             CallTarget::Limited { target, limits } => {
                 let identity = target.shared_identity();
-                if let Some(saved) = identity.and_then(|key| nodes.get(&key)) {
+                if let Some(saved) = identity.and_then(|key| context.call_nodes.get(&key)) {
                     CallTargetSnapshot::Limited {
                         target: saved.clone(),
                         limits: limits.clone(),
@@ -53,7 +58,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target(
             }
             CallTarget::Composed(targets) => {
                 let identity = targets.shared_identity();
-                if let Some(saved) = identity.and_then(|key| tables.get(&key)) {
+                if let Some(saved) = identity.and_then(|key| context.call_tables.get(&key)) {
                     CallTargetSnapshot::Composed(saved.clone())
                 } else if let Some((first, remaining)) = targets.split_first() {
                     // This buffer becomes the final snapshot child table. Completed
@@ -69,14 +74,14 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target(
                     CallTargetSnapshot::Composed(vec![].into())
                 }
             }
-            leaf => capture_leaf(leaf)?,
+            leaf => capture_leaf(leaf, context)?,
         };
         loop {
             match pending.pop() {
                 Some(PendingParent::Specialized(bindings, identity)) => {
                     let target: CallTargetSnapshotLink = value.into();
                     if let Some(key) = identity {
-                        nodes.insert(key, target.clone());
+                        context.call_nodes.insert(key, target.clone());
                     }
                     value = CallTargetSnapshot::Specialized {
                         target,
@@ -86,7 +91,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target(
                 Some(PendingParent::Limited(limits, identity)) => {
                     let target: CallTargetSnapshotLink = value.into();
                     if let Some(key) = identity {
-                        nodes.insert(key, target.clone());
+                        context.call_nodes.insert(key, target.clone());
                     }
                     value = CallTargetSnapshot::Limited {
                         target,
@@ -110,7 +115,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target(
                     }
                     let children: CallTargetSnapshotChildren = values.into();
                     if let Some(key) = identity {
-                        tables.insert(key, children.clone());
+                        context.call_tables.insert(key, children.clone());
                     }
                     value = CallTargetSnapshot::Composed(children);
                 }

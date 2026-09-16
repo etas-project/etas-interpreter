@@ -38,11 +38,7 @@ impl RestoreContext {
 }
 
 pub(super) fn capture_frame(frame: &Frame) -> Result<LocalsSnapshot, String> {
-    Ok(LocalsSnapshot {
-        id: frame.snapshot_id(),
-        locals: std::rc::Rc::new(super::value_capture::capture_locals(frame)?),
-        type_bindings: frame.sorted_type_bindings(),
-    })
+    super::capture_context::CaptureContext::default().frame(frame)
 }
 
 pub(super) fn restore_frame(

@@ -1,10 +1,10 @@
+use super::capture_context::CaptureContext;
 use super::capture_identity::CaptureIdentity;
 use super::message::{ConversationHeader, MessageHeader};
 use crate::{
     orchestration::{SnapshotBox, ValueSnapshot},
     value::*,
 };
-use std::collections::HashMap;
 
 enum Started {
     Value(ValueSnapshot),
@@ -15,8 +15,6 @@ struct PendingFrame {
     frame: Frame,
     identity: Option<CaptureIdentity>,
 }
-
-type CaptureCache = HashMap<CaptureIdentity, ValueSnapshot>;
 
 enum UnaryKind {
     Nominal(etas_types::TypeId),
@@ -80,19 +78,15 @@ enum Frame {
 }
 
 pub(super) fn capture(value: &InterpValue) -> Result<ValueSnapshot, String> {
-    capture_with(value, &mut CaptureCache::new())
-}
-
-pub(super) fn capture_locals(
-    frame: &crate::control::Frame,
-) -> Result<Vec<(etas_hir::SymbolId, ValueSnapshot)>, String> {
-    let mut cache = CaptureCache::new();
-    frame.try_map_locals(|value| capture_with(value, &mut cache))
+    CaptureContext::default().value(value)
 }
 
 // The cache cannot escape this borrowed root/frame. Insert completed values only:
 // failed capture never publishes a partial snapshot or a mutable live backing.
-fn capture_with(value: &InterpValue, cache: &mut CaptureCache) -> Result<ValueSnapshot, String> {
+pub(super) fn capture_with(
+    value: &InterpValue,
+    cache: &mut CaptureContext,
+) -> Result<ValueSnapshot, String> {
     let mut pending = match start(value, cache)? {
         Started::Value(value) => return Ok(value),
         Started::Pending(frame) => frame,
@@ -110,7 +104,7 @@ fn capture_with(value: &InterpValue, cache: &mut CaptureCache) -> Result<ValueSn
             None => {
                 let value = pending.frame.finish()?;
                 if let Some(identity) = pending.identity {
-                    cache.insert(identity, value.clone());
+                    cache.values.insert(identity, value.clone());
                 }
                 let Some(mut parent) = parents.pop() else {
                     return Ok(value);
@@ -122,9 +116,9 @@ fn capture_with(value: &InterpValue, cache: &mut CaptureCache) -> Result<ValueSn
     }
 }
 
-fn start(value: &InterpValue, cache: &CaptureCache) -> Result<Started, String> {
+fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, String> {
     let identity = CaptureIdentity::of(value);
-    if let Some(captured) = identity.as_ref().and_then(|key| cache.get(key)) {
+    if let Some(captured) = identity.as_ref().and_then(|key| cache.values.get(key)) {
         return Ok(Started::Value(captured.clone()));
     }
     let frame = match value {
@@ -210,7 +204,7 @@ fn start(value: &InterpValue, cache: &CaptureCache) -> Result<Started, String> {
             source: values.clone(),
             values: Vec::with_capacity(values.borrow().len()),
         },
-        _ => return ValueSnapshot::capture_leaf(value).map(Started::Value),
+        _ => return ValueSnapshot::capture_leaf(value, cache).map(Started::Value),
     };
     Ok(Started::Pending(PendingFrame { frame, identity }))
 }
@@ -233,7 +227,7 @@ fn pairs(kind: PairKind, source: &MapValue) -> Frame {
 }
 
 impl SequenceSource {
-    fn next(&self, index: usize, cache: &CaptureCache) -> Result<Option<Started>, String> {
+    fn next(&self, index: usize, cache: &mut CaptureContext) -> Result<Option<Started>, String> {
         let start = |value| start(value, cache);
         match self {
             Self::Fields(values) => values.get(index).map(start).transpose(),
@@ -247,8 +241,8 @@ impl SequenceSource {
 }
 
 impl Frame {
-    fn next(&self, cache: &CaptureCache) -> Result<Option<Started>, String> {
-        let start = |value| start(value, cache);
+    fn next(&self, cache: &mut CaptureContext) -> Result<Option<Started>, String> {
+        let mut start = |value| start(value, cache);
         match self {
             Self::Conversation { source, values, .. } => source
                 .get(values.len())

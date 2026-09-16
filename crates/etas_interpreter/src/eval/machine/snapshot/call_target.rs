@@ -3,14 +3,17 @@ use crate::control::CallTarget;
 use crate::orchestration::CallTargetSnapshot;
 
 mod capture;
-pub(super) use capture::capture_call_target;
+pub(super) use capture::{capture_call_target, capture_call_target_with};
 mod restore;
 pub(super) use restore::restore_call_target;
 
 #[cfg(test)]
 mod tests;
 
-fn capture_leaf(target: &CallTarget) -> Result<CallTargetSnapshot, String> {
+fn capture_leaf(
+    target: &CallTarget,
+    context: &mut super::capture_context::CaptureContext,
+) -> Result<CallTargetSnapshot, String> {
     Ok(match target {
         CallTarget::FlowItem(item) => CallTargetSnapshot::FlowItem(*item),
         CallTarget::AgentItem(item) => CallTargetSnapshot::AgentItem(*item),
@@ -18,7 +21,7 @@ fn capture_leaf(target: &CallTarget) -> Result<CallTargetSnapshot, String> {
         CallTarget::SpecImplMethod(symbol) => CallTargetSnapshot::SpecImplMethod(*symbol),
         CallTarget::Lambda { expr, captured } => CallTargetSnapshot::Lambda {
             expr: *expr,
-            captured: super::frame::capture_frame(captured)?,
+            captured: context.frame(captured)?,
         },
         CallTarget::EnumVariant(symbol) => CallTargetSnapshot::EnumVariant(*symbol),
         CallTarget::NominalConstructor(ty) => CallTargetSnapshot::NominalConstructor(*ty),

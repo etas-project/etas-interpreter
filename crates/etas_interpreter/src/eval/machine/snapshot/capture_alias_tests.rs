@@ -1,6 +1,54 @@
 use crate::{orchestration::ValueSnapshot, testing::allocation::measure, value::*};
 
 #[test]
+fn repeated_lambda_frames_reuse_captured_locals() {
+    use crate::{
+        control::{CallTarget, Frame},
+        orchestration::CallTargetSnapshot,
+    };
+    use etas_hir::{HirExprId, SymbolId};
+    for count in [1000, 2000, 4000] {
+        let frame = Frame::from_snapshot(vec![(
+            SymbolId(0),
+            InterpValue::Array(vec![InterpValue::Bool(true); 128].into()),
+        )])
+        .unwrap();
+        let runtime = InterpValue::Array(
+            (0..count)
+                .map(|i| {
+                    InterpValue::Callable(CallTarget::Lambda {
+                        expr: HirExprId(i),
+                        captured: frame.clone(),
+                    })
+                })
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        let (captured, cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());
+        eprintln!("lambda frames={count}: {cost:?}");
+        assert!(cost.count < 16, "repeated frame capture: {cost:?}");
+        let ValueSnapshot::Array(values) = captured else {
+            panic!("array")
+        };
+        let ValueSnapshot::Callable(CallTargetSnapshot::Lambda {
+            captured: first, ..
+        }) = &values[0]
+        else {
+            panic!("lambda")
+        };
+        for (i, value) in values.iter().enumerate() {
+            let ValueSnapshot::Callable(CallTargetSnapshot::Lambda { expr, captured }) = value
+            else {
+                panic!("lambda")
+            };
+            assert_eq!(expr.0, i as u32);
+            assert_eq!(captured.id, first.id);
+            assert!(std::rc::Rc::ptr_eq(&captured.locals, &first.locals));
+        }
+    }
+}
+
+#[test]
 fn repeated_container_capture_builds_each_shared_table_once() {
     for count in [1000, 2000, 4000] {
         let child = InterpValue::Array(vec![InterpValue::Bool(true); 128].into());

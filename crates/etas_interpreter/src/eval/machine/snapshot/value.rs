@@ -12,7 +12,10 @@ impl ValueSnapshot {
         super::value_capture::capture(value)
     }
 
-    pub(super) fn capture_leaf(value: &InterpValue) -> Result<Self, String> {
+    pub(super) fn capture_leaf(
+        value: &InterpValue,
+        context: &mut super::capture_context::CaptureContext,
+    ) -> Result<Self, String> {
         Ok(match value {
             InterpValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value.clone()),
             InterpValue::Unit => Self::Unit,
@@ -45,8 +48,8 @@ impl ValueSnapshot {
                 stderr: stderr.clone(),
             },
             InterpValue::Range(value) => Self::Range {
-                start: SnapshotBox::new(Self::capture(&value.start)?),
-                end: SnapshotBox::new(Self::capture(&value.end)?),
+                start: SnapshotBox::new(context.value(&value.start)?),
+                end: SnapshotBox::new(context.value(&value.end)?),
                 bounds: value.bounds,
             },
             InterpValue::OptionNone => Self::OptionNone,
@@ -71,9 +74,9 @@ impl ValueSnapshot {
             | InterpValue::PriorityQueue(_) => {
                 return Err("compound checkpoint value must use its capture builder".into());
             }
-            InterpValue::Callable(target) => {
-                Self::Callable(super::call_target::capture_call_target(target)?)
-            }
+            InterpValue::Callable(target) => Self::Callable(
+                super::call_target::capture_call_target_with(target, context)?,
+            ),
             InterpValue::Handler {
                 fact_expr,
                 handlers,
@@ -127,7 +130,7 @@ impl ValueSnapshot {
                 kind: kind.clone(),
                 predicate: predicate
                     .as_deref()
-                    .map(Self::capture)
+                    .map(|value| context.value(value))
                     .transpose()?
                     .map(SnapshotBox::new),
                 limit: *limit,
