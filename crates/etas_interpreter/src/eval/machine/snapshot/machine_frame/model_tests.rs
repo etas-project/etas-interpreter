@@ -90,10 +90,75 @@ fn assert_model(actual: &ModelLoopFrameSnapshot, expected: &ModelLoopFrameSnapsh
 }
 
 #[test]
+fn model_and_source_tool_capture_share_pending_outer_and_machine_locals() {
+    use crate::{
+        control::Frame, eval::machine::frame::ExprFrame, orchestration::ContinuationSnapshot,
+        value::InterpValue,
+    };
+    use etas_hir::{HirBlockId, SymbolId};
+    for source_tool in [false, true] {
+        let mut locals = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(7))]).unwrap();
+        let continuation = || Continuation::ContinueBlock {
+            block: HirBlockId(1),
+            next_stmt_index: 2,
+            frame: locals.clone(),
+        };
+        let mut model = model_frame(1);
+        model.pending.continuation = continuation();
+        model.outer_continuation = continuation();
+        let mut machine = EvalMachine::new();
+        machine.push_frame(EvalFrame::Expr(ExprFrame {
+            continuation: continuation(),
+        }));
+        machine.push_frame(if source_tool {
+            EvalFrame::SourceToolReturn(SourceToolReturnFrame {
+                tool_call_id: "call-1".into(),
+                tool_name: "helper".into(),
+                binding: SourceToolBinding {
+                    name: "helper".into(),
+                    qualified_name: None,
+                    item: HirItemId(3),
+                },
+                args: HostValue::String("input".into()),
+                boundary_key: "tool".into(),
+                output_schema: None,
+                model_loop: Box::new(model),
+            })
+        } else {
+            EvalFrame::ModelLoop(Box::new(model))
+        });
+        let saved = machine.snapshot().unwrap();
+        let MachineFrameSnapshot::Expr {
+            continuation: ContinuationSnapshot::ContinueBlock { frame: first, .. },
+        } = &saved.frames[0]
+        else {
+            panic!("expr")
+        };
+        let model = match &saved.frames[1] {
+            MachineFrameSnapshot::ModelLoop(model) => &**model,
+            MachineFrameSnapshot::SourceToolReturn(tool) => &*tool.model_loop,
+            _ => panic!("model"),
+        };
+        for continuation in [&model.pending.continuation, &model.outer_continuation] {
+            let ContinuationSnapshot::ContinueBlock { frame, .. } = continuation else {
+                panic!("block")
+            };
+            assert_eq!(frame.id, first.id);
+            assert!(std::rc::Rc::ptr_eq(&frame.locals, &first.locals));
+        }
+        assert!(locals.set(SymbolId(0), InterpValue::i32(99)));
+        assert!(first.locals[0].1.clone().restore().unwrap() == InterpValue::i32(7));
+    }
+}
+
+#[test]
 fn machine_snapshot_copies_model_payload_only_into_durable_output() {
     for width in [1000, 2000, 4000] {
         let model = model_frame(width);
-        let (expected, direct) = measure(|| ModelLoopFrameSnapshot::capture(&model).unwrap());
+        let (expected, direct) = measure(|| {
+            ModelLoopFrameSnapshot::capture(&model, &mut super::super::CaptureContext::default())
+                .unwrap()
+        });
         let mut machine = EvalMachine::new();
         machine.push_frame(EvalFrame::ModelLoop(Box::new(model)));
         let (snapshot, cost) = measure(|| machine.snapshot().unwrap());
@@ -138,7 +203,13 @@ fn machine_snapshot_copies_source_tool_arguments_only_into_durable_output() {
             output_schema: None,
             model_loop: Box::new(model_frame(1)),
         };
-        let (expected, direct) = measure(|| SourceToolReturnFrameSnapshot::capture(&tool).unwrap());
+        let (expected, direct) = measure(|| {
+            SourceToolReturnFrameSnapshot::capture(
+                &tool,
+                &mut super::super::CaptureContext::default(),
+            )
+            .unwrap()
+        });
         let mut machine = EvalMachine::new();
         machine.push_frame(EvalFrame::SourceToolReturn(tool));
         let (snapshot, cost) = measure(|| machine.snapshot().unwrap());

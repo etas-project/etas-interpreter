@@ -14,6 +14,7 @@ enum PendingParent<'a> {
     },
 }
 
+#[cfg(test)]
 pub(in crate::eval::machine::snapshot) fn capture_call_target(
     current: &CallTarget,
 ) -> Result<CallTargetSnapshot, String> {

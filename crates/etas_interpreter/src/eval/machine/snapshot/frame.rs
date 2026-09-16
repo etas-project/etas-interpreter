@@ -37,6 +37,7 @@ impl RestoreContext {
     }
 }
 
+#[cfg(test)]
 pub(super) fn capture_frame(frame: &Frame) -> Result<LocalsSnapshot, String> {
     super::capture_context::CaptureContext::default().frame(frame)
 }

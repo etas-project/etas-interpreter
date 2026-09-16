@@ -4,6 +4,56 @@ use crate::{
 
 mod restore;
 
+#[test]
+fn continuation_capture_reuses_shared_frames_across_chain_nodes() {
+    use crate::{control::Frame, value::InterpValue};
+    use etas_hir::{HirBlockId, SymbolId};
+    for count in [1000, 2000, 4000] {
+        let frame = Frame::from_snapshot(vec![(
+            SymbolId(0),
+            InterpValue::Array(vec![InterpValue::Bool(true); 128].into()),
+        )])
+        .unwrap();
+        let mut root = Continuation::Return;
+        for i in 0..count {
+            root = Continuation::Chain {
+                inner: Box::new(Continuation::ContinueBlock {
+                    block: HirBlockId(i),
+                    next_stmt_index: i as usize,
+                    frame: frame.clone(),
+                }),
+                outer: Box::new(root),
+            };
+        }
+        let runtime = RuntimeTree(Some(root));
+        let (saved, cost) =
+            measure(|| ContinuationSnapshot::capture(runtime.0.as_ref().unwrap()).unwrap());
+        eprintln!("shared continuation frames={count}: {cost:?}");
+        assert!(
+            cost.count < count as usize * 2 + 32,
+            "recaptured chain locals: {cost:?}"
+        );
+        let mut cursor = &saved;
+        let mut first = None;
+        for i in (0..count).rev() {
+            let ContinuationSnapshot::Chain { inner, outer } = cursor else {
+                panic!("chain")
+            };
+            let ContinuationSnapshot::ContinueBlock { block, frame, .. } = &**inner else {
+                panic!("block")
+            };
+            assert_eq!(block.0, i);
+            if let Some(first) = first {
+                assert_eq!(std::rc::Rc::as_ptr(&frame.locals), first);
+            } else {
+                first = Some(std::rc::Rc::as_ptr(&frame.locals));
+            }
+            cursor = outer;
+        }
+        assert!(matches!(cursor, ContinuationSnapshot::Return));
+    }
+}
+
 // Runtime edge destruction is a separate audit. Isolate the capture algorithm.
 struct RuntimeTree(Option<Continuation>);
 

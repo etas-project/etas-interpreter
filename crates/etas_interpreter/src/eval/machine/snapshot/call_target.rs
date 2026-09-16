@@ -3,7 +3,9 @@ use crate::control::CallTarget;
 use crate::orchestration::CallTargetSnapshot;
 
 mod capture;
-pub(super) use capture::{capture_call_target, capture_call_target_with};
+#[cfg(test)]
+pub(super) use capture::capture_call_target;
+pub(super) use capture::capture_call_target_with;
 mod restore;
 pub(super) use restore::restore_call_target;
 

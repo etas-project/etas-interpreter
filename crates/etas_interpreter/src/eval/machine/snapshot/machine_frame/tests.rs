@@ -16,6 +16,52 @@ fn span() -> Span {
     Span::empty(SourceId(7), TextSize::ZERO)
 }
 
+#[test]
+fn machine_capture_reuses_shared_frame_definitions_across_stack_entries() {
+    use etas_hir::{HirBlockId, SymbolId};
+    for count in [1000, 2000, 4000] {
+        let locals = Frame::from_snapshot(vec![(
+            SymbolId(0),
+            InterpValue::Array(vec![InterpValue::Bool(true); 128].into()),
+        )])
+        .unwrap();
+        let mut machine = EvalMachine::new();
+        for i in 0..count {
+            machine.push_frame(EvalFrame::Expr(ExprFrame {
+                continuation: Continuation::ContinueBlock {
+                    block: HirBlockId(i),
+                    next_stmt_index: i as usize,
+                    frame: locals.clone(),
+                },
+            }));
+        }
+        let (snapshot, cost) = measure(|| machine.snapshot().unwrap());
+        eprintln!("shared machine frames={count}: {cost:?}");
+        assert!(cost.count < 16, "recaptured stack locals: {cost:?}");
+        let mut first = None;
+        for (i, frame) in snapshot.frames.iter().enumerate() {
+            let MachineFrameSnapshot::Expr {
+                continuation:
+                    ContinuationSnapshot::ContinueBlock {
+                        block,
+                        next_stmt_index,
+                        frame,
+                    },
+            } = frame
+            else {
+                panic!("expr block")
+            };
+            assert_eq!(block.0, i as u32);
+            assert_eq!(*next_stmt_index, i);
+            if let Some(first) = first {
+                assert_eq!(std::rc::Rc::as_ptr(&frame.locals), first);
+            } else {
+                first = Some(std::rc::Rc::as_ptr(&frame.locals));
+            }
+        }
+    }
+}
+
 fn record_continuation(width: usize) -> Continuation {
     Continuation::RecordField {
         expr: HirExprId(3),
@@ -178,6 +224,10 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
     );
     assert_eq!(handler_locals.id, retry_locals.id);
     assert_eq!(handler_locals, retry_locals);
+    assert!(std::rc::Rc::ptr_eq(
+        &handler_locals.locals,
+        &retry_locals.locals
+    ));
     locals
         .with_local_mut(symbol, |value| {
             let InterpValue::Array(values) = value else {
@@ -229,6 +279,59 @@ fn borrowed_machine_capture_rejects_live_handles_without_consuming_runtime_stack
         panic!("record")
     };
     assert!(matches!(values[0].1, InterpValue::HostHandle(_)));
+}
+
+#[test]
+fn late_machine_capture_failure_releases_completed_shared_frames() {
+    use etas_hir::{HirBlockId, SymbolId};
+    let frame = Frame::from_snapshot(vec![(
+        SymbolId(0),
+        InterpValue::Array(vec![InterpValue::Bytes(vec![7; 4096].into()); 128].into()),
+    )])
+    .unwrap();
+    let mut machine = EvalMachine::new();
+    for _ in 0..1000 {
+        machine.push_frame(EvalFrame::Expr(ExprFrame {
+            continuation: Continuation::ContinueBlock {
+                block: HirBlockId(1),
+                next_stmt_index: 0,
+                frame: frame.clone(),
+            },
+        }));
+    }
+    machine.push_frame(EvalFrame::Expr(ExprFrame {
+        continuation: Continuation::RecordField {
+            expr: HirExprId(3),
+            nominal_type: None,
+            variant_symbol: None,
+            next_index: 1,
+            values: vec![(
+                "capability".into(),
+                InterpValue::HostHandle(crate::value::HostHandleValue::browser_session(
+                    etas_types::TypeId(1),
+                    "live".into(),
+                )),
+            )],
+            frame: frame.clone(),
+        },
+    }));
+    for _ in 0..2 {
+        let (_, cost) = measure(|| {
+            assert!(
+                machine
+                    .snapshot()
+                    .unwrap_err()
+                    .contains("host handles cannot be captured")
+            );
+        });
+        assert_eq!(
+            cost.bytes, cost.released_bytes,
+            "partial graph leaked: {cost:?}"
+        );
+        assert_eq!(machine.frames().len(), 1001);
+    }
+    machine.pop_frame();
+    assert!(machine.snapshot().is_ok());
 }
 
 #[test]

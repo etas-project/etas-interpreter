@@ -17,5 +17,6 @@ mod value_compare;
 mod value_membership;
 mod value_restore;
 
+pub(super) use capture_context::CaptureContext;
 pub(crate) use frame::RestoreContext;
 pub(crate) use validator::SnapshotValidator;

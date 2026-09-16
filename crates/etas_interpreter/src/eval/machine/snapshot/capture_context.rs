@@ -21,7 +21,7 @@ type FrameIdentity = (*const (), u64);
 /// One synchronous, read-only capture operation. All keyed runtime nodes remain
 /// owned by the borrowed root, including its captured frames. No cache escapes.
 #[derive(Default)]
-pub(super) struct CaptureContext {
+pub(in crate::eval::machine) struct CaptureContext {
     pub(super) values: HashMap<CaptureIdentity, ValueSnapshot>,
     pub(super) call_nodes: HashMap<*const CallTarget, CallTargetSnapshotLink>,
     pub(super) call_tables: HashMap<*const Vec<CallTarget>, CallTargetSnapshotChildren>,
@@ -32,6 +32,20 @@ pub(super) struct CaptureContext {
 }
 
 impl CaptureContext {
+    pub(super) fn call_target(
+        &mut self,
+        target: &CallTarget,
+    ) -> Result<crate::orchestration::CallTargetSnapshot, String> {
+        super::call_target::capture_call_target_with(target, self)
+    }
+
+    pub(super) fn continuation(
+        &mut self,
+        continuation: &crate::control::Continuation,
+    ) -> Result<crate::orchestration::ContinuationSnapshot, String> {
+        crate::orchestration::ContinuationSnapshot::capture_with(continuation, self)
+    }
+
     pub(super) fn value(&mut self, value: &InterpValue) -> Result<ValueSnapshot, String> {
         super::value_capture::capture_with(value, self)
     }

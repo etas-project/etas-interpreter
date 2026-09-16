@@ -138,9 +138,10 @@ impl EvalMachine {
     }
 
     pub(crate) fn snapshot(&self) -> Result<MachineSnapshot, String> {
+        let mut context = super::snapshot::CaptureContext::default();
         let mut frames = Vec::with_capacity(self.stack.len());
         for frame in &self.stack {
-            frames.push(MachineFrameSnapshot::capture(frame)?);
+            frames.push(MachineFrameSnapshot::capture(frame, &mut context)?);
         }
         Ok(MachineSnapshot { frames })
     }

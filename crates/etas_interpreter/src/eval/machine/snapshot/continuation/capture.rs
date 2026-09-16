@@ -1,3 +1,4 @@
+use super::super::capture_context::CaptureContext;
 use super::{Continuation, ContinuationSnapshot, capture_model_policy};
 use crate::orchestration::ContinuationSnapshotLink;
 
@@ -8,7 +9,15 @@ enum PendingParent<'a> {
 }
 
 impl ContinuationSnapshot {
-    pub(crate) fn capture(mut current: &Continuation) -> Result<Self, String> {
+    #[cfg(test)]
+    pub(crate) fn capture(current: &Continuation) -> Result<Self, String> {
+        CaptureContext::default().continuation(current)
+    }
+
+    pub(in crate::eval::machine::snapshot) fn capture_with(
+        mut current: &Continuation,
+        context: &mut CaptureContext,
+    ) -> Result<Self, String> {
         // Keep only the DFS frontier and completed siblings, never an intermediate
         // runtime tree or a second table of all captured snapshot nodes.
         let mut pending = Vec::new();
@@ -34,10 +43,12 @@ impl ContinuationSnapshot {
                 _ => {}
             }
 
-            let mut value = Self::capture_leaf(current)?;
+            let mut value = Self::capture_leaf(current, context)?;
             loop {
                 match pending.pop() {
-                    Some(PendingParent::Unary(parent)) => value = capture_parent(parent, value)?,
+                    Some(PendingParent::Unary(parent)) => {
+                        value = capture_parent(parent, value, context)?
+                    }
                     Some(PendingParent::ChainInner { outer }) => {
                         pending.push(PendingParent::ChainOuter {
                             inner: value.into(),
@@ -61,6 +72,7 @@ impl ContinuationSnapshot {
 fn capture_parent(
     parent: &Continuation,
     child: ContinuationSnapshot,
+    context: &mut CaptureContext,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match parent {
         Continuation::RestoreModelPolicy { previous, .. } => {
@@ -86,7 +98,7 @@ fn capture_parent(
             inner: child.into(),
             handlers: handlers.clone(),
             span: *span,
-            frame: super::super::frame::capture_frame(frame)?,
+            frame: context.frame(frame)?,
         },
         Continuation::ScopedModelPolicy { policy, .. } => ContinuationSnapshot::ScopedModelPolicy {
             policy: Box::new(capture_model_policy(policy)),
