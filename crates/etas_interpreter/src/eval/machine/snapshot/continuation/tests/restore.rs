@@ -6,6 +6,54 @@ use crate::{
 };
 
 #[test]
+fn shared_continuation_dag_restore_preserves_unique_node_cost() {
+    const WORKER: &str = "ETAS_SHARED_CONTINUATION_RESTORE_WORKER";
+    if std::env::var_os(WORKER).is_none() {
+        let thread = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", thread.name().unwrap(), "--nocapture"])
+            .env(WORKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    for depth in [10, 1000, 4000, 30_000] {
+        let mut saved = ContinuationSnapshot::Return;
+        for _ in 0..depth {
+            let child: crate::orchestration::ContinuationSnapshotLink = saved.into();
+            saved = ContinuationSnapshot::Chain {
+                inner: child.clone(),
+                outer: child,
+            };
+        }
+        let (_, cost) = measure(|| {
+            let restored = saved
+                .clone()
+                .restore_with(&mut RestoreContext::default())
+                .unwrap();
+            let mut cursor = &restored;
+            for _ in 0..depth {
+                let Continuation::Chain { inner, outer } = cursor else {
+                    panic!("chain")
+                };
+                assert!(std::ptr::eq(inner.as_ref(), outer.as_ref()));
+                cursor = inner;
+            }
+            assert!(matches!(cursor, Continuation::Return));
+        });
+        eprintln!("shared continuation restore depth={depth}: {cost:?}");
+        assert!(cost.count < depth + 64, "expanded snapshot DAG: {cost:?}");
+        assert_eq!(cost.bytes, cost.released_bytes, "restore leaked: {cost:?}");
+    }
+}
+
+#[test]
 fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
     const WORKER: &str = "ETAS_TEST_CONTINUATION_RESTORE_WORKER";
     if std::env::var_os(WORKER).is_none() {
@@ -98,6 +146,97 @@ fn frame(id: u64) -> LocalsSnapshot {
             ValueSnapshot::capture(&InterpValue::i32(7)).unwrap(),
         )]),
         type_bindings: vec![],
+    }
+}
+
+#[test]
+fn restored_shared_links_preserve_frames_and_validate_every_parent() {
+    use crate::orchestration::ContinuationSnapshotLink;
+    let saved_frame = frame(7);
+    let shared: ContinuationSnapshotLink = ContinuationSnapshot::ContinueBlock {
+        block: etas_hir::HirBlockId(3),
+        next_stmt_index: 0,
+        frame: saved_frame.clone(),
+    }
+    .into();
+    let first = ContinuationSnapshot::CallBoundary {
+        outer: shared.clone(),
+    };
+    let second = ContinuationSnapshot::HandlerDispatch {
+        outer: shared.clone(),
+    };
+    let mut context = RestoreContext::default();
+    let first = first.restore_with(&mut context).unwrap();
+    let second = second.restore_with(&mut context).unwrap();
+    let (Continuation::CallBoundary { outer: a }, Continuation::HandlerDispatch { outer: b }) =
+        (&first, &second)
+    else {
+        panic!("parent kind changed")
+    };
+    assert!(std::ptr::eq(a.as_ref(), b.as_ref()));
+    let Continuation::ContinueBlock { frame: live, .. } = a.as_ref() else {
+        panic!("block")
+    };
+    assert!(live.clone().set(etas_hir::SymbolId(1), InterpValue::i32(9)));
+    assert!(saved_frame.locals[0].1.clone().restore().unwrap() == InterpValue::i32(7));
+
+    let mut bad = saved_frame;
+    std::rc::Rc::make_mut(&mut bad.locals)[0].1 = ValueSnapshot::Unit;
+    let bad_parent = ContinuationSnapshot::HandleBoundary {
+        scope_id: HandlerScopeId(1),
+        inner: shared.clone(),
+        handlers: vec![],
+        span: super::span(),
+        frame: bad,
+    };
+    let error = bad_parent.restore_with(&mut context).unwrap_err();
+    assert!(error.contains("conflicting definitions"), "{error}");
+
+    let fresh = ContinuationSnapshot::CallBoundary { outer: shared }
+        .restore_with(&mut RestoreContext::default())
+        .unwrap();
+    let Continuation::CallBoundary { outer } = fresh else {
+        panic!("boundary")
+    };
+    let Continuation::ContinueBlock { frame: fresh, .. } = outer.as_ref() else {
+        panic!("block")
+    };
+    assert_eq!(fresh.get(etas_hir::SymbolId(1)), Some(InterpValue::i32(7)));
+}
+
+#[test]
+fn failed_shared_dag_restore_releases_completed_cached_nodes() {
+    use crate::orchestration::ContinuationSnapshotLink;
+    let mut saved = ContinuationSnapshot::Return;
+    for _ in 0..4000 {
+        let child: ContinuationSnapshotLink = saved.into();
+        saved = ContinuationSnapshot::Chain {
+            inner: child.clone(),
+            outer: child,
+        };
+    }
+    let saved = ContinuationSnapshot::Chain {
+        inner: saved.into(),
+        outer: ContinuationSnapshot::ContinueBlock {
+            block: etas_hir::HirBlockId(3),
+            next_stmt_index: 0,
+            frame: frame(0),
+        }
+        .into(),
+    };
+    for _ in 0..2 {
+        let (_, cost) = measure(|| {
+            let error = saved
+                .clone()
+                .restore_with(&mut RestoreContext::default())
+                .unwrap_err();
+            assert!(error.contains("nonzero"), "{error}");
+        });
+        assert!(cost.count < 4100, "expanded invalid snapshot: {cost:?}");
+        assert_eq!(
+            cost.bytes, cost.released_bytes,
+            "restore failure leaked: {cost:?}"
+        );
     }
 }
 

@@ -5,7 +5,7 @@ use crate::orchestration::{
     ModelExecutionPolicySnapshot,
 };
 
-enum PendingParent {
+enum UnaryParent {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
     CallBoundary,
     HandlerDispatch,
@@ -16,11 +16,20 @@ enum PendingParent {
         frame: LocalsSnapshot,
     },
     ScopedModelPolicy(Box<ModelExecutionPolicySnapshot>),
+}
+
+enum PendingParent {
+    Unary {
+        parent: UnaryParent,
+        source: Option<ContinuationSnapshotLink>,
+    },
     ChainInner {
         outer: ContinuationSnapshotLink,
+        source: Option<ContinuationSnapshotLink>,
     },
     ChainOuter {
         inner: ContinuationLink,
+        source: Option<ContinuationSnapshotLink>,
     },
 }
 
@@ -30,105 +39,148 @@ impl ContinuationSnapshot {
         context: &mut RestoreContext,
     ) -> Result<Continuation, String> {
         let mut pending = Vec::new();
-        loop {
-            match self {
-                Self::RestoreModelPolicy { previous, inner } => {
-                    pending.push(PendingParent::RestoreModelPolicy(previous));
-                    self = inner.into_value();
-                    continue;
-                }
-                Self::CallBoundary { outer } => {
-                    pending.push(PendingParent::CallBoundary);
-                    self = outer.into_value();
-                    continue;
-                }
-                Self::HandlerDispatch { outer } => {
-                    pending.push(PendingParent::HandlerDispatch);
-                    self = outer.into_value();
-                    continue;
-                }
-                Self::HandleBoundary {
-                    scope_id,
-                    inner,
-                    handlers,
-                    span,
-                    frame,
-                } => {
-                    pending.push(PendingParent::HandleBoundary {
-                        scope_id,
-                        handlers,
-                        span,
-                        frame,
-                    });
-                    self = inner.into_value();
-                    continue;
-                }
-                Self::ScopedModelPolicy { policy, inner } => {
-                    pending.push(PendingParent::ScopedModelPolicy(policy));
-                    self = inner.into_value();
-                    continue;
-                }
-                Self::Chain { inner, outer } => {
-                    pending.push(PendingParent::ChainInner { outer });
-                    self = inner.into_value();
-                    continue;
-                }
-                _ => {}
-            }
-
-            let mut value = self.restore_leaf(context)?;
-            loop {
-                value = match pending.pop() {
-                    Some(PendingParent::RestoreModelPolicy(previous)) => {
-                        Continuation::RestoreModelPolicy {
-                            previous: Box::new(restore_model_policy(*previous)),
-                            inner: value.into(),
-                        }
+        'walk: loop {
+            let mut value = 'restore: {
+                let (parent, child) = match self {
+                    Self::RestoreModelPolicy { previous, inner } => {
+                        (UnaryParent::RestoreModelPolicy(previous), inner)
                     }
-                    Some(PendingParent::CallBoundary) => Continuation::CallBoundary {
-                        outer: value.into(),
-                    },
-                    Some(PendingParent::HandlerDispatch) => Continuation::HandlerDispatch {
-                        outer: value.into(),
-                    },
-                    Some(PendingParent::HandleBoundary {
+                    Self::CallBoundary { outer } => (UnaryParent::CallBoundary, outer),
+                    Self::HandlerDispatch { outer } => (UnaryParent::HandlerDispatch, outer),
+                    Self::HandleBoundary {
                         scope_id,
+                        inner,
                         handlers,
                         span,
                         frame,
-                    }) => {
-                        // Normal link ownership also releases the inner tree if
-                        // frame identity reconciliation fails.
-                        let inner: ContinuationLink = value.into();
-                        let frame = super::super::frame::restore_frame(frame, context)?;
-                        Continuation::HandleBoundary {
+                    } => (
+                        UnaryParent::HandleBoundary {
                             scope_id,
-                            inner,
                             handlers,
                             span,
                             frame,
-                        }
-                    }
-                    Some(PendingParent::ScopedModelPolicy(policy)) => {
-                        Continuation::ScopedModelPolicy {
-                            policy: Box::new(restore_model_policy(*policy)),
-                            inner: value.into(),
-                        }
-                    }
-                    Some(PendingParent::ChainInner { outer }) => {
-                        pending.push(PendingParent::ChainOuter {
-                            inner: value.into(),
-                        });
-                        self = outer.into_value();
-                        break;
-                    }
-                    Some(PendingParent::ChainOuter { inner }) => Continuation::Chain {
+                        },
                         inner,
-                        outer: value.into(),
-                    },
-                    None => return Ok(value),
+                    ),
+                    Self::ScopedModelPolicy { policy, inner } => {
+                        (UnaryParent::ScopedModelPolicy(policy), inner)
+                    }
+                    Self::Chain { inner, outer } => {
+                        if let Some(inner) = restored_link(&inner, context) {
+                            if let Some(outer) = restored_link(&outer, context) {
+                                break 'restore Continuation::Chain { inner, outer };
+                            }
+                            pending.push(PendingParent::ChainOuter {
+                                inner,
+                                source: retain_shared(&outer),
+                            });
+                            self = outer.into_value();
+                        } else {
+                            let source = retain_shared(&inner);
+                            pending.push(PendingParent::ChainInner { outer, source });
+                            self = inner.into_value();
+                        }
+                        continue 'walk;
+                    }
+                    leaf => break 'restore leaf.restore_leaf(context)?,
                 };
+                if let Some(child) = restored_link(&child, context) {
+                    break 'restore restore_parent(parent, child, context)?;
+                }
+                pending.push(PendingParent::Unary {
+                    parent,
+                    source: retain_shared(&child),
+                });
+                self = child.into_value();
+                continue 'walk;
+            };
+            loop {
+                match pending.pop() {
+                    Some(PendingParent::Unary { parent, source }) => {
+                        let child = completed_link(value, source, context);
+                        value = restore_parent(parent, child, context)?;
+                    }
+                    Some(PendingParent::ChainInner { outer, source }) => {
+                        let inner = completed_link(value, source, context);
+                        if let Some(outer) = restored_link(&outer, context) {
+                            value = Continuation::Chain { inner, outer };
+                        } else {
+                            pending.push(PendingParent::ChainOuter {
+                                inner,
+                                source: retain_shared(&outer),
+                            });
+                            self = outer.into_value();
+                            break;
+                        }
+                    }
+                    Some(PendingParent::ChainOuter { inner, source }) => {
+                        value = Continuation::Chain {
+                            inner,
+                            outer: completed_link(value, source, context),
+                        };
+                    }
+                    None => return Ok(value),
+                }
             }
         }
     }
+}
+
+fn retain_shared(link: &ContinuationSnapshotLink) -> Option<ContinuationSnapshotLink> {
+    link.shared_identity().map(|_| link.clone())
+}
+
+fn restored_link(
+    link: &ContinuationSnapshotLink,
+    context: &RestoreContext,
+) -> Option<ContinuationLink> {
+    link.shared_identity()
+        .and_then(|key| context.continuations.get(&key))
+        .map(|(_, restored)| restored.clone())
+}
+
+fn completed_link(
+    value: Continuation,
+    source: Option<ContinuationSnapshotLink>,
+    context: &mut RestoreContext,
+) -> ContinuationLink {
+    let link: ContinuationLink = value.into();
+    if let Some(source) = source {
+        context.continuations.insert(
+            std::ptr::NonNull::from(source.as_ref()),
+            (source, link.clone()),
+        );
+    }
+    link
+}
+
+fn restore_parent(
+    parent: UnaryParent,
+    child: ContinuationLink,
+    context: &mut RestoreContext,
+) -> Result<Continuation, String> {
+    Ok(match parent {
+        UnaryParent::RestoreModelPolicy(previous) => Continuation::RestoreModelPolicy {
+            previous: Box::new(restore_model_policy(*previous)),
+            inner: child,
+        },
+        UnaryParent::CallBoundary => Continuation::CallBoundary { outer: child },
+        UnaryParent::HandlerDispatch => Continuation::HandlerDispatch { outer: child },
+        UnaryParent::HandleBoundary {
+            scope_id,
+            handlers,
+            span,
+            frame,
+        } => Continuation::HandleBoundary {
+            scope_id,
+            inner: child,
+            handlers,
+            span,
+            frame: super::super::frame::restore_frame(frame, context)?,
+        },
+        UnaryParent::ScopedModelPolicy(policy) => Continuation::ScopedModelPolicy {
+            policy: Box::new(restore_model_policy(*policy)),
+            inner: child,
+        },
+    })
 }

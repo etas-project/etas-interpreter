@@ -1,5 +1,6 @@
 use std::{
     ops::{Deref, DerefMut},
+    ptr::NonNull,
     rc::Rc,
 };
 
@@ -11,6 +12,11 @@ use super::ContinuationSnapshot;
 pub(crate) struct ContinuationSnapshotLink(Option<Rc<ContinuationSnapshot>>);
 
 impl ContinuationSnapshotLink {
+    pub(crate) fn shared_identity(&self) -> Option<NonNull<ContinuationSnapshot>> {
+        let node = self.0.as_ref().expect("live continuation snapshot link");
+        (Rc::strong_count(node) > 1).then(|| NonNull::from(node.as_ref()))
+    }
+
     pub(crate) fn new(value: ContinuationSnapshot) -> Self {
         Self(Some(Rc::new(value)))
     }

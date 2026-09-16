@@ -2,6 +2,8 @@ use super::{
     ActiveHandlerArmRecord, BTreeSet, ContinuationSnapshot, HandlerScopeId, LocalsSnapshot,
     SnapshotValidator,
 };
+use crate::orchestration::ContinuationSnapshotLink;
+use std::{collections::HashSet, ptr::NonNull};
 
 #[derive(Clone, Copy)]
 enum Visit<'a> {
@@ -14,15 +16,28 @@ enum Visit<'a> {
 }
 
 struct ContinuationWalk<'a> {
-    next: Option<Visit<'a>>,
-    pending: Vec<Visit<'a>>,
+    next: Option<Task<'a>>,
+    pending: Vec<Task<'a>>,
+    scope_free: HashSet<NonNull<ContinuationSnapshot>>,
+    scopes_seen: usize,
+}
+
+enum Task<'a> {
+    Visit(Visit<'a>),
+    Link(&'a ContinuationSnapshotLink),
+    CompleteShared {
+        identity: NonNull<ContinuationSnapshot>,
+        scopes_before: usize,
+    },
 }
 
 impl<'a> ContinuationWalk<'a> {
     fn new(root: &'a ContinuationSnapshot) -> Self {
         Self {
-            next: Some(Visit::Node(root)),
+            next: Some(Task::Visit(Visit::Node(root))),
             pending: Vec::new(),
+            scope_free: HashSet::new(),
+            scopes_seen: 0,
         }
     }
 }
@@ -31,7 +46,33 @@ impl<'a> Iterator for ContinuationWalk<'a> {
     type Item = Visit<'a>;
 
     fn next(&mut self) -> Option<Self::Item> {
-        let event = self.next.take().or_else(|| self.pending.pop())?;
+        let event = loop {
+            match self.next.take().or_else(|| self.pending.pop())? {
+                Task::Visit(event) => break event,
+                Task::Link(link) => {
+                    if let Some(identity) = link.shared_identity() {
+                        if self.scope_free.contains(&identity) {
+                            continue;
+                        }
+                        self.pending.push(Task::CompleteShared {
+                            identity,
+                            scopes_before: self.scopes_seen,
+                        });
+                    }
+                    self.next = Some(Task::Visit(Visit::Node(link)));
+                }
+                Task::CompleteShared {
+                    identity,
+                    scopes_before,
+                } => {
+                    // Repeated scope-bearing subtrees must still visit their
+                    // boundaries so duplicate IDs cannot bypass validation.
+                    if self.scopes_seen == scopes_before {
+                        self.scope_free.insert(identity);
+                    }
+                }
+            }
+        };
         if let Visit::Node(node) = event {
             match node {
                 ContinuationSnapshot::HandleBoundary {
@@ -41,22 +82,23 @@ impl<'a> Iterator for ContinuationWalk<'a> {
                     frame,
                     ..
                 } => {
-                    self.pending.push(Visit::LeaveHandler {
+                    self.scopes_seen += 1;
+                    self.pending.push(Task::Visit(Visit::LeaveHandler {
                         scope_id: *scope_id,
                         handlers,
                         frame,
-                    });
-                    self.next = Some(Visit::Node(inner));
+                    }));
+                    self.next = Some(Task::Link(inner));
                 }
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
                 | ContinuationSnapshot::CallBoundary { outer: inner }
                 | ContinuationSnapshot::HandlerDispatch { outer: inner }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => {
-                    self.next = Some(Visit::Node(inner))
+                    self.next = Some(Task::Link(inner))
                 }
                 ContinuationSnapshot::Chain { inner, outer } => {
-                    self.pending.push(Visit::Node(outer));
-                    self.next = Some(Visit::Node(inner));
+                    self.pending.push(Task::Link(outer));
+                    self.next = Some(Task::Link(inner));
                 }
                 _ => {}
             }
@@ -98,6 +140,26 @@ impl SnapshotValidator<'_> {
             if let Visit::LeaveHandler { scope_id, .. } = event {
                 scopes.push(scope_id);
             }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn shared_scope_free_continuations_are_visited_once() {
+        for depth in [10, 1000, 4000, 30_000] {
+            let mut root = ContinuationSnapshot::Return;
+            for _ in 0..depth {
+                let child: ContinuationSnapshotLink = root.into();
+                root = ContinuationSnapshot::Chain {
+                    inner: child.clone(),
+                    outer: child,
+                };
+            }
+            assert_eq!(ContinuationWalk::new(&root).count(), depth + 1);
         }
     }
 }

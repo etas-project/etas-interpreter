@@ -6,6 +6,123 @@ fn machine(continuation: ContinuationSnapshot) -> MachineSnapshot {
     }
 }
 
+fn shared_dag(mut root: ContinuationSnapshot, depth: usize) -> ContinuationSnapshot {
+    for _ in 0..depth {
+        let child: crate::orchestration::ContinuationSnapshotLink = root.into();
+        root = ContinuationSnapshot::Chain {
+            inner: child.clone(),
+            outer: child,
+        };
+    }
+    root
+}
+
+#[test]
+fn shared_dag_machine_restore_runs_checked_validation_without_expansion() {
+    use crate::{control::Continuation, eval::machine::state::EvalMachine};
+    let checked = crate::testing::project::checked_project(
+        "module app.main; flow main() -> unit { return; }",
+    );
+    let plan = crate::Interpreter
+        .plan(&checked, crate::api::PlanOptions)
+        .plan
+        .unwrap();
+    let limits = etas_host::StorageLimits::default();
+    let host = crate::api::HostExecutionContext::default();
+    for depth in [10, 1000, 4000, 30_000] {
+        let saved = checkpoint(&checked, shared_dag(ContinuationSnapshot::Return, depth), 0);
+        let (_, cost) = crate::testing::allocation::measure(|| {
+            SnapshotValidator::new(
+                &checked,
+                &plan.slots,
+                &plan.dispatch,
+                &plan.closures,
+                &limits,
+            )
+            .validate_checkpoint(&saved)
+            .unwrap();
+            let mut live = EvalMachine::from_snapshot(
+                &saved.machine,
+                &checked,
+                plan.slots.clone(),
+                &plan.dispatch,
+                &plan.closures,
+                &host,
+                &limits,
+            )
+            .unwrap();
+            let root = live.pop_frame().unwrap().into_continuation();
+            let mut cursor = &root;
+            for _ in 0..depth {
+                let Continuation::Chain { inner, outer } = cursor else {
+                    panic!("chain")
+                };
+                assert!(std::ptr::eq(inner.as_ref(), outer.as_ref()));
+                cursor = inner;
+            }
+            assert!(matches!(cursor, Continuation::Return));
+        });
+        eprintln!("checked DAG restore depth={depth}: {cost:?}");
+        assert!(
+            cost.count < depth + 160,
+            "repeated snapshot materialization: {cost:?}"
+        );
+        assert_eq!(cost.bytes, cost.released_bytes);
+    }
+}
+
+#[test]
+fn shared_dag_validation_keeps_duplicate_scopes_and_invalid_leaves_fail_closed() {
+    let checked = crate::testing::project::checked_project(
+        "module app.main; flow main() -> unit { return; }",
+    );
+    let plan = crate::Interpreter
+        .plan(&checked, crate::api::PlanOptions)
+        .plan
+        .unwrap();
+    let limits = etas_host::StorageLimits::default();
+    let scope_free = shared_dag(ContinuationSnapshot::Return, 4000);
+    let repeated_scope = shared_dag(boundary(0, scope_free.clone()), 4000);
+    let saved = checkpoint(&checked, repeated_scope, 1);
+    let error = SnapshotValidator::new(
+        &checked,
+        &plan.slots,
+        &plan.dispatch,
+        &plan.closures,
+        &limits,
+    )
+    .validate_checkpoint(&saved)
+    .unwrap_err();
+    assert!(error.contains("duplicate handle boundary"), "{error}");
+    let bad = ContinuationSnapshot::ContinueBlock {
+        block: HirBlockId(u32::MAX),
+        next_stmt_index: 0,
+        frame: LocalsSnapshot {
+            id: 1,
+            locals: Default::default(),
+            type_bindings: vec![],
+        },
+    };
+    for root in [
+        shared_dag(bad.clone(), 4000),
+        ContinuationSnapshot::Chain {
+            inner: scope_free.into(),
+            outer: bad.into(),
+        },
+    ] {
+        let error = SnapshotValidator::new(
+            &checked,
+            &plan.slots,
+            &plan.dispatch,
+            &plan.closures,
+            &limits,
+        )
+        .validate_machine(&machine(root))
+        .unwrap_err();
+        assert!(error.contains("block"), "{error}");
+    }
+}
+
 #[test]
 fn deep_continuation_validation_does_not_overflow_or_copy_snapshot_edges() {
     const WORKER: &str = "ETAS_TEST_CONTINUATION_VALIDATION_WORKER";
