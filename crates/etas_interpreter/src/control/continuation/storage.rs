@@ -1,6 +1,7 @@
 use super::Continuation;
 use std::{
     ops::{Deref, DerefMut},
+    ptr::NonNull,
     rc::Rc,
 };
 
@@ -13,6 +14,10 @@ pub struct ContinuationLink(Rc<Node>);
 struct Node(Continuation);
 
 impl ContinuationLink {
+    pub(crate) fn shared_capture_identity(&self) -> Option<NonNull<Continuation>> {
+        (Rc::strong_count(&self.0) > 1).then(|| NonNull::from(&self.0.0))
+    }
+
     pub fn into_value(self) -> Continuation {
         match Rc::try_unwrap(self.0) {
             Ok(mut node) => std::mem::replace(&mut node.0, Continuation::BlockValue),

@@ -5,6 +5,147 @@ use crate::{
 mod restore;
 
 #[test]
+fn shared_capture_preserves_parent_identity_and_freezes_live_frames() {
+    use super::CaptureContext;
+    use crate::{
+        control::{ContinuationLink, Frame},
+        value::InterpValue,
+    };
+    use etas_hir::{HirBlockId, SymbolId};
+    let mut frame = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(1))]).unwrap();
+    let leaf: ContinuationLink = Continuation::ContinueBlock {
+        block: HirBlockId(1),
+        next_stmt_index: 2,
+        frame: frame.clone(),
+    }
+    .into();
+    let first = Continuation::CallBoundary {
+        outer: leaf.clone(),
+    };
+    let second = Continuation::HandlerDispatch { outer: leaf };
+    let (saved_first, saved_second) = {
+        let mut context = CaptureContext::default();
+        (
+            context.continuation(&first).unwrap(),
+            context.continuation(&second).unwrap(),
+        )
+    };
+    let (
+        ContinuationSnapshot::CallBoundary { outer: a },
+        ContinuationSnapshot::HandlerDispatch { outer: b },
+    ) = (&saved_first, &saved_second)
+    else {
+        panic!("parent kind lost")
+    };
+    assert!(std::ptr::eq(a.as_ref(), b.as_ref()));
+    assert!(frame.set(SymbolId(0), InterpValue::i32(2)));
+    let ContinuationSnapshot::ContinueBlock { frame: saved, .. } = a.as_ref() else {
+        panic!("leaf")
+    };
+    assert!(saved.locals[0].1.clone().restore().unwrap() == InterpValue::i32(1));
+    let newer = ContinuationSnapshot::capture(&first).unwrap();
+    let ContinuationSnapshot::CallBoundary { outer } = newer else {
+        panic!("parent")
+    };
+    let ContinuationSnapshot::ContinueBlock { frame: saved, .. } = outer.as_ref() else {
+        panic!("leaf")
+    };
+    assert!(saved.locals[0].1.clone().restore().unwrap() == InterpValue::i32(2));
+}
+
+#[test]
+fn shared_dag_capture_failure_releases_memoized_nodes() {
+    use crate::{
+        control::ContinuationLink,
+        value::{HostHandleValue, InterpValue},
+    };
+    let mut root = Continuation::Return;
+    for _ in 0..4000 {
+        let child: ContinuationLink = root.into();
+        root = Continuation::Chain {
+            inner: child.clone(),
+            outer: child,
+        };
+    }
+    let root = Continuation::Chain {
+        inner: root.into(),
+        outer: Continuation::PipelineTarget {
+            input: InterpValue::HostHandle(HostHandleValue::browser_session(
+                etas_types::TypeId(1),
+                "live-session".into(),
+            )),
+            span: span(),
+        }
+        .into(),
+    };
+    for _ in 0..2 {
+        let (_, cost) = measure(|| {
+            let error = ContinuationSnapshot::capture(&root).unwrap_err();
+            assert!(error.contains("host handles cannot be captured"), "{error}");
+        });
+        assert_eq!(
+            cost.bytes, cost.released_bytes,
+            "failed capture leaked: {cost:?}"
+        );
+        assert!(
+            cost.count < 4100,
+            "expanded graph before rejection: {cost:?}"
+        );
+    }
+}
+
+#[test]
+fn shared_continuation_dag_capture_does_not_expand_occurrences() {
+    const WORKER: &str = "ETAS_SHARED_CONTINUATION_CAPTURE_WORKER";
+    if std::env::var_os(WORKER).is_none() {
+        let thread = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", thread.name().unwrap(), "--nocapture"])
+            .env(WORKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    for depth in [10, 1000, 4000, 30_000] {
+        let mut root = Continuation::Return;
+        for _ in 0..depth {
+            let child: crate::control::ContinuationLink = root.into();
+            root = Continuation::Chain {
+                inner: child.clone(),
+                outer: child,
+            };
+        }
+        let (_, cost) = measure(|| {
+            let saved = ContinuationSnapshot::capture(&root).unwrap();
+            let mut cursor = &saved;
+            for _ in 0..depth {
+                let ContinuationSnapshot::Chain { inner, outer } = cursor else {
+                    panic!("chain")
+                };
+                assert!(std::ptr::eq(inner.as_ref(), outer.as_ref()));
+                cursor = inner;
+            }
+            assert!(matches!(cursor, ContinuationSnapshot::Return));
+        });
+        eprintln!("shared continuation DAG depth={depth}: {cost:?}");
+        assert!(
+            cost.count < depth + 64,
+            "expanded shared control graph: {cost:?}"
+        );
+        assert_eq!(
+            cost.bytes, cost.released_bytes,
+            "captured graph leaked: {cost:?}"
+        );
+    }
+}
+
+#[test]
 fn continuation_capture_reuses_shared_frames_across_chain_nodes() {
     use crate::{control::Frame, value::InterpValue};
     use etas_hir::{HirBlockId, SymbolId};

@@ -2,6 +2,40 @@ use super::*;
 use etas_hir::HirItemId;
 
 #[test]
+fn captured_continuation_sharing_does_not_bypass_wire_budget() {
+    use crate::control::{Continuation, ContinuationLink};
+    for depth in [5, 30] {
+        let mut root = Continuation::Return;
+        for _ in 0..depth {
+            let child: ContinuationLink = root.into();
+            root = Continuation::Chain {
+                inner: child.clone(),
+                outer: child,
+            };
+        }
+        let saved = ContinuationSnapshot::capture(&root).unwrap();
+        let limit = if depth == 5 { 62 } else { 128 };
+        let (_, cost) = measure(|| {
+            let error =
+                encode_with_budget(Node::Continuation(&saved), &mut EncodingBudget::new(limit))
+                    .unwrap_err();
+            assert_eq!(
+                error.message(),
+                "checkpoint snapshot expansion exceeds node budget"
+            );
+        });
+        assert_eq!(cost.bytes, cost.released_bytes);
+        assert!(cost.bytes < 128 * 4096);
+        if depth == 5 {
+            assert!(
+                encode_with_budget(Node::Continuation(&saved), &mut EncodingBudget::new(63))
+                    .is_ok()
+            );
+        }
+    }
+}
+
+#[test]
 fn shared_value_snapshot_expansion_is_charged_per_occurrence() {
     let graph = |depth| {
         (0..depth).fold(ValueSnapshot::Bool(true), |node, _| {

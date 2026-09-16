@@ -1,13 +1,15 @@
 use std::{
     collections::{HashMap, HashSet},
+    ptr::NonNull,
     rc::Rc,
 };
 
 use super::capture_identity::CaptureIdentity;
 use crate::{
-    control::{CallTarget, Frame},
+    control::{CallTarget, Continuation, Frame},
     orchestration::{
-        CallTargetSnapshotChildren, CallTargetSnapshotLink, LocalsSnapshot, ValueSnapshot,
+        CallTargetSnapshotChildren, CallTargetSnapshotLink, ContinuationSnapshotLink,
+        LocalsSnapshot, ValueSnapshot,
     },
     value::InterpValue,
 };
@@ -25,6 +27,7 @@ pub(in crate::eval::machine) struct CaptureContext {
     pub(super) values: HashMap<CaptureIdentity, ValueSnapshot>,
     pub(super) call_nodes: HashMap<*const CallTarget, CallTargetSnapshotLink>,
     pub(super) call_tables: HashMap<*const Vec<CallTarget>, CallTargetSnapshotChildren>,
+    pub(super) continuations: HashMap<NonNull<Continuation>, ContinuationSnapshotLink>,
     first_frame: Option<(FrameIdentity, LocalsSnapshot)>,
     frames: HashMap<FrameIdentity, LocalsSnapshot>,
     first_active: Option<*const ()>,
