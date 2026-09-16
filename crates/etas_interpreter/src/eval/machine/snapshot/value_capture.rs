@@ -1,3 +1,4 @@
+use super::message::{ConversationHeader, MessageHeader};
 use crate::{
     orchestration::{SnapshotBox, ValueSnapshot},
     value::*,
@@ -12,6 +13,7 @@ enum UnaryKind {
     Nominal(etas_types::TypeId),
     Trust(etas_types::TrustWrapper),
     Some,
+    Message(Box<MessageHeader>),
 }
 enum SequenceKind {
     Tuple,
@@ -41,6 +43,11 @@ enum SequenceSource {
 }
 
 enum Frame {
+    Conversation {
+        header: Box<ConversationHeader>,
+        source: MessageList,
+        values: Vec<crate::orchestration::MessageSnapshot>,
+    },
     Unary {
         kind: UnaryKind,
         source: SharedValue,
@@ -92,6 +99,16 @@ pub(super) fn capture(value: &InterpValue) -> Result<ValueSnapshot, String> {
 
 fn start(value: &InterpValue) -> Result<Started, String> {
     let frame = match value {
+        InterpValue::Message(message) => Frame::Unary {
+            kind: UnaryKind::Message(Box::new(MessageHeader::capture(message))),
+            source: message.payload.clone(),
+            value: None,
+        },
+        InterpValue::Conversation(value) => Frame::Conversation {
+            header: Box::new(ConversationHeader::capture(value)),
+            source: value.messages.clone(),
+            values: Vec::with_capacity(value.messages.len()),
+        },
         InterpValue::Nominal { ty, value } => Frame::Unary {
             kind: UnaryKind::Nominal(*ty),
             source: value.clone(),
@@ -202,6 +219,10 @@ impl SequenceSource {
 impl Frame {
     fn next(&self) -> Result<Option<Started>, String> {
         match self {
+            Self::Conversation { source, values, .. } => source
+                .get(values.len())
+                .map(|message| start(&message.payload))
+                .transpose(),
             Self::Unary {
                 source,
                 value: None,
@@ -229,6 +250,12 @@ impl Frame {
 
     fn accept(&mut self, value: ValueSnapshot) -> Result<(), String> {
         match self {
+            Self::Conversation { source, values, .. } => {
+                let message = source
+                    .get(values.len())
+                    .ok_or("checkpoint conversation lost its current message")?;
+                values.push(MessageHeader::capture(message).snapshot(SnapshotBox::new(value)));
+            }
             Self::Unary { value: current, .. } => {
                 if current.is_some() {
                     return Err("checkpoint unary builder received duplicate payload".into());
@@ -263,6 +290,7 @@ impl Frame {
 
     fn finish(self) -> Result<ValueSnapshot, String> {
         Ok(match self {
+            Self::Conversation { header, values, .. } => header.snapshot(values),
             Self::Unary { kind, value, .. } => {
                 let value =
                     SnapshotBox::new(value.ok_or("checkpoint unary builder has no payload")?);
@@ -270,6 +298,7 @@ impl Frame {
                     UnaryKind::Nominal(ty) => ValueSnapshot::Nominal { ty, value },
                     UnaryKind::Trust(wrapper) => ValueSnapshot::Trust { wrapper, value },
                     UnaryKind::Some => ValueSnapshot::OptionSome(value),
+                    UnaryKind::Message(header) => ValueSnapshot::Message(header.snapshot(value)),
                 }
             }
             Self::Sequence { kind, values, .. } => match kind {

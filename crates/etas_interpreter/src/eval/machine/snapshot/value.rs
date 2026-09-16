@@ -1,7 +1,7 @@
 use super::RestoreContext;
 use crate::orchestration::SnapshotBox;
-use crate::orchestration::{ConversationSnapshot, MessageSnapshot, ValueSnapshot};
-use crate::value::{ConversationValue, InterpValue, MessageValue, RangeValue};
+use crate::orchestration::ValueSnapshot;
+use crate::value::{InterpValue, RangeValue};
 
 #[cfg(test)]
 #[path = "value_capture_tests.rs"]
@@ -22,10 +22,6 @@ impl ValueSnapshot {
             InterpValue::Bytes(value) => Self::Bytes(value.clone()),
             InterpValue::Json(value) => Self::Json(value.clone()),
             InterpValue::Prompt(messages) => Self::Prompt(messages.clone()),
-            InterpValue::Message(message) => Self::Message(MessageSnapshot::capture(message)?),
-            InterpValue::Conversation(conversation) => {
-                Self::Conversation(ConversationSnapshot::capture(conversation)?)
-            }
             InterpValue::Provenance(value) => Self::Provenance(value.clone()),
             InterpValue::ModelResponse(value) => Self::ModelResponse(value.clone()),
             InterpValue::Command {
@@ -55,6 +51,8 @@ impl ValueSnapshot {
             },
             InterpValue::OptionNone => Self::OptionNone,
             InterpValue::Nominal { .. }
+            | InterpValue::Message(_)
+            | InterpValue::Conversation(_)
             | InterpValue::Trust { .. }
             | InterpValue::OptionSome(_)
             | InterpValue::Tuple(_)
@@ -158,10 +156,6 @@ impl ValueSnapshot {
             Self::Bytes(value) => InterpValue::Bytes(value),
             Self::Json(value) => InterpValue::Json(value),
             Self::Prompt(messages) => InterpValue::Prompt(messages),
-            Self::Message(message) => InterpValue::Message(message.restore_with(context)?),
-            Self::Conversation(conversation) => {
-                InterpValue::Conversation(conversation.restore_with(context)?)
-            }
             Self::Provenance(value) => InterpValue::Provenance(value),
             Self::ModelResponse(value) => InterpValue::ModelResponse(value),
             Self::Command {
@@ -191,6 +185,8 @@ impl ValueSnapshot {
             }),
             Self::OptionNone => InterpValue::OptionNone,
             Self::Nominal { .. }
+            | Self::Message(_)
+            | Self::Conversation(_)
             | Self::Trust { .. }
             | Self::OptionSome(_)
             | Self::Tuple(_)
@@ -266,65 +262,6 @@ impl ValueSnapshot {
                     .map(Box::new),
                 limit,
             },
-        })
-    }
-}
-
-impl MessageSnapshot {
-    fn capture(message: &MessageValue) -> Result<Self, String> {
-        Ok(Self {
-            id: message.id.clone(),
-            from: message.from.clone(),
-            to: message.to.clone(),
-            role: message.role,
-            session: message.session.clone(),
-            created_at: message.created_at.clone(),
-            payload: SnapshotBox::new(ValueSnapshot::capture(&message.payload)?),
-            provenance: message.provenance.clone(),
-        })
-    }
-
-    fn restore_with(self, context: &mut RestoreContext) -> Result<MessageValue, String> {
-        Ok(MessageValue {
-            id: self.id,
-            from: self.from,
-            to: self.to,
-            role: self.role,
-            session: self.session,
-            created_at: self.created_at,
-            payload: self.payload.into_value().restore_with(context)?.into(),
-            provenance: self.provenance,
-        })
-    }
-}
-
-impl ConversationSnapshot {
-    fn capture(conversation: &ConversationValue) -> Result<Self, String> {
-        Ok(Self {
-            selected_context: conversation.selected_context.as_deref().cloned(),
-            session: conversation.session.clone(),
-            history_fence: conversation.history_fence.clone(),
-            messages: conversation
-                .messages
-                .iter()
-                .map(MessageSnapshot::capture)
-                .collect::<Result<Vec<_>, _>>()?,
-            cursor: conversation.cursor.clone(),
-        })
-    }
-
-    fn restore_with(self, context: &mut RestoreContext) -> Result<ConversationValue, String> {
-        Ok(ConversationValue {
-            selected_context: self.selected_context.map(Box::new),
-            session: self.session,
-            history_fence: self.history_fence,
-            messages: self
-                .messages
-                .into_iter()
-                .map(|message| message.restore_with(context))
-                .collect::<Result<Vec<_>, _>>()?
-                .into(),
-            cursor: self.cursor,
         })
     }
 }

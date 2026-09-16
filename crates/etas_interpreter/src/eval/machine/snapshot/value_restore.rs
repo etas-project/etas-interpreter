@@ -1,4 +1,5 @@
 use super::RestoreContext;
+use super::message::{ConversationHeader, MessageHeader};
 use crate::{
     orchestration::{SnapshotChildren, ValueSnapshot},
     value::*,
@@ -12,6 +13,7 @@ enum UnaryKind {
     Nominal(etas_types::TypeId),
     Trust(etas_types::TrustWrapper),
     Some,
+    Message(Box<MessageHeader>),
 }
 enum SequenceKind {
     Tuple,
@@ -36,6 +38,12 @@ enum UnaryState {
     Complete(InterpValue),
 }
 enum Frame {
+    Conversation {
+        header: Box<ConversationHeader>,
+        remaining: std::vec::IntoIter<crate::orchestration::MessageSnapshot>,
+        pending: Option<MessageHeader>,
+        values: Vec<MessageValue>,
+    },
     Unary {
         kind: UnaryKind,
         state: UnaryState,
@@ -90,6 +98,19 @@ pub(super) fn restore(
 
 fn start(value: ValueSnapshot, context: &mut RestoreContext) -> Result<Started, String> {
     let frame = match value {
+        ValueSnapshot::Message(message) => {
+            let (header, payload) = MessageHeader::split(message);
+            unary(UnaryKind::Message(Box::new(header)), payload)
+        }
+        ValueSnapshot::Conversation(conversation) => {
+            let (header, messages) = ConversationHeader::split(conversation);
+            Frame::Conversation {
+                header: Box::new(header),
+                values: Vec::with_capacity(messages.len()),
+                remaining: messages.into_iter(),
+                pending: None,
+            }
+        }
         ValueSnapshot::Nominal { ty, value } => unary(UnaryKind::Nominal(ty), value.into_value()),
         ValueSnapshot::Trust { wrapper, value } => {
             unary(UnaryKind::Trust(wrapper), value.into_value())
@@ -144,6 +165,13 @@ fn pairs(kind: PairKind, values: SnapshotChildren<(ValueSnapshot, ValueSnapshot)
 impl Frame {
     fn next(&mut self) -> Option<ValueSnapshot> {
         match self {
+            Self::Conversation {
+                remaining, pending, ..
+            } => {
+                let (header, payload) = MessageHeader::split(remaining.next()?);
+                *pending = Some(header);
+                Some(payload)
+            }
             Self::Unary { state, .. } => match std::mem::replace(state, UnaryState::Waiting) {
                 UnaryState::Child(child) => Some(child),
                 other => {
@@ -175,6 +203,14 @@ impl Frame {
     }
     fn accept(&mut self, value: InterpValue) -> Result<(), String> {
         match self {
+            Self::Conversation {
+                pending, values, ..
+            } => {
+                let header = pending
+                    .take()
+                    .ok_or("restored conversation message has no header")?;
+                values.push(header.runtime(value.into()));
+            }
             Self::Unary { state, .. } => {
                 if !matches!(state, UnaryState::Waiting) {
                     return Err("restored unary value is not awaiting its payload".into());
@@ -204,6 +240,17 @@ impl Frame {
     }
     fn finish(self) -> Result<InterpValue, String> {
         Ok(match self {
+            Self::Conversation {
+                header,
+                pending,
+                remaining,
+                values,
+            } => {
+                if pending.is_some() || remaining.len() != 0 {
+                    return Err("restored conversation has unfinished messages".into());
+                }
+                header.runtime(values.into())
+            }
             Self::Unary { kind, state } => {
                 let UnaryState::Complete(value) = state else {
                     return Err("restored unary value has no payload".into());
@@ -213,6 +260,7 @@ impl Frame {
                     UnaryKind::Nominal(ty) => InterpValue::Nominal { ty, value },
                     UnaryKind::Trust(wrapper) => InterpValue::Trust { wrapper, value },
                     UnaryKind::Some => InterpValue::OptionSome(value),
+                    UnaryKind::Message(header) => InterpValue::Message(header.runtime(value)),
                 }
             }
             Self::Sequence { kind, values, .. } => match kind {

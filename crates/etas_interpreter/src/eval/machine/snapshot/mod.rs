@@ -2,6 +2,9 @@ mod call_target;
 mod continuation;
 mod frame;
 mod machine_frame;
+mod message;
+#[cfg(test)]
+mod message_tests;
 mod model;
 mod validator;
 mod value;
