@@ -2,9 +2,17 @@ use super::*;
 use crate::{api::RunOptions, testing::allocation::measure};
 
 fn with_collection_eval(run: impl FnOnce(&mut EvalContext<'_>, HirExprId, Span)) {
-    let checked = crate::testing::project::checked_project(
+    with_checked_collection_eval(
         "module app.main; flow main() -> Array<string> { return [\"start\"].push(\"end\"); }",
+        run,
     );
+}
+
+fn with_checked_collection_eval(
+    source: &str,
+    run: impl FnOnce(&mut EvalContext<'_>, HirExprId, Span),
+) {
+    let checked = crate::testing::project::checked_project(source);
     let plan = crate::Interpreter
         .plan(&checked, crate::api::PlanOptions)
         .plan
@@ -34,6 +42,91 @@ fn with_collection_eval(run: impl FnOnce(&mut EvalContext<'_>, HirExprId, Span))
         entry_args: &[],
     });
     run(&mut eval, expr, span);
+}
+
+#[test]
+fn checked_list_at_does_not_allocate_on_successful_lookup() {
+    with_checked_collection_eval(
+        "module app.main; flow main() -> Result<string, IndexError> { return [\"start\"; \"end\"].at(0)?; }",
+        |eval, expr, span| {
+            assert!(eval.checked.types.checked_index_errors.contains_key(&expr));
+            for count in [1000, 2000, 4000] {
+                let list = crate::value::ListValue::new(
+                    (0..count)
+                        .map(|_| InterpValue::String("payload".repeat(128).into()))
+                        .collect(),
+                );
+                for index in [0, count / 2, count - 1] {
+                    let args = vec![InterpValue::i32(i32::try_from(index).unwrap())];
+                    let (value, cost) = measure(|| {
+                        eval.eval_local_method_with_values(
+                            expr,
+                            InterpValue::List(list.clone()),
+                            "at",
+                            &[],
+                            args,
+                            span,
+                        )
+                    });
+                    assert_eq!(
+                        cost.count, 0,
+                        "at must borrow cells: n={count}, index={index}, {cost:?}"
+                    );
+                    let ControlSignal::Value(InterpValue::String(value)) = value else {
+                        panic!("at string")
+                    };
+                    let InterpValue::String(original) = list.get(index).unwrap() else {
+                        panic!("string")
+                    };
+                    assert_eq!(value.as_ptr(), original.as_ptr());
+                }
+            }
+        },
+    );
+}
+
+#[test]
+fn list_get_borrows_cells_and_clones_only_the_selected_payload() {
+    with_collection_eval(|eval, expr, span| {
+        for count in [1000, 2000, 4000] {
+            let list = crate::value::ListValue::new(
+                (0..count)
+                    .map(|_| InterpValue::String("payload".repeat(128).into()))
+                    .collect(),
+            );
+            for index in [0, count / 2, count - 1, count] {
+                let args = vec![InterpValue::usize(index)];
+                let (result, cost) = measure(|| {
+                    eval.eval_local_method_with_values(
+                        expr,
+                        InterpValue::List(list.clone()),
+                        "get",
+                        &[],
+                        args,
+                        span,
+                    )
+                });
+                assert_eq!(
+                    cost.count,
+                    usize::from(index < count),
+                    "only Some wrapper, no list snapshot: n={count}, index={index}, {cost:?}"
+                );
+                match result {
+                    ControlSignal::Value(InterpValue::OptionSome(value)) => {
+                        let (InterpValue::String(old), InterpValue::String(new)) =
+                            (list.get(index).unwrap(), &*value)
+                        else {
+                            panic!("string payload")
+                        };
+                        assert_eq!(old.as_ptr(), new.as_ptr());
+                    }
+                    ControlSignal::Value(InterpValue::OptionNone) => assert_eq!(index, count),
+                    other => panic!("unexpected get result: {other:?}"),
+                }
+                assert_eq!(list.len(), count);
+            }
+        }
+    });
 }
 
 #[test]

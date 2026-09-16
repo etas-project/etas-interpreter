@@ -5,6 +5,11 @@ use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 async fn registry_declared_list_queries_and_extend_execute_checked_source() {
     let mut failures = Vec::new();
     for (name, expression) in [
+        (
+            "get",
+            "xs.get(1) == Some(2) && xs.get(9) == None && xs.get(-1) == None",
+        ),
+        ("at", "xs.at(1)? == Ok(2)"),
         ("head", "xs.head() == Some(1)"),
         ("tail", "xs.tail() == Some([2; 3]) && xs == [1; 2; 3]"),
         ("extend", "xs.extend([4; 5]) == [4; 5; 1; 2; 3]"),
@@ -41,6 +46,84 @@ async fn registry_declared_list_queries_and_extend_execute_checked_source() {
         }
     }
     assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn checked_sequence_methods_preserve_index_errors_suspension_and_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+flow index() -> i32 {
+    println("index")?;
+    checkpoint("index");
+    return -1;
+}
+flow access<I ~ Index>(xs: List<i32>, i: I) -> i32 ![Error<IndexError>] {
+    return xs.at(i);
+}
+flow main() -> bool {
+    let xs = [1; 2; 3];
+    let alias = xs;
+    let failed = xs.at(index())?;
+    let rejected = match failed { Ok(_) => false, Err(_) => true };
+    let repaired = handle { xs.at(9) } with {
+        Error<IndexError>.raise(_) => { finish 7; }
+    };
+    let array = [4, 5, 6];
+    let slice = array[0, 2);
+    return rejected && repaired == 7 && access(xs, 1)? == Ok(2)
+        && array.at(0)? == Ok(4) && slice.at(1)? == Ok(5)
+        && array.get(-1) == None && slice.get(9) == None
+        && xs == alias;
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.stdout_text(), "index\n");
+    assert_eq!(result.checkpoints.len(), 1);
+    let saved = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+    for checkpoint in [saved, &decoded] {
+        let host = FakeHost::new(services);
+        let invocation =
+            Interpreter.create_resume(&checked, checkpoint, &host, RunOptions::default());
+        invocation
+            .control()
+            .stop(etas_host::execution::CancellationReason::Requested)
+            .unwrap();
+        assert!(matches!(
+            invocation.execute().await.unwrap().outcome,
+            crate::api::RunOutcome::Cancelled(_)
+        ));
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+        assert_eq!(host.stdout_text(), "");
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]

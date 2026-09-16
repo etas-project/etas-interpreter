@@ -65,7 +65,9 @@ impl<'a> EvalContext<'a> {
             InterpValue::Array(values) => {
                 self.eval_array_method_values(expr, values, method, args, span)
             }
-            InterpValue::List(values) => self.eval_list_method_values(values, method, args, span),
+            InterpValue::List(values) => {
+                self.eval_list_method_values(expr, values, method, args, span)
+            }
             InterpValue::Slice(values) => {
                 self.eval_slice_method_values(expr, values, method, args, span)
             }
@@ -141,6 +143,7 @@ impl<'a> EvalContext<'a> {
 
     fn eval_list_method_values(
         &mut self,
+        expr: HirExprId,
         mut values: crate::value::ListValue,
         method: &str,
         args: EvaluatedLocalArgs,
@@ -152,6 +155,22 @@ impl<'a> EvalContext<'a> {
             }
             ("is_empty", EvaluatedLocalArgs::None) => {
                 ControlSignal::Value(InterpValue::Bool(values.is_empty()))
+            }
+            ("get", EvaluatedLocalArgs::One(arg)) => {
+                let Some(index) = self.index_usize(arg, span) else {
+                    return ControlSignal::Value(InterpValue::OptionNone);
+                };
+                ControlSignal::Value(
+                    values
+                        .get(index)
+                        .cloned()
+                        .map(crate::value::SharedValue::new)
+                        .map(InterpValue::OptionSome)
+                        .unwrap_or(InterpValue::OptionNone),
+                )
+            }
+            ("at", EvaluatedLocalArgs::One(arg)) => {
+                self.eval_index_value(expr, InterpValue::List(values), arg, span)
             }
             ("head", EvaluatedLocalArgs::None) => ControlSignal::Value(
                 values

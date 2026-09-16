@@ -141,7 +141,7 @@ pub(super) fn local_value_method_expected_arg_count(
         },
         InterpValue::List(_) => match method {
             "len" | "is_empty" | "pop" | "head" | "tail" => 0,
-            "push" | "extend" => 1,
+            "push" | "extend" | "get" | "at" => 1,
             _ => return None,
         },
         InterpValue::Slice(_) => match method {
