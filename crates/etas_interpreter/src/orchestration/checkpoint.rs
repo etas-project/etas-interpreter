@@ -265,7 +265,7 @@ pub(crate) struct MessageSnapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ConversationSnapshot {
-    pub(crate) selected_context: Option<etas_host::session::SessionPublishedContext>,
+    pub(crate) selected_context: Option<crate::value::PublishedContextValue>,
     pub(crate) session: String,
     pub(crate) history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub(crate) messages: Vec<MessageSnapshot>,

@@ -1,4 +1,5 @@
 mod budget;
+mod context;
 mod json;
 mod payload;
 #[cfg(test)]
@@ -9,6 +10,7 @@ use crate::orchestration::ConversationSnapshot;
 use budget::{MessageView, ViewBudget};
 use etas_host::StorageLimits;
 
+pub use context::PublishedContextValue;
 pub(crate) use json::validate_json;
 
 pub(crate) fn validate(value: &ConversationValue, limits: &StorageLimits) -> Result<(), String> {
@@ -43,7 +45,7 @@ pub(crate) fn validate_snapshot(
     budget.metadata(
         value.cursor.as_deref(),
         value.history_fence.as_ref(),
-        value.selected_context.as_ref(),
+        value.selected_context.as_deref(),
     )?;
     for message in &value.messages {
         budget.message(MessageView {

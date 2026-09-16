@@ -3,6 +3,7 @@ mod bytes;
 pub(crate) mod codec;
 pub(crate) mod comparison;
 pub(crate) mod conversation;
+pub use conversation::PublishedContextValue;
 mod deque;
 #[cfg(test)]
 mod equality_tests;

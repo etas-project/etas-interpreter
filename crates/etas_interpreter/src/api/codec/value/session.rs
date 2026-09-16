@@ -219,7 +219,7 @@ pub(super) fn conversation_from_json(
         message_parts(limits, value, value_from_json_with_limits).map(Into::into)
     })?;
     let conversation = ConversationValue {
-        selected_context: parts.selected_context.map(Box::new),
+        selected_context: parts.selected_context.map(Into::into),
         history_fence: parts.history_fence,
         session: parts.session,
         messages: parts.messages.into(),
@@ -238,7 +238,7 @@ pub(super) fn conversation_snapshot_from_json(
         message_parts(limits, value, snapshot_from_json_with_limits).map(Into::into)
     })?;
     Ok(crate::orchestration::ConversationSnapshot {
-        selected_context: parts.selected_context,
+        selected_context: parts.selected_context.map(Into::into),
         history_fence: parts.history_fence,
         session: parts.session,
         messages: parts.messages,

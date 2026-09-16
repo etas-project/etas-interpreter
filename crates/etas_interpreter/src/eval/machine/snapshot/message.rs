@@ -72,7 +72,7 @@ impl MessageHeader {
 }
 
 pub(super) struct ConversationHeader {
-    selected_context: Option<etas_host::session::SessionPublishedContext>,
+    selected_context: Option<crate::value::PublishedContextValue>,
     session: String,
     history_fence: Option<etas_host::session::SessionHistoryFence>,
     cursor: Option<String>,
@@ -81,7 +81,7 @@ pub(super) struct ConversationHeader {
 impl ConversationHeader {
     pub(super) fn capture(value: &ConversationValue) -> Self {
         Self {
-            selected_context: value.selected_context.as_deref().cloned(),
+            selected_context: value.selected_context.clone(),
             session: value.session.clone(),
             history_fence: value.history_fence.clone(),
             cursor: value.cursor.clone(),
@@ -112,7 +112,7 @@ impl ConversationHeader {
 
     pub(super) fn runtime(self, messages: MessageList) -> InterpValue {
         InterpValue::Conversation(ConversationValue {
-            selected_context: self.selected_context.map(Box::new),
+            selected_context: self.selected_context,
             session: self.session,
             history_fence: self.history_fence,
             cursor: self.cursor,

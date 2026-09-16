@@ -96,7 +96,7 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
         }
         V::Message(value) => message(value, slot, pending),
         V::Conversation(value) => {
-            *slot = json!({"kind":"conversation", "selected_context":value.selected_context.as_ref().map(codec::value::session::selected_context_json),
+            *slot = json!({"kind":"conversation", "selected_context":value.selected_context.as_deref().map(codec::value::session::selected_context_json),
                 "history_fence":value.history_fence.as_ref().map(|f|f.as_token()), "session":value.session, "cursor":value.cursor, "messages":null});
             for (message, slot) in value
                 .messages

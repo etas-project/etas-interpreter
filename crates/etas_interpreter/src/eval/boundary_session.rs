@@ -250,7 +250,7 @@ fn conversation_from_session_result(
             let conversation = crate::value::ConversationValue {
                 selected_context: match policy {
                     etas_host::ContextPolicy::SummaryPlusRecent { .. } => {
-                        published_context.clone().map(Box::new)
+                        published_context.clone().map(Into::into)
                     }
                     _ => None,
                 },

@@ -201,14 +201,17 @@ async fn conversation_projection_preserves_selected_context_evidence() {
         history_fence: Some(fence.clone()),
         messages: vec![].into(),
         cursor: None,
-        selected_context: Some(Box::new(etas_host::session::SessionPublishedContext {
-            content: etas_host::session::SessionContextContent {
-                text: "selected text".into(),
-                provenance: [("producer".into(), "source-v2".into())].into(),
-            },
-            fence,
-            version: 7,
-        })),
+        selected_context: Some(
+            etas_host::session::SessionPublishedContext {
+                content: etas_host::session::SessionContextContent {
+                    text: "selected text".into(),
+                    provenance: [("producer".into(), "source-v2".into())].into(),
+                },
+                fence,
+                version: 7,
+            }
+            .into(),
+        ),
     });
     let encoded = interp_to_host_json_string(&value).unwrap();
     let json: serde_json::Value = serde_json::from_str(&encoded).unwrap();

@@ -28,7 +28,7 @@ pub struct SessionConfigValue {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversationValue {
-    pub selected_context: Option<Box<etas_host::session::SessionPublishedContext>>,
+    pub selected_context: Option<super::PublishedContextValue>,
     pub session: String,
     pub history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub messages: MessageList,

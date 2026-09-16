@@ -3,6 +3,126 @@ use crate::{
     value::*,
 };
 
+#[tokio::test(flavor = "current_thread")]
+async fn selected_context_capture_and_restore_share_immutable_publication() {
+    use crate::testing::allocation::measure;
+    use etas_host::{SessionClient, SessionOperation, SessionResult};
+    let client = etas_host::InMemorySessionClient::new();
+    let request = |operation| etas_host::SessionRequest {
+        id: etas_host::HostRequestId(1),
+        operation,
+        authority: etas_host::AuthorityContext::deny_all(),
+        trace: etas_host::TraceContext::root(etas_host::TraceId(1)),
+        budget: etas_host::ExecutionBudget::default(),
+    };
+    client
+        .execute(request(SessionOperation::Resolve {
+            config: etas_host::SessionConfig {
+                id: "s".into(),
+                context: etas_host::ContextPolicy::All,
+                retention: etas_host::RetentionPolicy::Forever,
+            },
+        }))
+        .await
+        .unwrap()
+        .result
+        .unwrap();
+    let SessionResult::History { fence, .. } = client
+        .execute(request(SessionOperation::Load {
+            session: etas_host::SessionRef { id: "s".into() },
+            context: etas_host::ContextPolicy::All,
+            cursor: None,
+            limit: Some(1),
+        }))
+        .await
+        .unwrap()
+        .result
+        .unwrap()
+    else {
+        panic!("history")
+    };
+    for count in [1000, 2000, 4000] {
+        let context = etas_host::session::SessionPublishedContext {
+            content: etas_host::session::SessionContextContent {
+                text: "x".repeat(count * 1024),
+                provenance: (0..count)
+                    .map(|i| (i.to_string(), "p".repeat(1024)))
+                    .collect(),
+            },
+            fence: fence.clone(),
+            version: 7,
+        };
+        let pointer = context.content.text.as_ptr();
+        let runtime = InterpValue::Conversation(ConversationValue {
+            selected_context: Some(context.into()),
+            session: "s".into(),
+            history_fence: Some(fence.clone()),
+            cursor: None,
+            messages: vec![].into(),
+        });
+        let (alias, alias_cost) = measure(|| runtime.clone());
+        assert!(
+            alias_cost.count < 16 && alias_cost.bytes < 1024,
+            "publication payload copied on alias: n={count}: {alias_cost:?}"
+        );
+        let (saved, capture_cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());
+        assert!(
+            capture_cost.count < 16 && capture_cost.bytes < 1024,
+            "publication payload copied on capture: n={count}: {capture_cost:?}"
+        );
+        let (saved_alias, clone_cost) = measure(|| saved.clone());
+        assert!(
+            clone_cost.count < 16 && clone_cost.bytes < 1024,
+            "publication payload copied on snapshot clone: n={count}: {clone_cost:?}"
+        );
+        let (restored, restore_cost) = measure(|| saved_alias.restore().unwrap());
+        eprintln!(
+            "selected context n={count}: alias={alias_cost:?}; capture={capture_cost:?}; snapshot clone={clone_cost:?}; restore={restore_cost:?}"
+        );
+        assert!(
+            restore_cost.count < 16 && restore_cost.bytes < 1024,
+            "publication payload copied on restore: n={count}: {restore_cost:?}"
+        );
+        assert!(restored == runtime && alias == runtime);
+        let ValueSnapshot::Conversation(view) = &saved else {
+            panic!("conversation snapshot")
+        };
+        assert_eq!(
+            view.selected_context
+                .as_ref()
+                .unwrap()
+                .content
+                .text
+                .as_ptr(),
+            pointer
+        );
+        let InterpValue::Conversation(mut current) = runtime else {
+            panic!("conversation")
+        };
+        current.selected_context = None;
+        drop(current);
+        drop(alias);
+        let InterpValue::Conversation(restored) = restored else {
+            panic!("restored conversation")
+        };
+        let selected = restored.selected_context.as_ref().unwrap();
+        assert_eq!(selected.content.text.as_ptr(), pointer);
+        assert_eq!(selected.content.provenance.len(), count);
+        assert_eq!(selected.version, 7);
+        assert_eq!(selected.fence, fence);
+        let (_, shared_drop) = measure(|| drop(restored));
+        assert!(
+            shared_drop.released_bytes < 1024,
+            "saved checkpoint must still own the publication: {shared_drop:?}"
+        );
+        let (_, final_drop) = measure(|| drop(saved));
+        assert!(
+            final_drop.released_bytes >= count * 2048,
+            "last owner must release text and provenance: {final_drop:?}"
+        );
+    }
+}
+
 fn message(value: InterpValue) -> MessageValue {
     MessageValue {
         id: String::new(),
