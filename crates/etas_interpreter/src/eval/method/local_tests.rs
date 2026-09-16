@@ -37,6 +37,85 @@ fn with_collection_eval(run: impl FnOnce(&mut EvalContext<'_>, HirExprId, Span))
 }
 
 #[test]
+fn list_tail_and_extend_share_suffix_without_payload_materialization() {
+    with_collection_eval(|eval, expr, span| {
+        for count in [1000, 2000, 4000] {
+            let suffix = crate::value::ListValue::new(
+                (0..count)
+                    .map(|_| InterpValue::String("suffix".repeat(128).into()))
+                    .collect(),
+            );
+            let (tail, cost) = measure(|| {
+                eval.eval_local_method_with_values(
+                    expr,
+                    InterpValue::List(suffix.clone()),
+                    "tail",
+                    &[],
+                    vec![],
+                    span,
+                )
+            });
+            assert_eq!(
+                cost.count, 1,
+                "tail allocates only Some wrapper: n={count}, {cost:?}"
+            );
+            let ControlSignal::Value(InterpValue::OptionSome(tail)) = tail else {
+                panic!("tail")
+            };
+            let InterpValue::List(tail) = &*tail else {
+                panic!("list tail")
+            };
+            assert!(std::ptr::eq(tail.get(0).unwrap(), suffix.get(1).unwrap()));
+            for shared in [false, true] {
+                let prefix = crate::value::ListValue::new(
+                    (0..count)
+                        .map(|_| InterpValue::String("prefix".repeat(128).into()))
+                        .collect(),
+                );
+                let alias = shared.then(|| prefix.clone());
+                let args = vec![InterpValue::List(prefix)];
+                let (joined, cost) = measure(|| {
+                    eval.eval_local_method_with_values(
+                        expr,
+                        InterpValue::List(suffix.clone()),
+                        "extend",
+                        &[],
+                        args,
+                        span,
+                    )
+                });
+                assert_eq!(
+                    cost.count,
+                    if shared { count } else { 0 },
+                    "extend copies shared prefix cells only: n={count}, shared={shared}, {cost:?}"
+                );
+                let ControlSignal::Value(InterpValue::List(joined)) = joined else {
+                    panic!("joined")
+                };
+                assert_eq!(joined.len(), 2 * count);
+                assert!(std::ptr::eq(
+                    joined.get(count).unwrap(),
+                    suffix.get(0).unwrap()
+                ));
+                if let Some(alias) = alias {
+                    assert_eq!(alias.len(), count);
+                    let (InterpValue::String(old), InterpValue::String(new)) =
+                        (alias.get(0).unwrap(), joined.get(0).unwrap())
+                    else {
+                        panic!("string payload")
+                    };
+                    assert_eq!(
+                        old.as_ptr(),
+                        new.as_ptr(),
+                        "shared cells retain immutable payload backing"
+                    );
+                }
+            }
+        }
+    });
+}
+
+#[test]
 fn collection_kernels_move_owned_arguments_and_preserve_live_aliases() {
     with_collection_eval(|eval, expr, span| {
         for count in [1000, 2000, 4000] {

@@ -153,6 +153,29 @@ impl<'a> EvalContext<'a> {
             ("is_empty", EvaluatedLocalArgs::None) => {
                 ControlSignal::Value(InterpValue::Bool(values.is_empty()))
             }
+            ("head", EvaluatedLocalArgs::None) => ControlSignal::Value(
+                values
+                    .get(0)
+                    .cloned()
+                    .map(crate::value::SharedValue::new)
+                    .map(InterpValue::OptionSome)
+                    .unwrap_or(InterpValue::OptionNone),
+            ),
+            ("tail", EvaluatedLocalArgs::None) => ControlSignal::Value(if values.advance() {
+                InterpValue::OptionSome(crate::value::SharedValue::new(InterpValue::List(values)))
+            } else {
+                InterpValue::OptionNone
+            }),
+            ("extend", EvaluatedLocalArgs::One(arg)) => {
+                let InterpValue::List(mut prefix) = arg else {
+                    return ControlSignal::invalid_arguments(
+                        "List.extend expects a List value",
+                        span,
+                    );
+                };
+                prefix.append(values);
+                ControlSignal::Value(InterpValue::List(prefix))
+            }
             ("push", EvaluatedLocalArgs::One(arg)) => {
                 values.push_front(arg);
                 ControlSignal::Value(InterpValue::List(values))

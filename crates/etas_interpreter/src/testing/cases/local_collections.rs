@@ -2,6 +2,109 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn registry_declared_list_queries_and_extend_execute_checked_source() {
+    let mut failures = Vec::new();
+    for (name, expression) in [
+        ("head", "xs.head() == Some(1)"),
+        ("tail", "xs.tail() == Some([2; 3]) && xs == [1; 2; 3]"),
+        ("extend", "xs.extend([4; 5]) == [4; 5; 1; 2; 3]"),
+        (
+            "empty",
+            "empty.head() == None && empty.tail() == None && xs.extend(empty) == xs && empty.extend(xs) == xs",
+        ),
+        (
+            "singleton",
+            "one.tail() == Some(empty) && one.head() == Some(2)",
+        ),
+    ] {
+        let checked = checked_project(&format!(
+            "module app.main; flow main() -> bool {{ let xs = [1; 2; 3]; let (one, _) = [1; 2].pop(); let (empty, _) = one.pop(); return {expression}; }}"
+        ));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &FakeHost::new(availability(&[])),
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        if !result.diagnostics.is_empty() || result.value() != Some(&InterpValue::Bool(true)) {
+            failures.push(format!(
+                "{name}: {:?}; value={:?}",
+                result.diagnostics,
+                result.value()
+            ));
+        }
+    }
+    assert!(failures.is_empty(), "{}", failures.join("\n"));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn list_extend_suspended_prefix_preserves_aliases_and_checkpoint() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+flow prefix() -> List<string> {
+    println("prefix");
+    checkpoint("prefix");
+    return ["a"; "b"];
+}
+flow main() -> bool {
+    let suffix = ["c"; "d"];
+    let alias = suffix;
+    let joined = suffix.extend(prefix());
+    checkpoint("joined");
+    return joined == ["a"; "b"; "c"; "d"]
+        && joined.head() == Some("a")
+        && joined.tail() == Some(["b"; "c"; "d"])
+        && alias == ["c"; "d"] && suffix == alias;
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.stdout_text(), "prefix\n");
+    assert_eq!(result.checkpoints.len(), 2);
+    for saved in &result.checkpoints {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [saved, &decoded] {
+            let host = FakeHost::new(services);
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+            assert_eq!(host.stdout_text(), "");
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn vector_and_ring_updates_preserve_nested_aliases_and_suspended_arguments() {
     let checked = checked_project(
         r#"
