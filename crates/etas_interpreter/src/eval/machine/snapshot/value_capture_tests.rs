@@ -5,7 +5,8 @@ use crate::{
 };
 
 #[test]
-fn container_capture_allocates_only_the_owned_snapshot_slots() {
+fn container_capture_allocates_only_snapshot_slots_and_one_shared_owner() {
+    let owner_bytes = std::mem::size_of::<Vec<ValueSnapshot>>() + 2 * std::mem::size_of::<usize>();
     for count in [1000, 2000, 4000] {
         let values = || (0..count).map(InterpValue::i32).collect::<Vec<_>>();
         let pairs = || {
@@ -27,13 +28,13 @@ fn container_capture_allocates_only_the_owned_snapshot_slots() {
             let (snapshot, cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());
             assert_eq!(
                 cost.count,
-                1,
+                2,
                 "{}, n={count}: {cost:?}",
                 runtime.kind_name()
             );
             assert_eq!(
                 cost.bytes,
-                count as usize * std::mem::size_of::<ValueSnapshot>()
+                count as usize * std::mem::size_of::<ValueSnapshot>() + owner_bytes
             );
             assert_eq!(snapshot.restore().unwrap(), runtime);
         }
@@ -45,13 +46,14 @@ fn container_capture_allocates_only_the_owned_snapshot_slots() {
             let (snapshot, cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());
             assert_eq!(
                 cost.count,
-                1,
+                2,
                 "{}, n={count}: {cost:?}",
                 runtime.kind_name()
             );
             assert_eq!(
                 cost.bytes,
                 count as usize * std::mem::size_of::<(ValueSnapshot, ValueSnapshot)>()
+                    + owner_bytes
             );
             assert_eq!(snapshot.restore().unwrap(), runtime);
         }
@@ -72,10 +74,15 @@ fn snapshot_capture_shares_immutable_payloads_between_tree_occurrences() {
         ]));
         let (snapshot, cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());
         assert_eq!(
-            cost.count, 1,
-            "only the snapshot vector, no payload buffers"
+            cost.count, 2,
+            "snapshot vector plus shared owner, no payload buffers"
         );
-        assert_eq!(cost.bytes, 4 * std::mem::size_of::<ValueSnapshot>());
+        let owner_bytes =
+            std::mem::size_of::<Vec<ValueSnapshot>>() + 2 * std::mem::size_of::<usize>();
+        assert_eq!(
+            cost.bytes,
+            4 * std::mem::size_of::<ValueSnapshot>() + owner_bytes
+        );
         let ValueSnapshot::Array(fields) = &snapshot else {
             panic!("array")
         };

@@ -1,6 +1,42 @@
 use super::*;
 use etas_hir::HirItemId;
 
+#[test]
+fn shared_value_snapshot_expansion_is_charged_per_occurrence() {
+    let graph = |depth| {
+        (0..depth).fold(ValueSnapshot::Bool(true), |node, _| {
+            ValueSnapshot::Array(vec![node.clone(), node].into())
+        })
+    };
+    let value = graph(30);
+    let retained = value.clone();
+    let (_, cost) = measure(|| {
+        let error =
+            encode_with_budget(Node::Value(&value), &mut EncodingBudget::new(128)).unwrap_err();
+        assert_eq!(
+            error.message(),
+            "checkpoint snapshot expansion exceeds node budget"
+        );
+    });
+    assert_eq!(
+        cost.bytes, cost.released_bytes,
+        "partial graph encoding leaked: {cost:?}"
+    );
+    assert!(cost.bytes < 128 * 4096, "expanded beyond budget: {cost:?}");
+    let (ValueSnapshot::Array(value), ValueSnapshot::Array(retained)) = (&value, &retained) else {
+        panic!("array")
+    };
+    assert_eq!(value.as_ptr(), retained.as_ptr());
+
+    let small = graph(5);
+    assert!(encode_with_budget(Node::Value(&small), &mut EncodingBudget::new(62)).is_err());
+    let wire = codec::CheckpointDocument::from_value(
+        encode_with_budget(Node::Value(&small), &mut EncodingBudget::new(63)).unwrap(),
+    );
+    let restored = codec::value_from_json(&wire).unwrap();
+    assert!(ValueSnapshot::capture(&restored).unwrap() == small);
+}
+
 fn shared_target(depth: usize) -> CallTargetSnapshot {
     let mut target = CallTargetSnapshot::FlowItem(HirItemId(7));
     for _ in 0..depth {

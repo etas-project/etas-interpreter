@@ -162,7 +162,7 @@ impl PartialEq for LocalsSnapshot {
     }
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
     MemoryWriteIntent(Box<crate::value::MemoryWriteIntentValue>),
     Unit,

@@ -210,8 +210,8 @@ fn checkpoint_capture_avoids_intermediate_payload_copies() {
             eprintln!("capture n={count} field_names={field_names}: {allocations:?}");
             assert_eq!(
                 allocations.count,
-                field_names + 1,
-                "only snapshot slots and owned field names, n={count}: {allocations:?}"
+                field_names + 2,
+                "snapshot slots, shared owner and owned field names, n={count}: {allocations:?}"
             );
             assert_eq!(snapshot.restore().unwrap(), value);
         }
