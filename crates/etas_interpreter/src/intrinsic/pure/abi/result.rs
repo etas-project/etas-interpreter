@@ -4,6 +4,9 @@ use crate::value::InterpValue;
 
 use super::{AbiShape, AdapterError, PureAbiProjector};
 
+#[cfg(test)]
+mod tests;
+
 enum Wrapper {
     Nominal(TypeId),
     Trust(TrustWrapper),
@@ -16,17 +19,27 @@ pub(super) fn restore_wrappers<T>(
     leaf: impl FnOnce(T, TypeId, &AbiShape) -> Result<InterpValue, AdapterError>,
 ) -> Result<InterpValue, AdapterError> {
     let mut wrappers = Vec::new();
-    let mut visited = std::collections::HashSet::new();
+    let mut remaining_steps = None;
     let shape = loop {
         let shape = projector.shape(ty).ok_or(AdapterError::MissingType(ty))?;
         if matches!(
             shape,
             AbiShape::Nominal { .. } | AbiShape::Trust { .. } | AbiShape::Refined { .. }
-        ) && !visited.insert(ty)
-        {
-            return Err(AdapterError::UnsupportedValue(
-                "cyclic checked result ABI".into(),
-            ));
+        ) {
+            let remaining = match remaining_steps {
+                Some(remaining) => remaining,
+                None => projector.wrapper_steps(ty).ok_or_else(|| {
+                    AdapterError::UnsupportedValue(
+                        "checked result ABI is missing its prepared wrapper walk".into(),
+                    )
+                })?,
+            };
+            if remaining == 0 {
+                return Err(AdapterError::UnsupportedValue(
+                    "cyclic checked result ABI".into(),
+                ));
+            }
+            remaining_steps = Some(remaining - 1);
         }
         match shape {
             AbiShape::Nominal { representation } => {
