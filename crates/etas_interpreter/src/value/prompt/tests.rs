@@ -14,6 +14,32 @@ fn message(text: impl Into<StringValue>) -> PromptMessage {
 }
 
 #[test]
+fn shared_single_message_text_keeps_backing_and_snapshot_isolation() {
+    for count in [1000, 2000, 4000] {
+        let payload = "x".repeat(count * 1024);
+        let pointer = payload.as_ptr();
+        let value = InterpValue::Prompt(PromptValue::new(vec![message(payload)]));
+        let saved = ValueSnapshot::capture(&value).unwrap();
+        let InterpValue::Prompt(prompt) = value else {
+            unreachable!()
+        };
+        let (mut text, cost) = measure(|| prompt.into_text());
+        assert_eq!(cost.count, 0, "n={count}: {cost:?}");
+        assert_eq!(cost.bytes, 0, "n={count}: {cost:?}");
+        assert_eq!(text.as_ptr(), pointer);
+        text.push_str(" changed");
+        let ValueSnapshot::Prompt(saved) = saved else {
+            unreachable!()
+        };
+        assert_eq!(saved[0].text.as_ptr(), pointer);
+        assert_eq!(saved[0].text.len(), count * 1024);
+        assert_eq!(text.len(), count * 1024 + 8);
+        let (_, released) = measure(|| drop(saved));
+        assert!(released.released_bytes >= count * 1024, "{released:?}");
+    }
+}
+
+#[test]
 fn aliases_and_snapshots_share_immutable_messages_without_payload_copies() {
     for count in [1000, 2000, 4000] {
         let value = InterpValue::Prompt((0..count).map(|_| message("x".repeat(1024))).collect());
@@ -104,6 +130,8 @@ fn owned_and_shared_prompt_text_keep_identical_separator_semantics() {
         vec![],
         vec![""],
         vec!["a"],
+        vec!["中😀e\u{301}"],
+        vec!["中", "", "😀e\u{301}"],
         vec!["", "b", ""],
         vec!["a", "b", "c"],
     ] {

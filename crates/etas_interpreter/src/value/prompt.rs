@@ -47,6 +47,9 @@ impl PromptValue {
                 let Some(first) = messages.next() else {
                     return StringValue::default();
                 };
+                if messages.len() == 0 {
+                    return first.text.clone();
+                }
                 let mut text = first.text.as_str().to_owned();
                 for message in messages {
                     text.push('\n');

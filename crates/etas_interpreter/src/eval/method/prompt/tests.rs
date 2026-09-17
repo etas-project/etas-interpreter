@@ -35,6 +35,39 @@ fn prompt_data_streams_borrowed_payloads_and_rejects_nested_secrets() {
         entry_args: &[],
     });
     for count in [1000, 2000, 4000] {
+        let source = "text".repeat(count * 256);
+        let pointer = source.as_ptr();
+        let prompt = crate::value::PromptValue::new(vec![crate::value::PromptMessage {
+            role: crate::value::PromptRole::Assistant,
+            text: source.into(),
+            trust: Some(etas_types::TrustWrapper::Trusted),
+        }]);
+        let saved =
+            crate::orchestration::ValueSnapshot::capture(&InterpValue::Prompt(prompt.clone()))
+                .unwrap();
+        for method in ["user", "assistant", "system"] {
+            let ((text, trust), cost) = measure(|| {
+                eval.prompt_channel_content(method, InterpValue::Prompt(prompt.clone()), span, true)
+                    .unwrap()
+            });
+            assert_eq!(text.as_ptr(), pointer);
+            assert_eq!(text.len(), count * 1024);
+            assert_eq!(trust, None);
+            assert_eq!(cost.count, 0, "{method} n={count}: {cost:?}");
+            assert_eq!(cost.bytes, 0, "{method} n={count}: {cost:?}");
+        }
+        let error = eval
+            .prompt_channel_content("system", InterpValue::Prompt(prompt.clone()), span, false)
+            .unwrap_err();
+        assert_eq!(error.code, AnalysisDiagnosticCode::InvalidArguments);
+        assert!(error.message.contains("requires Trusted"));
+        assert_eq!(
+            saved.restore().unwrap(),
+            InterpValue::Prompt(prompt),
+            "channel projection must not change role, trust or checkpoint content"
+        );
+    }
+    for count in [1000, 2000, 4000] {
         let value = InterpValue::Record(
             vec![(
                 "data".into(),
