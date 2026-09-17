@@ -77,7 +77,7 @@ impl ListValue {
 
     pub fn iter(&self) -> ListIter<'_> {
         ListIter {
-            next: self.head.0.as_deref(),
+            next: self.head.0.as_ref(),
             remaining: self.len,
         }
     }
@@ -171,8 +171,15 @@ impl PartialEq for ListValue {
 impl Eq for ListValue {}
 
 pub struct ListIter<'a> {
-    next: Option<&'a Node>,
+    next: Option<&'a Rc<Node>>,
     remaining: usize,
+}
+
+impl ListIter<'_> {
+    pub(crate) fn shared_tail_identity(&self) -> Option<*const ()> {
+        let node = self.next?;
+        (Rc::strong_count(node) > 1).then(|| Rc::as_ptr(node).cast())
+    }
 }
 
 impl<'a> Iterator for ListIter<'a> {
@@ -182,7 +189,7 @@ impl<'a> Iterator for ListIter<'a> {
         let node = self.next?;
         #[cfg(test)]
         NODE_VISITS.set(NODE_VISITS.get() + 1);
-        self.next = node.next.0.as_deref();
+        self.next = node.next.0.as_ref();
         self.remaining -= 1;
         Some(&node.value)
     }

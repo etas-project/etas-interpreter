@@ -22,6 +22,132 @@ fn message(payload: Value) -> MessageValue {
 }
 
 #[test]
+fn secret_scan_visits_shared_dag_backing_once() {
+    for depth in [16, 1000, 2000, 4000] {
+        let mut value = Value::Bool(false);
+        for _ in 0..depth {
+            value = Value::Array(vec![value.clone(), value].into());
+        }
+        let value = SharedValue::new(value);
+        VISITS.set(0);
+        let (found, cost) = measure(|| contains_secret(&value));
+        assert!(!found);
+        eprintln!(
+            "secret DAG depth={depth}: visits={}, {cost:?}",
+            VISITS.get()
+        );
+        assert!(
+            VISITS.get() <= 3 * depth + 1,
+            "depth={depth}: visits={}",
+            VISITS.get()
+        );
+        assert!(cost.bytes < depth * 256, "depth={depth}: {cost:?}");
+        assert_eq!(
+            cost.bytes, cost.released_bytes,
+            "query cache must be released"
+        );
+    }
+}
+
+#[test]
+fn secret_scan_of_one_shared_backing_keeps_zero_allocation_cost() {
+    for count in [1000, 2000, 4000] {
+        let value = Value::Array(vec![Value::Bool(false); count].into());
+        let _alias = value.clone();
+        let (found, cost) = measure(|| contains_secret(&value));
+        assert!(!found);
+        assert_eq!(cost.count, 0, "n={count}: {cost:?}");
+        assert_eq!(cost.bytes, 0, "n={count}: {cost:?}");
+    }
+}
+
+#[test]
+fn secret_scan_does_not_rescan_shared_list_suffixes() {
+    for count in [1000, 2000, 4000] {
+        let mut list = ListValue::new(vec![Value::Bool(false); count]);
+        let mut tails = Vec::with_capacity(count);
+        while !list.is_empty() {
+            tails.push(Value::List(list.clone()));
+            assert!(list.advance());
+        }
+        let value = SharedValue::new(Value::Tuple(tails.into()));
+        VISITS.set(0);
+        let (found, cost) = measure(|| contains_secret(&value));
+        assert!(!found);
+        eprintln!(
+            "secret List suffixes n={count}: visits={}, {cost:?}",
+            VISITS.get()
+        );
+        assert!(
+            VISITS.get() <= 3 * count + 1,
+            "n={count}: visits={}",
+            VISITS.get()
+        );
+        assert!(cost.bytes < count * 256, "n={count}: {cost:?}");
+        assert_eq!(
+            cost.bytes, cost.released_bytes,
+            "query cache must be released"
+        );
+    }
+}
+
+#[test]
+fn secret_scan_cache_preserves_slice_windows_and_full_array_visibility() {
+    let backing = ArrayValue::new(vec![Value::Unit, secret()]);
+    let clean = Value::Slice(SliceValue::from_array(backing.clone(), 0..1).unwrap());
+    let dirty = Value::Slice(SliceValue::from_array(backing.clone(), 1..2).unwrap());
+    assert!(!contains_secret(&Value::Tuple(
+        vec![clean.clone(), clean.clone()].into()
+    )));
+    assert!(contains_secret(&Value::Tuple(
+        vec![clean.clone(), dirty].into()
+    )));
+    assert!(contains_secret(&Value::Tuple(
+        vec![clean, Value::Array(backing)].into()
+    )));
+}
+
+#[test]
+fn secret_scan_checks_outer_tags_before_reusing_child_identity() {
+    let payload = SharedValue::new(Value::Bool(false));
+    let value = Value::Tuple(
+        vec![
+            Value::OptionSome(payload.clone()),
+            Value::Trust {
+                wrapper: etas_types::TrustWrapper::Secret,
+                value: payload,
+            },
+        ]
+        .into(),
+    );
+    assert!(contains_secret(&value));
+
+    let tail = ListValue::new(vec![Value::Bool(false); 1000]);
+    let mut prefix = tail.clone();
+    prefix.push_front(secret());
+    let value = Value::Tuple(vec![Value::List(tail), Value::List(prefix)].into());
+    assert!(contains_secret(&value));
+}
+
+#[test]
+fn secret_scan_cache_does_not_survive_a_query_or_hide_later_siblings() {
+    let mut value = Value::Bool(false);
+    for _ in 0..1000 {
+        value = Value::Array(vec![value.clone(), value].into());
+    }
+    let mut array = ArrayValue::new(vec![value]);
+    let original = Value::Array(array.clone());
+    assert!(!contains_secret(&original));
+    array.borrow_mut().push(secret());
+    let changed = Value::Array(array);
+    assert!(contains_secret(&Value::Tuple(
+        vec![original.clone(), changed].into()
+    )));
+    assert!(!contains_secret(&original));
+    drop(SharedValue::new(original));
+}
+
+#[test]
 fn iterative_secret_scan_handles_deep_unary_containers_without_allocating() {
     for depth in [1000, 2000, 4000, 30_000] {
         for present in [false, true] {

@@ -1,8 +1,14 @@
 use crate::value::{InterpValue as Value, ListIter, MessageValue};
 use std::{collections::vec_deque, slice};
 
+mod visited;
+use visited::Visited;
+
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+thread_local! { static VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
 
 enum Children<'a> {
     One(Option<&'a Value>),
@@ -62,16 +68,17 @@ impl<'a> Children<'a> {
     }
 }
 
-impl<'a> Iterator for Children<'a> {
-    type Item = &'a Value;
-
-    fn next(&mut self) -> Option<Self::Item> {
+impl<'a> Children<'a> {
+    fn next(&mut self, visited: &mut Visited) -> Option<&'a Value> {
         match self {
             Self::One(value) => value.take(),
             Self::Two(values) => values.next(),
             Self::Values(values) => values.next(),
             Self::Deque(values) => values.next(),
-            Self::List(values) => values.next(),
+            Self::List(values) => visited
+                .enter_list_tail(values)
+                .then(|| values.next())
+                .flatten(),
             Self::Fields(values) => values.next().map(|(_, value)| value),
             Self::Pairs { entries, value } => {
                 if value.is_some() {
@@ -91,7 +98,10 @@ pub(in crate::eval::method) fn contains_secret(mut value: &Value) -> bool {
     // Unary wrappers and collection width never materialize pending value lists.
     let mut pending: Option<Children<'_>> = None;
     let mut parents = Vec::new();
+    let mut visited = Visited::default();
     loop {
+        #[cfg(test)]
+        VISITS.set(VISITS.get() + 1);
         if matches!(
             value,
             Value::Trust {
@@ -101,8 +111,9 @@ pub(in crate::eval::method) fn contains_secret(mut value: &Value) -> bool {
         ) {
             return true;
         }
-        if let Some(mut children) = Children::of(value)
-            && let Some(first) = children.next()
+        if visited.enter_value(value)
+            && let Some(mut children) = Children::of(value)
+            && let Some(first) = children.next(&mut visited)
         {
             if !children.is_empty()
                 && let Some(previous) = pending.replace(children)
@@ -116,7 +127,7 @@ pub(in crate::eval::method) fn contains_secret(mut value: &Value) -> bool {
             let Some(children) = pending.as_mut() else {
                 return false;
             };
-            if let Some(next) = children.next() {
+            if let Some(next) = children.next(&mut visited) {
                 if children.is_empty() {
                     pending = parents.pop();
                 }
