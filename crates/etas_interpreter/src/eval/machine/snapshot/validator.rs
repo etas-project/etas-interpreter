@@ -1,10 +1,13 @@
 use std::collections::BTreeSet;
 
 mod call_target;
+mod frame;
 mod traversal;
 
 #[cfg(test)]
 mod call_target_tests;
+#[cfg(test)]
+mod shared_call_target_tests;
 #[cfg(test)]
 mod traversal_tests;
 
@@ -26,7 +29,8 @@ use crate::orchestration::{
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
-    frame_definitions: std::cell::RefCell<std::collections::HashMap<u64, LocalsSnapshot>>,
+    frame_definitions: std::cell::RefCell<std::collections::HashMap<u64, frame::FrameValidation>>,
+    validated_call_targets: std::cell::RefCell<call_target::ValidatedCallTargets>,
     checked: &'a CheckedProject,
     slots: &'a SlotLayoutTable,
     dispatch: &'a IntrinsicDispatchTable,
@@ -44,6 +48,7 @@ impl<'a> SnapshotValidator<'a> {
     ) -> Self {
         Self {
             frame_definitions: Default::default(),
+            validated_call_targets: Default::default(),
             checked,
             slots,
             dispatch,
@@ -852,42 +857,6 @@ impl<'a> SnapshotValidator<'a> {
             ContinuationSnapshot::AgentPromptBody { item, .. } => self.item(*item, context),
             ContinuationSnapshot::Chain { .. } => Ok(()),
         }
-    }
-
-    fn frame(&self, frame: &LocalsSnapshot, context: &str) -> Result<(), String> {
-        if frame.id == 0 {
-            return Err(format!("{context} has a zero frame identity"));
-        }
-        {
-            let mut definitions = self.frame_definitions.borrow_mut();
-            if let Some(existing) = definitions.get(&frame.id) {
-                if existing != frame {
-                    return Err(format!("{context} has conflicting local-frame definitions"));
-                }
-                return Ok(());
-            }
-            definitions.insert(frame.id, frame.clone());
-        }
-        let mut type_params = std::collections::BTreeSet::new();
-        for (name, ty) in &frame.type_bindings {
-            if name.is_empty() || !type_params.insert(name) {
-                return Err(format!(
-                    "{context} frame contains an invalid or duplicate type parameter binding"
-                ));
-            }
-            self.type_id(*ty, &format!("{context} frame type binding"))?;
-        }
-        for (symbol, value) in frame.locals.iter() {
-            self.symbol(*symbol, &format!("{context} frame local"))?;
-            if self.slots.resolve(*symbol).is_none() {
-                return Err(format!(
-                    "{context} frame local symbol {} has no checked slot layout",
-                    symbol.0
-                ));
-            }
-            self.snapshot_value(value)?;
-        }
-        Ok(())
     }
 
     fn snapshot_value(&self, root: &ValueSnapshot) -> Result<(), String> {

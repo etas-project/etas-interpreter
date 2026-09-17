@@ -1,9 +1,28 @@
 use super::{BTreeSet, CallTargetSnapshot, SnapshotValidator, TypeId};
-use std::collections::HashSet;
+use crate::orchestration::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
+use std::collections::HashMap;
+
+// Own immutable source edges so a completed check cannot be confused with a
+// later allocation at the same address. COW edits acquire a different identity.
+#[derive(Default)]
+pub(super) struct ValidatedCallTargets {
+    nodes: HashMap<*const CallTargetSnapshot, CallTargetSnapshotLink>,
+    tables: HashMap<*const Vec<CallTargetSnapshot>, CallTargetSnapshotChildren>,
+}
+
+#[cfg(test)]
+thread_local! {
+    pub(super) static VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
+}
 
 enum Pending<'a> {
     Bindings(&'a [(String, TypeId)]),
     Siblings(&'a [CallTargetSnapshot]),
+    CompleteNode(*const CallTargetSnapshot, &'a CallTargetSnapshotLink),
+    CompleteTable(
+        *const Vec<CallTargetSnapshot>,
+        &'a CallTargetSnapshotChildren,
+    ),
 }
 
 impl SnapshotValidator<'_> {
@@ -14,12 +33,10 @@ impl SnapshotValidator<'_> {
     ) -> Result<(), String> {
         let mut next = Some(root);
         let mut pending = Vec::new();
-        // Snapshot edges are immutable and acyclic. Repeated aliases need the
-        // same checks once, while each enclosing wrapper keeps its own bindings.
-        let mut nodes = HashSet::new();
-        let mut tables = HashSet::new();
         loop {
             if let Some(node) = next.take() {
+                #[cfg(test)]
+                VISITS.set(VISITS.get() + 1);
                 match node {
                     CallTargetSnapshot::Specialized {
                         target,
@@ -29,21 +46,46 @@ impl SnapshotValidator<'_> {
                         if !type_bindings.is_empty() {
                             pending.push(Pending::Bindings(type_bindings));
                         }
-                        if target.shared_identity().is_none_or(|key| nodes.insert(key)) {
+                        if let Some(key) = target.shared_identity() {
+                            if !self
+                                .validated_call_targets
+                                .borrow()
+                                .nodes
+                                .contains_key(&key)
+                            {
+                                pending.push(Pending::CompleteNode(key, target));
+                                next = Some(target);
+                            }
+                        } else {
                             next = Some(target);
                         }
                     }
                     CallTargetSnapshot::Limited { target, .. } => {
-                        if target.shared_identity().is_none_or(|key| nodes.insert(key)) {
+                        if let Some(key) = target.shared_identity() {
+                            if !self
+                                .validated_call_targets
+                                .borrow()
+                                .nodes
+                                .contains_key(&key)
+                            {
+                                pending.push(Pending::CompleteNode(key, target));
+                                next = Some(target);
+                            }
+                        } else {
                             next = Some(target);
                         }
                     }
                     CallTargetSnapshot::Composed(targets) => {
-                        if targets
-                            .shared_identity()
-                            .is_some_and(|key| !tables.insert(key))
-                        {
-                            continue;
+                        if let Some(key) = targets.shared_identity() {
+                            if self
+                                .validated_call_targets
+                                .borrow()
+                                .tables
+                                .contains_key(&key)
+                            {
+                                continue;
+                            }
+                            pending.push(Pending::CompleteTable(key, targets));
                         }
                         if let Some((first, remaining)) = targets.split_first() {
                             if !remaining.is_empty() {
@@ -57,6 +99,18 @@ impl SnapshotValidator<'_> {
                 continue;
             }
             match pending.pop() {
+                Some(Pending::CompleteNode(key, target)) => {
+                    self.validated_call_targets
+                        .borrow_mut()
+                        .nodes
+                        .insert(key, target.clone());
+                }
+                Some(Pending::CompleteTable(key, targets)) => {
+                    self.validated_call_targets
+                        .borrow_mut()
+                        .tables
+                        .insert(key, targets.clone());
+                }
                 Some(Pending::Bindings(bindings)) => {
                     let mut names = BTreeSet::new();
                     for (name, ty) in bindings {
