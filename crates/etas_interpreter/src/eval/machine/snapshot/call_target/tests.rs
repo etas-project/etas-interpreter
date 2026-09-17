@@ -3,6 +3,7 @@ use crate::testing::allocation::measure;
 use etas_hir::HirItemId;
 
 mod restore;
+mod restore_shared;
 
 // Optional ownership lets tests transfer targets out of machines. All targets
 // use their normal production release path, with no test-only Drop guard.

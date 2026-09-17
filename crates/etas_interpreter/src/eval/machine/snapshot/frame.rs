@@ -1,5 +1,8 @@
-use crate::control::{ContinuationLink, Frame};
-use crate::orchestration::{ContinuationSnapshot, ContinuationSnapshotLink, LocalsSnapshot};
+use crate::control::{CallTargetChildren, CallTargetLink, ContinuationLink, Frame};
+use crate::orchestration::{
+    CallTargetSnapshot, CallTargetSnapshotChildren, CallTargetSnapshotLink, ContinuationSnapshot,
+    ContinuationSnapshotLink, LocalsSnapshot,
+};
 
 #[derive(Default)]
 pub(crate) struct RestoreContext {
@@ -7,9 +10,18 @@ pub(crate) struct RestoreContext {
     active: std::collections::HashSet<u64>,
     // Consuming restore retains the source owner with each cached node so its
     // address cannot be recycled while this restore operation is still active.
+    // Only completed nodes are cached; no cache survives into another restore.
     pub(super) continuations: std::collections::HashMap<
         std::ptr::NonNull<ContinuationSnapshot>,
         (ContinuationSnapshotLink, ContinuationLink),
+    >,
+    pub(super) call_nodes: std::collections::HashMap<
+        *const CallTargetSnapshot,
+        (CallTargetSnapshotLink, CallTargetLink),
+    >,
+    pub(super) call_tables: std::collections::HashMap<
+        *const Vec<CallTargetSnapshot>,
+        (CallTargetSnapshotChildren, CallTargetChildren),
     >,
 }
 

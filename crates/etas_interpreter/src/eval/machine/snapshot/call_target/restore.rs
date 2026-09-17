@@ -5,7 +5,6 @@ use crate::{
     orchestration::{CallTargetSnapshotChildren, CallTargetSnapshotLink},
 };
 use etas_types::TypeId;
-use std::collections::HashMap;
 
 enum PendingParent {
     Specialized(Vec<(String, TypeId)>, Option<CallTargetSnapshotLink>),
@@ -22,14 +21,6 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
     context: &mut RestoreContext,
 ) -> Result<CallTarget, String> {
     let mut pending = Vec::new();
-    // Keep source owners beside cached results so pointer keys cannot be reused
-    // during consuming restore. Never reuse a partially restored target.
-    let mut nodes =
-        HashMap::<*const CallTargetSnapshot, (CallTargetSnapshotLink, CallTargetLink)>::new();
-    let mut tables = HashMap::<
-        *const Vec<CallTargetSnapshot>,
-        (CallTargetSnapshotChildren, CallTargetChildren),
-    >::new();
     loop {
         let mut value = match current {
             CallTargetSnapshot::Specialized {
@@ -37,7 +28,7 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                 type_bindings,
             } => {
                 let identity = target.shared_identity();
-                if let Some((_, restored)) = identity.and_then(|key| nodes.get(&key)) {
+                if let Some((_, restored)) = identity.and_then(|key| context.call_nodes.get(&key)) {
                     CallTarget::Specialized {
                         target: restored.clone(),
                         type_bindings,
@@ -53,7 +44,7 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
             }
             CallTargetSnapshot::Limited { target, limits } => {
                 let identity = target.shared_identity();
-                if let Some((_, restored)) = identity.and_then(|key| nodes.get(&key)) {
+                if let Some((_, restored)) = identity.and_then(|key| context.call_nodes.get(&key)) {
                     CallTarget::Limited {
                         target: restored.clone(),
                         limits,
@@ -69,7 +60,8 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
             }
             CallTargetSnapshot::Composed(targets) => {
                 let identity = targets.shared_identity();
-                if let Some((_, restored)) = identity.and_then(|key| tables.get(&key)) {
+                if let Some((_, restored)) = identity.and_then(|key| context.call_tables.get(&key))
+                {
                     CallTarget::Composed(restored.clone())
                 } else {
                     let source = identity.map(|key| (key, targets.clone()));
@@ -94,7 +86,9 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                 Some(PendingParent::Specialized(type_bindings, source)) => {
                     let target: CallTargetLink = value.into();
                     if let Some(source) = source {
-                        nodes.insert((&*source) as *const _, (source, target.clone()));
+                        context
+                            .call_nodes
+                            .insert((&*source) as *const _, (source, target.clone()));
                     }
                     value = CallTarget::Specialized {
                         target,
@@ -104,7 +98,9 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                 Some(PendingParent::Limited(limits, source)) => {
                     let target: CallTargetLink = value.into();
                     if let Some(source) = source {
-                        nodes.insert((&*source) as *const _, (source, target.clone()));
+                        context
+                            .call_nodes
+                            .insert((&*source) as *const _, (source, target.clone()));
                     }
                     value = CallTarget::Limited { target, limits };
                 }
@@ -125,7 +121,7 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                     }
                     let children: CallTargetChildren = values.into();
                     if let Some((key, source)) = source {
-                        tables.insert(key, (source, children.clone()));
+                        context.call_tables.insert(key, (source, children.clone()));
                     }
                     value = CallTarget::Composed(children);
                 }
