@@ -36,6 +36,7 @@ mod list;
 mod map;
 pub use deque::DequeValue;
 pub use host_handle::HostHandleValue;
+pub(crate) use list::ListIter;
 pub use list::ListValue;
 pub use map::MapValue;
 pub use numeric::{NumericError, NumericValue};

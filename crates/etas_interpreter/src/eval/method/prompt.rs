@@ -1,5 +1,8 @@
 use super::*;
 
+mod content;
+#[cfg(test)]
+mod content_tests;
 #[cfg(test)]
 mod tests;
 
@@ -314,60 +317,7 @@ impl<'a> EvalContext<'a> {
                     })?;
                 Ok((json.into(), None))
             }
-            InterpValue::String(text) => {
-                if method == "system" && !allow_plain_system_content {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Prompt.system requires Trusted[T] content or a checked static string literal",
-                    ));
-                }
-                Ok((text, None))
-            }
-            InterpValue::Prompt(parts) => {
-                if method == "system" && !allow_plain_system_content {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Prompt.system requires Trusted[T] content or a checked static string literal",
-                    ));
-                }
-                Ok((parts.into_text(), None))
-            }
-            InterpValue::Trust { wrapper, value } => {
-                if wrapper == etas_types::TrustWrapper::Secret {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Secret[T] values are not prompt-encodable by default",
-                    ));
-                }
-                if method == "system" && wrapper != etas_types::TrustWrapper::Trusted {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Prompt.system requires Trusted[T] content or a checked static string literal",
-                    ));
-                }
-                let (text, _) = self.prompt_channel_content(
-                    method,
-                    value.into_value(),
-                    span,
-                    wrapper == etas_types::TrustWrapper::Trusted || allow_plain_system_content,
-                )?;
-                Ok((text, Some(wrapper)))
-            }
-            InterpValue::Message(message) => self.prompt_channel_content(
-                method,
-                message.payload.into_value(),
-                span,
-                allow_plain_system_content,
-            ),
-            other => Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                format!("Prompt.{method} expects a string-compatible argument, got {other:?}"),
-            )),
+            value => content::text(value, method, span, allow_plain_system_content),
         }
     }
 }

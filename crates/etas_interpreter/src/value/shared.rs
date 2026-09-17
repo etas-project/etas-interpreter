@@ -29,9 +29,16 @@ impl SharedValue {
     }
 
     pub fn into_value(self) -> InterpValue {
+        match self.try_into_value() {
+            Ok(value) => value,
+            Err(value) => (*value).clone(),
+        }
+    }
+
+    pub(crate) fn try_into_value(self) -> Result<InterpValue, Self> {
         match Rc::try_unwrap(self.0) {
-            Ok(mut node) => std::mem::replace(&mut node.0, InterpValue::Unit),
-            Err(node) => node.0.clone(),
+            Ok(mut node) => Ok(std::mem::replace(&mut node.0, InterpValue::Unit)),
+            Err(node) => Err(Self(node)),
         }
     }
 

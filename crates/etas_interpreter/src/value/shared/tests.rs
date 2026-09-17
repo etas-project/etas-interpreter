@@ -10,6 +10,33 @@ use etas_types::TypeId;
 use std::sync::Arc;
 
 #[test]
+fn try_take_preserves_shared_ownership_without_cloning_payload() {
+    let payload = "metadata".repeat(128 * 1024);
+    let pointer = payload.as_ptr();
+    let value = SharedValue::new(InterpValue::Message(crate::value::MessageValue {
+        id: payload,
+        from: None,
+        to: None,
+        role: crate::value::MessageRoleValue::User,
+        session: None,
+        created_at: String::new(),
+        payload: InterpValue::Unit.into(),
+        provenance: None,
+    }));
+    let alias = value.clone();
+    let (retained, cost) = measure(|| value.try_into_value().unwrap_err());
+    assert_eq!(cost.count, 0, "{cost:?}");
+    assert!(std::ptr::eq(retained.as_ref(), alias.as_ref()));
+    drop(alias);
+    let (moved, cost) = measure(|| retained.try_into_value().unwrap());
+    assert_eq!(cost.count, 0, "{cost:?}");
+    let InterpValue::Message(message) = moved else {
+        panic!("message");
+    };
+    assert_eq!(message.id.as_ptr(), pointer);
+}
+
+#[test]
 fn releasing_wide_unique_adt_collections_does_not_materialize_child_buffers() {
     for count in [1000, 2000, 4000] {
         let cases = [

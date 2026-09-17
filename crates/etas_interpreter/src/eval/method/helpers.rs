@@ -328,49 +328,8 @@ pub(super) fn host_number_to_f32(value: &HostValue) -> Option<f32> {
     }
 }
 
-pub(super) fn prompt_data_contains_secret(value: &InterpValue) -> bool {
-    match value {
-        InterpValue::Trust { wrapper, value } => {
-            *wrapper == etas_types::TrustWrapper::Secret || prompt_data_contains_secret(value)
-        }
-        InterpValue::Tuple(values) => values.iter().any(prompt_data_contains_secret),
-        InterpValue::Array(values) | InterpValue::Stack(values) => {
-            values.borrow().iter().any(prompt_data_contains_secret)
-        }
-        InterpValue::Deque(values) | InterpValue::Queue(values) => {
-            values.borrow().iter().any(prompt_data_contains_secret)
-        }
-        InterpValue::List(values) => values.iter().any(prompt_data_contains_secret),
-        InterpValue::Slice(values) => values.borrow().iter().any(prompt_data_contains_secret),
-        InterpValue::Set(values) | InterpValue::OrderedSet(values) => {
-            values.borrow().iter().any(prompt_data_contains_secret)
-        }
-        InterpValue::Map(entries)
-        | InterpValue::OrderedMap(entries)
-        | InterpValue::PriorityQueue(entries) => entries.borrow().iter().any(|(key, value)| {
-            prompt_data_contains_secret(key) || prompt_data_contains_secret(value)
-        }),
-        InterpValue::Record(fields) => fields
-            .borrow()
-            .iter()
-            .any(|(_, value)| prompt_data_contains_secret(value)),
-        InterpValue::Range(range) => {
-            prompt_data_contains_secret(&range.start) || prompt_data_contains_secret(&range.end)
-        }
-        InterpValue::Variant { fields, .. } => fields.iter().any(prompt_data_contains_secret),
-        InterpValue::OptionSome(value) | InterpValue::Nominal { value, .. } => {
-            prompt_data_contains_secret(value)
-        }
-        InterpValue::Message(crate::value::MessageValue { payload: value, .. }) => {
-            prompt_data_contains_secret(value)
-        }
-        InterpValue::Conversation(conversation) => conversation
-            .messages
-            .iter()
-            .any(|message| prompt_data_contains_secret(&message.payload)),
-        _ => false,
-    }
-}
+mod secret;
+pub(super) use secret::contains_secret as prompt_data_contains_secret;
 
 #[cfg(test)]
 mod tests {
