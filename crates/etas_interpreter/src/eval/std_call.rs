@@ -107,7 +107,7 @@ impl<'a> EvalContext<'a> {
             }
             StdCallable::Tls(callable) => self.execute_tls_callable(callable, call_args, span),
             StdCallable::Secret(callable) => {
-                self.execute_secret_callable(callable, call_args, span)
+                self.execute_secret_callable(callable, checked_call.result_type, call_args, span)
             }
             StdCallable::Json(callable) => self.execute_json_callable(callable, call_args, span),
             StdCallable::Browser(callable) => {
@@ -1133,6 +1133,7 @@ impl<'a> EvalContext<'a> {
     fn execute_secret_callable(
         &mut self,
         callable: SecretCallable,
+        result_type: etas_types::TypeId,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -1191,7 +1192,7 @@ impl<'a> EvalContext<'a> {
                         trace: self.host_trace(),
                         budget: self.host_budget(),
                     }),
-                    decode: HostBoundaryDecode::SecretBytes,
+                    decode: HostBoundaryDecode::SecretBytes { result_type },
                     span,
                     continuation: Continuation::BlockValue,
                 })

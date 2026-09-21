@@ -207,6 +207,7 @@ pub(in crate::driver) async fn dispatch(
                         boundary.decode,
                         eval.known_std_types.secret_value,
                         secret,
+                        &eval.checked.type_store,
                     )
                 })
                 .map_err(HostBoundaryFailure::Host),
@@ -456,6 +457,7 @@ pub(in crate::driver) fn host_boundary_value_from_secret(
     decode: HostBoundaryDecode,
     nominal_type: Option<etas_types::TypeId>,
     payload: SecretPayload,
+    store: &etas_types::TypeStore,
 ) -> Result<InterpValue, String> {
     match (decode, payload) {
         (HostBoundaryDecode::SecretValue, SecretPayload::Value(secret)) => {
@@ -467,8 +469,8 @@ pub(in crate::driver) fn host_boundary_value_from_secret(
                 secret,
             )))
         }
-        (HostBoundaryDecode::SecretBytes, SecretPayload::Bytes(bytes)) => {
-            Ok(InterpValue::Bytes(bytes.into()))
+        (HostBoundaryDecode::SecretBytes { result_type }, SecretPayload::Bytes(bytes)) => {
+            crate::eval::host_to_typed_interp_value(HostValue::Bytes(bytes), result_type, store)
         }
         (decode, payload) => Err(format!(
             "secret response payload {:?} does not match decode {:?}",
@@ -768,6 +770,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secret_digest_responses_use_the_checked_result_type() {
+        let mut types = etas_types::TypeInterner::new();
+        let bytes = types.primitive(etas_types::PrimitiveType::Bytes);
+        let boolean = types.primitive(etas_types::PrimitiveType::Bool);
+        let digest = types.intern(etas_types::Type::Nominal(etas_types::NominalTypeRef {
+            name: "std.crypto.Digest".into(),
+            representation: Some(bytes),
+            params: vec![],
+        }));
+        let result = host_boundary_value_from_secret(
+            HostBoundaryDecode::SecretBytes {
+                result_type: digest,
+            },
+            None,
+            SecretPayload::Bytes(vec![7; 32]),
+            types.store(),
+        )
+        .unwrap();
+        let InterpValue::Nominal { ty, value } = result else {
+            panic!("host digest lost nominal identity");
+        };
+        assert_eq!(ty, digest);
+        assert_eq!(*value, InterpValue::Bytes(vec![7; 32].into()));
+        for result_type in [boolean, etas_types::TypeId(u32::MAX)] {
+            assert!(
+                host_boundary_value_from_secret(
+                    HostBoundaryDecode::SecretBytes { result_type },
+                    None,
+                    SecretPayload::Bytes(vec![7; 32]),
+                    types.store(),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn host_boundaries_create_sealed_capability_values() {
         let tcp = host_boundary_value_from_tcp_stream(
             HostBoundaryDecode::TcpStream,
@@ -801,6 +840,7 @@ mod tests {
                 etas_host::SecretRef::new("secret-1"),
                 "<redacted>",
             )),
+            etas_types::TypeInterner::new().store(),
         )
         .expect("secret response should decode");
         let InterpValue::HostHandle(secret) = secret else {

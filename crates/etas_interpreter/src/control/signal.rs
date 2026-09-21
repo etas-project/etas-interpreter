@@ -305,7 +305,7 @@ pub enum HostBoundaryDecode {
     StreamBytes,
     TlsStream,
     SecretValue,
-    SecretBytes,
+    SecretBytes { result_type: etas_types::TypeId },
     BrowserPayload,
 }
 

@@ -14,6 +14,8 @@ mod bytes_tests;
 #[cfg(test)]
 mod count_tests;
 #[cfg(test)]
+mod crypto_tests;
+#[cfg(test)]
 mod join_tests;
 #[cfg(test)]
 mod record_tests;

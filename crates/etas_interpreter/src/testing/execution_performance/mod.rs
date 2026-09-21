@@ -11,6 +11,7 @@ use crate::{
 };
 use std::time::{Duration, Instant};
 
+mod crypto;
 mod iteration;
 mod scope;
 

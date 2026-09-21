@@ -23,20 +23,21 @@ pub fn execute_pure_intrinsic(
     {
         return super::count::execute_count(query, call, &args, projector);
     }
-    if call.intrinsic.0 == etas_std::intrinsic::pure::BYTES_LEN {
-        let [value] = args.as_slice() else {
+    if let Some(query) = etas_builtin::bytes::query::BytesQuery::for_intrinsic(call.intrinsic) {
+        if args.len() != query.arity() {
             return Err(AdapterError::Arity {
-                expected: 1,
+                expected: query.arity(),
                 actual: args.len(),
             });
-        };
-        let bytes =
-            super::abi::borrowed::bytes_for_type(value, call.parameter_types[0], projector)?;
-        return from_builtin_for_type(
-            etas_builtin::bytes::ops::len_borrowed(bytes),
-            call.result_type,
-            projector,
-        );
+        }
+        let mut borrowed: [&[u8]; 2] = [&[]; 2];
+        for ((slot, value), ty) in borrowed.iter_mut().zip(&args).zip(&call.parameter_types) {
+            *slot = super::abi::borrowed::bytes_for_type(value, *ty, projector)?;
+        }
+        let result = query
+            .evaluate(&borrowed[..args.len()])
+            .map_err(AdapterError::Builtin)?;
+        return from_builtin_for_type(result, call.result_type, projector);
     }
     if call.intrinsic.0 == etas_std::intrinsic::pure::TEXT_JOIN {
         return super::text::execute_join(call, &args, projector);
