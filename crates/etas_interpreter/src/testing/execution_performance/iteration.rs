@@ -115,6 +115,12 @@ fn checked_full_iteration_execution_has_linear_allocation_scaling() {
             let (result, cost, elapsed) = program.run(&args);
             assert_eq!(result, InterpValue::i32(count as i32));
             eprintln!("checked full traversal {family:?} n={count}: {cost:?}, {elapsed:?}");
+            // Includes the real evaluator/driver, not only the collection cursor.
+            // Eager continuation flattening used 45 allocations per element (47 for Map).
+            assert!(
+                cost.count <= 20 * count + 100,
+                "per-element scheduling allocations regressed for {family:?}: {cost:?}"
+            );
             if let Some(previous) = previous {
                 assert!(
                     cost.count <= previous.count * 2,

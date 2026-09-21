@@ -10,6 +10,9 @@ use crate::{
     },
 };
 
+#[cfg(test)]
+mod tests;
+
 impl EvalMachine {
     pub(crate) fn run_until_yield(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
         let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
@@ -57,17 +60,13 @@ impl EvalMachine {
             signal = match signal {
                 ControlSignal::Apply(pending) => {
                     let pending = *pending;
-                    let mut continuations = flatten_continuation(pending.continuation);
-                    let Some(first) = continuations.next() else {
+                    let Some(first) = self.push_outer_continuation_frames(pending.continuation)
+                    else {
                         return machine_fault(
                             "evaluation machine received an empty continuation sequence".to_owned(),
                             crate::diagnostics::item_span(ctx.checked, ctx.entry_item),
                         );
                     };
-                    let remaining = continuations.collect::<Vec<_>>();
-                    for continuation in remaining.into_iter().rev() {
-                        self.push_frame(EvalFrame::from_continuation(continuation));
-                    }
                     match pending.input {
                         ContinuationInput::Value(value) => {
                             ctx.apply_continuation_frame(first, value)
@@ -365,12 +364,24 @@ impl EvalMachine {
     }
 
     fn push_continuation_frames(&mut self, continuation: Continuation) {
-        let continuations = flatten_continuation(continuation).collect::<Vec<_>>();
-        for continuation in continuations.into_iter().rev() {
+        visit_continuation_stack_order(continuation, |continuation| {
             if !matches!(continuation, Continuation::BlockValue) {
                 self.push_frame(EvalFrame::from_continuation(continuation));
             }
-        }
+        });
+    }
+
+    fn push_outer_continuation_frames(
+        &mut self,
+        continuation: Continuation,
+    ) -> Option<Continuation> {
+        let mut first = None;
+        visit_continuation_stack_order(continuation, |continuation| {
+            if let Some(outer) = first.replace(continuation) {
+                self.push_frame(EvalFrame::from_continuation(outer));
+            }
+        });
+        first
     }
 }
 
@@ -382,19 +393,25 @@ fn machine_fault(message: impl Into<String>, span: etas_core::Span) -> MachinePo
     ))
 }
 
-fn flatten_continuation(continuation: Continuation) -> std::vec::IntoIter<Continuation> {
-    let mut pending = vec![continuation];
-    let mut flattened = Vec::new();
-    while let Some(continuation) = pending.pop() {
+// Visit outer leaves first so they can go directly onto the machine stack.
+// A leaf needs no scratch allocation; only unvisited branch links are retained.
+fn visit_continuation_stack_order(
+    mut continuation: Continuation,
+    mut visit: impl FnMut(Continuation),
+) {
+    let mut pending = Vec::new();
+    loop {
         match continuation {
             Continuation::Chain { inner, outer } => {
-                pending.push(outer.into_value());
-                pending.push(inner.into_value());
+                pending.push(inner);
+                continuation = outer.into_value();
+                continue;
             }
-            continuation => flattened.push(continuation),
+            leaf => visit(leaf),
         }
+        let Some(next) = pending.pop() else { break };
+        continuation = next.into_value();
     }
-    flattened.into_iter()
 }
 
 fn scheduling_poll(decision: crate::eval::safe_point::SafePointDecision) -> Option<MachinePoll> {
