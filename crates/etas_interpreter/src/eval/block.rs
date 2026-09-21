@@ -27,7 +27,7 @@ impl<'a> EvalContext<'a> {
         start_stmt_index: usize,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let scope_snapshot = frame.snapshot_symbols();
+        let scope_snapshot = frame.scope_symbols();
         let block_data = &self.checked.hir.blocks[block];
         for (index, stmt) in block_data.stmts.iter().enumerate().skip(start_stmt_index) {
             if let Some(signal) = self.execute_stmt(block, index, *stmt, frame) {

@@ -12,6 +12,7 @@ use crate::{
 use std::time::{Duration, Instant};
 
 mod iteration;
+mod scope;
 
 struct PreparedExecution {
     checked: etas_frontend::CheckedProject,

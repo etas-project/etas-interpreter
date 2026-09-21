@@ -18,11 +18,19 @@ pub struct Frame {
     type_bindings: Arc<HashMap<String, etas_types::TypeId>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct SlotStorage {
     values: Vec<Option<InterpValue>>,
     additional: HashMap<SymbolId, usize>,
+    scope_symbols: Option<Rc<HashSet<SymbolId>>>,
 }
+
+impl PartialEq for SlotStorage {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values && self.additional == other.additional
+    }
+}
+impl Eq for SlotStorage {}
 
 static NEXT_FRAME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
@@ -52,6 +60,7 @@ impl Frame {
             slots: Rc::new(RefCell::new(SlotStorage {
                 values: vec![None; slot_count],
                 additional: HashMap::new(),
+                scope_symbols: None,
             })),
             restored: None,
             type_bindings,
@@ -101,6 +110,7 @@ impl Frame {
             slots: Rc::new(RefCell::new(SlotStorage {
                 values: Vec::new(),
                 additional: HashMap::new(),
+                scope_symbols: None,
             })),
             restored: Some(Rc::new(RefCell::new(restored))),
             type_bindings: Arc::new(HashMap::new()),
@@ -162,11 +172,16 @@ impl Frame {
     pub fn insert(&mut self, symbol: SymbolId, value: InterpValue) {
         let mut slots = self.slots.borrow_mut();
         if let Some(slot) = self.resolve(&slots, symbol) {
+            if slots.values[slot].is_none() {
+                slots.scope_symbols = None;
+            }
             slots.values[slot] = Some(value);
             return;
         }
         if let Some(locals) = &self.restored {
-            locals.borrow_mut().insert(symbol, value);
+            if locals.borrow_mut().insert(symbol, value).is_none() {
+                slots.scope_symbols = None;
+            }
             return;
         }
         panic!("missing slot layout for symbol {:?}", symbol);
@@ -208,8 +223,12 @@ impl Frame {
 
     pub fn snapshot_symbols(&self) -> HashSet<SymbolId> {
         let slots = self.slots.borrow();
+        self.collect_symbols(&slots)
+    }
+
+    fn collect_symbols(&self, slots: &SlotStorage) -> HashSet<SymbolId> {
         let mut symbols = self
-            .slot_symbols(&slots)
+            .slot_symbols(slots)
             .filter_map(|(symbol, index)| slots.values[index].as_ref().map(|_| symbol))
             .collect::<HashSet<_>>();
         if let Some(restored) = &self.restored {
@@ -218,9 +237,31 @@ impl Frame {
         symbols
     }
 
+    /// Reassignments preserve scope membership. Frame aliases share invalidation,
+    /// while previously returned scope snapshots remain immutable.
+    pub(crate) fn scope_symbols(&self) -> Rc<HashSet<SymbolId>> {
+        let mut slots = self.slots.borrow_mut();
+        if let Some(cached) = &slots.scope_symbols {
+            return cached.clone();
+        }
+        let symbols = Rc::new(self.collect_symbols(&slots));
+        slots.scope_symbols = Some(symbols.clone());
+        symbols
+    }
+
     pub fn cleanup_to(&mut self, keep: &HashSet<SymbolId>) {
         let mut slots = self.slots.borrow_mut();
-        let SlotStorage { values, additional } = &mut *slots;
+        if slots
+            .scope_symbols
+            .as_ref()
+            .is_some_and(|cached| std::ptr::eq(cached.as_ref(), keep))
+        {
+            return;
+        }
+        let SlotStorage {
+            values, additional, ..
+        } = &mut *slots;
+        let mut removed = false;
         for (symbol, index) in self
             .layout
             .symbols()
@@ -231,13 +272,17 @@ impl Frame {
             .chain(additional.iter().map(|(symbol, index)| (*symbol, *index)))
         {
             if !keep.contains(&symbol) {
-                values[index] = None;
+                removed |= values[index].take().is_some();
             }
         }
         if let Some(restored) = &self.restored {
-            restored
-                .borrow_mut()
-                .retain(|symbol, _| keep.contains(symbol));
+            let mut restored = restored.borrow_mut();
+            let count = restored.len();
+            restored.retain(|symbol, _| keep.contains(symbol));
+            removed |= restored.len() != count;
+        }
+        if removed {
+            slots.scope_symbols = None;
         }
     }
 
@@ -332,3 +377,6 @@ impl Frame {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;
