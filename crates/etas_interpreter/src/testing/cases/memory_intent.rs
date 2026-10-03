@@ -1,5 +1,143 @@
 use super::super::*;
 
+#[tokio::test(flavor = "current_thread")]
+async fn memory_match_constructor_executes_through_public_paths() {
+    for (imports, constructor) in [
+        ("import std.memory.Match;", "Match"),
+        ("", "std.memory.Match"),
+        ("import std.memory.WriteCondition;", "WriteCondition.Match"),
+        ("", "std.memory.WriteCondition.Match"),
+        ("import std.memory.Match as Exact;", "Exact"),
+        ("import std.memory.*;", "Match"),
+    ] {
+        let checked = checked_project(&format!(
+            r#"
+module app.main;
+import std.memory.version;
+{imports}
+flow main() -> bool {{
+    let observed = version("synthetic-version-only-not-backend-evidence");
+    let condition = {constructor}(observed);
+    return match condition {{
+        WriteCondition.Match(actual) => actual.opaque == observed.opaque,
+        _ => false,
+    }};
+}}
+"#
+        ));
+        let host = FakeHost::new(availability(&[]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.diagnostics.is_empty(),
+            "{constructor}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.value(),
+            Some(&InterpValue::Bool(true)),
+            "{constructor}"
+        );
+        assert_eq!(host.memory_call_count(), 0);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn memory_match_preparation_preserves_exact_condition_without_storage_access() {
+    let token = format!("mv1:{}:{}:0000000000000001", "0".repeat(64), "0".repeat(32));
+    for operation in [
+        "prepare_put(Region.Items, \"key\", \"value\", condition)",
+        "prepare_delete(Region.Items, \"key\", condition)",
+    ] {
+        let checked = checked_project(&preparation_source(
+            &format!(
+                r#"
+                let condition = Match(std.memory.version("{token}"));
+                checkpoint("condition");
+                return {operation};
+            "#
+            ),
+            "MemoryWriteIntent<string, string>",
+        ));
+        let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let Some(InterpValue::MemoryWriteIntent(value)) = result.value() else {
+            panic!("prepared intent")
+        };
+        let condition = match value.intent().mutation() {
+            etas_host::memory::MemoryMutation::Put { condition, .. }
+            | etas_host::memory::MemoryMutation::Delete { condition, .. } => condition,
+        };
+        assert_eq!(
+            condition,
+            &etas_host::WriteCondition::Match(etas_host::MemoryVersion::parse(&token).unwrap())
+        );
+        let artifact = crate::api::codec::checkpoint_artifact_json(
+            &["match.es".into()],
+            "main",
+            &result.checkpoints[0],
+        )
+        .unwrap();
+        let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, &checkpoint, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        let Some(InterpValue::MemoryWriteIntent(resumed)) = resumed.value() else {
+            panic!("restored intent")
+        };
+        assert_eq!(resumed.intent().mutation(), value.intent().mutation());
+        assert_eq!(host.memory_call_count(), 0);
+    }
+}
+
+#[test]
+fn memory_match_rejects_wrong_payload_and_arity() {
+    for expression in [
+        "Match(\"not-a-version\")",
+        "Match(42)",
+        "Match()",
+        "Match(std.memory.version(\"v\"), std.memory.version(\"w\"))",
+    ] {
+        let output = etas_frontend::Frontend.check(etas_frontend::SourceInput {
+            id: etas_core::SourceId(1), path: None,
+            text: format!("module app.main; import std.memory.Match; flow main() -> WriteCondition {{ return {expression}; }}"),
+            kind: etas_frontend::SourceKind::SourceProjectFile,
+        });
+        assert!(
+            output
+                .diagnostics
+                .iter()
+                .any(|d| matches!(d.code, etas_core::DiagnosticCode::Type(_))),
+            "{expression}: {:?}",
+            output.diagnostics
+        );
+    }
+}
+
 fn preparation_source(body: &str, output: &str) -> String {
     format!(
         r#"
