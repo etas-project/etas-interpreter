@@ -1,6 +1,84 @@
 use super::super::*;
 use crate::testing::host::TestMemoryBackend;
 
+#[tokio::test(flavor = "current_thread")]
+async fn memory_match_prepared_writes_require_current_backend_version() {
+    let checked = checked_project(&source(
+        r#"
+        let first = commit(prepare_put(Region.Items, "key", "first", Missing));
+        let observed = match first {
+            WriteOutcome.Committed(receipt) => match receipt.change {
+                MemoryWriteChange.Written(version) => version,
+                _ => abort("expected written version"),
+            },
+            _ => abort("expected committed insert"),
+        };
+        let intent = prepare_put(Region.Items, "key", "second", std.memory.Match(observed));
+        let updated = match commit(intent) {
+            WriteOutcome.Committed(receipt) => match receipt.change {
+                MemoryWriteChange.Written(version) => version,
+                _ => abort("expected updated version"),
+            },
+            _ => abort("expected exact-version commit"),
+        };
+        let stale = match commit(prepare_put(Region.Items, "key", "stale", std.memory.Match(observed))) {
+            WriteOutcome.NotCommitted(_, MemoryWriteRejection.ConditionConflict(_, _)) => true,
+            _ => false,
+        };
+        let replayed = match commit(intent) {
+            WriteOutcome.Committed(receipt) => match receipt.change {
+                MemoryWriteChange.Written(version) => version.opaque == updated.opaque,
+                _ => false,
+            },
+            _ => false,
+        };
+        let deleted = match commit(prepare_delete(Region.Items, "key", std.memory.Match(updated))) {
+            WriteOutcome.Committed(receipt) => match receipt.change {
+                MemoryWriteChange.Deleted(_) => true,
+                _ => false,
+            },
+            _ => false,
+        };
+        return stale && replayed && deleted && observed.opaque != updated.opaque;
+        "#,
+        "bool",
+    ));
+    for sqlite in [false, true] {
+        let workspace = etas_host::TestWorkspace::create("match-version").unwrap();
+        let mut host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
+        host.storage = Some(if sqlite {
+            TestMemoryBackend::Sqlite(
+                etas_host::SqliteMemoryClient::open(workspace.path().join("memory.db")).unwrap(),
+            )
+        } else {
+            TestMemoryBackend::Volatile(etas_host::InMemoryMemoryClient::new())
+        });
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.diagnostics.is_empty(),
+            "sqlite={sqlite}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.value(),
+            Some(&InterpValue::Bool(true)),
+            "sqlite={sqlite}"
+        );
+        assert_eq!(host.memory_call_count(), 5);
+    }
+}
+
 fn source(body: &str, output: &str) -> String {
     format!(
         r#"
