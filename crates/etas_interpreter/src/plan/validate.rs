@@ -17,8 +17,8 @@ impl Pass<PlanContext<'_>> for ValidateCheckedProjectPass {
         _pass_context: &PassContext<PlanContext<'_>>,
         _manager: &mut PassManager<PlanContext<'_>>,
     ) -> PassResult {
-        if context.project.interpreter_support.items.is_empty()
-            && context.project.interpreter_support.entry.is_none()
+        if context.project.effects.interpreter_support.items.is_empty()
+            && context.project.effects.interpreter_support.entry.is_none()
         {
             context.push_missing_fact(
                 diagnostics::primary_span(context.project),

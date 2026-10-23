@@ -148,7 +148,10 @@ flow main() -> i32 {
         .map(|(id, _)| id)
         .collect::<Vec<_>>();
     for id in patterns {
-        let pattern = checked.hir.pats.get_mut(id).unwrap();
+        let pattern = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .pats
+            .get_mut(id)
+            .unwrap();
         if let etas_hir::HirPat::Record { fields, .. } = pattern {
             fields[0].name = "unknown".into();
             edits += 1;

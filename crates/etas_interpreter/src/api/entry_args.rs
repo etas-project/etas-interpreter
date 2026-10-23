@@ -38,10 +38,11 @@ pub fn entry_requires_console(checked: &CheckedProject) -> bool {
         return false;
     };
     let support = checked
+        .effects
         .interpreter_support
         .entry
         .as_ref()
-        .or_else(|| checked.interpreter_support.items.get(&entry));
+        .or_else(|| checked.effects.interpreter_support.items.get(&entry));
     support.is_some_and(interpreter_support_requires_console)
 }
 

@@ -82,7 +82,11 @@ flow main() -> i32 {
                     matches!(data, etas_hir::HirPat::Record { .. }).then_some(pat)
                 })
                 .unwrap();
-            let etas_hir::HirPat::Record { fields, .. } = checked.hir.pats.get_mut(pat).unwrap()
+            let etas_hir::HirPat::Record { fields, .. } =
+                std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+                    .pats
+                    .get_mut(pat)
+                    .unwrap()
             else {
                 unreachable!();
             };
@@ -96,7 +100,11 @@ flow main() -> i32 {
                     matches!(data, etas_hir::HirExpr::Field { .. }).then_some(expr)
                 })
                 .unwrap();
-            let etas_hir::HirExpr::Field { field, .. } = checked.hir.exprs.get_mut(expr).unwrap()
+            let etas_hir::HirExpr::Field { field, .. } =
+                std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+                    .exprs
+                    .get_mut(expr)
+                    .unwrap()
             else {
                 unreachable!();
             };
@@ -180,7 +188,9 @@ flow main() -> string {
     assert_eq!(resumed.value(), result.value());
 
     let mut incomplete = checked.clone();
-    incomplete.types.field_projections.clear();
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut incomplete).types)
+        .field_projections
+        .clear();
     let rejected = Interpreter.plan(&incomplete, PlanOptions);
     assert!(rejected.plan.is_none());
     assert!(

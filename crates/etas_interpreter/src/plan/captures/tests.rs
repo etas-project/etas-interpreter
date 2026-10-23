@@ -41,7 +41,12 @@ flow main(seed: i32) -> () -> i32 { return () => seed; }
             _ => None,
         })
         .unwrap();
-    let HirExpr::Path(path) = checked.hir.exprs.get_mut(expr).unwrap() else {
+    let HirExpr::Path(path) =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .exprs
+            .get_mut(expr)
+            .unwrap()
+    else {
         panic!("path");
     };
     path.resolution = ResolveResult::Resolved(other);
