@@ -776,33 +776,25 @@ flow main() -> bool {
     let HirArg::Positional(original_arg) = args[0] else {
         panic!("expected positional call arg");
     };
-    let return_stmt = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-        .stmts
-        .alloc(HirStmt::Return {
+    crate::testing::edit_checked_hir(&mut checked, |hir| {
+        let return_stmt = hir.stmts.alloc(HirStmt::Return {
             value: Some(original_arg),
             span: call_span,
         });
-    let arg_block = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-        .blocks
-        .alloc_with_id(|id| HirBlock {
+        let arg_block = hir.blocks.alloc_with_id(|id| HirBlock {
             id,
             stmts: vec![return_stmt],
             final_expr: None,
             scope,
             span: call_span,
         });
-    let arg_expr = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-        .exprs
-        .alloc(HirExpr::Block(arg_block));
-    let HirExpr::Call { args, .. } =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .exprs
-            .get_mut(call_expr)
-            .expect("call expr")
-    else {
-        panic!("expected call expr");
-    };
-    args[0] = HirArg::Positional(arg_expr);
+        let arg_expr = hir.exprs.alloc(HirExpr::Block(arg_block));
+        let HirExpr::Call { args, .. } = hir.exprs.get_mut(call_expr).expect("call expr") else {
+            panic!("expected call expr");
+        };
+        args[0] = HirArg::Positional(arg_expr);
+    })
+    .unwrap();
 
     let result = Interpreter
         .run_checked(
@@ -864,33 +856,26 @@ flow main() -> string {
     let HirArg::Positional(original_arg) = args[0] else {
         panic!("expected positional perform arg");
     };
-    let return_stmt = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-        .stmts
-        .alloc(HirStmt::Return {
+    crate::testing::edit_checked_hir(&mut checked, |hir| {
+        let return_stmt = hir.stmts.alloc(HirStmt::Return {
             value: Some(original_arg),
             span: perform_span,
         });
-    let arg_block = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-        .blocks
-        .alloc_with_id(|id| HirBlock {
+        let arg_block = hir.blocks.alloc_with_id(|id| HirBlock {
             id,
             stmts: vec![return_stmt],
             final_expr: None,
             scope,
             span: perform_span,
         });
-    let arg_expr = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-        .exprs
-        .alloc(HirExpr::Block(arg_block));
-    let HirExpr::Perform { args, .. } =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .exprs
-            .get_mut(perform_expr)
-            .expect("perform expr")
-    else {
-        panic!("expected perform expr");
-    };
-    args[0] = HirArg::Positional(arg_expr);
+        let arg_expr = hir.exprs.alloc(HirExpr::Block(arg_block));
+        let HirExpr::Perform { args, .. } = hir.exprs.get_mut(perform_expr).expect("perform expr")
+        else {
+            panic!("expected perform expr");
+        };
+        args[0] = HirArg::Positional(arg_expr);
+    })
+    .unwrap();
 
     let host = FakeHost::new(availability(&[HostRequirementKind::Approval]));
     let result = Interpreter

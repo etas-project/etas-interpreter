@@ -33,6 +33,17 @@ use etas_host::{
 };
 use etas_types::{NamedTypeRef, NominalTypeRef, Type};
 
+pub(crate) fn edit_checked_hir<R>(
+    checked: &mut etas_frontend::CheckedProject,
+    edit: impl FnOnce(&mut etas_hir::HirProgram) -> R,
+) -> Result<R, etas_hir::HirTreeIndexError> {
+    let mut editor = checked.hir.clone().edit();
+    let result = edit(editor.program_mut());
+    let revision = editor.finish()?;
+    std::sync::Arc::make_mut(checked).hir = revision;
+    Ok(result)
+}
+
 fn full_model_capabilities() -> ModelProviderCapabilities {
     ModelProviderCapabilities {
         supports_forced_tool_output: true,

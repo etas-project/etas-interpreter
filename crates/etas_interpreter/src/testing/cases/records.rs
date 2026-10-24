@@ -73,43 +73,35 @@ flow main() -> i32 {
 "#;
     for corrupt_pattern in [false, true] {
         let mut checked = checked_project(source);
-        if corrupt_pattern {
-            let pat = checked
-                .hir
-                .pats
-                .iter()
-                .find_map(|(pat, data)| {
-                    matches!(data, etas_hir::HirPat::Record { .. }).then_some(pat)
-                })
-                .unwrap();
-            let etas_hir::HirPat::Record { fields, .. } =
-                std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        crate::testing::edit_checked_hir(&mut checked, |hir| {
+            if corrupt_pattern {
+                let pat = hir
                     .pats
-                    .get_mut(pat)
-                    .unwrap()
-            else {
-                unreachable!();
-            };
-            fields[0].name = "unknown".into();
-        } else {
-            let expr = checked
-                .hir
-                .exprs
-                .iter()
-                .find_map(|(expr, data)| {
-                    matches!(data, etas_hir::HirExpr::Field { .. }).then_some(expr)
-                })
-                .unwrap();
-            let etas_hir::HirExpr::Field { field, .. } =
-                std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+                    .iter()
+                    .find_map(|(pat, data)| {
+                        matches!(data, etas_hir::HirPat::Record { .. }).then_some(pat)
+                    })
+                    .unwrap();
+                let etas_hir::HirPat::Record { fields, .. } = hir.pats.get_mut(pat).unwrap() else {
+                    unreachable!();
+                };
+                fields[0].name = "unknown".into();
+            } else {
+                let expr = hir
                     .exprs
-                    .get_mut(expr)
-                    .unwrap()
-            else {
-                unreachable!();
-            };
-            *field = "unknown".into();
-        }
+                    .iter()
+                    .find_map(|(expr, data)| {
+                        matches!(data, etas_hir::HirExpr::Field { .. }).then_some(expr)
+                    })
+                    .unwrap();
+                let etas_hir::HirExpr::Field { field, .. } = hir.exprs.get_mut(expr).unwrap()
+                else {
+                    unreachable!();
+                };
+                *field = "unknown".into();
+            }
+        })
+        .unwrap();
         let result = Interpreter.plan(&checked, PlanOptions);
         assert!(result.plan.is_none());
         assert!(

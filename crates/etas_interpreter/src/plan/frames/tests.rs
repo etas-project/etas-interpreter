@@ -53,7 +53,7 @@ fn frame_planning_rejects_missing_parameters_and_cyclic_scopes() {
             missing.insert(id, format!("s{}", symbol.0), symbol);
         }
     }
-    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir).scopes = missing;
+    crate::testing::edit_checked_hir(&mut checked, |hir| hir.scopes = missing).unwrap();
     assert!(
         FrameLayoutTable::build(&checked, &slots)
             .unwrap_err()
@@ -71,7 +71,7 @@ fn frame_planning_rejects_missing_parameters_and_cyclic_scopes() {
             cyclic.insert(id, format!("s{}", symbol.0), *symbol);
         }
     }
-    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir).scopes = cyclic;
+    crate::testing::edit_checked_hir(&mut checked, |hir| hir.scopes = cyclic).unwrap();
     assert!(
         FrameLayoutTable::build(&checked, &slots)
             .unwrap_err()

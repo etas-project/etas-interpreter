@@ -147,16 +147,16 @@ flow main() -> i32 {
         .iter()
         .map(|(id, _)| id)
         .collect::<Vec<_>>();
-    for id in patterns {
-        let pattern = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .pats
-            .get_mut(id)
-            .unwrap();
-        if let etas_hir::HirPat::Record { fields, .. } = pattern {
-            fields[0].name = "unknown".into();
-            edits += 1;
+    crate::testing::edit_checked_hir(&mut checked, |hir| {
+        for id in patterns {
+            let pattern = hir.pats.get_mut(id).unwrap();
+            if let etas_hir::HirPat::Record { fields, .. } = pattern {
+                fields[0].name = "unknown".into();
+                edits += 1;
+            }
         }
-    }
+    })
+    .unwrap();
     assert_eq!(edits, 1);
     let result = Interpreter.plan(&checked, Default::default());
     assert!(result.plan.is_none());
