@@ -266,11 +266,11 @@ flow main() -> unit {
             _ => None,
         })
         .expect("ProjectMemory item");
-    let HirItem::TopLevelLet(project_memory_decl) =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .items
-            .get_mut(project_memory_item)
-            .expect("ProjectMemory item")
+    let HirItem::TopLevelLet(project_memory_decl) = checked
+        .hir
+        .items
+        .get(project_memory_item)
+        .expect("ProjectMemory item")
     else {
         panic!("expected top-level let");
     };
@@ -287,25 +287,23 @@ flow main() -> unit {
     };
     let mut main_path = unresolved_path_from_segments(&["main"], span);
     main_path.resolution = ResolveResult::Resolved(main_symbol);
-    let HirExpr::Path(path) =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .exprs
-            .get_mut(callee_expr)
-            .expect("initializer callee")
-    else {
-        panic!("expected initializer callee path");
-    };
-    *path = main_path;
+    crate::testing::edit_checked_hir(&mut checked, |hir| {
+        let HirExpr::Path(path) = hir.exprs.get_mut(callee_expr).expect("initializer callee")
+        else {
+            panic!("expected initializer callee path");
+        };
+        *path = main_path;
 
-    let project_memory_symbol_data =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        let project_memory_symbol_data = hir
             .symbols
             .get_mut(project_memory_symbol)
             .expect("ProjectMemory symbol");
-    let SymbolDef::TopLevelLet { initializer, .. } = &mut project_memory_symbol_data.def else {
-        panic!("expected top-level let symbol def");
-    };
-    *initializer = initializer_expr;
+        let SymbolDef::TopLevelLet { initializer, .. } = &mut project_memory_symbol_data.def else {
+            panic!("expected top-level let symbol def");
+        };
+        *initializer = initializer_expr;
+    })
+    .unwrap();
     std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).types)
         .resource_handles
         .remove(&project_memory_symbol);
@@ -373,11 +371,11 @@ flow main() -> unit {
             _ => None,
         })
         .expect("ProjectMemory item");
-    let HirItem::TopLevelLet(project_memory_decl) =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .items
-            .get_mut(project_memory_item)
-            .expect("ProjectMemory item")
+    let HirItem::TopLevelLet(project_memory_decl) = checked
+        .hir
+        .items
+        .get(project_memory_item)
+        .expect("ProjectMemory item")
     else {
         panic!("expected top-level let");
     };
@@ -399,25 +397,23 @@ flow main() -> unit {
         remaining: vec!["std".to_owned(), "memory".to_owned(), "region".to_owned()],
         reason: PartialResolutionReason::PackageResolverRequired,
     });
-    let HirExpr::Path(path) =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .exprs
-            .get_mut(callee_expr)
-            .expect("initializer callee")
-    else {
-        panic!("expected initializer callee path");
-    };
-    *path = std_memory_region;
+    crate::testing::edit_checked_hir(&mut checked, |hir| {
+        let HirExpr::Path(path) = hir.exprs.get_mut(callee_expr).expect("initializer callee")
+        else {
+            panic!("expected initializer callee path");
+        };
+        *path = std_memory_region;
 
-    let project_memory_symbol_data =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        let project_memory_symbol_data = hir
             .symbols
             .get_mut(project_memory_symbol)
             .expect("ProjectMemory symbol");
-    let SymbolDef::TopLevelLet { initializer, .. } = &mut project_memory_symbol_data.def else {
-        panic!("expected top-level let symbol def");
-    };
-    *initializer = initializer_expr;
+        let SymbolDef::TopLevelLet { initializer, .. } = &mut project_memory_symbol_data.def else {
+            panic!("expected top-level let symbol def");
+        };
+        *initializer = initializer_expr;
+    })
+    .unwrap();
     std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).types)
         .resource_handles
         .remove(&project_memory_symbol);

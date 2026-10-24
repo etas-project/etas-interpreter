@@ -41,15 +41,13 @@ flow main(seed: i32) -> () -> i32 { return () => seed; }
             _ => None,
         })
         .unwrap();
-    let HirExpr::Path(path) =
-        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
-            .exprs
-            .get_mut(expr)
-            .unwrap()
-    else {
-        panic!("path");
-    };
-    path.resolution = ResolveResult::Resolved(other);
+    crate::testing::edit_checked_hir(&mut checked, |hir| {
+        let HirExpr::Path(path) = hir.exprs.get_mut(expr).unwrap() else {
+            panic!("path");
+        };
+        path.resolution = ResolveResult::Resolved(other);
+    })
+    .unwrap();
     let slots = SlotLayoutTable::for_project(&checked);
     let error = ClosureLayoutTable::build(&checked, &slots).unwrap_err();
     assert!(error.contains("outside the lexical scope"), "{error}");
