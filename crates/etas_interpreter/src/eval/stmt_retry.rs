@@ -35,9 +35,9 @@ impl<'a> EvalContext<'a> {
         &mut self,
         continuation: Continuation,
         span: Span,
-        message: String,
+        message: &str,
     ) -> Option<ControlSignal> {
-        self.retry_failure_from_continuation(continuation, span, &message)
+        self.retry_failure_from_continuation(continuation, span, message)
     }
 
     fn retry_failure_from_continuation(
@@ -73,8 +73,8 @@ impl<'a> EvalContext<'a> {
                     ));
                 }
                 Continuation::Chain { inner, outer } => {
-                    work.push(*outer);
-                    work.push(*inner);
+                    work.push(outer.into_value());
+                    work.push(inner.into_value());
                 }
                 _ => {}
             }

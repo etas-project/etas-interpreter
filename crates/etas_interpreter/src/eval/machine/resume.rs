@@ -53,16 +53,16 @@ impl EvalMachine {
         message: String,
     ) -> Option<ControlSignal> {
         if let Some(signal) =
-            ctx.retry_boundary_failure_signal(boundary_continuation, span, message.clone())
+            ctx.retry_boundary_failure_signal(boundary_continuation, span, &message)
         {
             return Some(signal);
         }
 
         for index in (0..self.frames().len()).rev() {
-            let continuation = self.frames()[index].continuation_clone();
-            if let Some(signal) =
-                ctx.retry_boundary_failure_signal(continuation, span, message.clone())
-            {
+            let Some(continuation) = self.frames()[index].retry_continuation() else {
+                continue;
+            };
+            if let Some(signal) = ctx.retry_boundary_failure_signal(continuation, span, &message) {
                 self.truncate_to(index);
                 return Some(signal);
             }
@@ -70,3 +70,6 @@ impl EvalMachine {
         None
     }
 }
+
+#[cfg(test)]
+mod tests;

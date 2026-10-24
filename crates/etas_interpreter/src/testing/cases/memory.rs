@@ -94,7 +94,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(host.memory_call_count(), 1);
 }
@@ -187,11 +187,13 @@ flow main() -> bool ![Memory.write] {
 }
 "#,
     );
-    checked.type_store.intern(Type::Nominal(NominalTypeRef {
-        name: "MemoryConflict".to_owned(),
-        params: Vec::new(),
-        representation: None,
-    }));
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).type_store).intern(
+        Type::Nominal(NominalTypeRef {
+            name: "MemoryConflict".to_owned(),
+            params: Vec::new(),
+            representation: None,
+        }),
+    );
 
     let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     host.seed_memory_conflict(etas_host::MemoryConflict {
@@ -264,11 +266,11 @@ flow main() -> unit {
             _ => None,
         })
         .expect("ProjectMemory item");
-    let HirItem::TopLevelLet(project_memory_decl) = checked
-        .hir
-        .items
-        .get_mut(project_memory_item)
-        .expect("ProjectMemory item")
+    let HirItem::TopLevelLet(project_memory_decl) =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .items
+            .get_mut(project_memory_item)
+            .expect("ProjectMemory item")
     else {
         panic!("expected top-level let");
     };
@@ -285,26 +287,26 @@ flow main() -> unit {
     };
     let mut main_path = unresolved_path_from_segments(&["main"], span);
     main_path.resolution = ResolveResult::Resolved(main_symbol);
-    let HirExpr::Path(path) = checked
-        .hir
-        .exprs
-        .get_mut(callee_expr)
-        .expect("initializer callee")
+    let HirExpr::Path(path) =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .exprs
+            .get_mut(callee_expr)
+            .expect("initializer callee")
     else {
         panic!("expected initializer callee path");
     };
     *path = main_path;
 
-    let project_memory_symbol_data = checked
-        .symbols
-        .get_mut(project_memory_symbol)
-        .expect("ProjectMemory symbol");
+    let project_memory_symbol_data =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .symbols
+            .get_mut(project_memory_symbol)
+            .expect("ProjectMemory symbol");
     let SymbolDef::TopLevelLet { initializer, .. } = &mut project_memory_symbol_data.def else {
         panic!("expected top-level let symbol def");
     };
     *initializer = initializer_expr;
-    checked
-        .types
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).types)
         .resource_handles
         .remove(&project_memory_symbol);
 
@@ -371,11 +373,11 @@ flow main() -> unit {
             _ => None,
         })
         .expect("ProjectMemory item");
-    let HirItem::TopLevelLet(project_memory_decl) = checked
-        .hir
-        .items
-        .get_mut(project_memory_item)
-        .expect("ProjectMemory item")
+    let HirItem::TopLevelLet(project_memory_decl) =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .items
+            .get_mut(project_memory_item)
+            .expect("ProjectMemory item")
     else {
         panic!("expected top-level let");
     };
@@ -397,26 +399,26 @@ flow main() -> unit {
         remaining: vec!["std".to_owned(), "memory".to_owned(), "region".to_owned()],
         reason: PartialResolutionReason::PackageResolverRequired,
     });
-    let HirExpr::Path(path) = checked
-        .hir
-        .exprs
-        .get_mut(callee_expr)
-        .expect("initializer callee")
+    let HirExpr::Path(path) =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .exprs
+            .get_mut(callee_expr)
+            .expect("initializer callee")
     else {
         panic!("expected initializer callee path");
     };
     *path = std_memory_region;
 
-    let project_memory_symbol_data = checked
-        .symbols
-        .get_mut(project_memory_symbol)
-        .expect("ProjectMemory symbol");
+    let project_memory_symbol_data =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .symbols
+            .get_mut(project_memory_symbol)
+            .expect("ProjectMemory symbol");
     let SymbolDef::TopLevelLet { initializer, .. } = &mut project_memory_symbol_data.def else {
         panic!("expected top-level let symbol def");
     };
     *initializer = initializer_expr;
-    checked
-        .types
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).types)
         .resource_handles
         .remove(&project_memory_symbol);
 
@@ -503,6 +505,7 @@ flow main() -> string ![Memory.write] {
             crate::testing::host::fake_memory_version("v2")
                 .as_token()
                 .to_owned()
+                .into()
         ))
     );
 }
@@ -709,7 +712,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(host.memory_call_count(), 2);
 }
@@ -766,7 +769,9 @@ flow main() -> string ![Memory] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict-continued".to_owned()))
+        Some(value::InterpValue::String(
+            "conflict-continued".to_owned().into()
+        ))
     );
     assert_eq!(host.memory_call_count(), 3);
 }
@@ -873,7 +878,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(
         host.memory_value(
@@ -931,7 +936,7 @@ flow main() -> string ![Memory.write] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("conflict".to_owned()))
+        Some(value::InterpValue::String("conflict".to_owned().into()))
     );
     assert_eq!(
         host.memory_value(
@@ -988,9 +993,9 @@ flow main() -> Option<string> {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::OptionSome(Box::new(
-            value::InterpValue::String("draft".to_owned()),
-        )))
+        Some(value::InterpValue::OptionSome(
+            crate::value::SharedValue::new(value::InterpValue::String("draft".to_owned().into()),)
+        ))
     );
     assert_eq!(host.memory_call_count(), 1);
 }
@@ -1092,12 +1097,14 @@ flow main() -> Option<Array<string>> {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::OptionSome(Box::new(
-            value::InterpValue::Array(value::ArrayValue::new(vec![
-                value::InterpValue::String("a".to_owned()),
-                value::InterpValue::String("b".to_owned()),
-            ])),
-        )))
+        Some(value::InterpValue::OptionSome(
+            crate::value::SharedValue::new(value::InterpValue::Array(value::ArrayValue::new(
+                vec![
+                    value::InterpValue::String("a".to_owned().into()),
+                    value::InterpValue::String("b".to_owned().into()),
+                ]
+            )),)
+        ))
     );
 }
 
@@ -1149,15 +1156,15 @@ flow main() -> Option<List<string>> {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::OptionSome(Box::new(
-            value::InterpValue::List(
+        Some(value::InterpValue::OptionSome(
+            crate::value::SharedValue::new(value::InterpValue::List(
                 vec![
-                    value::InterpValue::String("head".to_owned()),
-                    value::InterpValue::String("tail".to_owned()),
+                    value::InterpValue::String("head".to_owned().into()),
+                    value::InterpValue::String("tail".to_owned().into()),
                 ]
                 .into(),
-            ),
-        )))
+            ),)
+        ))
     );
 }
 
@@ -1264,8 +1271,8 @@ flow main() -> List<string> {
         result.value().cloned(),
         Some(value::InterpValue::List(
             vec![
-                value::InterpValue::String("paper-1".to_owned()),
-                value::InterpValue::String("paper-2".to_owned()),
+                value::InterpValue::String("paper-1".to_owned().into()),
+                value::InterpValue::String("paper-2".to_owned().into()),
             ]
             .into()
         ))
@@ -1384,7 +1391,7 @@ flow main() -> MemorySelection<string> {
     assert_eq!(limit, Some(2));
     assert_eq!(
         predicate.as_deref(),
-        Some(&value::InterpValue::String("paper".to_owned()))
+        Some(&value::InterpValue::String("paper".to_owned().into()))
     );
     assert_eq!(host.memory_call_count(), 0);
 }

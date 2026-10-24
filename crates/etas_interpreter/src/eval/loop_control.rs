@@ -1,12 +1,12 @@
 use super::*;
 use crate::control::ExecutionFault;
-use crate::value::RangeBounds;
+use crate::value::iteration::IterationSource;
 use etas_std::StdLimitKind;
 use std::collections::HashSet;
 
 pub(super) struct ForLoopResume {
     pub pat: etas_hir::HirPatId,
-    pub values: Option<Vec<InterpValue>>,
+    pub source: Option<IterationSource>,
     pub next_index: usize,
     pub body: HirBlockId,
     pub iterations: usize,
@@ -57,7 +57,7 @@ impl<'a> EvalContext<'a> {
                     signal,
                     Continuation::ForLoop {
                         pat,
-                        values: None,
+                        source: None,
                         next_index: 0,
                         body,
                         iterations,
@@ -78,7 +78,7 @@ impl<'a> EvalContext<'a> {
         self.resume_for_loop(
             ForLoopResume {
                 pat,
-                values: None,
+                source: None,
                 next_index: 0,
                 body,
                 iterations,
@@ -96,37 +96,42 @@ impl<'a> EvalContext<'a> {
         iterable_or_body_value: InterpValue,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let values = match state.values.take() {
-            Some(values) => values,
-            None => {
-                match self.iterable_values(iterable_or_body_value, state.iterations, state.span) {
-                    Ok(values) => values,
-                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-                }
-            }
+        let source = match state.source.take() {
+            Some(source) => source,
+            None => match IterationSource::new(iterable_or_body_value) {
+                Ok(source) => source,
+                Err(message) => return ControlSignal::invalid_arguments(message, state.span),
+            },
         };
-        self.continue_for_loop(state, values, frame)
+        self.continue_for_loop(state, source, frame)
     }
 
     fn continue_for_loop(
         &mut self,
         state: ForLoopResume,
-        values: Vec<InterpValue>,
+        source: IterationSource,
         frame: &mut Frame,
     ) -> ControlSignal {
         let ForLoopResume {
             pat,
-            values: _,
+            source: _,
             next_index,
             body,
             iterations,
             loop_scope,
             span,
         } = state;
-        let end = values.len().min(iterations);
         let mut index = next_index;
-        while index < end {
-            let value = values[index].clone();
+        while index < iterations {
+            let value = match source.get(index) {
+                Ok(Some(value)) => value,
+                Ok(None) => break,
+                Err(message) => {
+                    frame.cleanup_to(&loop_scope);
+                    return ControlSignal::missing_checked_fact(message, span);
+                }
+            };
+            index += 1;
             if let Err(fault) = self.bind_pattern(pat, value, frame, span) {
                 frame.cleanup_to(&loop_scope);
                 return ControlSignal::Fault(Box::new(fault));
@@ -171,8 +176,8 @@ impl<'a> EvalContext<'a> {
                         signal,
                         Continuation::ForLoop {
                             pat,
-                            values: Some(values),
-                            next_index: index + 1,
+                            source: Some(source),
+                            next_index: index,
                             body,
                             iterations,
                             loop_scope,
@@ -182,7 +187,6 @@ impl<'a> EvalContext<'a> {
                     );
                 }
             }
-            index += 1;
         }
         frame.cleanup_to(&loop_scope);
         ControlSignal::Value(InterpValue::Unit)
@@ -194,86 +198,6 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         compose_signal_continuation(signal, continuation)
-    }
-
-    fn iterable_values(
-        &mut self,
-        iterable: InterpValue,
-        iterations: usize,
-        span: Span,
-    ) -> Result<Vec<InterpValue>, ExecutionFault> {
-        match iterable {
-            InterpValue::Array(values) => Ok(values.snapshot()),
-            InterpValue::List(values) => Ok(values.snapshot()),
-            InterpValue::Slice(values) => Ok(values.snapshot()),
-            InterpValue::Set(values) => Ok(values.snapshot()),
-            InterpValue::Deque(values)
-            | InterpValue::Queue(values)
-            | InterpValue::Stack(values) => Ok(values.snapshot()),
-            InterpValue::PriorityQueue(entries) | InterpValue::OrderedMap(entries) => Ok(entries
-                .snapshot()
-                .into_iter()
-                .map(|(key, value)| InterpValue::Tuple(vec![key, value]))
-                .collect()),
-            InterpValue::OrderedSet(values) => Ok(values.snapshot()),
-            InterpValue::Range(range) => {
-                let (InterpValue::Number(start), InterpValue::Number(end)) =
-                    (*range.start, *range.end)
-                else {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::MissingCheckedFact,
-                        span,
-                        "range iteration requires integer range bounds",
-                    ));
-                };
-                self.range_iteration_values(start, end, range.bounds, iterations, span)
-            }
-            other => Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                format!("for iteration requires a local collection or range value, got {other:?}"),
-            )),
-        }
-    }
-
-    fn range_iteration_values(
-        &self,
-        start: crate::value::NumericValue,
-        end: crate::value::NumericValue,
-        bounds: RangeBounds,
-        iterations: usize,
-        span: Span,
-    ) -> Result<Vec<InterpValue>, ExecutionFault> {
-        let mut values = Vec::new();
-        let mut current = match bounds {
-            RangeBounds::ClosedClosed | RangeBounds::ClosedOpen => start,
-            RangeBounds::OpenOpen | RangeBounds::OpenClosed => {
-                if !numeric_range_cmp(start, end, |ordering| ordering.is_lt(), span)? {
-                    return Ok(values);
-                }
-                numeric_range_increment(start, span)?
-            }
-        };
-        while values.len() < iterations {
-            let in_bounds = match bounds {
-                RangeBounds::ClosedClosed | RangeBounds::OpenClosed => {
-                    numeric_range_cmp(current, end, |ordering| ordering.is_le(), span)?
-                }
-                RangeBounds::ClosedOpen | RangeBounds::OpenOpen => {
-                    numeric_range_cmp(current, end, |ordering| ordering.is_lt(), span)?
-                }
-            };
-            if !in_bounds {
-                break;
-            }
-            values.push(InterpValue::Number(current));
-            current = match numeric_range_increment(current, span) {
-                Ok(value) => value,
-                Err(_) if values.len() == iterations => current,
-                Err(fault) => return Err(fault),
-            };
-        }
-        Ok(values)
     }
 
     pub(super) fn execute_while_loop(
@@ -496,37 +420,4 @@ impl<'a> EvalContext<'a> {
             "loop execution requires an Iterations(...) limit",
         ))
     }
-}
-
-fn numeric_range_increment(
-    value: crate::value::NumericValue,
-    span: Span,
-) -> Result<crate::value::NumericValue, ExecutionFault> {
-    value
-        .one_same()
-        .and_then(|one| value.checked_add(one))
-        .map_err(|_| {
-            ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                "range iteration overflowed its integer bounds",
-            )
-        })
-}
-
-fn numeric_range_cmp(
-    lhs: crate::value::NumericValue,
-    rhs: crate::value::NumericValue,
-    cmp: impl FnOnce(std::cmp::Ordering) -> bool,
-    span: Span,
-) -> Result<bool, ExecutionFault> {
-    lhs.partial_cmp_same(rhs)
-        .map(|ordering| ordering.is_some_and(cmp))
-        .map_err(|_| {
-            ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "range bounds must have the same checked integer type",
-            )
-        })
 }

@@ -24,7 +24,7 @@ impl<'a> EvalContext<'a> {
             .args
             .first()
             .and_then(|value| match value {
-                InterpValue::String(text) => Some(text.clone()),
+                InterpValue::String(text) => Some(text.to_string()),
                 _ => None,
             })
             .unwrap_or_else(|| "approval".to_owned());

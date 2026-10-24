@@ -37,7 +37,7 @@ impl EvalContext<'_> {
             return Err(invalid("invalid fence fields"));
         }
         SessionHistoryFence::from_token(
-            text(&fields, "opaque", &self.storage_limits)?.to_owned(),
+            text(fields, "opaque", &self.storage_limits)?.to_owned(),
             &self.storage_limits.clone(),
         )
     }
@@ -51,8 +51,8 @@ impl EvalContext<'_> {
         if fields.len() != 2 {
             return Err(invalid("invalid context fields"));
         }
-        let text = text(&fields, "text", &self.storage_limits)?;
-        let InterpValue::Map(provenance) = field(&fields, "provenance")? else {
+        let text = text(fields, "text", &self.storage_limits)?;
+        let InterpValue::Map(provenance) = field(fields, "provenance")? else {
             return Err(invalid("context provenance must be Map<string,string>"));
         };
         let provenance = provenance.borrow();

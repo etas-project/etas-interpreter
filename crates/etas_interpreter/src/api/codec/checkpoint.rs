@@ -2,17 +2,22 @@ use super::*;
 use crate::orchestration::BoundaryOccurrenceId;
 use std::num::{NonZeroU32, NonZeroU64};
 
+#[cfg(test)]
+mod tests;
+
 pub fn checkpoint_artifact_json(
     sources: &[PathBuf],
     flow: &str,
     checkpoint: &InterpreterCheckpoint,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let mut artifact = CheckpointDocument::from_value(json!({
         "schema": crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA,
         "sources": sources,
         "flow": flow,
-        "checkpoint": checkpoint_json(checkpoint)?,
-    }))
+        "checkpoint": null,
+    }));
+    artifact.value_mut()["checkpoint"] = checkpoint_json(checkpoint)?;
+    Ok(artifact.into_value())
 }
 
 pub fn checkpoint_id(checkpoint: &InterpreterCheckpoint) -> u32 {
@@ -126,9 +131,13 @@ pub fn checkpoint_from_json_with_limits(
     let slots = crate::plan::SlotLayoutTable::for_project(checked);
     let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
         .map_err(|errors| InterpreterCodecError::new(errors.join("; ")))?;
-    crate::eval::machine::snapshot::SnapshotValidator::new(checked, &slots, &dispatch, limits)
-        .validate_checkpoint(&checkpoint)
+    let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)
         .map_err(InterpreterCodecError::new)?;
+    crate::eval::machine::snapshot::SnapshotValidator::new(
+        checked, &slots, &dispatch, &closures, limits,
+    )
+    .validate_checkpoint(&checkpoint)
+    .map_err(InterpreterCodecError::new)?;
     Ok(checkpoint)
 }
 
@@ -173,7 +182,8 @@ pub fn event_json(event: &WorkflowEvent) -> Value {
             created_at,
             payload,
             provenance,
-        } => json!({
+        } => {
+            let mut event = json!({
             "kind": "message_created",
             "id": id,
             "from": from,
@@ -181,9 +191,12 @@ pub fn event_json(event: &WorkflowEvent) -> Value {
             "session": session,
             "role": role,
             "created_at": created_at,
-            "payload": value_json(payload),
+            "payload": null,
             "provenance": provenance.as_ref().map(provenance_json),
-        }),
+            });
+            event["payload"] = value_json(payload);
+            event
+        }
         WorkflowEvent::MessageSessionAttached {
             id,
             session,
@@ -409,13 +422,14 @@ fn host_request_kind_name(kind: etas_host::HostRequestKind) -> &'static str {
 pub(super) fn checkpoint_json(
     checkpoint: &InterpreterCheckpoint,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let host_state = checkpoint_host_state_json(&checkpoint.host_state)?;
+    let mut artifact = CheckpointDocument::from_value(json!({
         "id": checkpoint.id.0,
         "label": checkpoint.label,
         "compilation": compilation_identity_json(&checkpoint.compilation),
         "entry_item": checkpoint.entry_item.0,
-        "args": checkpoint.args.iter().map(value_json).collect::<Vec<_>>(),
-        "machine": machine_json(&checkpoint.machine)?,
+        "args": null,
+        "machine": null,
         "handlers": checkpoint.handlers.handlers.iter().map(|handler| {
             json!({
                 "id": handler.id.0,
@@ -433,7 +447,7 @@ pub(super) fn checkpoint_json(
             "next_host_request": checkpoint.trace.next_host_request,
         },
         "execution_progress": execution_progress_json(checkpoint.execution_progress),
-        "host_state": checkpoint_host_state_json(&checkpoint.host_state)?,
+        "host_state": host_state,
         "storage": checkpoint.storage,
         "current_session": checkpoint.current_session,
         "resource_versions": checkpoint.resource_versions.versions.iter().map(|version| {
@@ -447,7 +461,10 @@ pub(super) fn checkpoint_json(
                 "result": completed_host_boundary_result_json(&boundary.result),
             })
         }).collect::<Vec<_>>(),
-    }))
+    }));
+    artifact.value_mut()["args"] = Value::Array(checkpoint.args.iter().map(value_json).collect());
+    artifact.value_mut()["machine"] = machine_json(&checkpoint.machine)?;
+    Ok(artifact.into_value())
 }
 
 fn boundary_occurrence_json(occurrence: &BoundaryOccurrenceId) -> Value {
@@ -585,61 +602,62 @@ pub(super) fn compilation_identity_from_json(
 }
 
 pub(super) fn machine_json(machine: &MachineSnapshot) -> Result<Value, InterpreterCodecError> {
-    let frames = machine
-        .frames
-        .iter()
-        .map(|frame| -> Result<Value, InterpreterCodecError> {
-            Ok(match frame {
-                MachineFrameSnapshot::Block { continuation } => json!({
-                    "kind": "block",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Expr { continuation } => json!({
-                    "kind": "expr",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Call { continuation, span } => json!({
-                    "kind": "call",
-                    "continuation": machine_continuation_json(continuation)?,
-                    "span": span_json(*span),
-                }),
-                MachineFrameSnapshot::Continuation { continuation } => json!({
-                    "kind": "continuation",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Handler { continuation } => json!({
-                    "kind": "handler",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::Retry { continuation } => json!({
-                    "kind": "retry",
-                    "continuation": machine_continuation_json(continuation)?,
-                }),
-                MachineFrameSnapshot::ModelLoop(frame) => {
-                    json!({
-                        "kind": "model_loop",
-                        "model": model_loop_frame_json(frame)?,
-                    })
-                }
-                MachineFrameSnapshot::SourceToolReturn(frame) => {
-                    json!({
-                        "kind": "source_tool_return",
-                        "source_tool": source_tool_return_frame_json(frame)?,
-                    })
-                }
-            })
-        })
-        .collect::<Result<Vec<_>, _>>()?;
-    Ok(json!({ "frames": frames }))
+    machine_json_with_budget(machine, &mut snapshot::EncodingBudget::default())
 }
 
-pub(super) fn machine_continuation_json(
-    continuation: &ContinuationSnapshot,
+fn machine_json_with_budget(
+    machine: &MachineSnapshot,
+    budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
-    let continuation = continuation
-        .to_runtime()
-        .map_err(InterpreterCodecError::new)?;
-    machine::continuation_snapshot(&continuation).map_err(InterpreterCodecError::new)
+    let mut object = CheckpointDocument::from_value(json!({"frames":[]}));
+    for frame in &machine.frames {
+        let frame = machine_frame_json(frame, budget)?;
+        object.value_mut()["frames"]
+            .as_array_mut()
+            .expect("machine frame array was initialized above")
+            .push(frame);
+    }
+    Ok(object.into_value())
+}
+
+fn machine_frame_json(
+    frame: &MachineFrameSnapshot,
+    budget: &mut snapshot::EncodingBudget,
+) -> Result<Value, InterpreterCodecError> {
+    let (mut object, continuation) = match frame {
+        MachineFrameSnapshot::Block { continuation } => {
+            (json!({"kind":"block","continuation":null}), continuation)
+        }
+        MachineFrameSnapshot::Expr { continuation } => {
+            (json!({"kind":"expr","continuation":null}), continuation)
+        }
+        MachineFrameSnapshot::Call { continuation, span } => (
+            json!({"kind":"call","span":span_json(*span),"continuation":null}),
+            continuation,
+        ),
+        MachineFrameSnapshot::Continuation { continuation } => (
+            json!({"kind":"continuation","continuation":null}),
+            continuation,
+        ),
+        MachineFrameSnapshot::Handler { continuation } => {
+            (json!({"kind":"handler","continuation":null}), continuation)
+        }
+        MachineFrameSnapshot::Retry { continuation } => {
+            (json!({"kind":"retry","continuation":null}), continuation)
+        }
+        MachineFrameSnapshot::ModelLoop(frame) => {
+            let mut object = json!({"kind":"model_loop","model":null});
+            object["model"] = model_loop_frame_json(frame, budget)?;
+            return Ok(object);
+        }
+        MachineFrameSnapshot::SourceToolReturn(frame) => {
+            let mut object = json!({"kind":"source_tool_return","source_tool":null});
+            object["source_tool"] = source_tool_return_frame_json(frame, budget)?;
+            return Ok(object);
+        }
+    };
+    object["continuation"] = snapshot::continuation_json_with_budget(continuation, budget)?;
+    Ok(object)
 }
 
 pub(super) fn machine_from_json(
@@ -673,32 +691,22 @@ pub(super) fn machine_from_json(
                 limits,
                 required_obj(frame, "continuation")?,
                 checked,
-                std::sync::Arc::new(crate::plan::SlotLayoutTable::default()),
             )
             .map_err(InterpreterCodecError::new)?;
             let kind = required_str(frame, "kind")?;
             if kind == "handler"
-                && !matches!(
-                    continuation,
-                    crate::control::Continuation::HandleBoundary { .. }
-                )
+                && !matches!(continuation, ContinuationSnapshot::HandleBoundary { .. })
             {
                 return Err(InterpreterCodecError::new(
                     "checkpoint handler frame does not contain a handler boundary",
                 ));
             }
-            if kind == "retry"
-                && !matches!(
-                    continuation,
-                    crate::control::Continuation::RetryAttempt { .. }
-                )
+            if kind == "retry" && !matches!(continuation, ContinuationSnapshot::RetryAttempt { .. })
             {
                 return Err(InterpreterCodecError::new(
                     "checkpoint retry frame does not contain a retry attempt",
                 ));
             }
-            let continuation =
-                ContinuationSnapshot::capture(&continuation).map_err(InterpreterCodecError::new)?;
             match kind {
                 "block" => Ok(MachineFrameSnapshot::Block { continuation }),
                 "expr" => Ok(MachineFrameSnapshot::Expr { continuation }),
@@ -720,9 +728,10 @@ pub(super) fn machine_from_json(
 
 pub(super) fn model_loop_frame_json(
     frame: &crate::orchestration::ModelLoopFrameSnapshot,
+    budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
-        "pending": pending_model_json(&frame.pending)?,
+    let mut object = CheckpointDocument::from_value(json!({
+        "pending": null,
         "round": frame.round,
         "repair_attempts": frame.repair.attempts,
         "repair_kind": frame.repair.last_kind,
@@ -734,8 +743,12 @@ pub(super) fn model_loop_frame_json(
             "boundary_key": tool.boundary_key,
         })),
         "boundary_key": frame.boundary_key,
-        "outer_continuation": machine_continuation_json(&frame.outer_continuation)?,
-    }))
+        "outer_continuation": null,
+    }));
+    object.value_mut()["pending"] = pending_model_json(&frame.pending, budget)?;
+    object.value_mut()["outer_continuation"] =
+        snapshot::continuation_json_with_budget(&frame.outer_continuation, budget)?;
+    Ok(object.into_value())
 }
 
 pub(super) fn model_loop_frame_from_json(
@@ -765,14 +778,10 @@ pub(super) fn model_loop_frame_from_json(
         completed_tool_result: required_bool(value, "completed_tool_result")?,
         current_host_tool,
         boundary_key: required_str(value, "boundary_key")?.to_owned(),
-        outer_continuation: ContinuationSnapshot::capture(
-            &machine::continuation_from_snapshot(
-                limits,
-                required_obj(value, "outer_continuation")?,
-                checked,
-                std::sync::Arc::new(crate::plan::SlotLayoutTable::default()),
-            )
-            .map_err(InterpreterCodecError::new)?,
+        outer_continuation: machine::continuation_from_snapshot(
+            limits,
+            required_obj(value, "outer_continuation")?,
+            checked,
         )
         .map_err(InterpreterCodecError::new)?,
     })
@@ -780,16 +789,19 @@ pub(super) fn model_loop_frame_from_json(
 
 pub(super) fn source_tool_return_frame_json(
     frame: &crate::orchestration::SourceToolReturnFrameSnapshot,
+    budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let mut object = CheckpointDocument::from_value(json!({
         "tool_call_id": frame.tool_call_id,
         "tool_name": frame.tool_name,
         "binding": source_tool_binding_json(&frame.binding),
         "args": host_value_json(&frame.args),
         "boundary_key": frame.boundary_key,
         "output_schema": frame.output_schema.as_ref().map(machine::host_schema_snapshot),
-        "model_loop": model_loop_frame_json(&frame.model_loop)?,
-    }))
+        "model_loop": null,
+    }));
+    object.value_mut()["model_loop"] = model_loop_frame_json(&frame.model_loop, budget)?;
+    Ok(object.into_value())
 }
 
 pub(super) fn source_tool_return_frame_from_json(
@@ -820,8 +832,9 @@ pub(super) fn source_tool_return_frame_from_json(
 
 pub(super) fn pending_model_json(
     pending: &crate::orchestration::PendingModelSnapshot,
+    budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
-    Ok(json!({
+    let mut object = CheckpointDocument::from_value(json!({
         "request": model_request_json(&pending.request)?,
         "decode": match pending.decode {
             crate::orchestration::ModelDecodeSnapshot::String => json!({"kind": "string"}),
@@ -831,8 +844,11 @@ pub(super) fn pending_model_json(
         "max_tool_rounds": pending.max_tool_rounds,
         "source_tools": pending.source_tools.iter().map(source_tool_binding_json).collect::<Vec<_>>(),
         "span": span_json(pending.span),
-        "continuation": machine_continuation_json(&pending.continuation)?,
-    }))
+        "continuation": null,
+    }));
+    object.value_mut()["continuation"] =
+        snapshot::continuation_json_with_budget(&pending.continuation, budget)?;
+    Ok(object.into_value())
 }
 
 pub(super) fn pending_model_from_json(
@@ -862,14 +878,10 @@ pub(super) fn pending_model_from_json(
             .map(source_tool_binding_from_json)
             .collect::<Result<Vec<_>, _>>()?,
         span: span_from_json(required_obj(value, "span")?)?,
-        continuation: ContinuationSnapshot::capture(
-            &machine::continuation_from_snapshot(
-                limits,
-                required_obj(value, "continuation")?,
-                checked,
-                std::sync::Arc::new(crate::plan::SlotLayoutTable::default()),
-            )
-            .map_err(InterpreterCodecError::new)?,
+        continuation: machine::continuation_from_snapshot(
+            limits,
+            required_obj(value, "continuation")?,
+            checked,
         )
         .map_err(InterpreterCodecError::new)?,
     })

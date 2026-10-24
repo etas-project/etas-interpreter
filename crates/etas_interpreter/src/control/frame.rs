@@ -9,22 +9,61 @@ use etas_hir::SymbolId;
 
 use crate::{plan::SlotLayoutTable, value::InterpValue};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub struct Frame {
+    snapshot_id: u64,
     layout: Arc<SlotLayoutTable>,
-    slots: Rc<RefCell<Vec<Option<InterpValue>>>>,
+    slots: Rc<RefCell<SlotStorage>>,
     restored: Option<Rc<RefCell<HashMap<SymbolId, InterpValue>>>>,
     type_bindings: Arc<HashMap<String, etas_types::TypeId>>,
 }
 
+#[derive(Debug)]
+struct SlotStorage {
+    values: Vec<Option<InterpValue>>,
+    additional: HashMap<SymbolId, usize>,
+    scope_symbols: Option<Rc<HashSet<SymbolId>>>,
+}
+
+impl PartialEq for SlotStorage {
+    fn eq(&self, other: &Self) -> bool {
+        self.values == other.values && self.additional == other.additional
+    }
+}
+impl Eq for SlotStorage {}
+
+static NEXT_FRAME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
+
+impl PartialEq for Frame {
+    fn eq(&self, other: &Self) -> bool {
+        self.layout == other.layout
+            && self.slots == other.slots
+            && self.restored == other.restored
+            && self.type_bindings == other.type_bindings
+    }
+}
+impl Eq for Frame {}
+
 impl Frame {
     pub fn new(layout: Arc<SlotLayoutTable>) -> Self {
+        Self::with_shared_type_bindings(layout, Arc::new(HashMap::new()))
+    }
+
+    fn with_shared_type_bindings(
+        layout: Arc<SlotLayoutTable>,
+        type_bindings: Arc<HashMap<String, etas_types::TypeId>>,
+    ) -> Self {
         let slot_count = layout.slot_count();
         Self {
+            snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             layout,
-            slots: Rc::new(RefCell::new(vec![None; slot_count])),
+            slots: Rc::new(RefCell::new(SlotStorage {
+                values: vec![None; slot_count],
+                additional: HashMap::new(),
+                scope_symbols: None,
+            })),
             restored: None,
-            type_bindings: Arc::new(HashMap::new()),
+            type_bindings,
         }
     }
 
@@ -32,9 +71,27 @@ impl Frame {
         layout: Arc<SlotLayoutTable>,
         type_bindings: HashMap<String, etas_types::TypeId>,
     ) -> Self {
-        let mut frame = Self::new(layout);
-        frame.type_bindings = Arc::new(type_bindings);
-        frame
+        Self::with_shared_type_bindings(layout, Arc::new(type_bindings))
+    }
+
+    pub(crate) fn capture(
+        &self,
+        layout: Arc<SlotLayoutTable>,
+        symbols: &[SymbolId],
+    ) -> Result<Self, String> {
+        let mut captured = Self::with_shared_type_bindings(layout, self.type_bindings.clone());
+        for symbol in symbols {
+            if captured.layout.resolve(*symbol).is_none() {
+                return Err(format!(
+                    "closure layout is missing captured symbol {symbol:?}"
+                ));
+            }
+            let value = self
+                .get(*symbol)
+                .ok_or_else(|| format!("closure capture {symbol:?} is not bound"))?;
+            captured.insert(*symbol, value);
+        }
+        Ok(captured)
     }
 
     pub(crate) fn from_snapshot(locals: Vec<(SymbolId, InterpValue)>) -> Result<Self, String> {
@@ -48,8 +105,13 @@ impl Frame {
             }
         }
         Ok(Self {
+            snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             layout: Arc::new(SlotLayoutTable::default()),
-            slots: Rc::new(RefCell::new(Vec::new())),
+            slots: Rc::new(RefCell::new(SlotStorage {
+                values: Vec::new(),
+                additional: HashMap::new(),
+                scope_symbols: None,
+            })),
             restored: Some(Rc::new(RefCell::new(restored))),
             type_bindings: Arc::new(HashMap::new()),
         })
@@ -68,6 +130,25 @@ impl Frame {
         &self.type_bindings
     }
 
+    pub(crate) fn snapshot_id(&self) -> u64 {
+        self.snapshot_id
+    }
+
+    // Frame aliases share slots, restored locals, layout and immutable type bindings.
+    // Include the wire identity separately: decoding may assign a different ID.
+    pub(crate) fn shared_capture_identity(&self) -> Option<(*const (), u64)> {
+        (Rc::strong_count(&self.slots) > 1)
+            .then(|| (Rc::as_ptr(&self.slots).cast(), self.snapshot_id))
+    }
+
+    pub(crate) fn set_snapshot_id(&mut self, id: u64) -> Result<(), String> {
+        if id == 0 {
+            return Err("snapshot frame identity must be nonzero".into());
+        }
+        self.snapshot_id = id;
+        Ok(())
+    }
+
     pub fn sorted_type_bindings(&self) -> Vec<(String, etas_types::TypeId)> {
         let mut bindings = self
             .type_bindings
@@ -79,8 +160,9 @@ impl Frame {
     }
 
     pub fn get(&self, symbol: SymbolId) -> Option<InterpValue> {
-        if let Some(slot) = self.layout.resolve(symbol) {
-            return self.slots.borrow()[slot.0 as usize].clone();
+        let slots = self.slots.borrow();
+        if let Some(slot) = self.resolve(&slots, symbol) {
+            return slots.values[slot].clone();
         }
         self.restored
             .as_ref()
@@ -88,23 +170,28 @@ impl Frame {
     }
 
     pub fn insert(&mut self, symbol: SymbolId, value: InterpValue) {
-        if let Some(slot) = self.layout.resolve(symbol) {
-            self.slots.borrow_mut()[slot.0 as usize] = Some(value);
+        let mut slots = self.slots.borrow_mut();
+        if let Some(slot) = self.resolve(&slots, symbol) {
+            if slots.values[slot].is_none() {
+                slots.scope_symbols = None;
+            }
+            slots.values[slot] = Some(value);
             return;
         }
         if let Some(locals) = &self.restored {
-            locals.borrow_mut().insert(symbol, value);
+            if locals.borrow_mut().insert(symbol, value).is_none() {
+                slots.scope_symbols = None;
+            }
             return;
         }
         panic!("missing slot layout for symbol {:?}", symbol);
     }
 
     pub fn set(&mut self, symbol: SymbolId, value: InterpValue) -> bool {
-        if let Some(slot) = self.layout.resolve(symbol) {
-            let mut slots = self.slots.borrow_mut();
-            let index = slot.0 as usize;
-            if slots[index].is_some() {
-                slots[index] = Some(value);
+        let mut slots = self.slots.borrow_mut();
+        if let Some(index) = self.resolve(&slots, symbol) {
+            if slots.values[index].is_some() {
+                slots.values[index] = Some(value);
                 return true;
             }
             return false;
@@ -120,13 +207,29 @@ impl Frame {
         })
     }
 
+    /// Synchronous commit only: no evaluation or suspension while the slot is borrowed.
+    pub(crate) fn with_local_mut<R>(
+        &mut self,
+        symbol: SymbolId,
+        update: impl FnOnce(&mut InterpValue) -> R,
+    ) -> Option<R> {
+        let mut slots = self.slots.borrow_mut();
+        if let Some(slot) = self.resolve(&slots, symbol) {
+            return slots.values.get_mut(slot)?.as_mut().map(update);
+        }
+        let mut locals = self.restored.as_ref()?.borrow_mut();
+        locals.get_mut(&symbol).map(update)
+    }
+
     pub fn snapshot_symbols(&self) -> HashSet<SymbolId> {
+        let slots = self.slots.borrow();
+        self.collect_symbols(&slots)
+    }
+
+    fn collect_symbols(&self, slots: &SlotStorage) -> HashSet<SymbolId> {
         let mut symbols = self
-            .layout
-            .symbols()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, symbol)| self.slots.borrow()[index].as_ref().map(|_| *symbol))
+            .slot_symbols(slots)
+            .filter_map(|(symbol, index)| slots.values[index].as_ref().map(|_| symbol))
             .collect::<HashSet<_>>();
         if let Some(restored) = &self.restored {
             symbols.extend(restored.borrow().keys().copied());
@@ -134,28 +237,60 @@ impl Frame {
         symbols
     }
 
+    /// Reassignments preserve scope membership. Frame aliases share invalidation,
+    /// while previously returned scope snapshots remain immutable.
+    pub(crate) fn scope_symbols(&self) -> Rc<HashSet<SymbolId>> {
+        let mut slots = self.slots.borrow_mut();
+        if let Some(cached) = &slots.scope_symbols {
+            return cached.clone();
+        }
+        let symbols = Rc::new(self.collect_symbols(&slots));
+        slots.scope_symbols = Some(symbols.clone());
+        symbols
+    }
+
     pub fn cleanup_to(&mut self, keep: &HashSet<SymbolId>) {
         let mut slots = self.slots.borrow_mut();
-        for (index, symbol) in self.layout.symbols().iter().enumerate() {
-            if !keep.contains(symbol) {
-                slots[index] = None;
+        if slots
+            .scope_symbols
+            .as_ref()
+            .is_some_and(|cached| std::ptr::eq(cached.as_ref(), keep))
+        {
+            return;
+        }
+        let SlotStorage {
+            values, additional, ..
+        } = &mut *slots;
+        let mut removed = false;
+        for (symbol, index) in self
+            .layout
+            .symbols()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, symbol)| (symbol, index))
+            .chain(additional.iter().map(|(symbol, index)| (*symbol, *index)))
+        {
+            if !keep.contains(&symbol) {
+                removed |= values[index].take().is_some();
             }
         }
         if let Some(restored) = &self.restored {
-            restored
-                .borrow_mut()
-                .retain(|symbol, _| keep.contains(symbol));
+            let mut restored = restored.borrow_mut();
+            let count = restored.len();
+            restored.retain(|symbol, _| keep.contains(symbol));
+            removed |= restored.len() != count;
+        }
+        if removed {
+            slots.scope_symbols = None;
         }
     }
 
     pub fn sorted_locals(&self) -> Vec<(SymbolId, InterpValue)> {
         let slots = self.slots.borrow();
         let mut locals = self
-            .layout
-            .symbols()
-            .iter()
-            .enumerate()
-            .filter_map(|(index, symbol)| slots[index].clone().map(|value| (*symbol, value)))
+            .slot_symbols(&slots)
+            .filter_map(|(symbol, index)| slots.values[index].clone().map(|value| (symbol, value)))
             .collect::<Vec<_>>();
         if let Some(restored) = &self.restored {
             locals.extend(
@@ -168,4 +303,80 @@ impl Frame {
         locals.sort_by_key(|(symbol, _)| symbol.0);
         locals
     }
+
+    pub(crate) fn try_map_locals<T, E>(
+        &self,
+        mut map: impl FnMut(&InterpValue) -> Result<T, E>,
+    ) -> Result<Vec<(SymbolId, T)>, E> {
+        let slots = self.slots.borrow();
+        let restored = self.restored.as_ref().map(|locals| locals.borrow());
+        let count = slots.values.iter().filter(|value| value.is_some()).count()
+            + restored.as_ref().map_or(0, |locals| locals.len());
+        let mut output = Vec::with_capacity(count);
+        for (symbol, index) in self.slot_symbols(&slots) {
+            if let Some(value) = &slots.values[index] {
+                output.push((symbol, map(value)?));
+            }
+        }
+        if let Some(restored) = restored {
+            for (symbol, value) in restored.iter() {
+                output.push((*symbol, map(value)?));
+            }
+        }
+        output.sort_unstable_by_key(|(symbol, _)| symbol.0);
+        Ok(output)
+    }
+
+    fn resolve(&self, slots: &SlotStorage, symbol: SymbolId) -> Option<usize> {
+        self.layout
+            .resolve(symbol)
+            .map(|slot| slot.0 as usize)
+            .or_else(|| slots.additional.get(&symbol).copied())
+    }
+
+    fn slot_symbols<'a>(
+        &'a self,
+        slots: &'a SlotStorage,
+    ) -> impl Iterator<Item = (SymbolId, usize)> + 'a {
+        self.layout
+            .symbols()
+            .iter()
+            .copied()
+            .enumerate()
+            .map(|(index, symbol)| (symbol, index))
+            .chain(
+                slots
+                    .additional
+                    .iter()
+                    .map(|(symbol, index)| (*symbol, *index)),
+            )
+    }
+
+    /// A first-class handler may be defined outside the applying callable.
+    /// Install only its planned bindings, in shared storage so every alias keeps
+    /// the same frame identity and observes the same symbol-to-slot mapping.
+    pub(crate) fn install_scope_layout(&mut self, layout: &SlotLayoutTable) {
+        // Restored frames already use symbolic locals rather than dense slots.
+        if self.restored.is_some() {
+            return;
+        }
+        let mut slots = self.slots.borrow_mut();
+        let missing = layout
+            .symbols()
+            .iter()
+            .filter(|symbol| self.resolve(&slots, **symbol).is_none())
+            .count();
+        slots.values.reserve(missing);
+        slots.additional.reserve(missing);
+        for symbol in layout.symbols() {
+            if self.resolve(&slots, *symbol).is_none() {
+                let index = slots.values.len();
+                slots.additional.insert(*symbol, index);
+                slots.values.push(None);
+            }
+        }
+    }
 }
+
+#[cfg(test)]
+mod tests;

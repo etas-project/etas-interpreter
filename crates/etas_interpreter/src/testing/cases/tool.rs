@@ -49,7 +49,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -59,7 +59,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("final answer".to_owned()))
+        Some(value::InterpValue::String("final answer".to_owned().into()))
     );
     assert_eq!(host.model_call_count(), 2);
     assert_eq!(
@@ -134,7 +134,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
                 host_context: api::HostExecutionContext {
@@ -160,7 +160,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("final answer".to_owned()))
+        Some(value::InterpValue::String("final answer".to_owned().into()))
     );
     assert_eq!(host.model_call_count(), 2);
     assert_eq!(host.tool_requests().len(), 1);
@@ -241,7 +241,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
                 host_context: api::HostExecutionContext {
@@ -310,7 +310,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
                 host_context: api::HostExecutionContext {
@@ -341,7 +341,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("final answer".to_owned()))
+        Some(value::InterpValue::String("final answer".to_owned().into()))
     );
     assert_eq!(host.model_call_count(), 2);
     assert_eq!(host.tool_requests().len(), 1);
@@ -418,7 +418,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -428,7 +428,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("final answer".to_owned()))
+        Some(value::InterpValue::String("final answer".to_owned().into()))
     );
     assert_eq!(host.model_call_count(), 3);
     assert_eq!(host.tool_requests().len(), 0);
@@ -494,7 +494,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
                 host_context: api::HostExecutionContext {
@@ -583,7 +583,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
                 host_context: api::HostExecutionContext {
@@ -699,7 +699,7 @@ flow main(input: string) -> Draft {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &first_host,
             options.clone(),
         )
@@ -779,7 +779,7 @@ flow main(input: string) -> Draft {
         value::InterpValue::Record(
             vec![(
                 "text".to_owned(),
-                value::InterpValue::String("resumed-completion".to_owned()),
+                value::InterpValue::String("resumed-completion".to_owned().into()),
             )]
             .into(),
         )
@@ -861,7 +861,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &first_host,
             options.clone(),
         )
@@ -908,7 +908,9 @@ flow main(input: string) -> string {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
         resumed.value().cloned(),
-        Some(value::InterpValue::String("resumed-completion".to_owned()))
+        Some(value::InterpValue::String(
+            "resumed-completion".to_owned().into()
+        ))
     );
     assert_eq!(resumed_host.model_call_count(), 1);
     assert_eq!(resumed_host.tool_requests().len(), 0);
@@ -957,7 +959,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
                 host_context: api::HostExecutionContext {
@@ -1045,7 +1047,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
                 host_context: api::HostExecutionContext {
@@ -1112,7 +1114,7 @@ flow main(topic: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("storage".to_owned())],
+            vec![value::InterpValue::String("storage".to_owned().into())],
             &host,
             RunOptions::default(),
         )
@@ -1171,7 +1173,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -1229,7 +1231,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )
@@ -1288,7 +1290,7 @@ flow main(input: string) -> ModelResponse {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             options,
         )

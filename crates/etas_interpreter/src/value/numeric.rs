@@ -2,7 +2,7 @@ use std::cmp::Ordering;
 
 use etas_types::PrimitiveType;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash)]
 pub enum NumericValue {
     I8(i8),
     I16(i16),

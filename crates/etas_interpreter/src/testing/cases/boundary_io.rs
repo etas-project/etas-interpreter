@@ -501,8 +501,7 @@ flow main() -> unit ![Console, Error<IOError>]
 "#,
     );
     let entry = checked.entry.expect("entry item");
-    let summary = checked
-        .effects
+    let summary = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
         .item_effects
         .get_mut(&entry)
         .expect("entry effect summary");
@@ -547,8 +546,7 @@ flow main(cmd: Command) -> CommandResult ![Command.run<DefaultCommandSandbox>]
 "#,
     );
     let entry = checked.entry.expect("entry item");
-    let summary = checked
-        .effects
+    let summary = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
         .item_effects
         .get_mut(&entry)
         .expect("entry effect summary");
@@ -689,7 +687,7 @@ flow main(
                     value::InterpValue::String("LANG".into()),
                     value::InterpValue::String("C".into()),
                 )])),
-                value::InterpValue::Bytes(b"input".to_vec()),
+                value::InterpValue::Bytes(b"input".to_vec().into()),
             ],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
@@ -852,13 +850,15 @@ flow main() -> Result<string, IOError> ![Console]
     assert_eq!(
         result.value().cloned(),
         Some(value::InterpValue::Variant {
-            name: "Err".to_owned(),
+            name: "Err".to_owned().into(),
             fields: vec![value::InterpValue::Variant {
-                name: "Host".to_owned(),
+                name: "Host".to_owned().into(),
                 fields: vec![value::InterpValue::String(
-                    "ProviderUnavailable: stdin closed".to_owned()
-                )],
-            }],
+                    "ProviderUnavailable: stdin closed".to_owned().into()
+                )]
+                .into(),
+            }]
+            .into(),
         })
     );
     assert!(result.events.iter().any(|event| matches!(
@@ -888,11 +888,13 @@ flow main() -> Result<string, IOError> ![Console]
     );
     let io_error = resolve_std_type(&checked, &["std", "io", "IOError"])
         .expect("checked std.io program should contain IOError");
-    let converted_error = checked.type_store.intern(Type::Named(NamedTypeRef {
+    let converted_error = std::sync::Arc::make_mut(
+        &mut std::sync::Arc::make_mut(&mut checked).type_store,
+    )
+    .intern(Type::Named(NamedTypeRef {
         name: "ConvertedIOError".to_owned(),
     }));
-    let capture = checked
-        .effects
+    let capture = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
         .try_captures
         .values_mut()
         .next()
@@ -950,7 +952,9 @@ flow main() -> Result<string, IOError> ![Console]
 }
 "#,
     );
-    checked.effects.try_captures.clear();
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+        .try_captures
+        .clear();
 
     let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
     let result = Interpreter
@@ -992,7 +996,9 @@ flow main() -> unit ![Approval] {
 }
 "#,
     );
-    checked.effects.performed_actions.clear();
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+        .performed_actions
+        .clear();
 
     let host = FakeHost::new(availability(&[HostRequirementKind::Approval]));
     let result = Interpreter
@@ -1101,15 +1107,15 @@ flow main() -> unit {
 "#,
     );
     let entry = checked.entry.expect("entry item");
-    checked.interpreter_support.entry = Some(InterpreterSupport::RequiresInterpreterOrchestration(
+    let support =
+        &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+            .interpreter_support;
+    support.entry = Some(InterpreterSupport::RequiresInterpreterOrchestration(
         etas_effects::InterpreterOrchestrationRequirementSet::feature(
             etas_effects::InterpreterFeatureKind::Resume,
         ),
     ));
-    checked
-        .interpreter_support
-        .items
-        .insert(entry, checked.interpreter_support.entry.clone().unwrap());
+    support.items.insert(entry, support.entry.clone().unwrap());
 
     let result = Interpreter
         .run_checked(

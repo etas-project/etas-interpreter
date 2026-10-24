@@ -1,9 +1,15 @@
 use super::*;
 
+mod content;
+#[cfg(test)]
+mod content_tests;
+#[cfg(test)]
+mod tests;
+
 impl<'a> EvalContext<'a> {
     pub(in crate::eval) fn eval_prompt_value_method(
         &mut self,
-        messages: Vec<crate::value::PromptMessage>,
+        messages: crate::value::PromptValue,
         method: &str,
         args: &[HirArg],
         span: Span,
@@ -142,7 +148,7 @@ impl<'a> EvalContext<'a> {
 
     pub(in crate::eval) fn finish_prompt_value_method_arg(
         &mut self,
-        mut messages: Vec<crate::value::PromptMessage>,
+        mut messages: crate::value::PromptValue,
         method: &str,
         role: crate::value::PromptRole,
         allow_plain_system_content: bool,
@@ -287,7 +293,7 @@ impl<'a> EvalContext<'a> {
         value: InterpValue,
         span: Span,
         allow_plain_system_content: bool,
-    ) -> Result<(String, Option<etas_types::TrustWrapper>), ExecutionFault> {
+    ) -> Result<(crate::value::StringValue, Option<etas_types::TrustWrapper>), ExecutionFault> {
         match value {
             value if method == "data" => {
                 if prompt_data_contains_secret(&value) {
@@ -297,87 +303,21 @@ impl<'a> EvalContext<'a> {
                         "Prompt.data cannot encode secret values",
                     ));
                 }
-                let host_value =
-                    super::host_value::interp_to_host_value(&value).map_err(|error| {
+                let json =
+                    super::host_value::interp_to_host_json_string(&value).map_err(|error| {
                         ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             span,
                             format!(
-                                "Prompt.data cannot encode {} values: {error}",
+                                "Prompt.data cannot encode {} values: {}",
                                 prompt_data_kind(&value),
+                                error.message
                             ),
                         )
                     })?;
-                let json = etas_host::host_value_to_json(&host_value).map_err(|error| {
-                    ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        format!("Prompt.data could not encode host value: {}", error.message),
-                    )
-                })?;
-                Ok((json.to_string(), None))
+                Ok((json.into(), None))
             }
-            InterpValue::String(text) => {
-                if method == "system" && !allow_plain_system_content {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Prompt.system requires Trusted[T] content or a checked static string literal",
-                    ));
-                }
-                Ok((text, None))
-            }
-            InterpValue::Prompt(parts) => {
-                if method == "system" && !allow_plain_system_content {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Prompt.system requires Trusted[T] content or a checked static string literal",
-                    ));
-                }
-                Ok((
-                    parts
-                        .into_iter()
-                        .map(|message| message.text)
-                        .collect::<Vec<_>>()
-                        .join("\n"),
-                    None,
-                ))
-            }
-            InterpValue::Trust { wrapper, value } => {
-                if wrapper == etas_types::TrustWrapper::Secret {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Secret[T] values are not prompt-encodable by default",
-                    ));
-                }
-                if method == "system" && wrapper != etas_types::TrustWrapper::Trusted {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        "Prompt.system requires Trusted[T] content or a checked static string literal",
-                    ));
-                }
-                let (text, _) = self.prompt_channel_content(
-                    method,
-                    *value,
-                    span,
-                    wrapper == etas_types::TrustWrapper::Trusted || allow_plain_system_content,
-                )?;
-                Ok((text, Some(wrapper)))
-            }
-            InterpValue::Message(message) => self.prompt_channel_content(
-                method,
-                *message.payload,
-                span,
-                allow_plain_system_content,
-            ),
-            other => Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                format!("Prompt.{method} expects a string-compatible argument, got {other:?}"),
-            )),
+            value => content::text(value, method, span, allow_plain_system_content),
         }
     }
 }

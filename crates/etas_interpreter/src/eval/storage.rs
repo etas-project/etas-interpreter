@@ -3,14 +3,13 @@ use etas_host::{
     HostError, HostErrorCode, HostRequestId, StorageLimits, StorageOperationKey,
     StorageOperationRef,
 };
-use std::cell::Ref;
 
 impl EvalContext<'_> {
     pub(super) fn checked_storage_record<'a>(
         &self,
         value: &'a InterpValue,
         path: &[&str],
-    ) -> Result<Ref<'a, Vec<(String, InterpValue)>>, HostError> {
+    ) -> Result<&'a Vec<(String, InterpValue)>, HostError> {
         let expected = super::resolve_std_type(self.checked, path)
             .ok_or_else(|| invalid("missing checked storage type"))?;
         let InterpValue::Nominal { ty, value } = value else {
@@ -41,8 +40,8 @@ impl EvalContext<'_> {
             return Err(invalid("invalid operation reference fields"));
         }
         let operation = StorageOperationRef {
-            key: StorageOperationKey::parse(text(&fields, "key", &self.storage_limits)?)?,
-            request_fingerprint: text(&fields, "fingerprint", &self.storage_limits)?.into(),
+            key: StorageOperationKey::parse(text(fields, "key", &self.storage_limits)?)?,
+            request_fingerprint: text(fields, "fingerprint", &self.storage_limits)?.into(),
         };
         operation.validate()?;
         Ok(operation)

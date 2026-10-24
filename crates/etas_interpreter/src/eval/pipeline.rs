@@ -77,7 +77,7 @@ impl<'a> EvalContext<'a> {
             };
             targets.push(self.call_target_with_limits(target, limits));
         }
-        ControlSignal::Value(InterpValue::Callable(CallTarget::Composed(targets)))
+        ControlSignal::Value(InterpValue::Callable(CallTarget::Composed(targets.into())))
     }
 
     pub(super) fn call_target_with_limits(
@@ -89,7 +89,7 @@ impl<'a> EvalContext<'a> {
             target
         } else {
             CallTarget::Limited {
-                target: Box::new(target),
+                target: target.into(),
                 limits,
             }
         }

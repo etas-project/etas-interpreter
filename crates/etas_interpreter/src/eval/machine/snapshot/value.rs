@@ -1,11 +1,21 @@
-use crate::orchestration::{ConversationSnapshot, MessageSnapshot, ValueSnapshot};
-use crate::value::{
-    ArrayValue, ConversationValue, InterpValue, ListValue, MapValue, MessageValue, RangeValue,
-    RecordValue, SetValue, SliceValue,
-};
+use super::RestoreContext;
+use crate::orchestration::SnapshotBox;
+use crate::orchestration::ValueSnapshot;
+use crate::value::{InterpValue, RangeValue};
+
+#[cfg(test)]
+#[path = "value_capture_tests.rs"]
+mod capture_tests;
 
 impl ValueSnapshot {
     pub(crate) fn capture(value: &InterpValue) -> Result<Self, String> {
+        super::value_capture::capture(value)
+    }
+
+    pub(super) fn capture_leaf(
+        value: &InterpValue,
+        context: &mut super::capture_context::CaptureContext,
+    ) -> Result<Self, String> {
         Ok(match value {
             InterpValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value.clone()),
             InterpValue::Unit => Self::Unit,
@@ -14,19 +24,7 @@ impl ValueSnapshot {
             InterpValue::String(value) => Self::String(value.clone()),
             InterpValue::Bytes(value) => Self::Bytes(value.clone()),
             InterpValue::Json(value) => Self::Json(value.clone()),
-            InterpValue::Nominal { ty, value } => Self::Nominal {
-                ty: *ty,
-                value: Box::new(Self::capture(value)?),
-            },
-            InterpValue::Trust { wrapper, value } => Self::Trust {
-                wrapper: *wrapper,
-                value: Box::new(Self::capture(value)?),
-            },
             InterpValue::Prompt(messages) => Self::Prompt(messages.clone()),
-            InterpValue::Message(message) => Self::Message(MessageSnapshot::capture(message)?),
-            InterpValue::Conversation(conversation) => {
-                Self::Conversation(ConversationSnapshot::capture(conversation)?)
-            }
             InterpValue::Provenance(value) => Self::Provenance(value.clone()),
             InterpValue::ModelResponse(value) => Self::ModelResponse(value.clone()),
             InterpValue::Command {
@@ -49,43 +47,36 @@ impl ValueSnapshot {
                 stdout: stdout.clone(),
                 stderr: stderr.clone(),
             },
-            InterpValue::Tuple(values) => Self::Tuple(capture_values(values)?),
-            InterpValue::Array(values) => Self::Array(capture_values(&values.snapshot())?),
-            InterpValue::List(values) => Self::List(capture_values(&values.snapshot())?),
-            InterpValue::Slice(values) => Self::Slice(capture_values(&values.snapshot())?),
-            InterpValue::Map(values) => Self::Map(capture_pairs(&values.snapshot())?),
-            InterpValue::Set(values) => Self::Set(capture_values(&values.snapshot())?),
-            InterpValue::Deque(values) => Self::Deque(capture_values(&values.snapshot())?),
-            InterpValue::Queue(values) => Self::Queue(capture_values(&values.snapshot())?),
-            InterpValue::Stack(values) => Self::Stack(capture_values(&values.snapshot())?),
-            InterpValue::PriorityQueue(values) => {
-                Self::PriorityQueue(capture_pairs(&values.snapshot())?)
-            }
-            InterpValue::OrderedMap(values) => Self::OrderedMap(capture_pairs(&values.snapshot())?),
-            InterpValue::OrderedSet(values) => {
-                Self::OrderedSet(capture_values(&values.snapshot())?)
-            }
             InterpValue::Range(value) => Self::Range {
-                start: Box::new(Self::capture(&value.start)?),
-                end: Box::new(Self::capture(&value.end)?),
+                start: SnapshotBox::new(context.value(&value.start)?),
+                end: SnapshotBox::new(context.value(&value.end)?),
                 bounds: value.bounds,
             },
-            InterpValue::Record(values) => Self::Record(
-                values
-                    .snapshot()
-                    .iter()
-                    .map(|(name, value)| Ok((name.clone(), Self::capture(value)?)))
-                    .collect::<Result<Vec<_>, String>>()?,
-            ),
-            InterpValue::Variant { name, fields } => Self::Variant {
-                name: name.clone(),
-                fields: capture_values(fields)?,
-            },
             InterpValue::OptionNone => Self::OptionNone,
-            InterpValue::OptionSome(value) => Self::OptionSome(Box::new(Self::capture(value)?)),
-            InterpValue::Callable(target) => {
-                Self::Callable(super::call_target::capture_call_target(target)?)
+            InterpValue::Nominal { .. }
+            | InterpValue::Message(_)
+            | InterpValue::Conversation(_)
+            | InterpValue::Trust { .. }
+            | InterpValue::OptionSome(_)
+            | InterpValue::Tuple(_)
+            | InterpValue::Variant { .. }
+            | InterpValue::Record(_)
+            | InterpValue::Array(_)
+            | InterpValue::Stack(_)
+            | InterpValue::List(_)
+            | InterpValue::Slice(_)
+            | InterpValue::Set(_)
+            | InterpValue::OrderedSet(_)
+            | InterpValue::Deque(_)
+            | InterpValue::Queue(_)
+            | InterpValue::Map(_)
+            | InterpValue::OrderedMap(_)
+            | InterpValue::PriorityQueue(_) => {
+                return Err("compound checkpoint value must use its capture builder".into());
             }
+            InterpValue::Callable(target) => Self::Callable(
+                super::call_target::capture_call_target_with(target, context)?,
+            ),
             InterpValue::Handler {
                 fact_expr,
                 handlers,
@@ -139,15 +130,26 @@ impl ValueSnapshot {
                 kind: kind.clone(),
                 predicate: predicate
                     .as_deref()
-                    .map(Self::capture)
+                    .map(|value| context.value(value))
                     .transpose()?
-                    .map(Box::new),
+                    .map(SnapshotBox::new),
                 limit: *limit,
             },
         })
     }
 
     pub(crate) fn restore(self) -> Result<InterpValue, String> {
+        self.restore_with(&mut RestoreContext::default())
+    }
+
+    pub(crate) fn restore_with(self, context: &mut RestoreContext) -> Result<InterpValue, String> {
+        super::value_restore::restore(self, context)
+    }
+
+    pub(super) fn restore_leaf_with(
+        self,
+        context: &mut RestoreContext,
+    ) -> Result<InterpValue, String> {
         Ok(match self {
             Self::MemoryWriteIntent(value) => InterpValue::MemoryWriteIntent(value),
             Self::Unit => InterpValue::Unit,
@@ -156,17 +158,7 @@ impl ValueSnapshot {
             Self::String(value) => InterpValue::String(value),
             Self::Bytes(value) => InterpValue::Bytes(value),
             Self::Json(value) => InterpValue::Json(value),
-            Self::Nominal { ty, value } => InterpValue::Nominal {
-                ty,
-                value: Box::new(value.restore()?),
-            },
-            Self::Trust { wrapper, value } => InterpValue::Trust {
-                wrapper,
-                value: Box::new(value.restore()?),
-            },
             Self::Prompt(messages) => InterpValue::Prompt(messages),
-            Self::Message(message) => InterpValue::Message(message.restore()?),
-            Self::Conversation(conversation) => InterpValue::Conversation(conversation.restore()?),
             Self::Provenance(value) => InterpValue::Provenance(value),
             Self::ModelResponse(value) => InterpValue::ModelResponse(value),
             Self::Command {
@@ -189,43 +181,35 @@ impl ValueSnapshot {
                 stdout,
                 stderr,
             },
-            Self::Tuple(values) => InterpValue::Tuple(restore_values(values)?),
-            Self::Array(values) => InterpValue::Array(ArrayValue::new(restore_values(values)?)),
-            Self::List(values) => InterpValue::List(ListValue::new(restore_values(values)?)),
-            Self::Slice(values) => InterpValue::Slice(SliceValue::new(restore_values(values)?)),
-            Self::Map(values) => InterpValue::Map(MapValue::new(restore_pairs(values)?)),
-            Self::Set(values) => InterpValue::Set(SetValue::new(restore_values(values)?)),
-            Self::Deque(values) => InterpValue::Deque(ArrayValue::new(restore_values(values)?)),
-            Self::Queue(values) => InterpValue::Queue(ArrayValue::new(restore_values(values)?)),
-            Self::Stack(values) => InterpValue::Stack(ArrayValue::new(restore_values(values)?)),
-            Self::PriorityQueue(values) => {
-                InterpValue::PriorityQueue(MapValue::new(restore_pairs(values)?))
-            }
-            Self::OrderedMap(values) => {
-                InterpValue::OrderedMap(MapValue::new(restore_pairs(values)?))
-            }
-            Self::OrderedSet(values) => {
-                InterpValue::OrderedSet(SetValue::new(restore_values(values)?))
-            }
             Self::Range { start, end, bounds } => InterpValue::Range(RangeValue {
-                start: Box::new(start.restore()?),
-                end: Box::new(end.restore()?),
+                start: Box::new(start.into_value().restore_with(context)?),
+                end: Box::new(end.into_value().restore_with(context)?),
                 bounds,
             }),
-            Self::Record(values) => InterpValue::Record(RecordValue::new(
-                values
-                    .into_iter()
-                    .map(|(name, value)| Ok((name, value.restore()?)))
-                    .collect::<Result<Vec<_>, String>>()?,
-            )),
-            Self::Variant { name, fields } => InterpValue::Variant {
-                name,
-                fields: restore_values(fields)?,
-            },
             Self::OptionNone => InterpValue::OptionNone,
-            Self::OptionSome(value) => InterpValue::OptionSome(Box::new(value.restore()?)),
+            Self::Nominal { .. }
+            | Self::Message(_)
+            | Self::Conversation(_)
+            | Self::Trust { .. }
+            | Self::OptionSome(_)
+            | Self::Tuple(_)
+            | Self::Variant { .. }
+            | Self::Record(_)
+            | Self::Array(_)
+            | Self::Stack(_)
+            | Self::List(_)
+            | Self::Slice(_)
+            | Self::Set(_)
+            | Self::OrderedSet(_)
+            | Self::Deque(_)
+            | Self::Queue(_)
+            | Self::Map(_)
+            | Self::OrderedMap(_)
+            | Self::PriorityQueue(_) => {
+                return Err("compound checkpoint value must use its restore builder".into());
+            }
             Self::Callable(target) => {
-                InterpValue::Callable(super::call_target::restore_call_target(target)?)
+                InterpValue::Callable(super::call_target::restore_call_target(target, context)?)
             }
             Self::Handler {
                 fact_expr,
@@ -276,97 +260,13 @@ impl ValueSnapshot {
                 value_type,
                 kind,
                 predicate: predicate
-                    .map(|value| value.restore())
+                    .map(|value| value.into_value().restore())
                     .transpose()?
                     .map(Box::new),
                 limit,
             },
         })
     }
-}
-
-impl MessageSnapshot {
-    fn capture(message: &MessageValue) -> Result<Self, String> {
-        Ok(Self {
-            id: message.id.clone(),
-            from: message.from.clone(),
-            to: message.to.clone(),
-            role: message.role,
-            session: message.session.clone(),
-            created_at: message.created_at.clone(),
-            payload: Box::new(ValueSnapshot::capture(&message.payload)?),
-            provenance: message.provenance.clone(),
-        })
-    }
-
-    fn restore(self) -> Result<MessageValue, String> {
-        Ok(MessageValue {
-            id: self.id,
-            from: self.from,
-            to: self.to,
-            role: self.role,
-            session: self.session,
-            created_at: self.created_at,
-            payload: Box::new(self.payload.restore()?),
-            provenance: self.provenance,
-        })
-    }
-}
-
-impl ConversationSnapshot {
-    fn capture(conversation: &ConversationValue) -> Result<Self, String> {
-        Ok(Self {
-            selected_context: conversation.selected_context.as_deref().cloned(),
-            session: conversation.session.clone(),
-            history_fence: conversation.history_fence.clone(),
-            messages: conversation
-                .messages
-                .iter()
-                .map(MessageSnapshot::capture)
-                .collect::<Result<Vec<_>, _>>()?,
-            cursor: conversation.cursor.clone(),
-        })
-    }
-
-    fn restore(self) -> Result<ConversationValue, String> {
-        Ok(ConversationValue {
-            selected_context: self.selected_context.map(Box::new),
-            session: self.session,
-            history_fence: self.history_fence,
-            messages: self
-                .messages
-                .into_iter()
-                .map(MessageSnapshot::restore)
-                .collect::<Result<Vec<_>, _>>()?,
-            cursor: self.cursor,
-        })
-    }
-}
-
-fn capture_values(values: &[InterpValue]) -> Result<Vec<ValueSnapshot>, String> {
-    values.iter().map(ValueSnapshot::capture).collect()
-}
-
-fn restore_values(values: Vec<ValueSnapshot>) -> Result<Vec<InterpValue>, String> {
-    values.into_iter().map(ValueSnapshot::restore).collect()
-}
-
-fn capture_pairs(
-    values: &[(InterpValue, InterpValue)],
-) -> Result<Vec<(ValueSnapshot, ValueSnapshot)>, String> {
-    values
-        .iter()
-        .map(|(key, value)| Ok((ValueSnapshot::capture(key)?, ValueSnapshot::capture(value)?)))
-        .collect()
-}
-
-fn restore_pairs(
-    values: Vec<(ValueSnapshot, ValueSnapshot)>,
-) -> Result<Vec<(InterpValue, InterpValue)>, String> {
-    values
-        .into_iter()
-        .map(|(key, value)| Ok((key.restore()?, value.restore()?)))
-        .collect()
 }
 
 #[cfg(test)]

@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "perform/tests.rs"]
+mod tests;
+
 impl<'a> EvalContext<'a> {
     pub(super) fn resume_perform_args(
         &mut self,
@@ -15,6 +19,7 @@ impl<'a> EvalContext<'a> {
             mut evaluated_args,
             span,
         } = resume;
+        evaluated_args.reserve(args.len().saturating_sub(evaluated_args.len()));
         for (index, arg) in args.iter().enumerate().skip(start_arg_index) {
             let expr_id = match arg {
                 HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
@@ -37,9 +42,9 @@ impl<'a> EvalContext<'a> {
                         signal,
                         Continuation::PerformArgs {
                             expr,
-                            action: action.clone(),
-                            type_args: type_args.clone(),
-                            args: args.clone(),
+                            action,
+                            type_args,
+                            args,
                             next_arg_index: index + 1,
                             evaluated_args,
                             span,
@@ -123,13 +128,12 @@ impl<'a> EvalContext<'a> {
         if !self.performed_action_symbol_matches(action, fact.action_symbol) {
             return false;
         }
-        let arg_exprs = args
+        fact.args
             .iter()
-            .map(|arg| match arg {
+            .copied()
+            .eq(args.iter().map(|arg| match arg {
                 HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
-            })
-            .collect::<Vec<_>>();
-        fact.args == arg_exprs
+            }))
     }
 
     fn performed_action_symbol_matches(
@@ -148,7 +152,7 @@ pub(super) struct PerformArgsResume {
     pub expr: HirExprId,
     pub action: ResolvedActionRef,
     pub type_args: Vec<etas_hir::HirTypeId>,
-    pub args: Vec<HirArg>,
+    pub args: std::sync::Arc<[HirArg]>,
     pub start_arg_index: usize,
     pub evaluated_args: Vec<InterpValue>,
     pub span: Span,

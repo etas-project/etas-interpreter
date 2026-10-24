@@ -42,7 +42,7 @@ flow main(args: Array<string>) -> i32 ![Console, Error<IOError>] {
                 item: checked.entry.expect("entry item"),
             },
             vec![value::InterpValue::Array(value::ArrayValue::new(vec![
-                value::InterpValue::String("fetch".to_owned()),
+                value::InterpValue::String("fetch".to_owned().into()),
             ]))],
             &host,
             RunOptions::default(),
@@ -258,7 +258,7 @@ flow main(command: string) -> i32 ![Console, Error<IOError>] {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("fetch".to_owned())],
+            vec![value::InterpValue::String("fetch".to_owned().into())],
             &host,
             RunOptions::default(),
         )

@@ -1,15 +1,18 @@
 use etas_core::Span;
 use etas_hir::{
-    HirArg, HirBlockId, HirElseBranch, HirExprId, HirFieldInit, HirItemId, HirMapEntry,
-    HirMatchArm, HirPatId, HirRangeBounds, HirStage, HirTypeId, ResolvedActionRef, ScopeId,
-    SymbolId,
+    HirArg, HirBlockId, HirElseBranch, HirExprId, HirItemId, HirMatchArm, HirPatId, HirRangeBounds,
+    HirStage, HirTypeId, ResolvedActionRef, ScopeId, SymbolId,
 };
 use etas_types::TypeId;
 
+use super::{
+    CallTargetSnapshotChildren, CallTargetSnapshotLink, ContinuationSnapshotLink, SnapshotBox,
+    SnapshotChildren,
+};
 use crate::api::ExecutionLimits;
 use crate::value::{
     HostJsonSupportValue, InterpValue, MemorySelectionKind, MessageRoleValue, ModelResponseValue,
-    PromptMessage, ProvenanceValue, RangeBounds,
+    PromptValue, ProvenanceValue, RangeBounds,
 };
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
@@ -108,7 +111,7 @@ pub struct MachineSnapshot {
     pub(crate) frames: Vec<MachineFrameSnapshot>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CallTargetSnapshot {
     FlowItem(HirItemId),
     AgentItem(HirItemId),
@@ -132,40 +135,52 @@ pub(crate) enum CallTargetSnapshot {
         result_type: etas_types::TypeId,
     },
     Specialized {
-        target: Box<CallTargetSnapshot>,
+        target: CallTargetSnapshotLink,
         type_bindings: Vec<(String, etas_types::TypeId)>,
     },
     Limited {
-        target: Box<CallTargetSnapshot>,
+        target: CallTargetSnapshotLink,
         limits: Vec<crate::eval::limit::RuntimeLimit>,
     },
-    Composed(Vec<CallTargetSnapshot>),
+    Composed(CallTargetSnapshotChildren),
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
-    pub(crate) locals: Vec<(SymbolId, ValueSnapshot)>,
+    pub(crate) id: u64,
+    // Owned checkpoint data, never a live Frame backing. Sharing only avoids
+    // copying an already captured definition during validation and restoration.
+    pub(crate) locals: std::rc::Rc<Vec<(SymbolId, ValueSnapshot)>>,
     pub(crate) type_bindings: Vec<(String, etas_types::TypeId)>,
 }
 
-#[derive(Clone, Debug)]
+impl PartialEq for LocalsSnapshot {
+    fn eq(&self, other: &Self) -> bool {
+        self.id == other.id
+            && self.type_bindings == other.type_bindings
+            && (std::rc::Rc::ptr_eq(&self.locals, &other.locals) || self.locals == other.locals)
+    }
+}
+
+#[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
     MemoryWriteIntent(Box<crate::value::MemoryWriteIntentValue>),
     Unit,
     Bool(bool),
     Number(crate::value::NumericValue),
-    String(String),
-    Bytes(Vec<u8>),
+    // Immutable backing is shared with runtime values; mutations use COW.
+    String(crate::value::StringValue),
+    Bytes(crate::value::BytesValue),
     Json(HostJsonSupportValue),
     Nominal {
         ty: TypeId,
-        value: Box<ValueSnapshot>,
+        value: SnapshotBox,
     },
     Trust {
         wrapper: etas_types::TrustWrapper,
-        value: Box<ValueSnapshot>,
+        value: SnapshotBox,
     },
-    Prompt(Vec<PromptMessage>),
+    Prompt(PromptValue),
     Message(MessageSnapshot),
     Conversation(ConversationSnapshot),
     Provenance(ProvenanceValue),
@@ -181,30 +196,30 @@ pub(crate) enum ValueSnapshot {
         stdout: Vec<u8>,
         stderr: Vec<u8>,
     },
-    Tuple(Vec<ValueSnapshot>),
-    Array(Vec<ValueSnapshot>),
-    List(Vec<ValueSnapshot>),
-    Slice(Vec<ValueSnapshot>),
-    Map(Vec<(ValueSnapshot, ValueSnapshot)>),
-    Set(Vec<ValueSnapshot>),
-    Deque(Vec<ValueSnapshot>),
-    Queue(Vec<ValueSnapshot>),
-    Stack(Vec<ValueSnapshot>),
-    PriorityQueue(Vec<(ValueSnapshot, ValueSnapshot)>),
-    OrderedMap(Vec<(ValueSnapshot, ValueSnapshot)>),
-    OrderedSet(Vec<ValueSnapshot>),
+    Tuple(SnapshotChildren<ValueSnapshot>),
+    Array(SnapshotChildren<ValueSnapshot>),
+    List(SnapshotChildren<ValueSnapshot>),
+    Slice(SnapshotChildren<ValueSnapshot>),
+    Map(SnapshotChildren<(ValueSnapshot, ValueSnapshot)>),
+    Set(SnapshotChildren<ValueSnapshot>),
+    Deque(SnapshotChildren<ValueSnapshot>),
+    Queue(SnapshotChildren<ValueSnapshot>),
+    Stack(SnapshotChildren<ValueSnapshot>),
+    PriorityQueue(SnapshotChildren<(ValueSnapshot, ValueSnapshot)>),
+    OrderedMap(SnapshotChildren<(ValueSnapshot, ValueSnapshot)>),
+    OrderedSet(SnapshotChildren<ValueSnapshot>),
     Range {
-        start: Box<ValueSnapshot>,
-        end: Box<ValueSnapshot>,
+        start: SnapshotBox,
+        end: SnapshotBox,
         bounds: RangeBounds,
     },
-    Record(Vec<(String, ValueSnapshot)>),
+    Record(SnapshotChildren<(String, ValueSnapshot)>),
     Variant {
         name: String,
-        fields: Vec<ValueSnapshot>,
+        fields: SnapshotChildren<ValueSnapshot>,
     },
     OptionNone,
-    OptionSome(Box<ValueSnapshot>),
+    OptionSome(SnapshotBox),
     Callable(CallTargetSnapshot),
     Handler {
         fact_expr: etas_hir::HirExprId,
@@ -231,12 +246,12 @@ pub(crate) enum ValueSnapshot {
         key_type: TypeId,
         value_type: TypeId,
         kind: MemorySelectionKind,
-        predicate: Option<Box<ValueSnapshot>>,
+        predicate: Option<SnapshotBox>,
         limit: Option<u32>,
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct MessageSnapshot {
     pub(crate) id: String,
     pub(crate) from: Option<String>,
@@ -244,25 +259,17 @@ pub(crate) struct MessageSnapshot {
     pub(crate) role: MessageRoleValue,
     pub(crate) session: Option<String>,
     pub(crate) created_at: String,
-    pub(crate) payload: Box<ValueSnapshot>,
+    pub(crate) payload: SnapshotBox,
     pub(crate) provenance: Option<ProvenanceValue>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ConversationSnapshot {
-    pub(crate) selected_context: Option<etas_host::session::SessionPublishedContext>,
+    pub(crate) selected_context: Option<crate::value::PublishedContextValue>,
     pub(crate) session: String,
     pub(crate) history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub(crate) messages: Vec<MessageSnapshot>,
     pub(crate) cursor: Option<String>,
-}
-
-#[derive(Clone, Copy, Debug)]
-pub(crate) enum AggregateKindSnapshot {
-    Tuple,
-    Array,
-    List,
-    Set,
 }
 
 #[derive(Clone, Debug)]
@@ -373,8 +380,7 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
     },
     AggregateElement {
-        kind: AggregateKindSnapshot,
-        exprs: Vec<HirExprId>,
+        expr: HirExprId,
         next_index: usize,
         values: Vec<ValueSnapshot>,
         frame: LocalsSnapshot,
@@ -401,19 +407,18 @@ pub(crate) enum ContinuationSnapshot {
         expr: HirExprId,
         nominal_type: Option<TypeId>,
         variant_symbol: Option<SymbolId>,
-        fields: Vec<HirFieldInit>,
         next_index: usize,
         values: Vec<(String, ValueSnapshot)>,
         frame: LocalsSnapshot,
     },
     MapKey {
-        entries: Vec<HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         values: Vec<(ValueSnapshot, ValueSnapshot)>,
         frame: LocalsSnapshot,
     },
     MapValue {
-        entries: Vec<HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         key: ValueSnapshot,
         values: Vec<(ValueSnapshot, ValueSnapshot)>,
@@ -453,7 +458,7 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     PromptValueMethodArg {
-        messages: Vec<PromptMessage>,
+        messages: PromptValue,
         method: String,
         role: crate::value::PromptRole,
         allow_plain_system_content: bool,
@@ -492,7 +497,7 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     CalleeEval {
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         span: Span,
         frame: LocalsSnapshot,
     },
@@ -506,7 +511,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     CallArgs {
         target: CallTargetSnapshot,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<ValueSnapshot>,
         span: Span,
@@ -524,7 +529,7 @@ pub(crate) enum ContinuationSnapshot {
         expr: HirExprId,
         action: ResolvedActionRef,
         type_args: Vec<HirTypeId>,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<ValueSnapshot>,
         span: Span,
@@ -605,14 +610,14 @@ pub(crate) enum ContinuationSnapshot {
     },
     RestoreModelPolicy {
         previous: Box<ModelExecutionPolicySnapshot>,
-        inner: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
     },
     CallBoundary {
-        outer: Box<ContinuationSnapshot>,
+        outer: ContinuationSnapshotLink,
     },
     ForLoop {
         pat: HirPatId,
-        values: Option<Vec<ValueSnapshot>>,
+        source: Option<ValueSnapshot>,
         next_index: usize,
         body: HirBlockId,
         iterations: usize,
@@ -655,11 +660,11 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
     },
     HandlerDispatch {
-        outer: Box<ContinuationSnapshot>,
+        outer: ContinuationSnapshotLink,
     },
     HandleBoundary {
         scope_id: HandlerScopeId,
-        inner: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
         handlers: Vec<ActiveHandlerArmRecord>,
         span: Span,
         frame: LocalsSnapshot,
@@ -671,11 +676,11 @@ pub(crate) enum ContinuationSnapshot {
     },
     ScopedModelPolicy {
         policy: Box<ModelExecutionPolicySnapshot>,
-        inner: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
     },
     Chain {
-        inner: Box<ContinuationSnapshot>,
-        outer: Box<ContinuationSnapshot>,
+        inner: ContinuationSnapshotLink,
+        outer: ContinuationSnapshotLink,
     },
     Return,
     Resume,

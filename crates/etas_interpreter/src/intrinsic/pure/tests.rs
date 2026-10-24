@@ -12,6 +12,150 @@ use super::abi::output::from_builtin;
 use super::{AdapterError, PureAbiProjector, execute_pure_intrinsic};
 
 #[test]
+fn checked_map_count_does_not_materialize_keys_or_values() {
+    use crate::{testing::allocation::measure, value::MapValue};
+    let mut interner = TypeInterner::new();
+    let string = interner.primitive(PrimitiveType::String);
+    let size = interner.primitive(PrimitiveType::USize);
+    let boolean = interner.primitive(PrimitiveType::Bool);
+    let map = interner.intern(Type::Map {
+        key: string,
+        value: string,
+    });
+    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    for count in [0, 1000, 2000, 4000] {
+        let entries = MapValue::new(
+            (0..count)
+                .map(|i| {
+                    (
+                        InterpValue::String(i.to_string().into()),
+                        InterpValue::String("payload".repeat(128).into()),
+                    )
+                })
+                .collect(),
+        );
+        for (intrinsic, result_type, expected) in [
+            (intrinsic::pure::LIST_LEN, size, InterpValue::usize(count)),
+            (
+                intrinsic::pure::LIST_IS_EMPTY,
+                boolean,
+                InterpValue::Bool(count == 0),
+            ),
+        ] {
+            let call = CheckedPureIntrinsicCall {
+                intrinsic: StdIntrinsicId(intrinsic),
+                parameter_types: vec![map],
+                result_type,
+            };
+            let args = vec![InterpValue::Map(entries.clone())];
+            let (result, allocations) =
+                measure(|| execute_pure_intrinsic(&call, args, &projector).unwrap());
+            assert_eq!(result, expected);
+            assert_eq!(allocations.count, 0, "count={count}");
+            assert!(
+                execute_pure_intrinsic(
+                    &call,
+                    vec![InterpValue::List(ListValue::new(vec![]))],
+                    &projector
+                )
+                .is_err()
+            );
+            let bad_result = CheckedPureIntrinsicCall {
+                result_type: string,
+                ..call
+            };
+            assert!(
+                execute_pure_intrinsic(
+                    &bad_result,
+                    vec![InterpValue::Map(entries.clone())],
+                    &projector
+                )
+                .is_err()
+            );
+        }
+    }
+}
+
+#[test]
+fn checked_abi_moves_unique_text_payloads_without_copying() {
+    use super::abi::input::into_builtin_for_type;
+    use crate::testing::allocation::measure;
+    use crate::value::ArrayValue;
+
+    let mut interner = TypeInterner::new();
+    let string = interner.primitive(PrimitiveType::String);
+    let array = interner.intern(Type::Array(string));
+    let option = interner.intern(Type::Option(string));
+    let result = interner.intern(Type::Result {
+        ok: string,
+        err: string,
+    });
+    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    for count in [1000, 2000, 4000] {
+        let values: Vec<_> = (0..count)
+            .map(|_| InterpValue::String("x".repeat(128).into()))
+            .collect();
+        let pointers: Vec<_> = values
+            .iter()
+            .map(|v| match v {
+                InterpValue::String(s) => s.as_ptr(),
+                _ => unreachable!(),
+            })
+            .collect();
+        let input = InterpValue::Array(ArrayValue::new(values));
+        let (output, allocations) =
+            measure(|| into_builtin_for_type(input, array, &projector).unwrap());
+        assert!(allocations.count < 32, "{count}: {allocations:?}");
+        let BuiltinValue::Array(output) = output else {
+            panic!("expected array")
+        };
+        for (value, pointer) in output.iter().zip(pointers) {
+            let BuiltinValue::String(value) = value else {
+                panic!("expected string")
+            };
+            assert_eq!(value.as_ptr(), pointer);
+        }
+    }
+    for (constructor, unwrap, wrapped) in [
+        (
+            intrinsic::pure::OPTION_SOME,
+            intrinsic::pure::OPTION_UNWRAP,
+            option,
+        ),
+        (
+            intrinsic::pure::RESULT_OK,
+            intrinsic::pure::RESULT_UNWRAP,
+            result,
+        ),
+    ] {
+        let text = "payload".repeat(4096);
+        let pointer = text.as_ptr();
+        let args = vec![InterpValue::String(text.into())];
+        let constructor_call = CheckedPureIntrinsicCall {
+            intrinsic: StdIntrinsicId(constructor),
+            parameter_types: vec![string],
+            result_type: wrapped,
+        };
+        let (wrapped_value, allocations) =
+            measure(|| execute_pure_intrinsic(&constructor_call, args, &projector).unwrap());
+        assert!(allocations.bytes < 1024, "{allocations:?}");
+        let args = vec![wrapped_value];
+        let unwrap_call = CheckedPureIntrinsicCall {
+            intrinsic: StdIntrinsicId(unwrap),
+            parameter_types: vec![wrapped],
+            result_type: string,
+        };
+        let (value, allocations) =
+            measure(|| execute_pure_intrinsic(&unwrap_call, args, &projector).unwrap());
+        assert_eq!(allocations.count, 0);
+        let InterpValue::String(text) = value else {
+            panic!("expected string")
+        };
+        assert_eq!(text.as_ptr(), pointer);
+    }
+}
+
+#[test]
 fn adapter_preserves_slice_values() {
     let value = InterpValue::Slice(SliceValue::new(vec![
         InterpValue::i32(1),
@@ -60,9 +204,9 @@ fn result_and_option_constructors_preserve_nominal_payloads() {
     let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
     let payload = InterpValue::Nominal {
         ty: payload_type,
-        value: Box::new(InterpValue::Record(RecordValue::new(vec![(
+        value: crate::value::SharedValue::new(InterpValue::Record(RecordValue::new(vec![(
             "name".to_owned(),
-            InterpValue::String("value".to_owned()),
+            InterpValue::String("value".to_owned().into()),
         )]))),
     };
 
@@ -100,18 +244,21 @@ fn result_and_option_constructors_preserve_nominal_payloads() {
     assert_eq!(
         ok,
         InterpValue::Variant {
-            name: "Ok".to_owned(),
-            fields: vec![payload.clone()],
+            name: "Ok".to_owned().into(),
+            fields: vec![payload.clone()].into(),
         }
     );
     assert_eq!(
         err,
         InterpValue::Variant {
-            name: "Err".to_owned(),
-            fields: vec![payload.clone()],
+            name: "Err".to_owned().into(),
+            fields: vec![payload.clone()].into(),
         }
     );
-    assert_eq!(some, InterpValue::OptionSome(Box::new(payload)));
+    assert_eq!(
+        some,
+        InterpValue::OptionSome(crate::value::SharedValue::new(payload))
+    );
 }
 
 #[test]
@@ -135,7 +282,9 @@ fn option_and_result_unwrap_use_distinct_checked_abis() {
     assert_eq!(
         execute_pure_intrinsic(
             &option_call,
-            vec![InterpValue::OptionSome(Box::new(InterpValue::i32(7)))],
+            vec![InterpValue::OptionSome(crate::value::SharedValue::new(
+                InterpValue::i32(7)
+            ))],
             &projector,
         ),
         Ok(InterpValue::i32(7))
@@ -156,8 +305,8 @@ fn option_and_result_unwrap_use_distinct_checked_abis() {
         execute_pure_intrinsic(
             &result_call,
             vec![InterpValue::Variant {
-                name: "Ok".to_owned(),
-                fields: vec![InterpValue::i32(11)],
+                name: "Ok".to_owned().into(),
+                fields: vec![InterpValue::i32(11)].into(),
             }],
             &projector,
         ),
@@ -167,8 +316,8 @@ fn option_and_result_unwrap_use_distinct_checked_abis() {
         execute_pure_intrinsic(
             &result_call,
             vec![InterpValue::Variant {
-                name: "Err".to_owned(),
-                fields: vec![InterpValue::String("failed".to_owned())],
+                name: "Err".to_owned().into(),
+                fields: vec![InterpValue::String("failed".to_owned().into())].into(),
             }],
             &projector,
         ),
@@ -241,31 +390,40 @@ fn pure_builtin_arguments_project_nominal_representations_recursively() {
     let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
     let header = InterpValue::Nominal {
         ty: header_type,
-        value: Box::new(InterpValue::Record(RecordValue::new(vec![
+        value: crate::value::SharedValue::new(InterpValue::Record(RecordValue::new(vec![
             (
                 "name".to_owned(),
-                InterpValue::String("content-length".to_owned()),
+                InterpValue::String("content-length".to_owned().into()),
             ),
-            ("value".to_owned(), InterpValue::String("5".to_owned())),
+            (
+                "value".to_owned(),
+                InterpValue::String("5".to_owned().into()),
+            ),
         ]))),
     };
     let request = InterpValue::Nominal {
         ty: request_type,
-        value: Box::new(InterpValue::Record(RecordValue::new(vec![
-            ("method".to_owned(), InterpValue::String("PUT".to_owned())),
+        value: crate::value::SharedValue::new(InterpValue::Record(RecordValue::new(vec![
+            (
+                "method".to_owned(),
+                InterpValue::String("PUT".to_owned().into()),
+            ),
             (
                 "target".to_owned(),
-                InterpValue::String("/items".to_owned()),
+                InterpValue::String("/items".to_owned().into()),
             ),
             (
                 "version".to_owned(),
-                InterpValue::String("HTTP/1.1".to_owned()),
+                InterpValue::String("HTTP/1.1".to_owned().into()),
             ),
             (
                 "headers".to_owned(),
                 InterpValue::List(ListValue::new(vec![header])),
             ),
-            ("body".to_owned(), InterpValue::Bytes(b"hello".to_vec())),
+            (
+                "body".to_owned(),
+                InterpValue::Bytes(b"hello".to_vec().into()),
+            ),
         ]))),
     };
 
@@ -349,7 +507,9 @@ fn pure_builtin_result_restores_nested_nominal_identity() {
             result_type,
         },
         vec![InterpValue::Bytes(
-            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n".to_vec(),
+            b"HTTP/1.1 204 No Content\r\nContent-Length: 0\r\n\r\n"
+                .to_vec()
+                .into(),
         )],
         &projector,
     )

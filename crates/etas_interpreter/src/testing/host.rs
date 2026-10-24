@@ -45,7 +45,7 @@ pub(super) enum SessionContextFault {
     ForeignReceipt,
 }
 
-pub(super) struct FakeHost {
+pub(crate) struct FakeHost {
     pub(super) session_context_fault: Option<SessionContextFault>,
     pub(super) storage: Option<TestMemoryBackend>,
     console_gate: Option<Arc<ConsoleGate>>,
@@ -88,7 +88,7 @@ pub(super) struct FakeHost {
 }
 
 impl FakeHost {
-    pub(super) fn new(availability: HostServiceAvailability) -> Self {
+    pub(crate) fn new(availability: HostServiceAvailability) -> Self {
         Self {
             storage: None,
             console_gate: None,
@@ -261,6 +261,23 @@ impl FakeHost {
             .lock()
             .expect("model errors lock")
             .push_back(HostError::new(code, message));
+    }
+
+    pub(super) fn seed_model_response_value(&self, value: HostValue) {
+        self.model_responses
+            .lock()
+            .expect("model responses lock")
+            .push_back(ModelResponse {
+                id: etas_host::HostRequestId(0),
+                message: ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: vec![ModelContent::Value(value)],
+                    tool_call_id: None,
+                    tool_calls: Vec::new(),
+                },
+                tool_calls: Vec::new(),
+                usage: None,
+            });
     }
 
     pub(super) fn force_next_model_response_id(&self, id: etas_host::HostRequestId) {

@@ -1,34 +1,89 @@
-use std::{
-    cell::{Ref, RefCell, RefMut},
-    fmt,
-    rc::Rc,
-};
+use std::{fmt, rc::Rc};
 
 use super::primitive::InterpValue;
 
 #[derive(Clone)]
-pub struct ArrayValue(Rc<RefCell<Vec<InterpValue>>>);
+pub struct ArrayValue(Rc<Vec<InterpValue>>);
 
 impl ArrayValue {
+    pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {
+        (Rc::strong_count(&self.0) > 1).then(|| Rc::as_ptr(&self.0).cast())
+    }
+
+    pub(super) fn into_unique_values(self) -> Option<Vec<InterpValue>> {
+        Rc::try_unwrap(self.0).ok()
+    }
+
     pub fn new(values: Vec<InterpValue>) -> Self {
-        Self(Rc::new(RefCell::new(values)))
+        Self(Rc::new(values))
     }
 
-    pub fn borrow(&self) -> Ref<'_, Vec<InterpValue>> {
-        self.0.borrow()
+    pub fn borrow(&self) -> &Vec<InterpValue> {
+        &self.0
     }
 
-    pub fn borrow_mut(&self) -> RefMut<'_, Vec<InterpValue>> {
-        self.0.borrow_mut()
+    pub fn borrow_mut(&mut self) -> &mut Vec<InterpValue> {
+        Rc::make_mut(&mut self.0)
     }
 
     pub fn snapshot(&self) -> Vec<InterpValue> {
         self.borrow().clone()
     }
 
+    /// Reuse unique backing; shared values retain their original snapshot.
+    pub fn into_values(self) -> Vec<InterpValue> {
+        match Rc::try_unwrap(self.0) {
+            Ok(values) => values,
+            Err(shared) => shared.as_ref().clone(),
+        }
+    }
+
+    pub(crate) fn push(&mut self, value: InterpValue) {
+        self.prepare_growth(1);
+        Rc::make_mut(&mut self.0).push(value);
+    }
+
+    fn prepare_growth(&mut self, additional: usize) {
+        if Rc::strong_count(&self.0) > 1 {
+            let current = self.0.as_ref();
+            // Clone shared headers directly into the final capacity, rather
+            // than cloning a full buffer and immediately growing it again.
+            let mut next = Vec::with_capacity(current.len() + additional);
+            next.extend(current.iter().cloned());
+            self.0 = Rc::new(next);
+        }
+    }
+
+    pub(crate) fn pop(&mut self) -> Option<InterpValue> {
+        if self.borrow().is_empty() {
+            return None;
+        }
+        self.borrow_mut().pop()
+    }
+
+    /// Consume unique buffers and clone shared elements directly into the
+    /// final buffer. In particular, a shared right operand needs no temporary Vec.
+    pub(crate) fn concat(mut self, other: Self) -> Self {
+        let right_len = other.borrow().len();
+        if right_len == 0 {
+            return self;
+        }
+        if self.borrow().is_empty() {
+            return other;
+        }
+        self.prepare_growth(right_len);
+        let values = Rc::make_mut(&mut self.0);
+        values.reserve(right_len);
+        match Rc::try_unwrap(other.0) {
+            Ok(right) => values.extend(right),
+            Err(shared) => values.extend(shared.iter().cloned()),
+        }
+        self
+    }
+
     pub fn make_unique(&mut self) {
         if Rc::strong_count(&self.0) > 1 {
-            self.0 = Rc::new(RefCell::new(self.snapshot()));
+            self.0 = Rc::new(self.snapshot());
         }
     }
 }
@@ -41,7 +96,7 @@ impl fmt::Debug for ArrayValue {
 
 impl PartialEq for ArrayValue {
     fn eq(&self, other: &Self) -> bool {
-        self.snapshot() == other.snapshot()
+        *self.borrow() == *other.borrow()
     }
 }
 
@@ -54,66 +109,71 @@ impl From<Vec<InterpValue>> for ArrayValue {
 }
 
 #[derive(Clone)]
-pub struct ListValue(Rc<RefCell<Vec<InterpValue>>>);
-
-impl ListValue {
-    pub fn new(values: Vec<InterpValue>) -> Self {
-        Self(Rc::new(RefCell::new(values)))
-    }
-
-    pub fn borrow(&self) -> Ref<'_, Vec<InterpValue>> {
-        self.0.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, Vec<InterpValue>> {
-        self.0.borrow_mut()
-    }
-
-    pub fn snapshot(&self) -> Vec<InterpValue> {
-        self.borrow().clone()
-    }
-
-    pub fn make_unique(&mut self) {
-        if Rc::strong_count(&self.0) > 1 {
-            self.0 = Rc::new(RefCell::new(self.snapshot()));
-        }
-    }
+pub struct SliceValue {
+    backing: Rc<Vec<InterpValue>>,
+    range: std::ops::Range<usize>,
 }
-
-impl fmt::Debug for ListValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("ListValue").field(&self.borrow()).finish()
-    }
-}
-
-impl PartialEq for ListValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.snapshot() == other.snapshot()
-    }
-}
-
-impl Eq for ListValue {}
-
-impl From<Vec<InterpValue>> for ListValue {
-    fn from(values: Vec<InterpValue>) -> Self {
-        Self::new(values)
-    }
-}
-
-#[derive(Clone)]
-pub struct SliceValue(Rc<RefCell<Vec<InterpValue>>>);
 
 impl SliceValue {
-    pub fn new(values: Vec<InterpValue>) -> Self {
-        Self(Rc::new(RefCell::new(values)))
+    pub(crate) fn shared_capture_identity(&self) -> Option<(*const (), usize, usize)> {
+        (Rc::strong_count(&self.backing) > 1).then(|| {
+            (
+                Rc::as_ptr(&self.backing).cast(),
+                self.range.start,
+                self.range.end,
+            )
+        })
     }
 
-    pub fn borrow(&self) -> Ref<'_, Vec<InterpValue>> {
-        self.0.borrow()
+    pub(super) fn into_unique_backing(self) -> Option<Vec<InterpValue>> {
+        Rc::try_unwrap(self.backing).ok()
+    }
+
+    pub fn new(values: Vec<InterpValue>) -> Self {
+        Self {
+            range: 0..values.len(),
+            backing: Rc::new(values),
+        }
+    }
+
+    pub fn from_array(values: ArrayValue, range: std::ops::Range<usize>) -> Option<Self> {
+        if range.start > range.end || range.end > values.borrow().len() {
+            return None;
+        }
+        Some(Self {
+            backing: values.0,
+            range,
+        })
+    }
+
+    pub fn slice(self, range: std::ops::Range<usize>) -> Option<Self> {
+        if range.start > range.end || range.end > self.range.len() {
+            return None;
+        }
+        Some(Self {
+            range: self.range.start + range.start..self.range.start + range.end,
+            backing: self.backing,
+        })
+    }
+
+    pub fn borrow(&self) -> &[InterpValue] {
+        &self.backing[self.range.clone()]
     }
 
     pub fn snapshot(&self) -> Vec<InterpValue> {
-        self.borrow().clone()
+        self.borrow().to_vec()
+    }
+
+    /// Reuse unique backing; shared values retain their original snapshot.
+    pub fn into_values(self) -> Vec<InterpValue> {
+        match Rc::try_unwrap(self.backing) {
+            Ok(mut values) => {
+                values.truncate(self.range.end);
+                values.drain(..self.range.start);
+                values
+            }
+            Err(shared) => shared[self.range].to_vec(),
+        }
     }
 }
 
@@ -125,7 +185,7 @@ impl fmt::Debug for SliceValue {
 
 impl PartialEq for SliceValue {
     fn eq(&self, other: &Self) -> bool {
-        self.snapshot() == other.snapshot()
+        *self.borrow() == *other.borrow()
     }
 }
 
@@ -137,143 +197,6 @@ impl From<Vec<InterpValue>> for SliceValue {
     }
 }
 
-#[derive(Clone)]
-pub struct MapValue(Rc<RefCell<Vec<(InterpValue, InterpValue)>>>);
-
-impl MapValue {
-    pub fn new(entries: Vec<(InterpValue, InterpValue)>) -> Self {
-        Self(Rc::new(RefCell::new(entries)))
-    }
-
-    pub fn borrow(&self) -> Ref<'_, Vec<(InterpValue, InterpValue)>> {
-        self.0.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, Vec<(InterpValue, InterpValue)>> {
-        self.0.borrow_mut()
-    }
-
-    pub fn snapshot(&self) -> Vec<(InterpValue, InterpValue)> {
-        self.borrow().clone()
-    }
-
-    pub fn make_unique(&mut self) {
-        if Rc::strong_count(&self.0) > 1 {
-            self.0 = Rc::new(RefCell::new(self.snapshot()));
-        }
-    }
-}
-
-impl fmt::Debug for MapValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("MapValue").field(&self.borrow()).finish()
-    }
-}
-
-impl PartialEq for MapValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.snapshot() == other.snapshot()
-    }
-}
-
-impl Eq for MapValue {}
-
-impl From<Vec<(InterpValue, InterpValue)>> for MapValue {
-    fn from(entries: Vec<(InterpValue, InterpValue)>) -> Self {
-        Self::new(entries)
-    }
-}
-
-#[derive(Clone)]
-pub struct SetValue(Rc<RefCell<Vec<InterpValue>>>);
-
-impl SetValue {
-    pub fn new(values: Vec<InterpValue>) -> Self {
-        Self(Rc::new(RefCell::new(values)))
-    }
-
-    pub fn borrow(&self) -> Ref<'_, Vec<InterpValue>> {
-        self.0.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, Vec<InterpValue>> {
-        self.0.borrow_mut()
-    }
-
-    pub fn snapshot(&self) -> Vec<InterpValue> {
-        self.borrow().clone()
-    }
-
-    pub fn make_unique(&mut self) {
-        if Rc::strong_count(&self.0) > 1 {
-            self.0 = Rc::new(RefCell::new(self.snapshot()));
-        }
-    }
-}
-
-impl fmt::Debug for SetValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("SetValue").field(&self.borrow()).finish()
-    }
-}
-
-impl PartialEq for SetValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.snapshot() == other.snapshot()
-    }
-}
-
-impl Eq for SetValue {}
-
-impl From<Vec<InterpValue>> for SetValue {
-    fn from(values: Vec<InterpValue>) -> Self {
-        Self::new(values)
-    }
-}
-
-#[derive(Clone)]
-pub struct RecordValue(Rc<RefCell<Vec<(String, InterpValue)>>>);
-
-impl RecordValue {
-    pub fn new(fields: Vec<(String, InterpValue)>) -> Self {
-        Self(Rc::new(RefCell::new(fields)))
-    }
-
-    pub fn borrow(&self) -> Ref<'_, Vec<(String, InterpValue)>> {
-        self.0.borrow()
-    }
-
-    pub fn borrow_mut(&self) -> RefMut<'_, Vec<(String, InterpValue)>> {
-        self.0.borrow_mut()
-    }
-
-    pub fn snapshot(&self) -> Vec<(String, InterpValue)> {
-        self.borrow().clone()
-    }
-
-    pub fn make_unique(&mut self) {
-        if Rc::strong_count(&self.0) > 1 {
-            self.0 = Rc::new(RefCell::new(self.snapshot()));
-        }
-    }
-}
-
-impl fmt::Debug for RecordValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.debug_tuple("RecordValue").field(&self.borrow()).finish()
-    }
-}
-
-impl PartialEq for RecordValue {
-    fn eq(&self, other: &Self) -> bool {
-        self.snapshot() == other.snapshot()
-    }
-}
-
-impl Eq for RecordValue {}
-
-impl From<Vec<(String, InterpValue)>> for RecordValue {
-    fn from(fields: Vec<(String, InterpValue)>) -> Self {
-        Self::new(fields)
-    }
-}
+#[cfg(test)]
+#[path = "aggregate/tests.rs"]
+mod tests;

@@ -1,7 +1,11 @@
 use super::*;
+mod aggregate_performance;
+pub(crate) mod allocation;
+mod execution_performance;
 mod host;
 pub(crate) mod project;
-use self::host::{FakeHost, availability};
+pub(crate) use self::host::FakeHost;
+use self::host::availability;
 use self::project::{checked_project, checked_project_sources, checked_project_with_environment};
 use crate::eval::resolve_std_type;
 use crate::host::HostServiceAvailability;

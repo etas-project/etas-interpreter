@@ -207,6 +207,7 @@ pub(in crate::driver) async fn dispatch(
                         boundary.decode,
                         eval.known_std_types.secret_value,
                         secret,
+                        &eval.checked.type_store,
                     )
                 })
                 .map_err(HostBoundaryFailure::Host),
@@ -358,7 +359,9 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
     entry: FilesystemEntry,
 ) -> Result<InterpValue, String> {
     match (decode, entry) {
-        (HostBoundaryDecode::Bytes, FilesystemEntry::Bytes(bytes)) => Ok(InterpValue::Bytes(bytes)),
+        (HostBoundaryDecode::Bytes, FilesystemEntry::Bytes(bytes)) => {
+            Ok(InterpValue::Bytes(bytes.into()))
+        }
         (HostBoundaryDecode::PathList, FilesystemEntry::Entries(entries)) => {
             Ok(InterpValue::List(ListValue::new(
                 entries
@@ -409,21 +412,21 @@ pub(in crate::driver) fn host_boundary_value_from_stream_payload(
     match (decode, payload) {
         (HostBoundaryDecode::StreamRead, StreamPayload::Read(StreamRead::Data(bytes))) => {
             Ok(InterpValue::Variant {
-                name: "Data".to_owned(),
-                fields: vec![InterpValue::Bytes(bytes)],
+                name: "Data".to_owned().into(),
+                fields: vec![InterpValue::Bytes(bytes.into())].into(),
             })
         }
         (HostBoundaryDecode::StreamRead, StreamPayload::Read(StreamRead::Eof)) => {
             Ok(InterpValue::Variant {
-                name: "Eof".to_owned(),
-                fields: Vec::new(),
+                name: "Eof".to_owned().into(),
+                fields: Vec::new().into(),
             })
         }
         (HostBoundaryDecode::StreamBytes, StreamPayload::Read(StreamRead::Data(bytes))) => {
-            Ok(InterpValue::Bytes(bytes))
+            Ok(InterpValue::Bytes(bytes.into()))
         }
         (HostBoundaryDecode::StreamBytes, StreamPayload::Read(StreamRead::Eof)) => {
-            Ok(InterpValue::Bytes(Vec::new()))
+            Ok(InterpValue::Bytes(Vec::new().into()))
         }
         (HostBoundaryDecode::Unit, StreamPayload::Unit) => Ok(InterpValue::Unit),
         (decode, payload) => Err(format!(
@@ -454,6 +457,7 @@ pub(in crate::driver) fn host_boundary_value_from_secret(
     decode: HostBoundaryDecode,
     nominal_type: Option<etas_types::TypeId>,
     payload: SecretPayload,
+    store: &etas_types::TypeStore,
 ) -> Result<InterpValue, String> {
     match (decode, payload) {
         (HostBoundaryDecode::SecretValue, SecretPayload::Value(secret)) => {
@@ -465,8 +469,8 @@ pub(in crate::driver) fn host_boundary_value_from_secret(
                 secret,
             )))
         }
-        (HostBoundaryDecode::SecretBytes, SecretPayload::Bytes(bytes)) => {
-            Ok(InterpValue::Bytes(bytes))
+        (HostBoundaryDecode::SecretBytes { result_type }, SecretPayload::Bytes(bytes)) => {
+            crate::eval::host_to_typed_interp_value(HostValue::Bytes(bytes), result_type, store)
         }
         (decode, payload) => Err(format!(
             "secret response payload {:?} does not match decode {:?}",
@@ -493,17 +497,20 @@ pub(in crate::driver) fn host_boundary_value_from_browser_payload(
         }
         (HostBoundaryDecode::BrowserPayload, BrowserProtocolPayload::Message(bytes)) => {
             Ok(InterpValue::Record(RecordValue::new(vec![
-                ("kind".to_owned(), InterpValue::String("Message".to_owned())),
-                ("body".to_owned(), InterpValue::Bytes(bytes)),
+                (
+                    "kind".to_owned(),
+                    InterpValue::String("Message".to_owned().into()),
+                ),
+                ("body".to_owned(), InterpValue::Bytes(bytes.into())),
             ])))
         }
         (HostBoundaryDecode::BrowserPayload, BrowserProtocolPayload::Screenshot(bytes)) => {
             Ok(InterpValue::Record(RecordValue::new(vec![
                 (
                     "kind".to_owned(),
-                    InterpValue::String("Screenshot".to_owned()),
+                    InterpValue::String("Screenshot".to_owned().into()),
                 ),
-                ("body".to_owned(), InterpValue::Bytes(bytes)),
+                ("body".to_owned(), InterpValue::Bytes(bytes.into())),
             ])))
         }
         (HostBoundaryDecode::Unit, BrowserProtocolPayload::Unit) => Ok(InterpValue::Unit),
@@ -763,6 +770,43 @@ mod tests {
     use super::*;
 
     #[test]
+    fn secret_digest_responses_use_the_checked_result_type() {
+        let mut types = etas_types::TypeInterner::new();
+        let bytes = types.primitive(etas_types::PrimitiveType::Bytes);
+        let boolean = types.primitive(etas_types::PrimitiveType::Bool);
+        let digest = types.intern(etas_types::Type::Nominal(etas_types::NominalTypeRef {
+            name: "std.crypto.Digest".into(),
+            representation: Some(bytes),
+            params: vec![],
+        }));
+        let result = host_boundary_value_from_secret(
+            HostBoundaryDecode::SecretBytes {
+                result_type: digest,
+            },
+            None,
+            SecretPayload::Bytes(vec![7; 32]),
+            types.store(),
+        )
+        .unwrap();
+        let InterpValue::Nominal { ty, value } = result else {
+            panic!("host digest lost nominal identity");
+        };
+        assert_eq!(ty, digest);
+        assert_eq!(*value, InterpValue::Bytes(vec![7; 32].into()));
+        for result_type in [boolean, etas_types::TypeId(u32::MAX)] {
+            assert!(
+                host_boundary_value_from_secret(
+                    HostBoundaryDecode::SecretBytes { result_type },
+                    None,
+                    SecretPayload::Bytes(vec![7; 32]),
+                    types.store(),
+                )
+                .is_err()
+            );
+        }
+    }
+
+    #[test]
     fn host_boundaries_create_sealed_capability_values() {
         let tcp = host_boundary_value_from_tcp_stream(
             HostBoundaryDecode::TcpStream,
@@ -796,6 +840,7 @@ mod tests {
                 etas_host::SecretRef::new("secret-1"),
                 "<redacted>",
             )),
+            etas_types::TypeInterner::new().store(),
         )
         .expect("secret response should decode");
         let InterpValue::HostHandle(secret) = secret else {

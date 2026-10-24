@@ -1,48 +1,16 @@
 use etas_core::Span;
+mod storage;
 use etas_hir::{
     HirArg, HirBlockId, HirElseBranch, HirExprId, HirItemId, HirMatchArm, HirPatId, HirStage,
     ResolvedActionRef, SymbolId,
 };
+pub use storage::ContinuationLink;
 
 use crate::{
-    control::Frame,
-    intrinsic::dispatch::{CheckedPureIntrinsicCall, CheckedStdIntrinsicCall},
+    control::{CallTarget, Frame},
     orchestration::{ActiveHandlerArmRecord, HandlerScopeId, RetryAttemptRecord},
     value::InterpValue,
 };
-
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum CallTarget {
-    FlowItem(HirItemId),
-    AgentItem(HirItemId),
-    ToolItem(HirItemId),
-    SpecImplMethod(SymbolId),
-    Lambda {
-        expr: HirExprId,
-        captured: Frame,
-    },
-    EnumVariant(SymbolId),
-    NominalConstructor(etas_types::TypeId),
-    PureIntrinsic(CheckedPureIntrinsicCall),
-    StdIntrinsic(CheckedStdIntrinsicCall),
-    Specialized {
-        target: Box<CallTarget>,
-        type_bindings: Vec<(String, etas_types::TypeId)>,
-    },
-    Limited {
-        target: Box<CallTarget>,
-        limits: Vec<crate::eval::limit::RuntimeLimit>,
-    },
-    Composed(Vec<CallTarget>),
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub enum AggregateKind {
-    Tuple,
-    Array,
-    List,
-    Set,
-}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StaticMethodKind {
@@ -108,8 +76,7 @@ pub enum Continuation {
         span: Span,
     },
     AggregateElement {
-        kind: AggregateKind,
-        exprs: Vec<HirExprId>,
+        expr: HirExprId,
         next_index: usize,
         values: Vec<InterpValue>,
         frame: Frame,
@@ -136,19 +103,18 @@ pub enum Continuation {
         expr: HirExprId,
         nominal_type: Option<etas_types::TypeId>,
         variant_symbol: Option<SymbolId>,
-        fields: Vec<etas_hir::HirFieldInit>,
         next_index: usize,
         values: Vec<(String, InterpValue)>,
         frame: Frame,
     },
     MapKey {
-        entries: Vec<etas_hir::HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         values: Vec<(InterpValue, InterpValue)>,
         frame: Frame,
     },
     MapValue {
-        entries: Vec<etas_hir::HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         key: InterpValue,
         values: Vec<(InterpValue, InterpValue)>,
@@ -188,7 +154,7 @@ pub enum Continuation {
         frame: Frame,
     },
     PromptValueMethodArg {
-        messages: Vec<crate::value::PromptMessage>,
+        messages: crate::value::PromptValue,
         method: String,
         role: crate::value::PromptRole,
         allow_plain_system_content: bool,
@@ -227,7 +193,7 @@ pub enum Continuation {
         frame: Frame,
     },
     CalleeEval {
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         span: Span,
         frame: Frame,
     },
@@ -241,7 +207,7 @@ pub enum Continuation {
     },
     CallArgs {
         target: CallTarget,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<InterpValue>,
         span: Span,
@@ -259,7 +225,7 @@ pub enum Continuation {
         expr: HirExprId,
         action: ResolvedActionRef,
         type_args: Vec<etas_hir::HirTypeId>,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<InterpValue>,
         span: Span,
@@ -340,14 +306,14 @@ pub enum Continuation {
     },
     RestoreModelPolicy {
         previous: Box<crate::api::ModelExecutionPolicy>,
-        inner: Box<Continuation>,
+        inner: ContinuationLink,
     },
     CallBoundary {
-        outer: Box<Continuation>,
+        outer: ContinuationLink,
     },
     ForLoop {
         pat: HirPatId,
-        values: Option<Vec<InterpValue>>,
+        source: Option<crate::value::iteration::IterationSource>,
         next_index: usize,
         body: HirBlockId,
         iterations: usize,
@@ -390,11 +356,11 @@ pub enum Continuation {
         span: Span,
     },
     HandlerDispatch {
-        outer: Box<Continuation>,
+        outer: ContinuationLink,
     },
     HandleBoundary {
         scope_id: HandlerScopeId,
-        inner: Box<Continuation>,
+        inner: ContinuationLink,
         handlers: Vec<ActiveHandlerArmRecord>,
         span: Span,
         frame: Frame,
@@ -406,11 +372,11 @@ pub enum Continuation {
     },
     ScopedModelPolicy {
         policy: Box<crate::api::ModelExecutionPolicy>,
-        inner: Box<Continuation>,
+        inner: ContinuationLink,
     },
     Chain {
-        inner: Box<Continuation>,
-        outer: Box<Continuation>,
+        inner: ContinuationLink,
+        outer: ContinuationLink,
     },
     Return,
     Resume,
@@ -419,6 +385,24 @@ pub enum Continuation {
 }
 
 impl Continuation {
+    // Retry lookup follows sequencing only; nested boundary wrappers stay opaque.
+    pub(crate) fn find_retry_attempt(&self) -> Option<&Self> {
+        let mut current = self;
+        let mut pending = Vec::new();
+        loop {
+            match current {
+                Self::RetryAttempt { .. } => return Some(current),
+                Self::Chain { inner, outer } => {
+                    pending.push(outer.as_ref());
+                    current = inner;
+                    continue;
+                }
+                _ => {}
+            }
+            current = pending.pop()?;
+        }
+    }
+
     pub(crate) fn handler_scope_occurrences(&self, scope_id: HandlerScopeId) -> usize {
         let mut count = 0;
         let mut pending = vec![self];

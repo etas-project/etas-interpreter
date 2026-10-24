@@ -60,11 +60,11 @@ mod storage;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
-    AggregateKind, CallTarget, CommandDecode, ConsoleDecode, Continuation, ContinuationInput,
-    ControlSignal, Frame, HostBoundaryDecode, HostBoundaryRequest, MemoryDecode, ModelDecode,
-    PendingBlock, PendingCall, PendingCheckpoint, PendingCommand, PendingConsole,
-    PendingContinuation, PendingExpr, PendingHostBoundary, PendingMemory, PendingModel,
-    PendingPerform, PendingSession, SessionDecode, SourceToolBinding, StaticMethodKind,
+    CallTarget, CommandDecode, ConsoleDecode, Continuation, ContinuationInput, ControlSignal,
+    Frame, HostBoundaryDecode, HostBoundaryRequest, MemoryDecode, ModelDecode, PendingBlock,
+    PendingCall, PendingCheckpoint, PendingCommand, PendingConsole, PendingContinuation,
+    PendingExpr, PendingHostBoundary, PendingMemory, PendingModel, PendingPerform, PendingSession,
+    SessionDecode, SourceToolBinding, StaticMethodKind,
 };
 pub(crate) use assign_place::{LocalPlaceComponent, LocalPlaceSegment};
 use branch::IfStmtResume;
@@ -90,7 +90,7 @@ use crate::{
         RetrySnapshot, TraceSnapshot, WorkflowEvent, WorkflowStepId,
     },
     plan::{BraceLiteralShape, InterpreterPlan},
-    value::{ArrayValue, InterpValue, ListValue, MapValue, RecordValue, SliceValue},
+    value::{ArrayValue, InterpValue, MapValue, RecordValue, SliceValue},
 };
 use etas_core::{AnalysisDiagnosticCode, Diagnostic, Span};
 use etas_hir::{
@@ -369,8 +369,8 @@ pub(crate) fn compose_continuation(inner: Continuation, outer: Continuation) -> 
     match inner {
         Continuation::BlockValue => outer,
         inner => Continuation::Chain {
-            inner: Box::new(inner),
-            outer: Box::new(outer),
+            inner: inner.into(),
+            outer: outer.into(),
         },
     }
 }

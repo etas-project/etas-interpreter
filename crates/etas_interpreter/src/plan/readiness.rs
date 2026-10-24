@@ -28,12 +28,14 @@ impl Pass<PlanContext<'_>> for ComputeReachableHostRequirementsPass {
         };
         let entry_support = context
             .project
+            .effects
             .interpreter_support
             .entry
             .clone()
             .or_else(|| {
                 context
                     .project
+                    .effects
                     .interpreter_support
                     .items
                     .get(&entry)

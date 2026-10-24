@@ -33,7 +33,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("ok".to_owned()))
+        Some(value::InterpValue::String("ok".to_owned().into()))
     );
     assert!(!result.events.is_empty());
 }
@@ -67,7 +67,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("yes".to_owned()))
+        Some(value::InterpValue::String("yes".to_owned().into()))
     );
 }
 
@@ -107,7 +107,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("ok".to_owned()))
+        Some(value::InterpValue::String("ok".to_owned().into()))
     );
 }
 
@@ -142,7 +142,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("ok".to_owned()))
+        Some(value::InterpValue::String("ok".to_owned().into()))
     );
 }
 
@@ -182,7 +182,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("one".to_owned()))
+        Some(value::InterpValue::String("one".to_owned().into()))
     );
 }
 
@@ -366,7 +366,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("malformed".to_owned()))
+        Some(value::InterpValue::String("malformed".to_owned().into()))
     );
 }
 
@@ -576,7 +576,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("hello".to_owned()))
+        Some(value::InterpValue::String("hello".to_owned().into()))
     );
 }
 
@@ -633,7 +633,7 @@ flow main() -> string ![Error<NetworkError>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("limit".to_owned()))
+        Some(value::InterpValue::String("limit".to_owned().into()))
     );
     let tcp_requests = host.tcp_requests();
     assert_eq!(tcp_requests.len(), 1, "{tcp_requests:#?}");
@@ -693,7 +693,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("network".to_owned()))
+        Some(value::InterpValue::String("network".to_owned().into()))
     );
     assert_eq!(host.tcp_requests().len(), 1);
 }
@@ -753,7 +753,8 @@ flow main() -> NetworkError {
         panic!("expected structured opaque host error payload, got {value:?}");
     };
     assert!(fields.borrow().iter().any(|(name, value)| {
-        name == "code" && value == &value::InterpValue::String("ProviderUnavailable".to_owned())
+        name == "code"
+            && value == &value::InterpValue::String("ProviderUnavailable".to_owned().into())
     }));
 }
 
@@ -810,7 +811,7 @@ flow main() -> string ![Error<NetworkError>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("limit".to_owned()))
+        Some(value::InterpValue::String("limit".to_owned().into()))
     );
 }
 
@@ -881,7 +882,7 @@ flow main() -> string ![Error<NetworkError>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("limit".to_owned()))
+        Some(value::InterpValue::String("limit".to_owned().into()))
     );
 }
 
@@ -959,7 +960,7 @@ flow main() -> string ![Error<NetworkError>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("limit".to_owned()))
+        Some(value::InterpValue::String("limit".to_owned().into()))
     );
 }
 
@@ -997,7 +998,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("ok".to_owned()))
+        Some(value::InterpValue::String("ok".to_owned().into()))
     );
 }
 

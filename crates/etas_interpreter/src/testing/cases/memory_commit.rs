@@ -281,7 +281,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value(),
-        Some(&InterpValue::String("conflict".to_owned()))
+        Some(&InterpValue::String("conflict".to_owned().into()))
     );
     let stored = client
         .execute(etas_host::MemoryRequest {

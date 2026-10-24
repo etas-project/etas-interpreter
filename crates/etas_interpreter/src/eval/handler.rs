@@ -344,6 +344,13 @@ impl<'a> EvalContext<'a> {
             .iter()
             .find(|handler| self.handler_matches_perform(&perform, handler))?;
         let mut handler_frame = frame.clone();
+        let Some(layout) = self.plan.frames.get(handler.scope) else {
+            return Some(ControlSignal::missing_checked_fact(
+                "handler arm is missing its checked frame layout",
+                handler.span,
+            ));
+        };
+        handler_frame.install_scope_layout(layout);
         if let Err(fault) = self.bind_handler_patterns(
             &handler.patterns,
             &perform.args,
@@ -359,7 +366,7 @@ impl<'a> EvalContext<'a> {
                 pending.continuation = compose_continuation(
                     pending.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Apply(pending)
@@ -380,7 +387,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Block(nested)
@@ -389,7 +396,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Expr(nested)
@@ -398,7 +405,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Call(nested)
@@ -407,7 +414,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Memory(nested)
@@ -416,7 +423,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Session(nested)
@@ -425,7 +432,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Perform(nested)
@@ -434,7 +441,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Console(nested)
@@ -443,7 +450,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Command(nested)
@@ -452,7 +459,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Model(nested)
@@ -461,7 +468,7 @@ impl<'a> EvalContext<'a> {
                 nested.continuation = compose_continuation(
                     nested.continuation,
                     Continuation::HandlerDispatch {
-                        outer: Box::new(outer_continuation),
+                        outer: outer_continuation.into(),
                     },
                 );
                 ControlSignal::Host(nested)
@@ -617,7 +624,7 @@ impl<'a> EvalContext<'a> {
                 let inner = std::mem::replace(continuation, Continuation::BlockValue);
                 *continuation = Continuation::HandleBoundary {
                     scope_id,
-                    inner: Box::new(inner),
+                    inner: inner.into(),
                     handlers,
                     span,
                     frame: frame.clone(),

@@ -1,6 +1,79 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn message_payload_aliases_preserve_value_semantics_across_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.message.Message;
+import std.runtime.checkpoint;
+
+flow main(input: Array<i32>) -> (i32, i32, i32, i32) {
+    let original = Message.new(input);
+    let alias = original;
+    var changed = alias.body;
+    checkpoint("shared-message");
+    changed[0] = 42;
+    return (input[0], original.body[0], alias.body[0], changed[0]);
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![value::InterpValue::Array(
+                vec![value::InterpValue::i32(7); 1000].into(),
+            )],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let expected = value::InterpValue::Tuple(
+        vec![
+            value::InterpValue::i32(7),
+            value::InterpValue::i32(7),
+            value::InterpValue::i32(7),
+            value::InterpValue::i32(42),
+        ]
+        .into(),
+    );
+    assert_eq!(result.value(), Some(&expected));
+    assert_eq!(result.checkpoints.len(), 1);
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &checked,
+            &result.checkpoints[0],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&expected));
+    let artifact =
+        api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let bytes =
+        api::codec::checkpoint_file_to_bytes(artifact, api::codec::CheckpointFileLimits::default())
+            .unwrap();
+    let document =
+        api::codec::checkpoint_file_from_bytes(&bytes, api::codec::CheckpointFileLimits::default())
+            .unwrap();
+    let checkpoint = api::codec::checkpoint_from_json(&document, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &checkpoint, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&expected));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_message_new_and_checked_cast_without_host() {
     let checked = checked_project(
         r#"
@@ -20,7 +93,7 @@ flow main(input: string) -> Option<Message<string>> {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -31,7 +104,7 @@ flow main(input: string) -> Option<Message<string>> {
     let Some(value::InterpValue::OptionSome(message)) = result.value().cloned() else {
         panic!("expected cast message, got {:?}", result.value().cloned());
     };
-    let value::InterpValue::Message(message) = *message else {
+    let value::InterpValue::Message(ref message) = *message else {
         panic!("expected message value, got {message:?}");
     };
     assert_eq!(message.id, "msg-0");
@@ -42,7 +115,7 @@ flow main(input: string) -> Option<Message<string>> {
     assert!(is_unix_timestamp(&message.created_at), "{message:?}");
     assert_eq!(
         *message.payload,
-        value::InterpValue::String("hello".to_owned())
+        value::InterpValue::String("hello".to_owned().into())
     );
     assert_eq!(
         message.provenance,
@@ -73,7 +146,7 @@ flow main(input: Message<string>) -> Option<Message<string>> {
         role: value::MessageRoleValue::User,
         session: None,
         created_at: "external-boundary".to_owned(),
-        payload: Box::new(value::InterpValue::i32(42)),
+        payload: value::InterpValue::i32(42).into(),
         provenance: None,
     });
 
@@ -116,7 +189,7 @@ flow main(input: string) -> Message<string> {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions {
                 current_session: Some("session-42".to_owned()),
@@ -153,7 +226,7 @@ flow main(input: string) -> Message<string> {
                 && session == "session-42"
                 && role == "user"
                 && is_unix_timestamp(created_at)
-                && payload.as_ref() == &value::InterpValue::String("hello".to_owned())
+                && payload.as_ref() == &value::InterpValue::String("hello".to_owned().into())
                 && provenance.trace_id.as_deref() == Some("TraceId(0)")
                 && provenance.source.as_deref() == Some("Message.new")
         )
@@ -180,7 +253,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -190,7 +263,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("hello".to_owned()))
+        Some(value::InterpValue::String("hello".to_owned().into()))
     );
 }
 
@@ -223,7 +296,7 @@ flow main(input: string) -> (string, MessageId, Option<SessionId>, Role, Time, O
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("hello".to_owned())],
+            vec![value::InterpValue::String("hello".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions {
                 current_session: Some("session-42".to_owned()),
@@ -238,27 +311,36 @@ flow main(input: string) -> (string, MessageId, Option<SessionId>, Role, Time, O
         panic!("expected metadata tuple, got {:?}", result.value().cloned());
     };
     assert_eq!(values.len(), 6);
-    assert_eq!(values[0], value::InterpValue::String("hello".to_owned()));
-    assert_eq!(values[1], value::InterpValue::String("msg-0".to_owned()));
+    assert_eq!(
+        values[0],
+        value::InterpValue::String("hello".to_owned().into())
+    );
+    assert_eq!(
+        values[1],
+        value::InterpValue::String("msg-0".to_owned().into())
+    );
     assert_eq!(
         values[2],
-        value::InterpValue::OptionSome(Box::new(value::InterpValue::String(
-            "session-42".to_owned()
+        value::InterpValue::OptionSome(crate::value::SharedValue::new(value::InterpValue::String(
+            "session-42".to_owned().into()
         )))
     );
-    assert_eq!(values[3], value::InterpValue::String("user".to_owned()));
+    assert_eq!(
+        values[3],
+        value::InterpValue::String("user".to_owned().into())
+    );
     let value::InterpValue::String(created_at) = &values[4] else {
         panic!("expected timestamp string, got {:?}", values[4]);
     };
     assert!(is_unix_timestamp(created_at));
     assert_eq!(
         values[5],
-        value::InterpValue::OptionSome(Box::new(value::InterpValue::Provenance(
-            value::ProvenanceValue {
+        value::InterpValue::OptionSome(crate::value::SharedValue::new(
+            value::InterpValue::Provenance(value::ProvenanceValue {
                 trace_id: Some("TraceId(0)".to_owned()),
                 source: Some("Message.new".to_owned()),
-            }
-        )))
+            })
+        ))
     );
 }
 
@@ -274,8 +356,8 @@ flow main(limit: Limit) -> (ContextPolicy, ContextPolicy, RetentionPolicy) {
 "#,
     );
     let limit = value::InterpValue::Variant {
-        name: "ContextTokens".to_owned(),
-        fields: vec![value::InterpValue::i32(24_000)],
+        name: "ContextTokens".to_owned().into(),
+        fields: vec![value::InterpValue::i32(24_000)].into(),
     };
 
     let result = Interpreter
@@ -294,20 +376,23 @@ flow main(limit: Limit) -> (ContextPolicy, ContextPolicy, RetentionPolicy) {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::Tuple(vec![
-            value::InterpValue::Variant {
-                name: "LastTurns".to_owned(),
-                fields: vec![value::InterpValue::usize(8)],
-            },
-            value::InterpValue::Variant {
-                name: "SummaryPlusRecent".to_owned(),
-                fields: vec![value::InterpValue::usize(4)],
-            },
-            value::InterpValue::Variant {
-                name: "Days".to_owned(),
-                fields: vec![value::InterpValue::usize(90)],
-            },
-        ]))
+        Some(value::InterpValue::Tuple(
+            vec![
+                value::InterpValue::Variant {
+                    name: "LastTurns".to_owned().into(),
+                    fields: vec![value::InterpValue::usize(8)].into(),
+                },
+                value::InterpValue::Variant {
+                    name: "SummaryPlusRecent".to_owned().into(),
+                    fields: vec![value::InterpValue::usize(4)].into(),
+                },
+                value::InterpValue::Variant {
+                    name: "Days".to_owned().into(),
+                    fields: vec![value::InterpValue::usize(90)].into(),
+                },
+            ]
+            .into()
+        ))
     );
 }
 
@@ -329,7 +414,7 @@ flow main(ticket: string) -> SessionConfig {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("ticket-42".to_owned())],
+            vec![value::InterpValue::String("ticket-42".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -340,8 +425,8 @@ flow main(ticket: string) -> SessionConfig {
     assert_eq!(
         result.value().cloned(),
         Some(value::InterpValue::Variant {
-            name: "SessionConfig.continue_or_new".to_owned(),
-            fields: vec![value::InterpValue::String("ticket-42".to_owned())],
+            name: "SessionConfig.continue_or_new".to_owned().into(),
+            fields: vec![value::InterpValue::String("ticket-42".to_owned().into())].into(),
         })
     );
 }
@@ -365,7 +450,7 @@ flow main(ticket: string) -> SessionId {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("ticket-42".to_owned())],
+            vec![value::InterpValue::String("ticket-42".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -376,7 +461,7 @@ flow main(ticket: string) -> SessionId {
     assert_eq!(
         result.value().cloned(),
         Some(value::InterpValue::String(
-            "continue_or_new:ticket-42".to_owned()
+            "continue_or_new:ticket-42".to_owned().into()
         ))
     );
 }
@@ -400,7 +485,7 @@ flow main(ticket: string) -> ContextPolicy {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("ticket-42".to_owned())],
+            vec![value::InterpValue::String("ticket-42".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -454,7 +539,7 @@ flow main() -> SessionId ![Memory.read<SessionId>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("session-42".to_owned()))
+        Some(value::InterpValue::String("session-42".to_owned().into()))
     );
 }
 
@@ -515,8 +600,8 @@ flow main(ticket: string, input: string) -> Message<string> {
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("ticket-42".to_owned()),
-                value::InterpValue::String("hello".to_owned()),
+                value::InterpValue::String("ticket-42".to_owned().into()),
+                value::InterpValue::String("hello".to_owned().into()),
             ],
             &host,
             RunOptions::default(),
@@ -537,7 +622,7 @@ flow main(ticket: string, input: string) -> Message<string> {
     );
     assert_eq!(
         *message.payload,
-        value::InterpValue::String("hello".to_owned())
+        value::InterpValue::String("hello".to_owned().into())
     );
     assert!(result.events.iter().any(|event| {
         matches!(
@@ -550,7 +635,7 @@ flow main(ticket: string, input: string) -> Message<string> {
                 ..
             } if id == "msg-0"
                 && role == "user"
-                && payload.as_ref() == &value::InterpValue::String("hello".to_owned())
+                && payload.as_ref() == &value::InterpValue::String("hello".to_owned().into())
         )
     }));
     assert!(result.events.iter().any(|event| {
@@ -599,8 +684,8 @@ flow main(ticket: string, input: string) -> Message<string> {
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("ticket-42".to_owned()),
-                value::InterpValue::String("hello".to_owned()),
+                value::InterpValue::String("ticket-42".to_owned().into()),
+                value::InterpValue::String("hello".to_owned().into()),
             ],
             &first_host,
             RunOptions::default(),
@@ -650,7 +735,7 @@ flow main(ticket: string, input: string) -> Message<string> {
     );
     assert_eq!(
         *message.payload,
-        value::InterpValue::String("hello".to_owned())
+        value::InterpValue::String("hello".to_owned().into())
     );
 }
 
@@ -681,11 +766,11 @@ flow main(ticket: SessionId, input: string, limit: Limit) -> Message<string> {
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("session-record-42".to_owned()),
-                value::InterpValue::String("hello".to_owned()),
+                value::InterpValue::String("session-record-42".to_owned().into()),
+                value::InterpValue::String("hello".to_owned().into()),
                 value::InterpValue::Variant {
-                    name: "ContextTokens".to_owned(),
-                    fields: vec![value::InterpValue::i32(24_000)],
+                    name: "ContextTokens".to_owned().into(),
+                    fields: vec![value::InterpValue::i32(24_000)].into(),
                 },
             ],
             &host,
@@ -702,7 +787,7 @@ flow main(ticket: SessionId, input: string, limit: Limit) -> Message<string> {
     assert_eq!(message.session.as_deref(), Some("session-record-42"));
     assert_eq!(
         *message.payload,
-        value::InterpValue::String("hello".to_owned())
+        value::InterpValue::String("hello".to_owned().into())
     );
     assert!(result.events.iter().any(|event| {
         matches!(
@@ -745,7 +830,7 @@ flow main(ticket: string) -> usize ![Memory.read<SessionId>, Memory.write<Sessio
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("ticket-load".to_owned())],
+            vec![value::InterpValue::String("ticket-load".to_owned().into())],
             &host,
             RunOptions::default(),
         )
@@ -806,10 +891,10 @@ flow main(ticket: SessionId, limit: Limit) -> usize ![Memory.read<SessionId>, Me
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("ticket-retention".to_owned()),
+                value::InterpValue::String("ticket-retention".to_owned().into()),
                 value::InterpValue::Variant {
-                    name: "ContextTokens".to_owned(),
-                    fields: vec![value::InterpValue::i32(100)],
+                    name: "ContextTokens".to_owned().into(),
+                    fields: vec![value::InterpValue::i32(100)].into(),
                 },
             ],
             &host,
@@ -863,10 +948,10 @@ flow main(ticket: SessionId, limit: Limit) -> usize ![Memory.read<SessionId>, Me
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("paged-history".to_owned()),
+                value::InterpValue::String("paged-history".to_owned().into()),
                 value::InterpValue::Variant {
-                    name: "ContextTokens".to_owned(),
-                    fields: vec![value::InterpValue::i32(1000)],
+                    name: "ContextTokens".to_owned().into(),
+                    fields: vec![value::InterpValue::i32(1000)].into(),
                 },
             ],
             &host,
@@ -912,8 +997,8 @@ flow main(ticket: string, input: string) -> string {
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("ticket-42".to_owned()),
-                value::InterpValue::String("hello".to_owned()),
+                value::InterpValue::String("ticket-42".to_owned().into()),
+                value::InterpValue::String("hello".to_owned().into()),
             ],
             &host,
             RunOptions::default(),
@@ -925,7 +1010,7 @@ flow main(ticket: string, input: string) -> string {
     assert_eq!(host.session_call_count(), 2);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("handoff-ok".to_owned()))
+        Some(value::InterpValue::String("handoff-ok".to_owned().into()))
     );
     assert!(result.events.iter().any(|event| {
         matches!(
@@ -961,8 +1046,8 @@ flow main(input: string, session: SessionConfig) -> Message<string> {
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("hello".to_owned()),
-                value::InterpValue::String("session-should-not-be-accepted".to_owned()),
+                value::InterpValue::String("hello".to_owned().into()),
+                value::InterpValue::String("session-should-not-be-accepted".to_owned().into()),
             ],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),

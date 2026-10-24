@@ -1,46 +1,57 @@
 use super::support::*;
 use super::*;
+use crate::api::codec::snapshot::{Node, Pending, write_object};
+use crate::orchestration::ContinuationSnapshot as Continuation;
 
-pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value, String> {
-    Ok(match continuation {
+macro_rules! object {
+    ($slot:ident, $pending:ident; $($key:literal: $value:expr),* $(,)?) => {
+        write_object([$(($key, ($value).into())),*], $slot, $pending)
+    };
+}
+pub(in crate::api::codec) fn write_continuation<'a>(
+    continuation: &'a Continuation,
+    slot: &'a mut Value,
+    pending: &mut Pending<'a>,
+) {
+    match continuation {
         Continuation::ContinueBlock {
             block,
             next_stmt_index,
             frame,
-        } => json!({
-            "kind": "continue_block",
-            "block": block.0,
-            "next_stmt_index": next_stmt_index,
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("continue_block"),
+            "block": json!(block.0),
+            "next_stmt_index": json!(next_stmt_index),
+            "frame": Node::Frame(frame),
+        },
         Continuation::Bind {
             block,
             next_stmt_index,
             pat,
             span,
             frame,
-        } => json!({
-            "kind": "bind",
-            "block": block.0,
-            "next_stmt_index": next_stmt_index,
-            "pat": pat.0,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("bind"),
+            "block": json!(block.0),
+            "next_stmt_index": json!(next_stmt_index),
+            "pat": json!(pat.0),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::Assign {
             block,
             next_stmt_index,
             target,
             span,
             frame,
-        } => json!({
-            "kind": "assign",
-            "block": block.0,
-            "next_stmt_index": next_stmt_index,
-            "target": target.0,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("assign"),
+            "block": json!(block.0),
+            "next_stmt_index": json!(next_stmt_index),
+            "target": json!(target.0),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::AssignTargetIndex {
             block,
             next_stmt_index,
@@ -51,171 +62,184 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             new_value,
             span,
             frame,
-        } => json!({
-            "kind": "assign_target_index",
-            "block": block.0,
-            "next_stmt_index": next_stmt_index,
-            "root_symbol": root_symbol.0,
-            "segments": segments.iter().map(local_place_segment_snapshot).collect::<Vec<_>>(),
-            "components": components.iter().map(local_place_component_snapshot).collect::<Vec<_>>(),
-            "next_component_index": next_component_index,
-            "new_value": value_json(new_value),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("assign_target_index"),
+            "block": json!(block.0),
+            "next_stmt_index": json!(next_stmt_index),
+            "root_symbol": json!(root_symbol.0),
+            "segments": Node::LocalSegments(segments),
+            "components": json!(components.iter().map(local_place_component_snapshot).collect::<Vec<_>>()),
+            "next_component_index": json!(next_component_index),
+            "new_value": Node::Value(new_value),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::FieldReceiver {
             expr,
             field,
             span,
             frame,
-        } => json!({
-            "kind": "field_receiver",
-            "expr": expr.0,
-            "field": field,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::Unary { op, span } => json!({
-            "kind": "unary",
-            "op": unary_op_name(*op),
-            "span": span_snapshot(*span),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("field_receiver"),
+            "expr": json!(expr.0),
+            "field": json!(field),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::Unary { op, span } => {
+            object! { slot, pending;
+            "kind": json!("unary"),
+                "op": json!(unary_op_name(*op)),
+                "span": json!(span_snapshot(*span)),
+            }
+        }
         Continuation::BinaryLeft {
             op,
             rhs,
             span,
             frame,
-        } => json!({
-            "kind": "binary_left",
-            "op": binary_op_name(*op),
-            "rhs": rhs.0,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::BinaryRight { op, left, span } => json!({
-            "kind": "binary_right",
-            "op": binary_op_name(*op),
-            "left": value_json(left),
-            "span": span_snapshot(*span),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("binary_left"),
+            "op": json!(binary_op_name(*op)),
+            "rhs": json!(rhs.0),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::BinaryRight { op, left, span } => {
+            object! { slot, pending;
+            "kind": json!("binary_right"),
+                "op": json!(binary_op_name(*op)),
+                "left": Node::Value(left),
+                "span": json!(span_snapshot(*span)),
+            }
+        }
         Continuation::AggregateElement {
-            kind,
-            exprs,
+            expr,
             next_index,
             values,
             frame,
-        } => json!({
-            "kind": "aggregate_element",
-            "aggregate_kind": aggregate_kind_name(*kind),
-            "exprs": exprs.iter().map(|expr| expr.0).collect::<Vec<_>>(),
-            "next_index": next_index,
-            "values": values.iter().map(value_json).collect::<Vec<_>>(),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::ListConsHead { tail, span, frame } => json!({
-            "kind": "list_cons_head",
-            "tail": tail.0,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::ListConsTail { head, span } => json!({
-            "kind": "list_cons_tail",
-            "head": value_json(head),
-            "span": span_snapshot(*span),
-        }),
-        Continuation::RangeStart { end, bounds, frame } => json!({
-            "kind": "range_start",
-            "end": end.0,
-            "bounds": range_bounds_name(*bounds),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::RangeEnd { start, bounds } => json!({
-            "kind": "range_end",
-            "start": value_json(start),
-            "bounds": range_bounds_name(*bounds),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("aggregate_element"),
+            "expr": json!(expr.0),
+            "next_index": json!(next_index),
+            "values": Node::Values(values),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::ListConsHead { tail, span, frame } => {
+            object! { slot, pending;
+            "kind": json!("list_cons_head"),
+                "tail": json!(tail.0),
+                "span": json!(span_snapshot(*span)),
+                "frame": Node::Frame(frame),
+            }
+        }
+        Continuation::ListConsTail { head, span } => {
+            object! { slot, pending;
+            "kind": json!("list_cons_tail"),
+                "head": Node::Value(head),
+                "span": json!(span_snapshot(*span)),
+            }
+        }
+        Continuation::RangeStart { end, bounds, frame } => {
+            object! { slot, pending;
+            "kind": json!("range_start"),
+                "end": json!(end.0),
+                "bounds": json!(range_bounds_name(*bounds)),
+                "frame": Node::Frame(frame),
+            }
+        }
+        Continuation::RangeEnd { start, bounds } => {
+            object! { slot, pending;
+            "kind": json!("range_end"),
+                "start": Node::Value(start),
+                "bounds": json!(range_bounds_name(*bounds)),
+            }
+        }
         Continuation::RecordField {
             expr,
             nominal_type,
             variant_symbol,
-            fields,
             next_index,
             values,
             frame,
-        } => json!({
-            "kind": "record_field",
-            "expr": expr.0,
-            "nominal_type": nominal_type.map(|ty| ty.0),
-            "variant_symbol": variant_symbol.map(|symbol| symbol.0),
-            "fields": fields.iter().map(field_init_snapshot).collect::<Result<Vec<_>, _>>()?,
-            "next_index": next_index,
-            "values": values.iter().map(|(name, value)| json!({
-                "name": name,
-                "value": value_json(value),
-            })).collect::<Vec<_>>(),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("record_field"),
+            "expr": json!(expr.0),
+            "nominal_type": json!(nominal_type.map(|ty| ty.0)),
+            "variant_symbol": json!(variant_symbol.map(|symbol| symbol.0)),
+            "next_index": json!(next_index),
+            "values": Node::NamedValues(values),
+            "frame": Node::Frame(frame),
+        },
         Continuation::MapKey {
-            entries,
+            expr,
             index,
             values,
             frame,
-        } => json!({
-            "kind": "map_key",
-            "entries": entries.iter().map(map_entry_snapshot).collect::<Vec<_>>(),
-            "index": index,
-            "values": map_values_snapshot(values),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("map_key"),
+            "expr": json!(expr.0),
+            "index": json!(index),
+            "values": Node::Pairs(values),
+            "frame": Node::Frame(frame),
+        },
         Continuation::MapValue {
-            entries,
+            expr,
             index,
             key,
             values,
             frame,
-        } => json!({
-            "kind": "map_value",
-            "entries": entries.iter().map(map_entry_snapshot).collect::<Vec<_>>(),
-            "index": index,
-            "key": value_json(key),
-            "values": map_values_snapshot(values),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("map_value"),
+            "expr": json!(expr.0),
+            "index": json!(index),
+            "key": Node::Value(key),
+            "values": Node::Pairs(values),
+            "frame": Node::Frame(frame),
+        },
         Continuation::IndexBase {
             expr,
             index,
             span,
             frame,
-        } => json!({
-            "kind": "index_base",
-            "expr": expr.0,
-            "index": index.0,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::IndexValue { expr, base, span } => json!({
-            "kind": "index_value",
-            "expr": expr.0,
-            "base": value_json(base),
-            "span": span_snapshot(*span),
-        }),
-        Continuation::SliceBase { eval, frame } => json!({
-            "kind": "slice_base",
-            "eval": slice_eval_snapshot(eval),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::SliceStart { eval, base, frame } => json!({
-            "kind": "slice_start",
-            "eval": slice_eval_snapshot(eval),
-            "base": value_json(base),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::SliceEnd { eval, base, start } => json!({
-            "kind": "slice_end",
-            "eval": slice_eval_snapshot(eval),
-            "base": value_json(base),
-            "start": value_json(start),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("index_base"),
+            "expr": json!(expr.0),
+            "index": json!(index.0),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::IndexValue { expr, base, span } => {
+            object! { slot, pending;
+            "kind": json!("index_value"),
+                "expr": json!(expr.0),
+                "base": Node::Value(base),
+                "span": json!(span_snapshot(*span)),
+            }
+        }
+        Continuation::SliceBase { eval, frame } => {
+            object! { slot, pending;
+            "kind": json!("slice_base"),
+                "eval": json!(slice_eval_snapshot(eval)),
+                "frame": Node::Frame(frame),
+            }
+        }
+        Continuation::SliceStart { eval, base, frame } => {
+            object! { slot, pending;
+            "kind": json!("slice_start"),
+                "eval": json!(slice_eval_snapshot(eval)),
+                "base": Node::Value(base),
+                "frame": Node::Frame(frame),
+            }
+        }
+        Continuation::SliceEnd { eval, base, start } => {
+            object! { slot, pending;
+            "kind": json!("slice_end"),
+                "eval": json!(slice_eval_snapshot(eval)),
+                "base": Node::Value(base),
+                "start": Node::Value(start),
+            }
+        }
         Continuation::MethodReceiver {
             expr,
             method,
@@ -223,29 +247,29 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             args,
             span,
             frame,
-        } => json!({
-            "kind": "method_receiver",
-            "expr": expr.0,
-            "method": method,
-            "type_args": type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("method_receiver"),
+            "expr": json!(expr.0),
+            "method": json!(method),
+            "type_args": json!(type_args.iter().map(|ty| ty.0).collect::<Vec<_>>()),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::PromptValueMethodArg {
             messages,
             method,
             role,
             allow_plain_system_content,
             span,
-        } => json!({
-            "kind": "prompt_value_method_arg",
-            "messages": messages.iter().map(prompt_message_snapshot).collect::<Vec<_>>(),
-            "method": method,
-            "role": prompt_role_name(*role),
-            "allow_plain_system_content": allow_plain_system_content,
-            "span": span_snapshot(*span),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("prompt_value_method_arg"),
+            "messages": json!(messages.iter().map(prompt_message_snapshot).collect::<Vec<_>>()),
+            "method": json!(method),
+            "role": json!(prompt_role_name(*role)),
+            "allow_plain_system_content": json!(allow_plain_system_content),
+            "span": json!(span_snapshot(*span)),
+        },
         Continuation::LocalMethodArgs {
             expr,
             receiver,
@@ -256,18 +280,18 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             evaluated_args,
             span,
             frame,
-        } => json!({
-            "kind": "local_method_args",
-            "expr": expr.0,
-            "receiver": value_json(receiver),
-            "method": method,
-            "type_args": type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "next_arg_index": next_arg_index,
-            "evaluated_args": evaluated_args.iter().map(value_json).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("local_method_args"),
+            "expr": json!(expr.0),
+            "receiver": Node::Value(receiver),
+            "method": json!(method),
+            "type_args": json!(type_args.iter().map(|ty| ty.0).collect::<Vec<_>>()),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "next_arg_index": json!(next_arg_index),
+            "evaluated_args": Node::Values(evaluated_args),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::StaticMethodArgs {
             expr,
             kind,
@@ -278,18 +302,18 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             evaluated_args,
             span,
             frame,
-        } => json!({
-            "kind": "static_method_args",
-            "expr": expr.0,
-            "static_kind": static_method_kind_snapshot(kind),
-            "method": method,
-            "type_args": type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "next_arg_index": next_arg_index,
-            "evaluated_args": evaluated_args.iter().map(value_json).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("static_method_args"),
+            "expr": json!(expr.0),
+            "static_kind": json!(static_method_kind_snapshot(kind)),
+            "method": json!(method),
+            "type_args": json!(type_args.iter().map(|ty| ty.0).collect::<Vec<_>>()),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "next_arg_index": json!(next_arg_index),
+            "evaluated_args": Node::Values(evaluated_args),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::SpecMethodReceiver {
             expr,
             receiver_expr,
@@ -299,23 +323,25 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             args,
             span,
             frame,
-        } => json!({
-            "kind": "spec_method_receiver",
-            "expr": expr.0,
-            "receiver_expr": receiver_expr.0,
-            "spec_symbol": spec_symbol.0,
-            "spec_args": spec_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
-            "method": method,
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::CalleeEval { args, span, frame } => json!({
-            "kind": "callee_eval",
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("spec_method_receiver"),
+            "expr": json!(expr.0),
+            "receiver_expr": json!(receiver_expr.0),
+            "spec_symbol": json!(spec_symbol.0),
+            "spec_args": json!(spec_args.iter().map(|ty| ty.0).collect::<Vec<_>>()),
+            "method": json!(method),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::CalleeEval { args, span, frame } => {
+            object! { slot, pending;
+            "kind": json!("callee_eval"),
+                "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+                "span": json!(span_snapshot(*span)),
+                "frame": Node::Frame(frame),
+            }
+        }
         Continuation::PipelineStageTarget {
             stages,
             next_stage_index,
@@ -323,15 +349,15 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             current_limits,
             span,
             frame,
-        } => json!({
-            "kind": "pipeline_stage_target",
-            "stages": stages.iter().map(stage_snapshot).collect::<Vec<_>>(),
-            "next_stage_index": next_stage_index,
-            "targets": targets.iter().map(call_target_snapshot).collect::<Vec<_>>(),
-            "current_limits": current_limits.iter().map(runtime_limit_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("pipeline_stage_target"),
+            "stages": json!(stages.iter().map(stage_snapshot).collect::<Vec<_>>()),
+            "next_stage_index": json!(next_stage_index),
+            "targets": Node::CallTargets(targets),
+            "current_limits": json!(current_limits.iter().map(runtime_limit_snapshot).collect::<Vec<_>>()),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::CallArgs {
             target,
             args,
@@ -339,15 +365,15 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             evaluated_args,
             span,
             frame,
-        } => json!({
-            "kind": "call_args",
-            "target": call_target_snapshot(target),
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "next_arg_index": next_arg_index,
-            "evaluated_args": evaluated_args.iter().map(value_json).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("call_args"),
+            "target": Node::CallTarget(target),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "next_arg_index": json!(next_arg_index),
+            "evaluated_args": Node::Values(evaluated_args),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::VariantArgs {
             variant_symbol,
             args,
@@ -355,15 +381,15 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             evaluated_args,
             span,
             frame,
-        } => json!({
-            "kind": "variant_args",
-            "variant_symbol": variant_symbol.0,
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "next_arg_index": next_arg_index,
-            "evaluated_args": evaluated_args.iter().map(value_json).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("variant_args"),
+            "variant_symbol": json!(variant_symbol.0),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "next_arg_index": json!(next_arg_index),
+            "evaluated_args": Node::Values(evaluated_args),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::PerformArgs {
             expr,
             type_args,
@@ -371,14 +397,14 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             evaluated_args,
             frame,
             ..
-        } => json!({
-            "kind": "perform_args",
-            "expr": expr.0,
-            "type_args": type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
-            "next_arg_index": next_arg_index,
-            "evaluated_args": evaluated_args.iter().map(value_json).collect::<Vec<_>>(),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("perform_args"),
+            "expr": json!(expr.0),
+            "type_args": json!(type_args.iter().map(|ty| ty.0).collect::<Vec<_>>()),
+            "next_arg_index": json!(next_arg_index),
+            "evaluated_args": Node::Values(evaluated_args),
+            "frame": Node::Frame(frame),
+        },
         Continuation::MemoryArgs {
             region_stable_id,
             path,
@@ -392,20 +418,20 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             evaluated_args,
             span,
             frame,
-        } => json!({
-            "kind": "memory_args",
-            "result_type": result_type.0,
-            "region_stable_id": region_stable_id,
-            "path": path,
-            "key_type": key_type.0,
-            "value_type": value_type.0,
-            "method": method,
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "next_arg_index": next_arg_index,
-            "evaluated_args": evaluated_args.iter().map(value_json).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("memory_args"),
+            "result_type": json!(result_type.0),
+            "region_stable_id": json!(region_stable_id),
+            "path": json!(path),
+            "key_type": json!(key_type.0),
+            "value_type": json!(value_type.0),
+            "method": json!(method),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "next_arg_index": json!(next_arg_index),
+            "evaluated_args": Node::Values(evaluated_args),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::MemorySelectionLimitArgs {
             region_stable_id,
             path,
@@ -419,33 +445,33 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             evaluated_args,
             span,
             frame,
-        } => json!({
-            "kind": "memory_selection_limit_args",
-            "region_stable_id": region_stable_id,
-            "path": path,
-            "key_type": key_type.0,
-            "value_type": value_type.0,
-            "selection_kind": crate::value::codec::memory_selection_kind_json(kind),
-            "predicate": predicate.as_ref().map(value_json),
-            "limit": limit,
-            "args": args.iter().map(arg_snapshot).collect::<Vec<_>>(),
-            "next_arg_index": next_arg_index,
-            "evaluated_args": evaluated_args.iter().map(value_json).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("memory_selection_limit_args"),
+            "region_stable_id": json!(region_stable_id),
+            "path": json!(path),
+            "key_type": json!(key_type.0),
+            "value_type": json!(value_type.0),
+            "selection_kind": json!(crate::value::codec::memory_selection_kind_json(kind)),
+            "predicate": predicate.as_ref().map(Node::Value),
+            "limit": json!(limit),
+            "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+            "next_arg_index": json!(next_arg_index),
+            "evaluated_args": Node::Values(evaluated_args),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::IfExpr {
             then_block,
             else_branch,
             span,
             frame,
-        } => json!({
-            "kind": "if_expr",
-            "then_block": then_block.0,
-            "else_branch": else_branch.as_ref().map(else_branch_snapshot),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("if_expr"),
+            "then_block": json!(then_block.0),
+            "else_branch": json!(else_branch.as_ref().map(else_branch_snapshot)),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::IfStmt {
             block,
             next_stmt_index,
@@ -453,106 +479,116 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             else_branch,
             span,
             frame,
-        } => json!({
-            "kind": "if_stmt",
-            "block": block.0,
-            "next_stmt_index": next_stmt_index,
-            "then_block": then_block.0,
-            "else_branch": else_branch.as_ref().map(else_branch_snapshot),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::MatchExpr { arms, span, frame } => json!({
-            "kind": "match_expr",
-            "arms": arms.iter().map(match_arm_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("if_stmt"),
+            "block": json!(block.0),
+            "next_stmt_index": json!(next_stmt_index),
+            "then_block": json!(then_block.0),
+            "else_branch": json!(else_branch.as_ref().map(else_branch_snapshot)),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::MatchExpr { arms, span, frame } => {
+            object! { slot, pending;
+            "kind": json!("match_expr"),
+                "arms": json!(arms.iter().map(match_arm_snapshot).collect::<Vec<_>>()),
+                "span": json!(span_snapshot(*span)),
+                "frame": Node::Frame(frame),
+            }
+        }
         Continuation::MatchStmt {
             block,
             next_stmt_index,
             arms,
             span,
             frame,
-        } => json!({
-            "kind": "match_stmt",
-            "block": block.0,
-            "next_stmt_index": next_stmt_index,
-            "arms": arms.iter().map(match_arm_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("match_stmt"),
+            "block": json!(block.0),
+            "next_stmt_index": json!(next_stmt_index),
+            "arms": json!(arms.iter().map(match_arm_snapshot).collect::<Vec<_>>()),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::HandleHandler {
             handle_expr,
             body,
             handler,
             span,
             frame,
-        } => json!({
-            "kind": "handle_handler",
-            "handle_expr": handle_expr.0,
-            "body": body.0,
-            "handler": handler.0,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("handle_handler"),
+            "handle_expr": json!(handle_expr.0),
+            "body": json!(body.0),
+            "handler": json!(handler.0),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::PipelineInput {
             stages,
             span,
             frame,
-        } => json!({
-            "kind": "pipeline_input",
-            "stages": stages.iter().map(stage_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::PipelineTarget { input, span } => json!({
-            "kind": "pipeline_target",
-            "input": value_json(input),
-            "span": span_snapshot(*span),
-        }),
-        Continuation::ComposedCall { remaining, span } => json!({
-            "kind": "composed_call",
-            "remaining": remaining.iter().map(call_target_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-        }),
-        Continuation::RestoreModelPolicy { previous, inner } => json!({
-            "kind": "restore_model_policy",
-            "previous": model_policy_snapshot(previous),
-            "inner": continuation_snapshot(inner)?,
-        }),
-        Continuation::TryExpr { expr, span } => json!({
-            "kind": "try_expr",
-            "expr": expr.0,
-            "span": span_snapshot(*span),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("pipeline_input"),
+            "stages": json!(stages.iter().map(stage_snapshot).collect::<Vec<_>>()),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::PipelineTarget { input, span } => {
+            object! { slot, pending;
+            "kind": json!("pipeline_target"),
+                "input": Node::Value(input),
+                "span": json!(span_snapshot(*span)),
+            }
+        }
+        Continuation::ComposedCall { remaining, span } => {
+            object! { slot, pending;
+            "kind": json!("composed_call"),
+                "remaining": Node::CallTargets(remaining),
+                "span": json!(span_snapshot(*span)),
+            }
+        }
+        Continuation::RestoreModelPolicy { previous, inner } => {
+            object! { slot, pending;
+            "kind": json!("restore_model_policy"),
+                "previous": json!(model_policy_snapshot(previous)),
+                "inner": Node::Continuation(inner),
+            }
+        }
+        Continuation::TryExpr { expr, span } => {
+            object! { slot, pending;
+            "kind": json!("try_expr"),
+                "expr": json!(expr.0),
+                "span": json!(span_snapshot(*span)),
+            }
+        }
         Continuation::MemoryClearDeleteAll {
             region_stable_id,
             path,
             span,
-        } => json!({
-            "kind": "memory_clear_delete_all",
-            "region_stable_id": region_stable_id,
-            "path": path,
-            "span": span_snapshot(*span),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("memory_clear_delete_all"),
+            "region_stable_id": json!(region_stable_id),
+            "path": json!(path),
+            "span": json!(span_snapshot(*span)),
+        },
         Continuation::MemoryClearDeleteNext {
             region_stable_id,
             path,
             remaining_keys,
             next_index,
             span,
-        } => json!({
-            "kind": "memory_clear_delete_next",
-            "region_stable_id": region_stable_id,
-            "path": path,
-            "remaining_keys": remaining_keys.iter().map(value_json).collect::<Vec<_>>(),
-            "next_index": next_index,
-            "span": span_snapshot(*span),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("memory_clear_delete_next"),
+            "region_stable_id": json!(region_stable_id),
+            "path": json!(path),
+            "remaining_keys": Node::Values(remaining_keys),
+            "next_index": json!(next_index),
+            "span": json!(span_snapshot(*span)),
+        },
         Continuation::ForLoop {
             pat,
-            values,
+            source,
             next_index,
             body,
             iterations,
@@ -562,17 +598,17 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
         } => {
             let mut scope = loop_scope.iter().map(|symbol| symbol.0).collect::<Vec<_>>();
             scope.sort_unstable();
-            json!({
-                "kind": "for_loop",
-                "pat": pat.0,
-                "values": values.as_ref().map(|values| values.iter().map(value_json).collect::<Vec<_>>()),
-                "next_index": next_index,
-                "body": body.0,
-                "iterations": iterations,
-                "loop_scope": scope,
-                "span": span_snapshot(*span),
-                "frame": frame_snapshot(frame),
-            })
+            object! { slot, pending;
+            "kind": json!("for_loop"),
+                "pat": json!(pat.0),
+                "source": source.as_ref().map(Node::Value),
+                "next_index": json!(next_index),
+                "body": json!(body.0),
+                "iterations": json!(iterations),
+                "loop_scope": json!(scope),
+                "span": json!(span_snapshot(*span)),
+                "frame": Node::Frame(frame),
+            }
         }
         Continuation::WhileLoop {
             cond,
@@ -582,16 +618,16 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             resume_after_body,
             span,
             frame,
-        } => json!({
-            "kind": "while_loop",
-            "cond": cond.0,
-            "body": body.0,
-            "iteration": iteration,
-            "max_iterations": max_iterations,
-            "resume_after_body": resume_after_body,
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("while_loop"),
+            "cond": json!(cond.0),
+            "body": json!(body.0),
+            "iteration": json!(iteration),
+            "max_iterations": json!(max_iterations),
+            "resume_after_body": json!(resume_after_body),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
         Continuation::RetryAttempt {
             retry,
             body,
@@ -600,62 +636,80 @@ pub(crate) fn continuation_snapshot(continuation: &Continuation) -> Result<Value
             block,
             next_stmt_index,
             frame,
-        } => json!({
-            "kind": "retry_attempt",
-            "retry_id": retry.id.0,
-            "retry_ordinal": retry.ordinal,
-            "body": body.0,
-            "attempts": attempts,
-            "next_attempt": next_attempt,
-            "block": block.0,
-            "next_stmt_index": next_stmt_index,
-            "frame": frame_snapshot(frame),
-        }),
+        } => object! { slot, pending;
+            "kind": json!("retry_attempt"),
+            "retry_id": json!(retry.id.0),
+            "retry_ordinal": json!(retry.ordinal),
+            "body": json!(body.0),
+            "attempts": json!(attempts),
+            "next_attempt": json!(next_attempt),
+            "block": json!(block.0),
+            "next_stmt_index": json!(next_stmt_index),
+            "frame": Node::Frame(frame),
+        },
         Continuation::HandleBoundary {
             scope_id,
             inner,
             handlers,
             span,
             frame,
-        } => json!({
-            "kind": "handle_boundary",
-            "scope_id": scope_id.0,
-            "inner": continuation_snapshot(inner)?,
-            "handlers": handlers.iter().map(handler_arm_snapshot).collect::<Vec<_>>(),
-            "span": span_snapshot(*span),
-            "frame": frame_snapshot(frame),
-        }),
-        Continuation::HandlerDispatch { outer } => json!({
-            "kind": "handler_dispatch",
-            "outer": continuation_snapshot(outer)?,
-        }),
+        } => object! { slot, pending;
+            "kind": json!("handle_boundary"),
+            "scope_id": json!(scope_id.0),
+            "inner": Node::Continuation(inner),
+            "handlers": json!(handlers.iter().map(handler_arm_snapshot).collect::<Vec<_>>()),
+            "span": json!(span_snapshot(*span)),
+            "frame": Node::Frame(frame),
+        },
+        Continuation::HandlerDispatch { outer } => {
+            object! { slot, pending;
+            "kind": json!("handler_dispatch"),
+                "outer": Node::Continuation(outer),
+            }
+        }
         Continuation::AgentPromptBody {
             item,
             span,
             model_policy,
-        } => json!({
-            "kind": "agent_prompt_body",
-            "item": item.0,
-            "span": span_snapshot(*span),
-            "model_policy": model_policy.as_ref().map(|policy| model_policy_snapshot(policy)),
-        }),
-        Continuation::ScopedModelPolicy { policy, inner } => json!({
-            "kind": "scoped_model_policy",
-            "policy": model_policy_snapshot(policy),
-            "inner": continuation_snapshot(inner)?,
-        }),
-        Continuation::CallBoundary { outer } => json!({
-            "kind": "call_boundary",
-            "outer": continuation_snapshot(outer)?,
-        }),
-        Continuation::Chain { inner, outer } => json!({
-            "kind": "chain",
-            "inner": continuation_snapshot(inner)?,
-            "outer": continuation_snapshot(outer)?,
-        }),
-        Continuation::Return => json!({ "kind": "return" }),
-        Continuation::Resume => json!({ "kind": "resume" }),
-        Continuation::Finish => json!({ "kind": "finish" }),
-        Continuation::BlockValue => json!({ "kind": "block_value" }),
-    })
+        } => object! { slot, pending;
+            "kind": json!("agent_prompt_body"),
+            "item": json!(item.0),
+            "span": json!(span_snapshot(*span)),
+            "model_policy": json!(model_policy.as_ref().map(|policy| model_policy_snapshot(policy))),
+        },
+        Continuation::ScopedModelPolicy { policy, inner } => {
+            object! { slot, pending;
+            "kind": json!("scoped_model_policy"),
+                "policy": json!(model_policy_snapshot(policy)),
+                "inner": Node::Continuation(inner),
+            }
+        }
+        Continuation::CallBoundary { outer } => {
+            object! { slot, pending;
+            "kind": json!("call_boundary"),
+                "outer": Node::Continuation(outer),
+            }
+        }
+        Continuation::Chain { inner, outer } => {
+            object! { slot, pending;
+            "kind": json!("chain"),
+                "inner": Node::Continuation(inner),
+                "outer": Node::Continuation(outer),
+            }
+        }
+        Continuation::Return => object! { slot, pending;
+            "kind": json!("return"),
+        },
+        Continuation::Resume => object! { slot, pending;
+            "kind": json!("resume"),
+        },
+        Continuation::Finish => object! { slot, pending;
+            "kind": json!("finish"),
+        },
+        Continuation::BlockValue => {
+            object! { slot, pending;
+            "kind": json!("block_value"),
+            }
+        }
+    }
 }

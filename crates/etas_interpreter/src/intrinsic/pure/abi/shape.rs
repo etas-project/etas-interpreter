@@ -1,9 +1,11 @@
 use std::collections::HashMap;
 
 use etas_types::{
-    FieldType, PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner, TypeStore,
-    applied_representation,
+    PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner, TypeStore, applied_representation,
 };
+
+use super::record::RecordAbiLayout;
+use super::wrapper_walk::WrapperWalkLimits;
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum AbiShape {
@@ -22,7 +24,7 @@ pub enum AbiShape {
         ok: TypeId,
         err: TypeId,
     },
-    Record(Vec<FieldType>),
+    Record(RecordAbiLayout),
     Tuple(Vec<TypeId>),
     Enum,
     Nominal {
@@ -41,6 +43,7 @@ pub enum AbiShape {
 #[derive(Clone, Debug, Default)]
 pub struct PureAbiProjector {
     shapes: HashMap<TypeId, AbiShape>,
+    wrapper_walks: WrapperWalkLimits,
 }
 
 impl PureAbiProjector {
@@ -75,7 +78,10 @@ impl PureAbiProjector {
                     Type::Slice(inner) => AbiShape::Slice(*inner),
                     Type::Option(inner) => AbiShape::Option(*inner),
                     Type::Result { ok, err } => AbiShape::Result { ok: *ok, err: *err },
-                    Type::Record(record) => AbiShape::Record(record.fields.clone()),
+                    Type::Record(record) => match RecordAbiLayout::build(&record.fields) {
+                        Ok(layout) => AbiShape::Record(layout),
+                        Err(message) => AbiShape::Unsupported(message),
+                    },
                     Type::Tuple(elements) => AbiShape::Tuple(elements.clone()),
                     Type::Enum(_) => AbiShape::Enum,
                     Type::Applied { constructor, .. }
@@ -102,10 +108,18 @@ impl PureAbiProjector {
                 (id, shape)
             })
             .collect();
-        Ok(Self { shapes })
+        let wrapper_walks = WrapperWalkLimits::build(&shapes);
+        Ok(Self {
+            shapes,
+            wrapper_walks,
+        })
     }
 
     pub fn shape(&self, ty: TypeId) -> Option<&AbiShape> {
         self.shapes.get(&ty)
+    }
+
+    pub(super) fn wrapper_steps(&self, ty: TypeId) -> Option<usize> {
+        self.wrapper_walks.get(ty)
     }
 }

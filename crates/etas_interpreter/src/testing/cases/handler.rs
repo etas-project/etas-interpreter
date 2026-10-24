@@ -1,6 +1,70 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn first_class_handler_slots_preserve_caller_locals_across_checkpoint() {
+    use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+effect Select { action choose(value: i32) -> i32; }
+let Increment: ![Select => []] = handler {
+    Select.choose(value) => {
+        let updated = value + 1;
+        checkpoint("handler-slots");
+        resume updated;
+    }
+};
+flow apply(selected: ![Select => []], initial: i32) -> i32 {
+    var value = initial;
+    handle {
+        let chosen = perform Select.choose(value);
+        value = chosen;
+    } with selected;
+    return value;
+}
+flow main() -> i32 {
+    let result = apply(Increment, 10);
+    checkpoint("caller-slots");
+    return result;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(11)));
+    assert_eq!(result.checkpoints.len(), 2);
+    for saved in &result.checkpoints {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [saved, &decoded] {
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), Some(&InterpValue::i32(11)));
+        }
+        assert_eq!(
+            checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap(),
+            artifact
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_records_checkpoint_event_and_snapshot() {
     let checked = checked_project(
         r#"
@@ -72,7 +136,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("approved".to_owned())],
+            vec![value::InterpValue::String("approved".to_owned().into())],
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
@@ -82,7 +146,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("approved".to_owned()))
+        Some(value::InterpValue::String("approved".to_owned().into()))
     );
 }
 
@@ -126,7 +190,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("fallback".to_owned()))
+        Some(value::InterpValue::String("fallback".to_owned().into()))
     );
 }
 
@@ -247,7 +311,9 @@ flow main(input: string) -> string {
 }
 "#,
     );
-    checked.effects.handle_applications.clear();
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+        .handle_applications
+        .clear();
 
     let result = Interpreter
         .run_checked(
@@ -255,7 +321,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("approved".to_owned())],
+            vec![value::InterpValue::String("approved".to_owned().into())],
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
@@ -296,7 +362,9 @@ flow main(input: string) -> string {
 }
 "#,
     );
-    checked.effects.handler_values.clear();
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+        .handler_values
+        .clear();
 
     let result = Interpreter
         .run_checked(
@@ -304,7 +372,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("approved".to_owned())],
+            vec![value::InterpValue::String("approved".to_owned().into())],
             &FakeHost::new(availability(&[HostRequirementKind::Approval])),
             RunOptions::default(),
         )
@@ -370,7 +438,7 @@ flow main() -> string ![Console.stdin_read_line, Error<IOError>, Approval.reques
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("resumed\n".to_owned()))
+        Some(value::InterpValue::String("resumed\n".to_owned().into()))
     );
 }
 
@@ -708,19 +776,29 @@ flow main() -> bool {
     let HirArg::Positional(original_arg) = args[0] else {
         panic!("expected positional call arg");
     };
-    let return_stmt = checked.hir.stmts.alloc(HirStmt::Return {
-        value: Some(original_arg),
-        span: call_span,
-    });
-    let arg_block = checked.hir.blocks.alloc_with_id(|id| HirBlock {
-        id,
-        stmts: vec![return_stmt],
-        final_expr: None,
-        scope,
-        span: call_span,
-    });
-    let arg_expr = checked.hir.exprs.alloc(HirExpr::Block(arg_block));
-    let HirExpr::Call { args, .. } = checked.hir.exprs.get_mut(call_expr).expect("call expr")
+    let return_stmt = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        .stmts
+        .alloc(HirStmt::Return {
+            value: Some(original_arg),
+            span: call_span,
+        });
+    let arg_block = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        .blocks
+        .alloc_with_id(|id| HirBlock {
+            id,
+            stmts: vec![return_stmt],
+            final_expr: None,
+            scope,
+            span: call_span,
+        });
+    let arg_expr = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        .exprs
+        .alloc(HirExpr::Block(arg_block));
+    let HirExpr::Call { args, .. } =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .exprs
+            .get_mut(call_expr)
+            .expect("call expr")
     else {
         panic!("expected call expr");
     };
@@ -786,23 +864,29 @@ flow main() -> string {
     let HirArg::Positional(original_arg) = args[0] else {
         panic!("expected positional perform arg");
     };
-    let return_stmt = checked.hir.stmts.alloc(HirStmt::Return {
-        value: Some(original_arg),
-        span: perform_span,
-    });
-    let arg_block = checked.hir.blocks.alloc_with_id(|id| HirBlock {
-        id,
-        stmts: vec![return_stmt],
-        final_expr: None,
-        scope,
-        span: perform_span,
-    });
-    let arg_expr = checked.hir.exprs.alloc(HirExpr::Block(arg_block));
-    let HirExpr::Perform { args, .. } = checked
-        .hir
+    let return_stmt = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        .stmts
+        .alloc(HirStmt::Return {
+            value: Some(original_arg),
+            span: perform_span,
+        });
+    let arg_block = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+        .blocks
+        .alloc_with_id(|id| HirBlock {
+            id,
+            stmts: vec![return_stmt],
+            final_expr: None,
+            scope,
+            span: perform_span,
+        });
+    let arg_expr = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
         .exprs
-        .get_mut(perform_expr)
-        .expect("perform expr")
+        .alloc(HirExpr::Block(arg_block));
+    let HirExpr::Perform { args, .. } =
+        std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).hir)
+            .exprs
+            .get_mut(perform_expr)
+            .expect("perform expr")
     else {
         panic!("expected perform expr");
     };
@@ -823,7 +907,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("outer".to_owned()))
+        Some(value::InterpValue::String("outer".to_owned().into()))
     );
     assert_eq!(host.approval_call_count(), 0);
 }

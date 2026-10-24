@@ -1,16 +1,24 @@
+use super::{RestoreContext, capture_context::CaptureContext};
+mod capture;
+mod restore;
+#[cfg(test)]
+mod tests;
 use std::collections::HashSet;
 
 use crate::api::{ModelExecutionPolicy, ModelResponseDecodePolicy};
-use crate::control::{AggregateKind, Continuation, StaticMethodKind};
+use crate::control::{Continuation, StaticMethodKind};
 use crate::eval::{LocalPlaceComponent, LocalPlaceSegment, SliceExprEval};
 use crate::orchestration::{
-    AggregateKindSnapshot, ContinuationSnapshot, LocalPlaceComponentSnapshot,
-    LocalPlaceSegmentSnapshot, ModelExecutionPolicySnapshot, ModelResponseDecodeSnapshot,
-    SliceExprEvalSnapshot, StaticMethodKindSnapshot, ValueSnapshot,
+    ContinuationSnapshot, LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot,
+    ModelExecutionPolicySnapshot, ModelResponseDecodeSnapshot, SliceExprEvalSnapshot,
+    StaticMethodKindSnapshot, ValueSnapshot,
 };
 
 impl ContinuationSnapshot {
-    pub(crate) fn capture(continuation: &Continuation) -> Result<Self, String> {
+    fn capture_leaf(
+        continuation: &Continuation,
+        context: &mut CaptureContext,
+    ) -> Result<Self, String> {
         Ok(match continuation {
             Continuation::ContinueBlock {
                 block,
@@ -19,7 +27,7 @@ impl ContinuationSnapshot {
             } => Self::ContinueBlock {
                 block: *block,
                 next_stmt_index: *next_stmt_index,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::Bind {
                 block,
@@ -32,7 +40,7 @@ impl ContinuationSnapshot {
                 next_stmt_index: *next_stmt_index,
                 pat: *pat,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::Assign {
                 block,
@@ -45,7 +53,7 @@ impl ContinuationSnapshot {
                 next_stmt_index: *next_stmt_index,
                 target: *target,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::AssignTargetIndex {
                 block,
@@ -63,13 +71,13 @@ impl ContinuationSnapshot {
                 root_symbol: *root_symbol,
                 segments: segments
                     .iter()
-                    .map(capture_local_segment)
+                    .map(|segment| capture_local_segment(segment, context))
                     .collect::<Result<Vec<_>, _>>()?,
                 components: components.iter().map(capture_local_component).collect(),
                 next_component_index: *next_component_index,
-                new_value: ValueSnapshot::capture(new_value)?,
+                new_value: context.value(new_value)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::FieldReceiver {
                 expr,
@@ -80,7 +88,7 @@ impl ContinuationSnapshot {
                 expr: *expr,
                 field: field.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::Unary { op, span } => Self::Unary {
                 op: *op,
@@ -95,49 +103,46 @@ impl ContinuationSnapshot {
                 op: *op,
                 rhs: *rhs,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::BinaryRight { op, left, span } => Self::BinaryRight {
                 op: *op,
-                left: ValueSnapshot::capture(left)?,
+                left: context.value(left)?,
                 span: *span,
             },
             Continuation::AggregateElement {
-                kind,
-                exprs,
+                expr,
                 next_index,
                 values,
                 frame,
             } => Self::AggregateElement {
-                kind: capture_aggregate_kind(*kind),
-                exprs: exprs.clone(),
+                expr: *expr,
                 next_index: *next_index,
-                values: capture_values(values)?,
-                frame: super::frame::capture_frame(frame)?,
+                values: capture_values(values, context)?,
+                frame: context.frame(frame)?,
             },
             Continuation::ListConsHead { tail, span, frame } => Self::ListConsHead {
                 tail: *tail,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::ListConsTail { head, span } => Self::ListConsTail {
-                head: ValueSnapshot::capture(head)?,
+                head: context.value(head)?,
                 span: *span,
             },
             Continuation::RangeStart { end, bounds, frame } => Self::RangeStart {
                 end: *end,
                 bounds: *bounds,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::RangeEnd { start, bounds } => Self::RangeEnd {
-                start: ValueSnapshot::capture(start)?,
+                start: context.value(start)?,
                 bounds: *bounds,
             },
             Continuation::RecordField {
                 expr,
                 nominal_type,
                 variant_symbol,
-                fields,
                 next_index,
                 values,
                 frame,
@@ -145,37 +150,36 @@ impl ContinuationSnapshot {
                 expr: *expr,
                 nominal_type: *nominal_type,
                 variant_symbol: *variant_symbol,
-                fields: fields.clone(),
                 next_index: *next_index,
                 values: values
                     .iter()
-                    .map(|(name, value)| Ok((name.clone(), ValueSnapshot::capture(value)?)))
+                    .map(|(name, value)| Ok((name.clone(), context.value(value)?)))
                     .collect::<Result<Vec<_>, String>>()?,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::MapKey {
-                entries,
+                expr,
                 index,
                 values,
                 frame,
             } => Self::MapKey {
-                entries: entries.clone(),
+                expr: *expr,
                 index: *index,
-                values: capture_pairs(values)?,
-                frame: super::frame::capture_frame(frame)?,
+                values: capture_pairs(values, context)?,
+                frame: context.frame(frame)?,
             },
             Continuation::MapValue {
-                entries,
+                expr,
                 index,
                 key,
                 values,
                 frame,
             } => Self::MapValue {
-                entries: entries.clone(),
+                expr: *expr,
                 index: *index,
-                key: ValueSnapshot::capture(key)?,
-                values: capture_pairs(values)?,
-                frame: super::frame::capture_frame(frame)?,
+                key: context.value(key)?,
+                values: capture_pairs(values, context)?,
+                frame: context.frame(frame)?,
             },
             Continuation::IndexBase {
                 expr,
@@ -186,26 +190,26 @@ impl ContinuationSnapshot {
                 expr: *expr,
                 index: *index,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::IndexValue { expr, base, span } => Self::IndexValue {
                 expr: *expr,
-                base: ValueSnapshot::capture(base)?,
+                base: context.value(base)?,
                 span: *span,
             },
             Continuation::SliceBase { eval, frame } => Self::SliceBase {
                 eval: capture_slice_eval(*eval),
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::SliceStart { eval, base, frame } => Self::SliceStart {
                 eval: capture_slice_eval(*eval),
-                base: ValueSnapshot::capture(base)?,
-                frame: super::frame::capture_frame(frame)?,
+                base: context.value(base)?,
+                frame: context.frame(frame)?,
             },
             Continuation::SliceEnd { eval, base, start } => Self::SliceEnd {
                 eval: capture_slice_eval(*eval),
-                base: ValueSnapshot::capture(base)?,
-                start: ValueSnapshot::capture(start)?,
+                base: context.value(base)?,
+                start: context.value(start)?,
             },
             Continuation::MethodReceiver {
                 expr,
@@ -220,7 +224,7 @@ impl ContinuationSnapshot {
                 type_args: type_args.clone(),
                 args: args.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::PromptValueMethodArg {
                 messages,
@@ -247,14 +251,14 @@ impl ContinuationSnapshot {
                 frame,
             } => Self::LocalMethodArgs {
                 expr: *expr,
-                receiver: ValueSnapshot::capture(receiver)?,
+                receiver: context.value(receiver)?,
                 method: method.clone(),
                 type_args: type_args.clone(),
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
-                evaluated_args: capture_values(evaluated_args)?,
+                evaluated_args: capture_values(evaluated_args, context)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::StaticMethodArgs {
                 expr,
@@ -273,9 +277,9 @@ impl ContinuationSnapshot {
                 type_args: type_args.clone(),
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
-                evaluated_args: capture_values(evaluated_args)?,
+                evaluated_args: capture_values(evaluated_args, context)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::SpecMethodReceiver {
                 expr,
@@ -294,12 +298,12 @@ impl ContinuationSnapshot {
                 method: method.clone(),
                 args: args.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::CalleeEval { args, span, frame } => Self::CalleeEval {
                 args: args.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::PipelineStageTarget {
                 stages,
@@ -313,11 +317,11 @@ impl ContinuationSnapshot {
                 next_stage_index: *next_stage_index,
                 targets: targets
                     .iter()
-                    .map(super::call_target::capture_call_target)
+                    .map(|target| context.call_target(target))
                     .collect::<Result<Vec<_>, _>>()?,
                 current_limits: current_limits.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::CallArgs {
                 target,
@@ -327,12 +331,12 @@ impl ContinuationSnapshot {
                 span,
                 frame,
             } => Self::CallArgs {
-                target: super::call_target::capture_call_target(target)?,
+                target: context.call_target(target)?,
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
-                evaluated_args: capture_values(evaluated_args)?,
+                evaluated_args: capture_values(evaluated_args, context)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::VariantArgs {
                 variant_symbol,
@@ -345,9 +349,9 @@ impl ContinuationSnapshot {
                 variant_symbol: *variant_symbol,
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
-                evaluated_args: capture_values(evaluated_args)?,
+                evaluated_args: capture_values(evaluated_args, context)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::PerformArgs {
                 expr,
@@ -364,9 +368,9 @@ impl ContinuationSnapshot {
                 type_args: type_args.clone(),
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
-                evaluated_args: capture_values(evaluated_args)?,
+                evaluated_args: capture_values(evaluated_args, context)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::MemoryArgs {
                 region_stable_id,
@@ -390,9 +394,9 @@ impl ContinuationSnapshot {
                 method: method.clone(),
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
-                evaluated_args: capture_values(evaluated_args)?,
+                evaluated_args: capture_values(evaluated_args, context)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::MemorySelectionLimitArgs {
                 region_stable_id,
@@ -413,13 +417,16 @@ impl ContinuationSnapshot {
                 key_type: *key_type,
                 value_type: *value_type,
                 kind: kind.clone(),
-                predicate: predicate.as_ref().map(ValueSnapshot::capture).transpose()?,
+                predicate: predicate
+                    .as_ref()
+                    .map(|value| context.value(value))
+                    .transpose()?,
                 limit: *limit,
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
-                evaluated_args: capture_values(evaluated_args)?,
+                evaluated_args: capture_values(evaluated_args, context)?,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::IfExpr {
                 then_block,
@@ -430,7 +437,7 @@ impl ContinuationSnapshot {
                 then_block: *then_block,
                 else_branch: else_branch.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::IfStmt {
                 block,
@@ -445,12 +452,12 @@ impl ContinuationSnapshot {
                 then_block: *then_block,
                 else_branch: else_branch.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::MatchExpr { arms, span, frame } => Self::MatchExpr {
                 arms: arms.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::MatchStmt {
                 block,
@@ -463,7 +470,7 @@ impl ContinuationSnapshot {
                 next_stmt_index: *next_stmt_index,
                 arms: arms.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::HandleHandler {
                 handle_expr,
@@ -476,7 +483,7 @@ impl ContinuationSnapshot {
                 body: *body,
                 handler: *handler,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::PipelineInput {
                 stages,
@@ -485,29 +492,22 @@ impl ContinuationSnapshot {
             } => Self::PipelineInput {
                 stages: stages.clone(),
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::PipelineTarget { input, span } => Self::PipelineTarget {
-                input: ValueSnapshot::capture(input)?,
+                input: context.value(input)?,
                 span: *span,
             },
             Continuation::ComposedCall { remaining, span } => Self::ComposedCall {
                 remaining: remaining
                     .iter()
-                    .map(super::call_target::capture_call_target)
+                    .map(|target| context.call_target(target))
                     .collect::<Result<Vec<_>, _>>()?,
                 span: *span,
             },
-            Continuation::RestoreModelPolicy { previous, inner } => Self::RestoreModelPolicy {
-                previous: Box::new(capture_model_policy(previous)),
-                inner: Box::new(Self::capture(inner)?),
-            },
-            Continuation::CallBoundary { outer } => Self::CallBoundary {
-                outer: Box::new(Self::capture(outer)?),
-            },
             Continuation::ForLoop {
                 pat,
-                values,
+                source,
                 next_index,
                 body,
                 iterations,
@@ -519,16 +519,16 @@ impl ContinuationSnapshot {
                 loop_scope.sort_by_key(|symbol| symbol.0);
                 Self::ForLoop {
                     pat: *pat,
-                    values: values
+                    source: source
                         .as_ref()
-                        .map(|values| capture_values(values))
+                        .map(|source| context.value(source.value()))
                         .transpose()?,
                     next_index: *next_index,
                     body: *body,
                     iterations: *iterations,
                     loop_scope,
                     span: *span,
-                    frame: super::frame::capture_frame(frame)?,
+                    frame: context.frame(frame)?,
                 }
             }
             Continuation::WhileLoop {
@@ -546,7 +546,7 @@ impl ContinuationSnapshot {
                 max_iterations: *max_iterations,
                 resume_after_body: *resume_after_body,
                 span: *span,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::RetryAttempt {
                 retry,
@@ -563,7 +563,7 @@ impl ContinuationSnapshot {
                 next_attempt: *next_attempt,
                 block: *block,
                 next_stmt_index: *next_stmt_index,
-                frame: super::frame::capture_frame(frame)?,
+                frame: context.frame(frame)?,
             },
             Continuation::TryExpr { expr, span } => Self::TryExpr {
                 expr: *expr,
@@ -587,25 +587,9 @@ impl ContinuationSnapshot {
             } => Self::MemoryClearDeleteNext {
                 region_stable_id: region_stable_id.clone(),
                 path: path.clone(),
-                remaining_keys: capture_values(remaining_keys)?,
+                remaining_keys: capture_values(remaining_keys, context)?,
                 next_index: *next_index,
                 span: *span,
-            },
-            Continuation::HandlerDispatch { outer } => Self::HandlerDispatch {
-                outer: Box::new(Self::capture(outer)?),
-            },
-            Continuation::HandleBoundary {
-                scope_id,
-                inner,
-                handlers,
-                span,
-                frame,
-            } => Self::HandleBoundary {
-                scope_id: *scope_id,
-                inner: Box::new(Self::capture(inner)?),
-                handlers: handlers.clone(),
-                span: *span,
-                frame: super::frame::capture_frame(frame)?,
             },
             Continuation::AgentPromptBody {
                 item,
@@ -619,14 +603,14 @@ impl ContinuationSnapshot {
                     .map(capture_model_policy)
                     .map(Box::new),
             },
-            Continuation::ScopedModelPolicy { policy, inner } => Self::ScopedModelPolicy {
-                policy: Box::new(capture_model_policy(policy)),
-                inner: Box::new(Self::capture(inner)?),
-            },
-            Continuation::Chain { inner, outer } => Self::Chain {
-                inner: Box::new(Self::capture(inner)?),
-                outer: Box::new(Self::capture(outer)?),
-            },
+            Continuation::RestoreModelPolicy { .. }
+            | Continuation::CallBoundary { .. }
+            | Continuation::HandlerDispatch { .. }
+            | Continuation::HandleBoundary { .. }
+            | Continuation::ScopedModelPolicy { .. }
+            | Continuation::Chain { .. } => {
+                return Err("continuation capture expected a leaf, not an owned edge".into());
+            }
             Continuation::Return => Self::Return,
             Continuation::Resume => Self::Resume,
             Continuation::Finish => Self::Finish,
@@ -634,7 +618,7 @@ impl ContinuationSnapshot {
         })
     }
 
-    pub(crate) fn restore(self) -> Result<Continuation, String> {
+    fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
             Self::ContinueBlock {
                 block,
@@ -643,7 +627,7 @@ impl ContinuationSnapshot {
             } => Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::Bind {
                 block,
@@ -656,7 +640,7 @@ impl ContinuationSnapshot {
                 next_stmt_index,
                 pat,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::Assign {
                 block,
@@ -669,7 +653,7 @@ impl ContinuationSnapshot {
                 next_stmt_index,
                 target,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::AssignTargetIndex {
                 block,
@@ -687,16 +671,16 @@ impl ContinuationSnapshot {
                 root_symbol,
                 segments: segments
                     .into_iter()
-                    .map(restore_local_segment)
+                    .map(|segment| restore_local_segment(segment, context))
                     .collect::<Result<Vec<_>, _>>()?,
                 components: components
                     .into_iter()
                     .map(restore_local_component)
                     .collect(),
                 next_component_index,
-                new_value: new_value.restore()?,
+                new_value: new_value.restore_with(context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::FieldReceiver {
                 expr,
@@ -707,7 +691,7 @@ impl ContinuationSnapshot {
                 expr,
                 field,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::Unary { op, span } => Continuation::Unary { op, span },
             Self::BinaryLeft {
@@ -719,49 +703,46 @@ impl ContinuationSnapshot {
                 op,
                 rhs,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::BinaryRight { op, left, span } => Continuation::BinaryRight {
                 op,
-                left: left.restore()?,
+                left: left.restore_with(context)?,
                 span,
             },
             Self::AggregateElement {
-                kind,
-                exprs,
+                expr,
                 next_index,
                 values,
                 frame,
             } => Continuation::AggregateElement {
-                kind: restore_aggregate_kind(kind),
-                exprs,
+                expr,
                 next_index,
-                values: restore_values(values)?,
-                frame: super::frame::restore_frame(frame)?,
+                values: restore_values(values, context)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::ListConsHead { tail, span, frame } => Continuation::ListConsHead {
                 tail,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::ListConsTail { head, span } => Continuation::ListConsTail {
-                head: head.restore()?,
+                head: head.restore_with(context)?,
                 span,
             },
             Self::RangeStart { end, bounds, frame } => Continuation::RangeStart {
                 end,
                 bounds,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::RangeEnd { start, bounds } => Continuation::RangeEnd {
-                start: start.restore()?,
+                start: start.restore_with(context)?,
                 bounds,
             },
             Self::RecordField {
                 expr,
                 nominal_type,
                 variant_symbol,
-                fields,
                 next_index,
                 values,
                 frame,
@@ -769,37 +750,36 @@ impl ContinuationSnapshot {
                 expr,
                 nominal_type,
                 variant_symbol,
-                fields,
                 next_index,
                 values: values
                     .into_iter()
-                    .map(|(name, value)| Ok((name, value.restore()?)))
+                    .map(|(name, value)| Ok((name, value.restore_with(context)?)))
                     .collect::<Result<Vec<_>, String>>()?,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MapKey {
-                entries,
+                expr,
                 index,
                 values,
                 frame,
             } => Continuation::MapKey {
-                entries,
+                expr,
                 index,
-                values: restore_pairs(values)?,
-                frame: super::frame::restore_frame(frame)?,
+                values: restore_pairs(values, context)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MapValue {
-                entries,
+                expr,
                 index,
                 key,
                 values,
                 frame,
             } => Continuation::MapValue {
-                entries,
+                expr,
                 index,
-                key: key.restore()?,
-                values: restore_pairs(values)?,
-                frame: super::frame::restore_frame(frame)?,
+                key: key.restore_with(context)?,
+                values: restore_pairs(values, context)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::IndexBase {
                 expr,
@@ -810,26 +790,26 @@ impl ContinuationSnapshot {
                 expr,
                 index,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::IndexValue { expr, base, span } => Continuation::IndexValue {
                 expr,
-                base: base.restore()?,
+                base: base.restore_with(context)?,
                 span,
             },
             Self::SliceBase { eval, frame } => Continuation::SliceBase {
                 eval: restore_slice_eval(eval),
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::SliceStart { eval, base, frame } => Continuation::SliceStart {
                 eval: restore_slice_eval(eval),
-                base: base.restore()?,
-                frame: super::frame::restore_frame(frame)?,
+                base: base.restore_with(context)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::SliceEnd { eval, base, start } => Continuation::SliceEnd {
                 eval: restore_slice_eval(eval),
-                base: base.restore()?,
-                start: start.restore()?,
+                base: base.restore_with(context)?,
+                start: start.restore_with(context)?,
             },
             Self::MethodReceiver {
                 expr,
@@ -844,7 +824,7 @@ impl ContinuationSnapshot {
                 type_args,
                 args,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::PromptValueMethodArg {
                 messages,
@@ -871,14 +851,14 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::LocalMethodArgs {
                 expr,
-                receiver: receiver.restore()?,
+                receiver: receiver.restore_with(context)?,
                 method,
                 type_args,
                 args,
                 next_arg_index,
-                evaluated_args: restore_values(evaluated_args)?,
+                evaluated_args: restore_values(evaluated_args, context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::StaticMethodArgs {
                 expr,
@@ -897,9 +877,9 @@ impl ContinuationSnapshot {
                 type_args,
                 args,
                 next_arg_index,
-                evaluated_args: restore_values(evaluated_args)?,
+                evaluated_args: restore_values(evaluated_args, context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::SpecMethodReceiver {
                 expr,
@@ -918,12 +898,12 @@ impl ContinuationSnapshot {
                 method,
                 args,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::CalleeEval { args, span, frame } => Continuation::CalleeEval {
                 args,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::PipelineStageTarget {
                 stages,
@@ -937,11 +917,11 @@ impl ContinuationSnapshot {
                 next_stage_index,
                 targets: targets
                     .into_iter()
-                    .map(super::call_target::restore_call_target)
+                    .map(|target| super::call_target::restore_call_target(target, context))
                     .collect::<Result<Vec<_>, _>>()?,
                 current_limits,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::CallArgs {
                 target,
@@ -951,12 +931,12 @@ impl ContinuationSnapshot {
                 span,
                 frame,
             } => Continuation::CallArgs {
-                target: super::call_target::restore_call_target(target)?,
+                target: super::call_target::restore_call_target(target, context)?,
                 args,
                 next_arg_index,
-                evaluated_args: restore_values(evaluated_args)?,
+                evaluated_args: restore_values(evaluated_args, context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::VariantArgs {
                 variant_symbol,
@@ -969,9 +949,9 @@ impl ContinuationSnapshot {
                 variant_symbol,
                 args,
                 next_arg_index,
-                evaluated_args: restore_values(evaluated_args)?,
+                evaluated_args: restore_values(evaluated_args, context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::PerformArgs {
                 expr,
@@ -988,9 +968,9 @@ impl ContinuationSnapshot {
                 type_args,
                 args,
                 next_arg_index,
-                evaluated_args: restore_values(evaluated_args)?,
+                evaluated_args: restore_values(evaluated_args, context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MemoryArgs {
                 region_stable_id,
@@ -1015,9 +995,9 @@ impl ContinuationSnapshot {
                 method,
                 args,
                 next_arg_index,
-                evaluated_args: restore_values(evaluated_args)?,
+                evaluated_args: restore_values(evaluated_args, context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MemorySelectionLimitArgs {
                 region_stable_id,
@@ -1038,13 +1018,15 @@ impl ContinuationSnapshot {
                 key_type,
                 value_type,
                 kind,
-                predicate: predicate.map(ValueSnapshot::restore).transpose()?,
+                predicate: predicate
+                    .map(|value| value.restore_with(context))
+                    .transpose()?,
                 limit,
                 args,
                 next_arg_index,
-                evaluated_args: restore_values(evaluated_args)?,
+                evaluated_args: restore_values(evaluated_args, context)?,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::IfExpr {
                 then_block,
@@ -1055,7 +1037,7 @@ impl ContinuationSnapshot {
                 then_block,
                 else_branch,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::IfStmt {
                 block,
@@ -1070,12 +1052,12 @@ impl ContinuationSnapshot {
                 then_block,
                 else_branch,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MatchExpr { arms, span, frame } => Continuation::MatchExpr {
                 arms,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MatchStmt {
                 block,
@@ -1088,7 +1070,7 @@ impl ContinuationSnapshot {
                 next_stmt_index,
                 arms,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::HandleHandler {
                 handle_expr,
@@ -1101,7 +1083,7 @@ impl ContinuationSnapshot {
                 body,
                 handler,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::PipelineInput {
                 stages,
@@ -1110,29 +1092,22 @@ impl ContinuationSnapshot {
             } => Continuation::PipelineInput {
                 stages,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::PipelineTarget { input, span } => Continuation::PipelineTarget {
-                input: input.restore()?,
+                input: input.restore_with(context)?,
                 span,
             },
             Self::ComposedCall { remaining, span } => Continuation::ComposedCall {
                 remaining: remaining
                     .into_iter()
-                    .map(super::call_target::restore_call_target)
+                    .map(|target| super::call_target::restore_call_target(target, context))
                     .collect::<Result<Vec<_>, _>>()?,
                 span,
             },
-            Self::RestoreModelPolicy { previous, inner } => Continuation::RestoreModelPolicy {
-                previous: Box::new(restore_model_policy(*previous)),
-                inner: Box::new(inner.restore()?),
-            },
-            Self::CallBoundary { outer } => Continuation::CallBoundary {
-                outer: Box::new(outer.restore()?),
-            },
             Self::ForLoop {
                 pat,
-                values,
+                source,
                 next_index,
                 body,
                 iterations,
@@ -1141,13 +1116,17 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::ForLoop {
                 pat,
-                values: values.map(restore_values).transpose()?,
+                source: source
+                    .map(|source| {
+                        crate::value::iteration::IterationSource::new(source.restore_with(context)?)
+                    })
+                    .transpose()?,
                 next_index,
                 body,
                 iterations,
                 loop_scope: loop_scope.into_iter().collect::<HashSet<_>>(),
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::WhileLoop {
                 cond,
@@ -1164,7 +1143,7 @@ impl ContinuationSnapshot {
                 max_iterations,
                 resume_after_body,
                 span,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::RetryAttempt {
                 retry,
@@ -1181,7 +1160,7 @@ impl ContinuationSnapshot {
                 next_attempt,
                 block,
                 next_stmt_index,
-                frame: super::frame::restore_frame(frame)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::TryExpr { expr, span } => Continuation::TryExpr { expr, span },
             Self::MemoryClearDeleteAll {
@@ -1202,25 +1181,9 @@ impl ContinuationSnapshot {
             } => Continuation::MemoryClearDeleteNext {
                 region_stable_id,
                 path,
-                remaining_keys: restore_values(remaining_keys)?,
+                remaining_keys: restore_values(remaining_keys, context)?,
                 next_index,
                 span,
-            },
-            Self::HandlerDispatch { outer } => Continuation::HandlerDispatch {
-                outer: Box::new(outer.restore()?),
-            },
-            Self::HandleBoundary {
-                scope_id,
-                inner,
-                handlers,
-                span,
-                frame,
-            } => Continuation::HandleBoundary {
-                scope_id,
-                inner: Box::new(inner.restore()?),
-                handlers,
-                span,
-                frame: super::frame::restore_frame(frame)?,
             },
             Self::AgentPromptBody {
                 item,
@@ -1233,68 +1196,81 @@ impl ContinuationSnapshot {
                     .map(|policy| restore_model_policy(*policy))
                     .map(Box::new),
             },
-            Self::ScopedModelPolicy { policy, inner } => Continuation::ScopedModelPolicy {
-                policy: Box::new(restore_model_policy(*policy)),
-                inner: Box::new(inner.restore()?),
-            },
-            Self::Chain { inner, outer } => Continuation::Chain {
-                inner: Box::new(inner.restore()?),
-                outer: Box::new(outer.restore()?),
-            },
+            Self::RestoreModelPolicy { .. }
+            | Self::CallBoundary { .. }
+            | Self::HandlerDispatch { .. }
+            | Self::HandleBoundary { .. }
+            | Self::ScopedModelPolicy { .. }
+            | Self::Chain { .. } => {
+                return Err("continuation restore expected a leaf, not an owned edge".into());
+            }
             Self::Return => Continuation::Return,
             Self::Resume => Continuation::Resume,
             Self::Finish => Continuation::Finish,
             Self::BlockValue => Continuation::BlockValue,
         })
     }
-
-    pub(crate) fn to_runtime(&self) -> Result<Continuation, String> {
-        self.clone().restore()
-    }
 }
 
-fn capture_values(values: &[crate::value::InterpValue]) -> Result<Vec<ValueSnapshot>, String> {
-    values.iter().map(ValueSnapshot::capture).collect()
+fn capture_values(
+    values: &[crate::value::InterpValue],
+    context: &mut CaptureContext,
+) -> Result<Vec<ValueSnapshot>, String> {
+    values.iter().map(|value| context.value(value)).collect()
 }
 
-fn restore_values(values: Vec<ValueSnapshot>) -> Result<Vec<crate::value::InterpValue>, String> {
-    values.into_iter().map(ValueSnapshot::restore).collect()
+fn restore_values(
+    values: Vec<ValueSnapshot>,
+    context: &mut RestoreContext,
+) -> Result<Vec<crate::value::InterpValue>, String> {
+    values
+        .into_iter()
+        .map(|value| value.restore_with(context))
+        .collect()
 }
 
 fn capture_pairs(
     values: &[(crate::value::InterpValue, crate::value::InterpValue)],
+    context: &mut CaptureContext,
 ) -> Result<Vec<(ValueSnapshot, ValueSnapshot)>, String> {
     values
         .iter()
-        .map(|(key, value)| Ok((ValueSnapshot::capture(key)?, ValueSnapshot::capture(value)?)))
+        .map(|(key, value)| Ok((context.value(key)?, context.value(value)?)))
         .collect()
 }
 
 fn restore_pairs(
     values: Vec<(ValueSnapshot, ValueSnapshot)>,
+    context: &mut RestoreContext,
 ) -> Result<Vec<(crate::value::InterpValue, crate::value::InterpValue)>, String> {
     values
         .into_iter()
-        .map(|(key, value)| Ok((key.restore()?, value.restore()?)))
+        .map(|(key, value)| Ok((key.restore_with(context)?, value.restore_with(context)?)))
         .collect()
 }
 
-fn capture_local_segment(value: &LocalPlaceSegment) -> Result<LocalPlaceSegmentSnapshot, String> {
+fn capture_local_segment(
+    value: &LocalPlaceSegment,
+    context: &mut CaptureContext,
+) -> Result<LocalPlaceSegmentSnapshot, String> {
     Ok(match value {
         LocalPlaceSegment::Field(value) => LocalPlaceSegmentSnapshot::Field(value.clone()),
         LocalPlaceSegment::Index(value) => LocalPlaceSegmentSnapshot::Index(*value),
         LocalPlaceSegment::MapKey(value) => {
-            LocalPlaceSegmentSnapshot::MapKey(Box::new(ValueSnapshot::capture(value)?))
+            LocalPlaceSegmentSnapshot::MapKey(Box::new(context.value(value)?))
         }
     })
 }
 
-fn restore_local_segment(value: LocalPlaceSegmentSnapshot) -> Result<LocalPlaceSegment, String> {
+fn restore_local_segment(
+    value: LocalPlaceSegmentSnapshot,
+    context: &mut RestoreContext,
+) -> Result<LocalPlaceSegment, String> {
     Ok(match value {
         LocalPlaceSegmentSnapshot::Field(value) => LocalPlaceSegment::Field(value),
         LocalPlaceSegmentSnapshot::Index(value) => LocalPlaceSegment::Index(value),
         LocalPlaceSegmentSnapshot::MapKey(value) => {
-            LocalPlaceSegment::MapKey(Box::new(value.restore()?))
+            LocalPlaceSegment::MapKey(Box::new(value.restore_with(context)?))
         }
     })
 }
@@ -1337,24 +1313,6 @@ fn restore_slice_eval(value: SliceExprEvalSnapshot) -> SliceExprEval {
         end: value.end,
         bounds: value.bounds,
         span: value.span,
-    }
-}
-
-fn capture_aggregate_kind(value: AggregateKind) -> AggregateKindSnapshot {
-    match value {
-        AggregateKind::Tuple => AggregateKindSnapshot::Tuple,
-        AggregateKind::Array => AggregateKindSnapshot::Array,
-        AggregateKind::List => AggregateKindSnapshot::List,
-        AggregateKind::Set => AggregateKindSnapshot::Set,
-    }
-}
-
-fn restore_aggregate_kind(value: AggregateKindSnapshot) -> AggregateKind {
-    match value {
-        AggregateKindSnapshot::Tuple => AggregateKind::Tuple,
-        AggregateKindSnapshot::Array => AggregateKind::Array,
-        AggregateKindSnapshot::List => AggregateKind::List,
-        AggregateKindSnapshot::Set => AggregateKind::Set,
     }
 }
 

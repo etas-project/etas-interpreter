@@ -4,7 +4,9 @@ use super::value::{
     optional_string, optional_u32, required, required_bool, required_str, required_usize,
 };
 
-pub(super) fn model_policy_snapshot(policy: &crate::api::ModelExecutionPolicy) -> Value {
+pub(super) fn model_policy_snapshot(
+    policy: &crate::orchestration::ModelExecutionPolicySnapshot,
+) -> Value {
     json!({
         "provider": policy.provider.as_ref().map(|provider| provider.0.as_str()),
         "provider_capabilities": policy.provider_capabilities.map(|capabilities| json!({
@@ -22,8 +24,8 @@ pub(super) fn model_policy_snapshot(policy: &crate::api::ModelExecutionPolicy) -
         "options": model_options_snapshot(&policy.options),
         "budget": policy.budget.as_ref().map(crate::api::codec::budget_json),
         "response_decode": match policy.response_decode {
-            crate::api::ModelResponseDecodePolicy::String => "string",
-            crate::api::ModelResponseDecodePolicy::ModelResponse => "model_response",
+            crate::orchestration::ModelResponseDecodeSnapshot::String => "string",
+            crate::orchestration::ModelResponseDecodeSnapshot::ModelResponse => "model_response",
         },
         "max_tool_rounds": policy.max_tool_rounds,
     })
@@ -31,7 +33,7 @@ pub(super) fn model_policy_snapshot(policy: &crate::api::ModelExecutionPolicy) -
 
 pub(super) fn model_policy_from_snapshot(
     value: &Value,
-) -> Result<crate::api::ModelExecutionPolicy, String> {
+) -> Result<crate::orchestration::ModelExecutionPolicySnapshot, String> {
     let provider_capabilities = match value.get("provider_capabilities") {
         Some(Value::Null) => None,
         Some(value) => Some(etas_host::ModelProviderCapabilities {
@@ -55,7 +57,7 @@ pub(super) fn model_policy_from_snapshot(
         .iter()
         .map(tool_schema_from_snapshot)
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(crate::api::ModelExecutionPolicy {
+    Ok(crate::orchestration::ModelExecutionPolicySnapshot {
         provider: optional_string(value, "provider")?.map(etas_host::ModelProviderId),
         provider_capabilities,
         model: etas_host::ModelName(required_str(value, "model")?.to_owned()),
@@ -79,8 +81,8 @@ pub(super) fn model_policy_from_snapshot(
             None => return Err("machine model policy is missing `budget`".to_owned()),
         },
         response_decode: match required_str(value, "response_decode")? {
-            "string" => crate::api::ModelResponseDecodePolicy::String,
-            "model_response" => crate::api::ModelResponseDecodePolicy::ModelResponse,
+            "string" => crate::orchestration::ModelResponseDecodeSnapshot::String,
+            "model_response" => crate::orchestration::ModelResponseDecodeSnapshot::ModelResponse,
             other => return Err(format!("unknown machine model response decode `{other}`")),
         },
         max_tool_rounds: required_usize(value, "max_tool_rounds")?,
@@ -90,7 +92,7 @@ pub(super) fn model_policy_from_snapshot(
 pub(super) fn optional_model_policy(
     value: &Value,
     field: &str,
-) -> Result<Option<crate::api::ModelExecutionPolicy>, String> {
+) -> Result<Option<crate::orchestration::ModelExecutionPolicySnapshot>, String> {
     let Some(value) = value.get(field) else {
         return Err(format!("machine snapshot is missing `{field}`"));
     };

@@ -1,4 +1,11 @@
 use super::primitive::InterpValue;
+mod host;
+mod ingress;
+mod messages;
+pub use messages::MessageList;
+#[cfg(test)]
+mod message_tests;
+pub use host::{HostFields, HostPairs, HostValues};
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct MessageValue {
@@ -8,7 +15,7 @@ pub struct MessageValue {
     pub role: MessageRoleValue,
     pub session: Option<String>,
     pub created_at: String,
-    pub payload: Box<InterpValue>,
+    pub payload: super::SharedValue,
     pub provenance: Option<ProvenanceValue>,
 }
 
@@ -21,10 +28,10 @@ pub struct SessionConfigValue {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversationValue {
-    pub selected_context: Option<Box<etas_host::session::SessionPublishedContext>>,
+    pub selected_context: Option<super::PublishedContextValue>,
     pub session: String,
     pub history_fence: Option<etas_host::session::SessionHistoryFence>,
-    pub messages: Vec<MessageValue>,
+    pub messages: MessageList,
     pub cursor: Option<String>,
 }
 
@@ -83,34 +90,50 @@ pub struct ModelUsageValue {
     pub output_tokens: u64,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum HostSupportValue {
     Unit,
     Bool(bool),
-    Int(String),
-    UInt(String),
+    Int(super::StringValue),
+    UInt(super::StringValue),
     FloatBits(u64),
-    String(String),
-    Bytes(Vec<u8>),
-    List(Vec<HostSupportValue>),
-    Map(Vec<(HostSupportValue, HostSupportValue)>),
-    Record(Vec<(String, HostSupportValue)>),
+    String(super::StringValue),
+    Bytes(super::BytesValue),
+    List(HostValues),
+    Map(HostPairs),
+    Record(HostFields),
     Variant {
-        name: String,
-        fields: Vec<HostSupportValue>,
+        name: super::StringValue,
+        fields: HostValues,
     },
     Json(HostJsonSupportValue),
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+impl PartialEq for HostSupportValue {
+    fn eq(&self, other: &Self) -> bool {
+        host::equal(self, other)
+    }
+}
+
+impl Eq for HostSupportValue {}
+
+#[derive(Clone, Debug)]
 pub enum HostJsonSupportValue {
     Null,
     Bool(bool),
     NumberBits(u64),
-    String(String),
-    Array(Vec<HostJsonSupportValue>),
-    Object(Vec<(String, HostJsonSupportValue)>),
+    String(super::StringValue),
+    Array(super::JsonArray),
+    Object(super::JsonObject),
 }
+
+impl PartialEq for HostJsonSupportValue {
+    fn eq(&self, other: &Self) -> bool {
+        super::json::equal(self, other)
+    }
+}
+
+impl Eq for HostJsonSupportValue {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct RangeValue {
@@ -138,6 +161,6 @@ pub enum PromptRole {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct PromptMessage {
     pub role: PromptRole,
-    pub text: String,
+    pub text: super::StringValue,
     pub trust: Option<etas_types::TrustWrapper>,
 }

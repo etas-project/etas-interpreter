@@ -1,6 +1,6 @@
 use super::*;
 use crate::control::ExecutionFault;
-use crate::value::{RangeBounds, RangeValue};
+use crate::value::range::IntegerRange;
 
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_slice_expr(
@@ -89,16 +89,15 @@ impl<'a> EvalContext<'a> {
         match base {
             InterpValue::Array(values) => {
                 let (start, end) = self.slice_bounds(start, end, bounds, span)?;
-                let values = values.borrow();
-                self.slice_sequence(values.as_slice(), start, end, "array", span)
-                    .map(SliceValue::new)
+                SliceValue::from_array(values, start..end)
+                    .ok_or_else(|| self.slice_bounds_fault("array", span))
                     .map(InterpValue::Slice)
             }
             InterpValue::Slice(values) => {
                 let (start, end) = self.slice_bounds(start, end, bounds, span)?;
-                let values = values.borrow();
-                self.slice_sequence(values.as_slice(), start, end, "slice", span)
-                    .map(SliceValue::new)
+                values
+                    .slice(start..end)
+                    .ok_or_else(|| self.slice_bounds_fault("slice", span))
                     .map(InterpValue::Slice)
             }
             InterpValue::Bytes(values) => {
@@ -110,47 +109,27 @@ impl<'a> EvalContext<'a> {
                         "bytes slice bounds are out of range at runtime",
                     ));
                 }
-                Ok(InterpValue::Bytes(values[start..end].to_vec()))
+                Ok(InterpValue::Bytes(values[start..end].to_vec().into()))
             }
             InterpValue::Range(range) => {
-                let range_start = match *range.start {
-                    InterpValue::Number(value) => value,
-                    _ => {
-                        return Err(ExecutionFault::new(
-                            AnalysisDiagnosticCode::MissingCheckedFact,
-                            span,
-                            "range slicing requires integer range bounds",
-                        ));
-                    }
-                };
-                let range_end = match *range.end {
-                    InterpValue::Number(value) => value,
-                    _ => {
-                        return Err(ExecutionFault::new(
-                            AnalysisDiagnosticCode::MissingCheckedFact,
-                            span,
-                            "range slicing requires integer range bounds",
-                        ));
-                    }
-                };
-                let values = self.range_values(range_start, range_end, range.bounds, span)?;
+                let interval = IntegerRange::from_value(&range).map_err(|error| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        format!("range slicing requires checked integer bounds: {error:?}"),
+                    )
+                })?;
                 let (start, end) = self.slice_bounds(start, end, bounds, span)?;
-                let sliced = self.slice_sequence(values.as_slice(), start, end, "range", span)?;
-                let (Some(InterpValue::Number(start)), Some(InterpValue::Number(end))) =
-                    (sliced.first().cloned(), sliced.last().cloned())
-                else {
-                    return Ok(InterpValue::Range(RangeValue {
-                        start: Box::new(InterpValue::Number(range_start)),
-                        end: Box::new(InterpValue::Number(range_start)),
-                        bounds: RangeBounds::ClosedOpen,
-                    }));
-                };
-                let exclusive_end = increment_range_number(end, span)?;
-                Ok(InterpValue::Range(RangeValue {
-                    start: Box::new(InterpValue::Number(start)),
-                    end: Box::new(InterpValue::Number(exclusive_end)),
-                    bounds: RangeBounds::ClosedOpen,
-                }))
+                interval
+                    .slice(start, end)
+                    .map(InterpValue::Range)
+                    .map_err(|error| {
+                        ExecutionFault::new(
+                            AnalysisDiagnosticCode::InvalidArguments,
+                            span,
+                            format!("range slice bounds are out of range at runtime: {error:?}"),
+                        )
+                    })
             }
             other => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
@@ -163,22 +142,12 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn slice_sequence(
-        &self,
-        values: &[InterpValue],
-        start: usize,
-        end: usize,
-        label: &str,
-        span: Span,
-    ) -> Result<Vec<InterpValue>, ExecutionFault> {
-        if start > end || end > values.len() {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                format!("{label} slice bounds are out of range at runtime"),
-            ));
-        }
-        Ok(values[start..end].to_vec())
+    fn slice_bounds_fault(&self, label: &str, span: Span) -> ExecutionFault {
+        ExecutionFault::new(
+            AnalysisDiagnosticCode::InvalidArguments,
+            span,
+            format!("{label} slice bounds are out of range at runtime"),
+        )
     }
 
     fn slice_bounds(
@@ -223,74 +192,6 @@ impl<'a> EvalContext<'a> {
             }
         }
     }
-
-    fn range_values(
-        &self,
-        start: crate::value::NumericValue,
-        end: crate::value::NumericValue,
-        bounds: RangeBounds,
-        span: Span,
-    ) -> Result<Vec<InterpValue>, ExecutionFault> {
-        let mut values = Vec::new();
-        let mut current = match bounds {
-            RangeBounds::ClosedClosed | RangeBounds::ClosedOpen => start,
-            RangeBounds::OpenOpen | RangeBounds::OpenClosed => {
-                if !compare_range_numbers(start, end, |ordering| ordering.is_lt(), span)? {
-                    return Ok(values);
-                }
-                increment_range_number(start, span)?
-            }
-        };
-        loop {
-            let in_bounds = match bounds {
-                RangeBounds::ClosedClosed | RangeBounds::OpenClosed => {
-                    compare_range_numbers(current, end, |ordering| ordering.is_le(), span)?
-                }
-                RangeBounds::ClosedOpen | RangeBounds::OpenOpen => {
-                    compare_range_numbers(current, end, |ordering| ordering.is_lt(), span)?
-                }
-            };
-            if !in_bounds {
-                break;
-            }
-            values.push(InterpValue::Number(current));
-            current = increment_range_number(current, span)?;
-        }
-        Ok(values)
-    }
-}
-
-fn increment_range_number(
-    value: crate::value::NumericValue,
-    span: Span,
-) -> Result<crate::value::NumericValue, ExecutionFault> {
-    value
-        .one_same()
-        .and_then(|one| value.checked_add(one))
-        .map_err(|_| {
-            ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                "range slicing overflowed its integer bounds",
-            )
-        })
-}
-
-fn compare_range_numbers(
-    lhs: crate::value::NumericValue,
-    rhs: crate::value::NumericValue,
-    cmp: impl FnOnce(std::cmp::Ordering) -> bool,
-    span: Span,
-) -> Result<bool, ExecutionFault> {
-    lhs.partial_cmp_same(rhs)
-        .map(|ordering| ordering.is_some_and(cmp))
-        .map_err(|_| {
-            ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "range bounds must have the same checked integer type",
-            )
-        })
 }
 
 #[derive(Clone, Copy, Debug)]

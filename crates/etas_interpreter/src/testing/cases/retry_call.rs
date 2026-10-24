@@ -117,7 +117,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("recovered".to_owned()))
+        Some(value::InterpValue::String("recovered".to_owned().into()))
     );
     assert_eq!(host.model_call_count(), 2);
     assert!(
@@ -203,7 +203,9 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("recovered:after".to_owned()))
+        Some(value::InterpValue::String(
+            "recovered:after".to_owned().into()
+        ))
     );
 }
 
@@ -284,7 +286,9 @@ flow main() -> string ![Error<IOError>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("reviewed:done".to_owned()))
+        Some(value::InterpValue::String(
+            "reviewed:done".to_owned().into()
+        ))
     );
     assert_eq!(host.stdout_text(), "reviewed\nafter\n");
 }
@@ -637,7 +641,7 @@ flow main() -> string {
     assert_eq!(
         result.value().cloned(),
         Some(value::InterpValue::String(
-            "recovered through tool".to_owned()
+            "recovered through tool".to_owned().into()
         ))
     );
     assert_eq!(host.model_call_count(), 3);
@@ -713,7 +717,7 @@ flow main() -> string ![Memory.write, Error<MemoryConflict>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("written".to_owned()))
+        Some(value::InterpValue::String("written".to_owned().into()))
     );
     assert_eq!(host.memory_call_count(), 2);
     assert_eq!(

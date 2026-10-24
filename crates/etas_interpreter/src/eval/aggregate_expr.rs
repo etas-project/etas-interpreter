@@ -1,29 +1,20 @@
 use super::*;
 use crate::value::{RangeBounds, RangeValue};
 
+enum AggregateKind {
+    Tuple,
+    Array,
+    List,
+    Set,
+}
+
 impl<'a> EvalContext<'a> {
-    pub(super) fn eval_tuple_expr(
+    pub(super) fn eval_sequence_expr(
         &mut self,
-        elems: &[HirExprId],
+        expr: HirExprId,
         frame: &mut Frame,
     ) -> ControlSignal {
-        self.resume_expr_sequence(AggregateKind::Tuple, elems.to_vec(), 0, Vec::new(), frame)
-    }
-
-    pub(super) fn eval_array_expr(
-        &mut self,
-        elems: &[HirExprId],
-        frame: &mut Frame,
-    ) -> ControlSignal {
-        self.resume_expr_sequence(AggregateKind::Array, elems.to_vec(), 0, Vec::new(), frame)
-    }
-
-    pub(super) fn eval_list_expr(
-        &mut self,
-        elems: &[HirExprId],
-        frame: &mut Frame,
-    ) -> ControlSignal {
-        self.resume_expr_sequence(AggregateKind::List, elems.to_vec(), 0, Vec::new(), frame)
+        self.resume_expr_sequence(expr, 0, Vec::new(), frame)
     }
 
     pub(super) fn eval_list_cons_expr(
@@ -73,23 +64,14 @@ impl<'a> EvalContext<'a> {
         tail: InterpValue,
         span: Span,
     ) -> ControlSignal {
-        let InterpValue::List(values) = tail else {
+        let InterpValue::List(mut values) = tail else {
             return ControlSignal::missing_checked_fact(
                 "list cons tail must evaluate to a List[T]",
                 span,
             );
         };
-        let mut result = values.snapshot();
-        result.insert(0, head);
-        ControlSignal::Value(InterpValue::List(result.into()))
-    }
-
-    pub(super) fn eval_set_expr(
-        &mut self,
-        elems: &[HirExprId],
-        frame: &mut Frame,
-    ) -> ControlSignal {
-        self.resume_expr_sequence(AggregateKind::Set, elems.to_vec(), 0, Vec::new(), frame)
+        values.push_front(head);
+        ControlSignal::Value(InterpValue::List(values))
     }
 
     pub(super) fn eval_range_expr(
@@ -176,10 +158,18 @@ impl<'a> EvalContext<'a> {
     }
 
     pub(super) fn eval_lambda_expr(&mut self, expr: HirExprId, frame: &mut Frame) -> ControlSignal {
-        ControlSignal::Value(InterpValue::Callable(CallTarget::Lambda {
-            expr,
-            captured: self.capture_frame(frame),
-        }))
+        let span = self.checked.hir.exprs[expr].span(&self.checked.hir.blocks);
+        let Some(layout) = self.plan.closures.get(expr) else {
+            return ControlSignal::missing_checked_fact(
+                "lambda is missing its checked capture layout",
+                span,
+            );
+        };
+        let captured = match frame.capture(layout.slots.clone(), &layout.captures) {
+            Ok(captured) => captured,
+            Err(message) => return ControlSignal::missing_checked_fact(message, span),
+        };
+        ControlSignal::Value(InterpValue::Callable(CallTarget::Lambda { expr, captured }))
     }
 
     pub(super) fn eval_record_expr(
@@ -188,13 +178,12 @@ impl<'a> EvalContext<'a> {
         record: &etas_hir::HirRecordExpr,
         frame: &mut Frame,
     ) -> ControlSignal {
-        self.resume_record_fields(expr, record.fields.clone(), 0, Vec::new(), frame)
+        self.resume_record_fields(expr, 0, Vec::with_capacity(record.fields.len()), frame)
     }
 
     pub(super) fn resume_record_fields(
         &mut self,
         expr: HirExprId,
-        fields: Vec<etas_hir::HirFieldInit>,
         start_index: usize,
         mut values: Vec<(String, InterpValue)>,
         frame: &mut Frame,
@@ -217,7 +206,8 @@ impl<'a> EvalContext<'a> {
             None
         };
         let variant_symbol = self.named_variant_symbol(record.path.as_ref());
-        for (index, field) in fields.iter().enumerate().skip(start_index) {
+        values.reserve(record.fields.len().saturating_sub(values.len()));
+        for (index, field) in record.fields.iter().enumerate().skip(start_index) {
             match field {
                 etas_hir::HirFieldInit::Shorthand {
                     name,
@@ -237,7 +227,6 @@ impl<'a> EvalContext<'a> {
                                     expr,
                                     nominal_type,
                                     variant_symbol,
-                                    fields,
                                     next_index: index + 1,
                                     values,
                                     frame: frame.clone(),
@@ -250,40 +239,42 @@ impl<'a> EvalContext<'a> {
             }
         }
         if let Some(symbol) = variant_symbol {
-            return match self.eval_named_variant(
-                symbol,
-                values,
-                item_span(self.checked, self.entry_item),
-            ) {
+            return match self.eval_named_variant(expr, symbol, values, record.span) {
                 Ok(value) => ControlSignal::Value(value),
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),
             };
         }
-        let value = InterpValue::Record(values.into());
+        let value = match self.plan.records.construct(expr, values) {
+            Ok(value) => value,
+            Err(message) => return ControlSignal::missing_checked_fact(message, record.span),
+        };
         ControlSignal::Value(match nominal_type {
             Some(ty) => InterpValue::Nominal {
                 ty,
-                value: Box::new(value),
+                value: crate::value::SharedValue::new(value),
             },
             None => value,
         })
     }
 
-    pub(super) fn eval_map_expr(
-        &mut self,
-        entries: &[etas_hir::HirMapEntry],
-        frame: &mut Frame,
-    ) -> ControlSignal {
-        self.resume_map_entries(entries.to_vec(), 0, Vec::new(), frame)
+    pub(super) fn eval_map_expr(&mut self, expr: HirExprId, frame: &mut Frame) -> ControlSignal {
+        self.resume_map_entries(expr, 0, Vec::new(), frame)
     }
 
     pub(super) fn resume_map_entries(
         &mut self,
-        entries: Vec<etas_hir::HirMapEntry>,
+        expr: HirExprId,
         start_index: usize,
         mut values: Vec<(InterpValue, InterpValue)>,
         frame: &mut Frame,
     ) -> ControlSignal {
+        let Some(HirExpr::Map { entries, .. }) = self.checked.hir.exprs.get(expr) else {
+            return ControlSignal::missing_checked_fact(
+                "map continuation is missing its checked construction expression",
+                item_span(self.checked, self.entry_item),
+            );
+        };
+        values.reserve(entries.len().saturating_sub(values.len()));
         for (index, entry) in entries.iter().enumerate().skip(start_index) {
             let key = match self.eval_expr(entry.key, frame) {
                 ControlSignal::Value(value) => value,
@@ -291,7 +282,7 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::MapKey {
-                            entries,
+                            expr,
                             index,
                             values,
                             frame: frame.clone(),
@@ -306,7 +297,7 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::MapValue {
-                            entries,
+                            expr,
                             index,
                             key,
                             values,
@@ -323,12 +314,18 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn resume_map_key_value(
         &mut self,
-        entries: Vec<etas_hir::HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         values: Vec<(InterpValue, InterpValue)>,
         key: InterpValue,
         frame: &mut Frame,
     ) -> ControlSignal {
+        let Some(HirExpr::Map { entries, .. }) = self.checked.hir.exprs.get(expr) else {
+            return ControlSignal::missing_checked_fact(
+                "map continuation is missing its checked construction expression",
+                item_span(self.checked, self.entry_item),
+            );
+        };
         let Some(entry) = entries.get(index) else {
             return ControlSignal::invalid_arguments(
                 "map key continuation index is out of range",
@@ -337,12 +334,12 @@ impl<'a> EvalContext<'a> {
         };
         match self.eval_expr(entry.value, frame) {
             ControlSignal::Value(value) => {
-                self.resume_map_value(entries, index, values, key, value, frame)
+                self.resume_map_value(expr, index, values, key, value, frame)
             }
             signal if is_pending_host_boundary_signal(&signal) => compose_signal_continuation(
                 signal,
                 Continuation::MapValue {
-                    entries,
+                    expr,
                     index,
                     key,
                     values,
@@ -355,7 +352,7 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn resume_map_value(
         &mut self,
-        entries: Vec<etas_hir::HirMapEntry>,
+        expr: HirExprId,
         index: usize,
         mut values: Vec<(InterpValue, InterpValue)>,
         key: InterpValue,
@@ -363,7 +360,7 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         values.push((key, value));
-        self.resume_map_entries(entries, index + 1, values, frame)
+        self.resume_map_entries(expr, index + 1, values, frame)
     }
 
     pub(super) fn eval_empty_record_or_map_expr(
@@ -393,21 +390,32 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn resume_expr_sequence(
         &mut self,
-        kind: AggregateKind,
-        exprs: Vec<HirExprId>,
+        expr: HirExprId,
         start_index: usize,
         mut values: Vec<InterpValue>,
         frame: &mut Frame,
     ) -> ControlSignal {
-        for (index, expr) in exprs.iter().enumerate().skip(start_index) {
-            match self.eval_expr(*expr, frame) {
+        let (kind, exprs) = match self.checked.hir.exprs.get(expr) {
+            Some(HirExpr::Tuple { elems, .. }) => (AggregateKind::Tuple, elems),
+            Some(HirExpr::Array { elems, .. }) => (AggregateKind::Array, elems),
+            Some(HirExpr::List { elems, .. }) => (AggregateKind::List, elems),
+            Some(HirExpr::Set { elems, .. }) => (AggregateKind::Set, elems),
+            _ => {
+                return ControlSignal::missing_checked_fact(
+                    "aggregate continuation is missing its checked construction expression",
+                    item_span(self.checked, self.entry_item),
+                );
+            }
+        };
+        values.reserve(exprs.len().saturating_sub(values.len()));
+        for (index, element) in exprs.iter().enumerate().skip(start_index) {
+            match self.eval_expr(*element, frame) {
                 ControlSignal::Value(value) => values.push(value),
                 signal if is_pending_host_boundary_signal(&signal) => {
                     return compose_signal_continuation(
                         signal,
                         Continuation::AggregateElement {
-                            kind,
-                            exprs,
+                            expr,
                             next_index: index + 1,
                             values,
                             frame: frame.clone(),
@@ -418,18 +426,14 @@ impl<'a> EvalContext<'a> {
             }
         }
         ControlSignal::Value(match kind {
-            AggregateKind::Tuple => InterpValue::Tuple(values),
+            AggregateKind::Tuple => InterpValue::Tuple(values.into()),
             AggregateKind::Array => InterpValue::Array(ArrayValue::new(values)),
             AggregateKind::List => InterpValue::List(values.into()),
             AggregateKind::Set => InterpValue::Set(values.into()),
         })
     }
-
-    fn capture_frame(&self, frame: &Frame) -> Frame {
-        let mut captured = Frame::new(self.plan.slots.clone());
-        for (symbol, value) in frame.sorted_locals() {
-            captured.insert(symbol, value);
-        }
-        captured
-    }
 }
+
+#[cfg(test)]
+#[path = "aggregate_expr/tests.rs"]
+mod tests;

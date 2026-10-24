@@ -43,7 +43,7 @@ flow main() -> List<string> {{ {body} }}
     let Some(InterpValue::List(keys)) = result.value() else {
         panic!("expected key list")
     };
-    assert_eq!(keys.borrow().len(), count);
+    assert_eq!(keys.len(), count);
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -131,12 +131,11 @@ flow main() -> List<string> {{
     let Some(InterpValue::List(keys)) = result.value() else {
         panic!("expected typed key list")
     };
-    let keys = keys.borrow();
     assert_eq!(keys.len(), 102);
     for (i, key) in (0..101).rev().zip(keys.iter().skip(1)) {
-        assert_eq!(key, &InterpValue::String(format!("key-{i:03}")));
+        assert_eq!(key, &InterpValue::String(format!("key-{i:03}").into()));
     }
-    assert_eq!(keys[0], InterpValue::String("updated".into()));
+    assert_eq!(keys.get(0), Some(&InterpValue::String("updated".into())));
 }
 
 #[tokio::test(flavor = "current_thread")]

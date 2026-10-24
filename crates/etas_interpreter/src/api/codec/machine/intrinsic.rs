@@ -1,4 +1,6 @@
-pub(super) fn intrinsic_dispatch_name(dispatch: etas_std::IntrinsicDispatch) -> &'static str {
+pub(in crate::api::codec) fn intrinsic_dispatch_name(
+    dispatch: etas_std::IntrinsicDispatch,
+) -> &'static str {
     match dispatch {
         etas_std::IntrinsicDispatch::PureKernel => "pure_kernel",
         etas_std::IntrinsicDispatch::Runtime => "runtime",

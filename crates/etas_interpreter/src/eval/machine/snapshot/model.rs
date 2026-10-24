@@ -1,17 +1,20 @@
+use super::{RestoreContext, capture_context::CaptureContext};
 use crate::control::{ModelDecode, PendingModel, SourceToolBinding};
 use crate::eval::machine::frame::{
     HostToolProgress, ModelLoopFrame, ModelRepairState, SourceToolReturnFrame,
 };
 use crate::orchestration::{
-    ContinuationSnapshot, HostToolProgressSnapshot, ModelDecodeSnapshot, ModelLoopFrameSnapshot,
-    ModelRepairSnapshot, PendingModelSnapshot, SourceToolBindingSnapshot,
-    SourceToolReturnFrameSnapshot,
+    HostToolProgressSnapshot, ModelDecodeSnapshot, ModelLoopFrameSnapshot, ModelRepairSnapshot,
+    PendingModelSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
 };
 
 impl ModelLoopFrameSnapshot {
-    pub(crate) fn capture(frame: &ModelLoopFrame) -> Result<Self, String> {
+    pub(in crate::eval::machine::snapshot) fn capture(
+        frame: &ModelLoopFrame,
+        context: &mut CaptureContext,
+    ) -> Result<Self, String> {
         Ok(Self {
-            pending: PendingModelSnapshot::capture(&frame.pending)?,
+            pending: PendingModelSnapshot::capture(&frame.pending, context)?,
             round: frame.round,
             repair: ModelRepairSnapshot {
                 attempts: frame.repair.attempts,
@@ -27,16 +30,17 @@ impl ModelLoopFrameSnapshot {
                 }
             }),
             boundary_key: frame.boundary_key.clone(),
-            outer_continuation: ContinuationSnapshot::capture(&frame.outer_continuation)?,
+            outer_continuation: context.continuation(&frame.outer_continuation)?,
         })
     }
 
     pub(crate) fn restore(
         self,
         current: &crate::api::HostExecutionContext,
+        context: &mut RestoreContext,
     ) -> Result<ModelLoopFrame, String> {
         Ok(ModelLoopFrame {
-            pending: self.pending.restore(current)?,
+            pending: self.pending.restore(current, context)?,
             round: self.round,
             repair: ModelRepairState {
                 attempts: self.repair.attempts,
@@ -50,13 +54,13 @@ impl ModelLoopFrameSnapshot {
                 boundary_key: progress.boundary_key,
             }),
             boundary_key: self.boundary_key,
-            outer_continuation: self.outer_continuation.restore()?,
+            outer_continuation: self.outer_continuation.restore_with(context)?,
         })
     }
 }
 
 impl PendingModelSnapshot {
-    fn capture(pending: &PendingModel) -> Result<Self, String> {
+    fn capture(pending: &PendingModel, context: &mut CaptureContext) -> Result<Self, String> {
         Ok(Self {
             request: crate::orchestration::ModelRequestSnapshot::capture(&pending.request),
             decode: match pending.decode {
@@ -71,11 +75,15 @@ impl PendingModelSnapshot {
                 .map(SourceToolBindingSnapshot::capture)
                 .collect(),
             span: pending.span,
-            continuation: ContinuationSnapshot::capture(&pending.continuation)?,
+            continuation: context.continuation(&pending.continuation)?,
         })
     }
 
-    fn restore(self, current: &crate::api::HostExecutionContext) -> Result<PendingModel, String> {
+    fn restore(
+        self,
+        current: &crate::api::HostExecutionContext,
+        context: &mut RestoreContext,
+    ) -> Result<PendingModel, String> {
         Ok(PendingModel {
             request: self.request.restore(current),
             decode: match self.decode {
@@ -90,7 +98,7 @@ impl PendingModelSnapshot {
                 .map(SourceToolBindingSnapshot::restore)
                 .collect(),
             span: self.span,
-            continuation: self.continuation.restore()?,
+            continuation: self.continuation.restore_with(context)?,
         })
     }
 }
@@ -114,7 +122,10 @@ impl SourceToolBindingSnapshot {
 }
 
 impl SourceToolReturnFrameSnapshot {
-    pub(crate) fn capture(frame: &SourceToolReturnFrame) -> Result<Self, String> {
+    pub(in crate::eval::machine::snapshot) fn capture(
+        frame: &SourceToolReturnFrame,
+        context: &mut CaptureContext,
+    ) -> Result<Self, String> {
         Ok(Self {
             tool_call_id: frame.tool_call_id.clone(),
             tool_name: frame.tool_name.clone(),
@@ -122,13 +133,14 @@ impl SourceToolReturnFrameSnapshot {
             args: frame.args.clone(),
             boundary_key: frame.boundary_key.clone(),
             output_schema: frame.output_schema.clone(),
-            model_loop: Box::new(ModelLoopFrameSnapshot::capture(&frame.model_loop)?),
+            model_loop: Box::new(ModelLoopFrameSnapshot::capture(&frame.model_loop, context)?),
         })
     }
 
     pub(crate) fn restore(
         self,
         current: &crate::api::HostExecutionContext,
+        context: &mut RestoreContext,
     ) -> Result<SourceToolReturnFrame, String> {
         Ok(SourceToolReturnFrame {
             tool_call_id: self.tool_call_id,
@@ -137,7 +149,7 @@ impl SourceToolReturnFrameSnapshot {
             args: self.args,
             boundary_key: self.boundary_key,
             output_schema: self.output_schema,
-            model_loop: Box::new(self.model_loop.restore(current)?),
+            model_loop: Box::new(self.model_loop.restore(current, context)?),
         })
     }
 }

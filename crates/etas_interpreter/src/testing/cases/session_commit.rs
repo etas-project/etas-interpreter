@@ -247,12 +247,59 @@ flow main(ticket: string) -> Conversation ![Memory.read<SessionId>, Memory.write
     .unwrap();
     let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
     let calls = host.session_call_count();
-    let resumed = Interpreter
-        .resume_checkpoint(&checked, &checkpoint, &host, RunOptions::default())
+    let client = host.persistent_session.as_ref().unwrap();
+    let etas_host::SessionResult::History { fence, .. } = client
+        .execute(request(etas_host::SessionOperation::Load {
+            session: publication.session.clone(),
+            context: etas_host::ContextPolicy::All,
+            cursor: None,
+            limit: Some(1),
+        }))
         .await
+        .unwrap()
+        .result
+        .unwrap()
+    else {
+        panic!("history")
+    };
+    let later = SessionContextPublication::prepare(
+        publication.session.clone(),
+        fence,
+        SessionContextContent {
+            text: "new backend publication".into(),
+            provenance: [("producer".into(), "later".into())].into(),
+        },
+        &etas_host::StorageLimits::default(),
+    )
+    .unwrap();
+    let newer = client
+        .write(SessionWriteRequest {
+            id: HostRequestId(102),
+            operation: SessionWriteOperation::PublishContext(Box::new(later)),
+            authority: AuthorityContext::deny_all(),
+            trace: TraceContext::root(TraceId(1)),
+            budget: Default::default(),
+        })
+        .await
+        .unwrap()
+        .result
         .unwrap();
-    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value(), result.value());
+    let SessionWriteResult::Context(etas_host::WriteOutcome::Committed(receipt)) = newer else {
+        panic!("publication must commit")
+    };
+    assert!(receipt.context_version > context.version);
+    for saved in [&result.checkpoints[0], &checkpoint] {
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, saved, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(
+            resumed.value(),
+            result.value(),
+            "later backend publication must not mutate a selected checkpoint view"
+        );
+    }
     assert_eq!(
         host.session_call_count(),
         calls,

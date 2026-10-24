@@ -250,13 +250,13 @@ fn conversation_from_session_result(
             let conversation = crate::value::ConversationValue {
                 selected_context: match policy {
                     etas_host::ContextPolicy::SummaryPlusRecent { .. } => {
-                        published_context.clone().map(Box::new)
+                        published_context.clone().map(Into::into)
                     }
                     _ => None,
                 },
                 session: session.id.clone(),
                 history_fence: Some(fence.clone()),
-                messages,
+                messages: messages.into(),
                 cursor: cursor.as_ref().map(|cursor| cursor.opaque.clone()),
             };
             crate::value::conversation::validate(&conversation, limits)?;
@@ -340,7 +340,7 @@ fn message_value_from_session_message(
         role: message_role_from_session_role(message.role),
         session: Some(message.session.id.clone()),
         created_at: message.created_at.clone(),
-        payload: Box::new(
+        payload: crate::value::SharedValue::new(
             host_to_typed_interp_value(message.payload.clone(), payload_type, store).map_err(
                 |error| {
                     format!(

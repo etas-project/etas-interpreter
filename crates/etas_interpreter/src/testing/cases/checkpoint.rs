@@ -45,7 +45,7 @@ flow main() -> string {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
         resumed.value().cloned(),
-        Some(value::InterpValue::String("done".to_owned()))
+        Some(value::InterpValue::String("done".to_owned().into()))
     );
 }
 
@@ -693,7 +693,7 @@ flow main(input: string) -> string {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("approved".to_owned())],
+            vec![value::InterpValue::String("approved".to_owned().into())],
             &host,
             RunOptions::default(),
         )
@@ -728,7 +728,7 @@ flow main(input: string) -> string {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(
         resumed.value().cloned(),
-        Some(value::InterpValue::String("approved".to_owned()))
+        Some(value::InterpValue::String("approved".to_owned().into()))
     );
 }
 
@@ -782,7 +782,7 @@ flow main() -> string {
     assert_eq!(resumed_checkpoint.id.0, 1);
     assert_eq!(
         resumed.value().cloned(),
-        Some(value::InterpValue::String("done".to_owned()))
+        Some(value::InterpValue::String("done".to_owned().into()))
     );
 }
 

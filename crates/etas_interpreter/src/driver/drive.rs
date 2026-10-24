@@ -76,6 +76,7 @@ pub async fn execute_entry_from_snapshot(
         eval.checked,
         eval.plan.slots.clone(),
         &eval.plan.dispatch,
+        &eval.plan.closures,
         &eval.host_context,
         &eval.storage_limits,
     ) {

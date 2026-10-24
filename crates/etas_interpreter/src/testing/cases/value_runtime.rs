@@ -81,7 +81,9 @@ flow main() -> UserId {
         result.value().cloned(),
         Some(value::InterpValue::Nominal {
             ty: expected_type,
-            value: Box::new(value::InterpValue::String("user-42".to_owned())),
+            value: crate::value::SharedValue::new(value::InterpValue::String(
+                "user-42".to_owned().into()
+            )),
         })
     );
 }
@@ -639,7 +641,9 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("[true,\"ok\"]".to_owned()))
+        Some(value::InterpValue::String(
+            "[true,\"ok\"]".to_owned().into()
+        ))
     );
 }
 
@@ -676,7 +680,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("invalid-json".to_owned()))
+        Some(value::InterpValue::String("invalid-json".to_owned().into()))
     );
 }
 
@@ -730,14 +734,27 @@ flow main() -> (Option<i32>, Option<i32>, Option<i32>, Option<i32>, bool, Option
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::Tuple(vec![
-            value::InterpValue::OptionSome(Box::new(value::InterpValue::i32(1))),
-            value::InterpValue::OptionSome(Box::new(value::InterpValue::i32(3))),
-            value::InterpValue::OptionSome(Box::new(value::InterpValue::i32(6))),
-            value::InterpValue::OptionSome(Box::new(value::InterpValue::i32(7))),
-            value::InterpValue::Bool(true),
-            value::InterpValue::OptionSome(Box::new(value::InterpValue::String("high".to_owned()))),
-        ]))
+        Some(value::InterpValue::Tuple(
+            vec![
+                value::InterpValue::OptionSome(crate::value::SharedValue::new(
+                    value::InterpValue::i32(1)
+                )),
+                value::InterpValue::OptionSome(crate::value::SharedValue::new(
+                    value::InterpValue::i32(3)
+                )),
+                value::InterpValue::OptionSome(crate::value::SharedValue::new(
+                    value::InterpValue::i32(6)
+                )),
+                value::InterpValue::OptionSome(crate::value::SharedValue::new(
+                    value::InterpValue::i32(7)
+                )),
+                value::InterpValue::Bool(true),
+                value::InterpValue::OptionSome(crate::value::SharedValue::new(
+                    value::InterpValue::String("high".to_owned().into())
+                )),
+            ]
+            .into()
+        ))
     );
 }
 
@@ -761,7 +778,7 @@ flow main(input: string) -> Prompt {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("policy".to_owned())],
+            vec![value::InterpValue::String("policy".to_owned().into())],
             &FakeHost::new(HostServiceAvailability::default()),
             RunOptions::default(),
         )
@@ -771,18 +788,21 @@ flow main(input: string) -> Prompt {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::Prompt(vec![
-            value::PromptMessage {
-                role: value::PromptRole::System,
-                text: "policy".to_owned(),
-                trust: Some(etas_types::TrustWrapper::Trusted),
-            },
-            value::PromptMessage {
-                role: value::PromptRole::User,
-                text: "body".to_owned(),
-                trust: Some(etas_types::TrustWrapper::Public),
-            },
-        ]))
+        Some(value::InterpValue::Prompt(
+            vec![
+                value::PromptMessage {
+                    role: value::PromptRole::System,
+                    text: "policy".into(),
+                    trust: Some(etas_types::TrustWrapper::Trusted),
+                },
+                value::PromptMessage {
+                    role: value::PromptRole::User,
+                    text: "body".into(),
+                    trust: Some(etas_types::TrustWrapper::Public),
+                },
+            ]
+            .into()
+        ))
     );
 }
 
@@ -930,11 +950,11 @@ flow main() -> Map<string, i32> {
         Some(value::InterpValue::Map(
             vec![
                 (
-                    value::InterpValue::String("alice".to_owned()),
+                    value::InterpValue::String("alice".to_owned().into()),
                     value::InterpValue::i32(10)
                 ),
                 (
-                    value::InterpValue::String("bob".to_owned()),
+                    value::InterpValue::String("bob".to_owned().into()),
                     value::InterpValue::i32(8)
                 ),
             ]
@@ -1023,7 +1043,7 @@ flow main(input: string) -> i32 {
             EntryPoint {
                 item: checked.entry.expect("entry item"),
             },
-            vec![value::InterpValue::String("choose one".to_owned())],
+            vec![value::InterpValue::String("choose one".to_owned().into())],
             &host,
             options,
         )
@@ -1150,6 +1170,52 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn shared_composed_call_targets_keep_aliases_after_execution_and_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+flow increment(value: i32) -> i32 { return value + 1; }
+flow double(value: i32) -> i32 { return value * 2; }
+flow main() -> i32 {
+  let pipeline = increment | double;
+  let alias = pipeline;
+  let first = alias(10);
+  checkpoint("retained-pipeline");
+  return first + pipeline(20) + alias(30);
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(126)));
+    let saved = result.checkpoints.first().expect("checkpoint");
+    let wire = crate::api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, saved, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value().cloned(), Some(value::InterpValue::i32(126)));
+    assert_eq!(
+        crate::api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap(),
+        wire
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_string_index_and_list_pop_without_host() {
     let checked = checked_project(
         r#"
@@ -1183,7 +1249,7 @@ flow main() -> char {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("m".to_owned()))
+        Some(value::InterpValue::String("m".to_owned().into()))
     );
 }
 
@@ -1217,7 +1283,7 @@ flow main() -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("ok".to_owned()))
+        Some(value::InterpValue::String("ok".to_owned().into()))
     );
 }
 

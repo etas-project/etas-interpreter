@@ -41,33 +41,37 @@ fn stream_error_raise_action(span: Span) -> ResolvedActionRef {
 fn stream_error_value(failure: StreamFailure) -> InterpValue {
     match failure {
         StreamFailure::LimitExceeded { .. } => InterpValue::Variant {
-            name: "LimitExceeded".to_owned(),
-            fields: Vec::new(),
+            name: "LimitExceeded".to_owned().into(),
+            fields: Vec::new().into(),
         },
         StreamFailure::TimedOut => InterpValue::Variant {
-            name: "TimedOut".to_owned(),
-            fields: Vec::new(),
+            name: "TimedOut".to_owned().into(),
+            fields: Vec::new().into(),
         },
         StreamFailure::Cancelled => InterpValue::Variant {
-            name: "Cancelled".to_owned(),
-            fields: Vec::new(),
+            name: "Cancelled".to_owned().into(),
+            fields: Vec::new().into(),
         },
         StreamFailure::Closed => InterpValue::Variant {
-            name: "Closed".to_owned(),
-            fields: Vec::new(),
+            name: "Closed".to_owned().into(),
+            fields: Vec::new().into(),
         },
         StreamFailure::Interrupted => InterpValue::Variant {
-            name: "Interrupted".to_owned(),
-            fields: Vec::new(),
+            name: "Interrupted".to_owned().into(),
+            fields: Vec::new().into(),
         },
         StreamFailure::Host(error) => InterpValue::Variant {
-            name: "Host".to_owned(),
-            fields: vec![InterpValue::String(format!(
-                "{}: {}; details={:?}",
-                error.code.as_str(),
-                error.message,
-                error.details
-            ))],
+            name: "Host".to_owned().into(),
+            fields: vec![InterpValue::String(
+                format!(
+                    "{}: {}; details={:?}",
+                    error.code.as_str(),
+                    error.message,
+                    error.details
+                )
+                .into(),
+            )]
+            .into(),
         },
     }
 }
@@ -87,18 +91,19 @@ mod tests {
                 "closed, cancelled, interrupted, and timed out",
             ))),
             InterpValue::Variant {
-                name: "Host".to_owned(),
+                name: "Host".to_owned().into(),
                 fields: vec![InterpValue::String(
                     "ProviderUnavailable: closed, cancelled, interrupted, and timed out; details=[]"
-                        .to_owned(),
-                )],
+                        .to_owned().into(),
+                )]
+                .into(),
             }
         );
         assert_eq!(
             stream_error_value(StreamFailure::TimedOut),
             InterpValue::Variant {
-                name: "TimedOut".to_owned(),
-                fields: Vec::new(),
+                name: "TimedOut".to_owned().into(),
+                fields: Vec::new().into(),
             }
         );
     }
@@ -119,8 +124,8 @@ mod tests {
             assert_eq!(
                 stream_error_value(failure),
                 InterpValue::Variant {
-                    name: expected.to_owned(),
-                    fields: Vec::new(),
+                    name: expected.to_owned().into(),
+                    fields: Vec::new().into(),
                 }
             );
         }

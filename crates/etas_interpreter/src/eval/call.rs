@@ -1,5 +1,9 @@
 use super::*;
 
+#[cfg(test)]
+#[path = "call/tests.rs"]
+mod tests;
+
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_static_collection_constructor_call(
         &mut self,
@@ -56,6 +60,12 @@ impl<'a> EvalContext<'a> {
         {
             return signal;
         }
+        let Some(descriptors) = self.plan.arguments.get(call) else {
+            return ControlSignal::missing_checked_fact(
+                "call is missing its checked argument descriptors",
+                span,
+            );
+        };
         let nominal_target =
             match self.resolve_nominal_constructor_call_target(call, callee, frame, span) {
                 Ok(target) => target,
@@ -90,7 +100,7 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::CalleeEval {
-                            args: args.to_vec(),
+                            args: descriptors,
                             span,
                             frame: frame.clone(),
                         },
@@ -109,7 +119,7 @@ impl<'a> EvalContext<'a> {
             Ok(target) => target,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        self.resume_call_args(target, args.to_vec(), 0, Vec::new(), span, frame)
+        self.resume_call_args(target, descriptors, 0, Vec::new(), span, frame)
     }
 
     fn eval_checked_field_method_call(
@@ -163,7 +173,7 @@ impl<'a> EvalContext<'a> {
             return None;
         }
         let receiver_symbol = partial.resolved_prefix?;
-        let receiver = frame.get(receiver_symbol)?.clone();
+        let receiver = frame.get(receiver_symbol)?;
         Some(self.resume_local_method_args(
             crate::eval::method::LocalMethodArgsState {
                 expr: callee,
@@ -182,12 +192,13 @@ impl<'a> EvalContext<'a> {
     pub(super) fn resume_call_args(
         &mut self,
         target: CallTarget,
-        args: Vec<HirArg>,
+        args: std::sync::Arc<[HirArg]>,
         start_arg_index: usize,
         mut evaluated_args: Vec<InterpValue>,
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
+        evaluated_args.reserve(args.len().saturating_sub(evaluated_args.len()));
         for (index, arg) in args.iter().enumerate().skip(start_arg_index) {
             let expr = match arg {
                 HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
@@ -209,8 +220,8 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::CallArgs {
-                            target: target.clone(),
-                            args: args.clone(),
+                            target,
+                            args,
                             next_arg_index: index + 1,
                             evaluated_args,
                             span,
@@ -350,7 +361,7 @@ impl<'a> EvalContext<'a> {
                 match <Vec<InterpValue> as TryInto<[InterpValue; 1]>>::try_into(call_args) {
                     Ok([value]) => ControlSignal::Value(InterpValue::Nominal {
                         ty,
-                        value: Box::new(value),
+                        value: crate::value::SharedValue::new(value),
                     }),
                     Err(args) => ControlSignal::invalid_arguments(
                         format!(
@@ -392,11 +403,18 @@ impl<'a> EvalContext<'a> {
             CallTarget::Specialized {
                 target,
                 type_bindings,
-            } => self.execute_specialized_call_target(*target, type_bindings, call_args, span),
+            } => self.execute_specialized_call_target(
+                target.into_value(),
+                type_bindings,
+                call_args,
+                span,
+            ),
             CallTarget::Limited { target, limits } => {
-                self.execute_limited_call_target(*target, limits, call_args, span)
+                self.execute_limited_call_target(target.into_value(), limits, call_args, span)
             }
-            CallTarget::Composed(stages) => self.execute_composed_call(stages, call_args, span),
+            CallTarget::Composed(stages) => {
+                self.execute_composed_call(stages.into_values(), call_args, span)
+            }
         }
     }
 
@@ -413,7 +431,7 @@ impl<'a> EvalContext<'a> {
         match target {
             CallTarget::FlowItem(item) => match self.checked.hir.items.get(item) {
                 Some(HirItem::Flow(flow)) => {
-                    let (signal, _) =
+                    let signal =
                         self.execute_flow_with_type_bindings(item, flow, &call_args, bindings);
                     match signal {
                         ControlSignal::Value(value) | ControlSignal::Return(value) => {
@@ -500,13 +518,13 @@ impl<'a> EvalContext<'a> {
                 }
             }
             has_limits = true;
-            target = *inner;
+            target = inner.into_value();
         }
         if has_limits {
             let previous = std::mem::replace(&mut self.model_policy, policy);
             continuation = Continuation::RestoreModelPolicy {
                 previous: Box::new(previous),
-                inner: Box::new(continuation),
+                inner: continuation.into(),
             };
         }
         Ok((target, continuation))

@@ -53,33 +53,39 @@ impl<'a> EvalContext<'a> {
             }
             HirExpr::Record(record) => self.eval_record_expr(expr, record, frame),
             HirExpr::EmptyRecordOrMap { span } => self.eval_empty_record_or_map_expr(expr, *span),
-            HirExpr::Tuple { elems, .. } => self.eval_tuple_expr(elems, frame),
-            HirExpr::Array { elems, .. } => self.eval_array_expr(elems, frame),
-            HirExpr::List { elems, .. } => self.eval_list_expr(elems, frame),
+            HirExpr::Tuple { .. } => self.eval_sequence_expr(expr, frame),
+            HirExpr::Array { .. } => self.eval_sequence_expr(expr, frame),
+            HirExpr::List { .. } => self.eval_sequence_expr(expr, frame),
             HirExpr::ListCons { head, tail, span } => {
                 self.eval_list_cons_expr(*head, *tail, *span, frame)
             }
             HirExpr::EmptySequence { span } => self.eval_empty_sequence_expr(expr, *span),
-            HirExpr::Map { entries, .. } => self.eval_map_expr(entries, frame),
-            HirExpr::Set { elems, .. } => self.eval_set_expr(elems, frame),
+            HirExpr::Map { .. } => self.eval_map_expr(expr, frame),
+            HirExpr::Set { .. } => self.eval_sequence_expr(expr, frame),
             HirExpr::Range {
                 start, end, bounds, ..
             } => self.eval_range_expr(*start, *end, *bounds, frame),
             HirExpr::Perform {
                 action,
                 generic_args,
-                args,
                 span,
+                ..
             } => {
                 let Some(type_args) = self.checked_type_args_from_generic_args(generic_args) else {
                     return ControlSignal::invalid_arguments("effect-row generic argument reached runtime perform dispatch without checked instantiation facts".to_owned(), *span);
+                };
+                let Some(args) = self.plan.arguments.get(expr) else {
+                    return ControlSignal::missing_checked_fact(
+                        "perform is missing its checked argument descriptors",
+                        *span,
+                    );
                 };
                 self.resume_perform_args(
                     PerformArgsResume {
                         expr,
                         action: action.clone(),
                         type_args,
-                        args: args.to_vec(),
+                        args,
                         start_arg_index: 0,
                         evaluated_args: Vec::new(),
                         span: *span,

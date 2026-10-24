@@ -1,6 +1,9 @@
 use super::*;
 use crate::control::ExecutionFault;
 
+#[cfg(test)]
+mod tests;
+
 impl<'a> EvalContext<'a> {
     pub fn execute_entry_signal(&mut self, item: HirItemId) -> ControlSignal {
         let start = self.step_id();
@@ -23,16 +26,6 @@ impl<'a> EvalContext<'a> {
         flow: &HirFlowDecl,
         args: &[InterpValue],
     ) -> ControlSignal {
-        let (signal, _) = self.execute_flow_with_frame(item, flow, args);
-        signal
-    }
-
-    pub(super) fn execute_flow_with_frame(
-        &mut self,
-        item: HirItemId,
-        flow: &HirFlowDecl,
-        args: &[InterpValue],
-    ) -> (ControlSignal, Frame) {
         self.execute_flow_with_type_bindings(item, flow, args, Default::default())
     }
 
@@ -42,17 +35,38 @@ impl<'a> EvalContext<'a> {
         flow: &HirFlowDecl,
         args: &[InterpValue],
         type_bindings: std::collections::HashMap<String, etas_types::TypeId>,
-    ) -> (ControlSignal, Frame) {
-        let mut frame = Frame::with_type_bindings(self.plan.slots.clone(), type_bindings);
+    ) -> ControlSignal {
+        let mut frame = match self.callable_frame(flow.scope, type_bindings, flow.span) {
+            Ok(frame) => frame,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
         for (symbol, arg) in flow.params.iter().zip(args.iter().cloned()) {
             frame.insert(*symbol, arg);
         }
-        let body = self
-            .item_primary_block(item)
-            .expect("flow body block should be indexed by HirTreeView");
+        let Some(body) = self.item_primary_block(item) else {
+            return ControlSignal::missing_checked_fact(
+                "flow body block is missing from checked HIR",
+                flow.span,
+            );
+        };
         let signal = self.execute_block(body, &mut frame);
-        let signal = self.drive_restored_handlers(signal, &mut frame);
-        (signal, frame)
+        self.drive_restored_handlers(signal, &mut frame)
+    }
+
+    pub(super) fn callable_frame(
+        &self,
+        scope: etas_hir::ScopeId,
+        type_bindings: std::collections::HashMap<String, etas_types::TypeId>,
+        span: Span,
+    ) -> Result<Frame, ExecutionFault> {
+        let layout = self.plan.frames.get(scope).ok_or_else(|| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                format!("callable frame layout is missing for scope {scope:?}"),
+            )
+        })?;
+        Ok(Frame::with_type_bindings(layout.clone(), type_bindings))
     }
 
     pub(crate) fn prepare_source_tool_call(
@@ -119,7 +133,10 @@ impl<'a> EvalContext<'a> {
                 ),
             )));
         }
-        let mut frame = Frame::new(self.plan.slots.clone());
+        let mut frame = match self.callable_frame(tool.scope, Default::default(), span) {
+            Ok(frame) => frame,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
         for (symbol, arg) in tool.params.iter().zip(args) {
             frame.insert(*symbol, arg);
         }

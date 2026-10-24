@@ -1,5 +1,12 @@
+mod call_target_storage;
 mod checkpoint;
+pub(crate) use call_target_storage::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
+mod continuation_storage;
+pub(crate) use continuation_storage::ContinuationSnapshotLink;
+mod snapshot_storage;
+mod snapshot_walk;
 pub use checkpoint::{StorageSnapshot, StorageWriteRecord};
+pub(crate) use snapshot_storage::{SnapshotBox, SnapshotChildren};
 mod identity;
 mod ledger;
 
@@ -11,11 +18,10 @@ pub use checkpoint::{
     ResourceVersionSnapshot, RetryAttemptId, RetryAttemptRecord, RetrySnapshot, TraceSnapshot,
 };
 pub(crate) use checkpoint::{
-    AggregateKindSnapshot, CallTargetSnapshot, ContinuationSnapshot, ConversationSnapshot,
-    HostToolProgressSnapshot, LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot,
-    LocalsSnapshot, MachineFrameSnapshot, MessageSnapshot, ModelDecodeSnapshot,
-    ModelExecutionPolicySnapshot, ModelLoopFrameSnapshot, ModelRepairSnapshot,
-    ModelResponseDecodeSnapshot, PendingModelSnapshot, SliceExprEvalSnapshot,
+    CallTargetSnapshot, ContinuationSnapshot, ConversationSnapshot, HostToolProgressSnapshot,
+    LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot,
+    MessageSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelLoopFrameSnapshot,
+    ModelRepairSnapshot, ModelResponseDecodeSnapshot, PendingModelSnapshot, SliceExprEvalSnapshot,
     SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot, StaticMethodKindSnapshot,
     ValueSnapshot,
 };

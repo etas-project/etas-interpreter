@@ -19,7 +19,9 @@ impl<'a> EvalContext<'a> {
         result: ConsoleResult,
     ) -> Result<InterpValue, ExecutionFault> {
         match (console.decode, result) {
-            (ConsoleDecode::String, ConsoleResult::Input(text)) => Ok(InterpValue::String(text)),
+            (ConsoleDecode::String, ConsoleResult::Input(text)) => {
+                Ok(InterpValue::String(text.into()))
+            }
             (ConsoleDecode::Unit, ConsoleResult::Written) => Ok(InterpValue::Unit),
             (_, other) => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -96,8 +98,8 @@ fn error_raise_action(span: Span) -> ResolvedActionRef {
 fn console_error_value(error: HostError) -> InterpValue {
     match error.code {
         HostErrorCode::AuthorityDenied => InterpValue::Variant {
-            name: "PermissionDenied".to_owned(),
-            fields: Vec::new(),
+            name: "PermissionDenied".to_owned().into(),
+            fields: Vec::new().into(),
         },
         HostErrorCode::ProviderRejected
         | HostErrorCode::ProviderUnavailable
@@ -111,12 +113,11 @@ fn console_error_value(error: HostError) -> InterpValue {
         | HostErrorCode::Cancelled
         | HostErrorCode::Closed
         | HostErrorCode::Interrupted => InterpValue::Variant {
-            name: "Host".to_owned(),
-            fields: vec![InterpValue::String(format!(
-                "{}: {}",
-                error.code.as_str(),
-                error.message
-            ))],
+            name: "Host".to_owned().into(),
+            fields: vec![InterpValue::String(
+                format!("{}: {}", error.code.as_str(), error.message).into(),
+            )]
+            .into(),
         },
     }
 }
