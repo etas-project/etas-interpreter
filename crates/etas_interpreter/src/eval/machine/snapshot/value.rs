@@ -281,7 +281,7 @@ impl ValueSnapshot {
                 value_type,
                 kind,
                 predicate: predicate
-                    .map(|value| value.into_value().restore())
+                    .map(|value| value.into_value().restore_with(context))
                     .transpose()?
                     .map(Box::new),
                 limit,

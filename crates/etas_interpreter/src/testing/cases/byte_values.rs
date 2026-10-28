@@ -5,6 +5,113 @@ use crate::api::codec::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn large_payload_checkpoint_preserves_nested_aliases_and_early_loop_cursor() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.bytes.len as byte_len;
+import std.text.len as text_len;
+import std.codec.text.utf8_encode;
+import std.runtime.checkpoint;
+type Row = { body: bytes, text: string }
+flow main(input: bytes, text: string, length: usize) -> bool {
+    var rows = [Row { body = input, text = text }];
+    let original = rows;
+    let retained = Some(rows[0]);
+    for row in rows limit Iterations(2) {
+        checkpoint("large-capture");
+        rows[0].body = utf8_encode("new");
+        rows[0].text = "new";
+        if row.body != input || row.text != text { return false; }
+        break;
+    }
+    let retained_ok = match retained {
+        Some(row) => row.body == input && row.text == text,
+        None => false,
+    };
+    return original[0].body == input && original[0].text == text
+        && byte_len(input) == length && text_len(text) == length
+        && rows[0].body == utf8_encode("new") && rows[0].text == "new"
+        && retained_ok;
+}
+"#,
+    );
+    for (length, fits_default_file_budget) in [(16 * 1024, true), (64 * 1024, false)] {
+        let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![
+                    InterpValue::Bytes(vec![7; length].into()),
+                    InterpValue::String("x".repeat(length).into()),
+                    InterpValue::usize(length),
+                ],
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+        assert_eq!(result.checkpoints.len(), 1);
+        let saved = &result.checkpoints[0];
+        let before_args = saved.args.clone();
+        let before_budget = saved.host_state.budget.clone();
+        assert!(
+            matches!(&before_args[0], crate::orchestration::ValueSnapshot::Bytes(value) if value.len() == length)
+        );
+        assert!(
+            matches!(&before_args[1], crate::orchestration::ValueSnapshot::String(value) if value.len() == length)
+        );
+        for _ in 0..2 {
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, saved, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+            assert_eq!(saved.args, before_args);
+            assert_eq!(saved.host_state.budget, before_budget);
+        }
+        let encoded = checkpoint_artifact_json(&[], "main", saved);
+        if !fits_default_file_budget {
+            let error = encoded.unwrap_err();
+            assert!(
+                error
+                    .message()
+                    .contains("snapshot expansion exceeds node budget"),
+                "{error}"
+            );
+            assert_eq!(saved.args, before_args);
+            assert_eq!(saved.host_state.budget, before_budget);
+            continue;
+        }
+        let before = encoded.unwrap();
+        let bytes =
+            checkpoint_file_to_bytes(before.clone(), CheckpointFileLimits::default()).unwrap();
+        let decoded = checkpoint_file_from_bytes(&bytes, CheckpointFileLimits::default()).unwrap();
+        let restored = checkpoint_from_json(&decoded, &checked).unwrap();
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, &restored, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+        assert_eq!(
+            checkpoint_artifact_json(&[], "main", &restored).unwrap(),
+            before
+        );
+        assert_eq!(
+            checkpoint_artifact_json(&[], "main", saved).unwrap(),
+            before
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn byte_assignment_preserves_aliases_through_handler_error_and_cancelled_resume() {
     let checked = checked_project(
         r#"

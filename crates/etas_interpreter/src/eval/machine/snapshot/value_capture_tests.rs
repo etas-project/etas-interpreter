@@ -105,7 +105,7 @@ fn snapshot_capture_shares_immutable_payloads_between_tree_occurrences() {
 
 #[test]
 fn immutable_payload_capture_clone_restore_allocate_nothing_and_isolate_mutation() {
-    for count in [1000, 2000, 4000] {
+    for count in [1000, 2000, 4000, 1024 * 1024, 4 * 1024 * 1024] {
         for runtime in [
             InterpValue::String("x".repeat(count).into()),
             InterpValue::Bytes(vec![7; count].into()),
