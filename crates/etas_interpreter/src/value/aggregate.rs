@@ -2,6 +2,17 @@ use std::{fmt, rc::Rc};
 
 use super::primitive::InterpValue;
 
+pub(crate) fn try_map_cloned<T: Clone, U, E>(
+    values: &[T],
+    mut map: impl FnMut(T) -> Result<U, E>,
+) -> Result<Vec<U>, E> {
+    let mut output = Vec::with_capacity(values.len());
+    for value in values {
+        output.push(map(value.clone())?);
+    }
+    Ok(output)
+}
+
 #[derive(Clone)]
 pub struct ArrayValue(Rc<Vec<InterpValue>>);
 
@@ -35,6 +46,17 @@ impl ArrayValue {
         match Rc::try_unwrap(self.0) {
             Ok(values) => values,
             Err(shared) => shared.as_ref().clone(),
+        }
+    }
+
+    /// Project shared elements directly into the destination, not a cloned runtime Vec.
+    pub(crate) fn try_map_values<T, E>(
+        self,
+        map: impl FnMut(InterpValue) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        match Rc::try_unwrap(self.0) {
+            Ok(values) => values.into_iter().map(map).collect(),
+            Err(shared) => try_map_cloned(&shared, map),
         }
     }
 
@@ -173,6 +195,20 @@ impl SliceValue {
                 values
             }
             Err(shared) => shared[self.range].to_vec(),
+        }
+    }
+
+    pub(crate) fn try_map_values<T, E>(
+        self,
+        map: impl FnMut(InterpValue) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        match Rc::try_unwrap(self.backing) {
+            Ok(mut values) => {
+                values.truncate(self.range.end);
+                values.drain(..self.range.start);
+                values.into_iter().map(map).collect()
+            }
+            Err(shared) => try_map_cloned(&shared[self.range], map),
         }
     }
 }

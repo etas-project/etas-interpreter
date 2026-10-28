@@ -148,6 +148,17 @@ impl ListValue {
         }
         values
     }
+
+    pub(crate) fn try_map_values<T, E>(
+        mut self,
+        mut map: impl FnMut(InterpValue) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        let mut output = Vec::with_capacity(self.len);
+        while let Some(value) = self.pop_front() {
+            output.push(map(value)?);
+        }
+        Ok(output)
+    }
 }
 
 impl From<Vec<InterpValue>> for ListValue {
