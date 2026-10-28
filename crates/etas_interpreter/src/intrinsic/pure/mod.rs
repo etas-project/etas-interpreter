@@ -16,6 +16,8 @@ mod count_tests;
 #[cfg(test)]
 mod crypto_tests;
 #[cfg(test)]
+mod fast_path_validation_tests;
+#[cfg(test)]
 mod join_tests;
 #[cfg(test)]
 mod record_input_tests;

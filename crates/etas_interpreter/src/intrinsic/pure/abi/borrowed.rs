@@ -39,6 +39,45 @@ pub(in crate::intrinsic::pure) fn bytes_for_type<'a>(
     }
 }
 
+/// Native ADT operations preserve their payload rather than projecting it into
+/// the kernel ABI. They must still enforce the checked identity envelope.
+pub(in crate::intrinsic::pure) fn check_payload_identity(
+    value: &InterpValue,
+    ty: TypeId,
+    projector: &PureAbiProjector,
+) -> Result<(), AdapterError> {
+    let (value, expected) = representation_for_type(value, ty, projector)?;
+    match value {
+        InterpValue::Nominal { ty: actual, .. } => {
+            if *actual != expected {
+                return Err(AdapterError::NominalIdentity {
+                    expected,
+                    actual: *actual,
+                });
+            }
+            // Opaque nominal values may have no pure-kernel representation.
+            // A tag on a structural/enum type does not create nominal evidence.
+            if !projector.has_nominal_identity(expected) {
+                return Err(type_mismatch(expected, value));
+            }
+        }
+        InterpValue::HostHandle(handle) => {
+            if handle.nominal_type() != expected {
+                return Err(AdapterError::NominalIdentity {
+                    expected,
+                    actual: handle.nominal_type(),
+                });
+            }
+            if !projector.has_nominal_identity(expected) {
+                return Err(type_mismatch(expected, value));
+            }
+        }
+        InterpValue::Trust { .. } => return Err(type_mismatch(expected, value)),
+        _ => {}
+    }
+    Ok(())
+}
+
 fn primitive_for_type<'a>(
     value: &'a InterpValue,
     ty: TypeId,
