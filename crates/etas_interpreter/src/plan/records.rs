@@ -183,7 +183,12 @@ impl RecordLayoutTable {
                     let Some(ty) = project.types.expr_types.get(base) else {
                         continue;
                     };
-                    if Some(*ty) == project.types.known_std_types.command_result {
+                    if Some(*ty)
+                        == project
+                            .types
+                            .known_std_types
+                            .runtime_type(etas_std::RuntimeTypeRole::CommandResult)
+                    {
                         let projections = project
                             .types
                             .field_projections
@@ -327,7 +332,12 @@ fn native_field(
     name: &str,
     output: TypeId,
 ) -> Result<Option<etas_std::RuntimeField>, String> {
-    if Some(receiver) != project.types.known_std_types.command_result {
+    if Some(receiver)
+        != project
+            .types
+            .known_std_types
+            .runtime_type(etas_std::RuntimeTypeRole::CommandResult)
+    {
         return Ok(None);
     }
     let descriptor = etas_std::RuntimeTypeRole::CommandResult

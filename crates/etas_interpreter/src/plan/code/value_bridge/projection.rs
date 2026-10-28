@@ -9,17 +9,11 @@ pub(super) fn workspace_path_region(program: &CheckedProject, ty: TypeId) -> Res
     let Some(Type::Applied { constructor, args }) = program.type_store.get(ty) else {
         return Err(Failure::UnsupportedType);
     };
-    let identity = program
+    if program
         .types
-        .reflection_type_identities
-        .get(&TypeId(constructor.0))
-        .ok_or(Failure::MissingType)?;
-    let standard = etas_frontend::code::identity::standard_package_key(&program.std_registry)
-        .map_err(|_| Failure::InconsistentLayout)?;
-    if identity.package() != standard
-        || identity.kind() != etas_code::DefinitionKind::Type
-        || identity.module() != ["std", "fs"]
-        || identity.declaration() != ["WorkspacePath"]
+        .known_std_types
+        .runtime_type(etas_std::RuntimeTypeRole::WorkspacePath)
+        != Some(TypeId(constructor.0))
         || args.len() != 1
     {
         return Err(Failure::UnsupportedType);

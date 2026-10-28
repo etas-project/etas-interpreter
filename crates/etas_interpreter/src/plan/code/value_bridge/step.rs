@@ -28,8 +28,18 @@ impl Walk<'_> {
             .ok_or(Failure::MissingType)?;
         let target = self.target.type_store.get(to).ok_or(Failure::MissingType)?;
         if matches!(&value, InterpValue::CommandResult { .. }) {
-            if self.source.types.known_std_types.command_result != Some(from)
-                || self.target.types.known_std_types.command_result != Some(to)
+            if self
+                .source
+                .types
+                .known_std_types
+                .runtime_type(etas_std::RuntimeTypeRole::CommandResult)
+                != Some(from)
+                || self
+                    .target
+                    .types
+                    .known_std_types
+                    .runtime_type(etas_std::RuntimeTypeRole::CommandResult)
+                    != Some(to)
             {
                 return Err(Failure::UnsupportedType);
             }
