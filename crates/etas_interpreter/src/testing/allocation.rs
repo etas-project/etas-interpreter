@@ -10,6 +10,7 @@ pub(crate) struct Allocations {
 
 thread_local! {
     static ACTIVE: Cell<Option<Allocations>> = const { Cell::new(None) };
+    static HARD_LIMIT: Cell<Option<usize>> = const { Cell::new(None) };
 }
 
 struct CountingAllocator;
@@ -20,6 +21,13 @@ static ALLOCATOR: CountingAllocator = CountingAllocator;
 fn record(bytes: usize) {
     let _ = ACTIVE.try_with(|active| {
         if let Some(mut stats) = active.get() {
+            if let Ok(Some(limit)) = HARD_LIMIT.try_with(Cell::get)
+                && stats.bytes.saturating_add(bytes) > limit
+            {
+                // Only enabled in a supervised test subprocess. Do not allocate
+                // a panic/report while already inside the allocator.
+                std::process::abort();
+            }
             stats.count = stats.count.saturating_add(1);
             stats.bytes = stats.bytes.saturating_add(bytes);
             active.set(Some(stats));
@@ -79,6 +87,26 @@ pub(crate) fn measure<T>(operation: impl FnOnce() -> T) -> (T, Allocations) {
     let stats = ACTIVE.with(|active| active.get().unwrap());
     drop(reset);
     (result, stats)
+}
+
+pub(crate) fn measure_with_hard_limit<T>(
+    limit: usize,
+    operation: impl FnOnce() -> T,
+) -> (T, Allocations) {
+    struct Reset;
+    impl Drop for Reset {
+        fn drop(&mut self) {
+            HARD_LIMIT.with(|limit| limit.set(None));
+        }
+    }
+    HARD_LIMIT.with(|current| {
+        assert!(current.get().is_none(), "nested hard allocation limit");
+        current.set(Some(limit));
+    });
+    let reset = Reset;
+    let result = measure(operation);
+    drop(reset);
+    result
 }
 
 #[test]
