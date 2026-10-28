@@ -102,7 +102,7 @@ fn from_builtin_representation(
             if name != "Tuple" || fields.len() != types.len() {
                 return Err(AdapterError::TypeMismatch {
                     expected: ty,
-                    actual: format!("builtin variant {name} with {} field(s)", fields.len()),
+                    actual: format!("builtin variant with {} field(s)", fields.len()),
                 });
             }
             fields
@@ -246,7 +246,7 @@ fn from_builtin_enum(value: BuiltinValue, ty: TypeId) -> Result<InterpValue, Ada
 fn builtin_type_mismatch(expected: TypeId, actual: &BuiltinValue) -> AdapterError {
     AdapterError::TypeMismatch {
         expected,
-        actual: format!("{actual:?}"),
+        actual: format!("{:?}", actual.type_tag()),
     }
 }
 

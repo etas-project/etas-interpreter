@@ -117,10 +117,9 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                 return Err(type_mismatch(ty, &InterpValue::Tuple(values)));
             }
             values
-                .into_iter()
-                .zip(types.iter().copied())
-                .map(|(value, ty)| into_builtin_for_type(value, ty, projector))
-                .collect::<Result<Vec<_>, _>>()
+                .try_map_indexed(|index, value| {
+                    into_builtin_for_type(value, types[index], projector)
+                })
                 .map(|fields| BuiltinValue::Variant {
                     name: "Tuple".to_owned(),
                     fields,
@@ -243,9 +242,7 @@ fn into_builtin_enum(value: InterpValue, ty: TypeId) -> Result<BuiltinValue, Ada
         return Err(type_mismatch(ty, &value));
     };
     fields
-        .into_iter()
-        .map(into_builtin)
-        .collect::<Result<Vec<_>, _>>()
+        .try_map_indexed(|_, value| into_builtin(value))
         .map(|fields| BuiltinValue::Variant {
             name: name.into_string(),
             fields,
@@ -307,9 +304,7 @@ pub(in crate::intrinsic::pure) fn into_builtin(
             .map(BuiltinValue::ResultErr)
         }
         InterpValue::Variant { name, fields } => fields
-            .into_iter()
-            .map(into_builtin)
-            .collect::<Result<Vec<_>, _>>()
+            .try_map_indexed(|_, value| into_builtin(value))
             .map(|fields| BuiltinValue::Variant {
                 name: name.into_string(),
                 fields,
@@ -317,7 +312,10 @@ pub(in crate::intrinsic::pure) fn into_builtin(
         InterpValue::Nominal { .. } => Err(AdapterError::UnsupportedValue(
             "nominal values require a checked ABI projection".to_owned(),
         )),
-        other => Err(AdapterError::UnsupportedValue(format!("{other:?}"))),
+        other => Err(AdapterError::UnsupportedValue(format!(
+            "{} is not supported by the checked pure ABI",
+            other.kind_name()
+        ))),
     }
 }
 
