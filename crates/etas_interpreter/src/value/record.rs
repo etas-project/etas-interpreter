@@ -148,6 +148,19 @@ impl RecordValue {
         }
     }
 
+    pub(crate) fn try_map_values<T, E>(
+        self,
+        map: impl FnMut((String, InterpValue)) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        match Rc::try_unwrap(self.0) {
+            Ok(mut data) => std::mem::take(&mut data.fields)
+                .into_iter()
+                .map(map)
+                .collect(),
+            Err(shared) => super::aggregate::try_map_cloned(&shared.fields, map),
+        }
+    }
+
     pub fn make_unique(&mut self) {
         if Rc::strong_count(&self.0) > 1 {
             self.0 = Rc::new(self.0.as_ref().clone());
