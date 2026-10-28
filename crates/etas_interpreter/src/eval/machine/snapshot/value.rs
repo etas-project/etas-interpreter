@@ -149,6 +149,7 @@ impl ValueSnapshot {
         })
     }
 
+    #[cfg(test)]
     pub(crate) fn restore(self) -> Result<InterpValue, String> {
         self.restore_with(&mut RestoreContext::default())
     }
