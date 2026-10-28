@@ -11,7 +11,13 @@ pub(super) struct BorrowedValue<'a>(pub &'a InterpValue);
 
 impl HostValueProjection for BorrowedValue<'_> {
     fn project<V: HostValueVisitor>(&self, visitor: V) -> Result<V::Output, HostError> {
-        match self.0 {
+        let mut value = self.0;
+        while let InterpValue::Nominal { value: inner, .. }
+        | InterpValue::Trust { value: inner, .. } = value
+        {
+            value = inner;
+        }
+        match value {
             InterpValue::MemoryWriteIntent(_) => Err(projection_error(
                 "write intents require the explicit storage/checkpoint codec",
             )),
@@ -23,9 +29,6 @@ impl HostValueProjection for BorrowedValue<'_> {
             InterpValue::String(v) => visitor.scalar(HostScalar::String(v)),
             InterpValue::Bytes(v) => visitor.scalar(HostScalar::Bytes(v)),
             InterpValue::Json(v) => visitor.json(&BorrowedJson(v)),
-            InterpValue::Nominal { value, .. } | InterpValue::Trust { value, .. } => {
-                BorrowedValue(value).project(visitor)
-            }
             InterpValue::Tuple(v) => visitor.list(v.iter().map(BorrowedValue)),
             InterpValue::Array(v) | InterpValue::Stack(v) => {
                 visitor.list(v.borrow().iter().map(BorrowedValue))

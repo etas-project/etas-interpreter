@@ -6,6 +6,46 @@ use crate::value::{
 use etas_host::{HostValue, host_value_to_json_string};
 
 #[test]
+fn host_wrapper_projection_is_stack_safe_without_intermediate_payload_copies() {
+    if crate::testing::in_subprocess("ETAS_TEST_HOST_ABI_WRAPPERS") {
+        return;
+    }
+    let payload = "中😀\n\"payload".repeat(1024);
+    let scalar = InterpValue::String(payload.clone().into());
+    let (expected_host, host_cost) =
+        crate::testing::allocation::measure(|| interp_to_host_value(&scalar).unwrap());
+    let (expected_json, json_cost) =
+        crate::testing::allocation::measure(|| interp_to_host_json_string(&scalar).unwrap());
+    for depth in [1000, 2000, 4000, 30_000] {
+        let mut value = scalar.clone();
+        for layer in 0..depth {
+            value = if layer % 2 == 0 {
+                InterpValue::Nominal {
+                    ty: etas_types::TypeId(layer as u32),
+                    value: crate::value::SharedValue::new(value),
+                }
+            } else {
+                InterpValue::Trust {
+                    wrapper: etas_types::TrustWrapper::Public,
+                    value: crate::value::SharedValue::new(value),
+                }
+            };
+        }
+        let (host, cost) =
+            crate::testing::allocation::measure(|| interp_to_host_value(&value).unwrap());
+        assert_eq!(host, expected_host);
+        assert_eq!(cost.count, host_cost.count, "depth={depth}: {cost:?}");
+        assert_eq!(cost.bytes, host_cost.bytes, "depth={depth}: {cost:?}");
+        let (json, cost) =
+            crate::testing::allocation::measure(|| interp_to_host_json_string(&value).unwrap());
+        assert_eq!(json, expected_json);
+        assert_eq!(cost.count, json_cost.count, "depth={depth}: {cost:?}");
+        assert_eq!(cost.bytes, json_cost.bytes, "depth={depth}: {cost:?}");
+        eprintln!("host wrapper ABI depth={depth}: host={host_cost:?}, JSON={cost:?}");
+    }
+}
+
+#[test]
 fn cold_ordered_host_projection_allocates_output_not_a_retained_runtime_view() {
     let mut materialized = Vec::new();
     for count in [1000, 2000, 4000] {
