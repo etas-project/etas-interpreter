@@ -131,3 +131,75 @@ fn concat_self_and_empty_inputs_do_not_mutate_live_aliases() {
     assert!(matches!(source.borrow()[0], InterpValue::String(_)));
     assert!(matches!(doubled.borrow()[1], InterpValue::String(_)));
 }
+
+#[test]
+fn slice_retention_and_materialization_costs_follow_backing_ownership() {
+    for count in [1000, 2000, 4000] {
+        for shared in [false, true] {
+            let values = ArrayValue::new(
+                (0..count)
+                    .map(|_| InterpValue::String("x".repeat(128).into()))
+                    .collect(),
+            );
+            let capacity = values.borrow().capacity();
+            let pointer = values.borrow().as_ptr();
+            let payloads: [_; 3] = std::array::from_fn(|i| {
+                let InterpValue::String(text) = &values.borrow()[i + 2] else {
+                    panic!("string payload")
+                };
+                text.as_ptr()
+            });
+            let backing = Rc::downgrade(&values.0);
+            let alias = shared.then(|| values.clone());
+            let (view, view_cost) = measure(|| SliceValue::from_array(values, 2..5).unwrap());
+            assert_eq!(view_cost.count, 0);
+            assert_eq!(view.borrow().len(), 3);
+            assert_eq!(view.backing.len(), count);
+            assert_eq!(view.backing.capacity(), capacity);
+            assert_eq!(backing.strong_count(), if shared { 2 } else { 1 });
+
+            let (window, materialization) = measure(|| view.into_values());
+            let output_capacity = if shared { 3 } else { capacity };
+            assert_eq!(window.len(), 3);
+            assert_eq!(window.capacity(), output_capacity);
+            assert_eq!(materialization.count, usize::from(shared));
+            assert_eq!(
+                materialization.bytes,
+                if shared {
+                    3 * std::mem::size_of::<InterpValue>()
+                } else {
+                    0
+                }
+            );
+            if !shared {
+                assert_eq!(window.as_ptr(), pointer);
+                assert!(materialization.released_bytes >= (count - 3) * 128);
+            }
+            for (value, pointer) in window.iter().zip(payloads) {
+                let InterpValue::String(text) = value else {
+                    panic!("string payload")
+                };
+                assert_eq!(text.as_ptr(), pointer, "selected payload was copied");
+            }
+            assert_eq!(backing.upgrade().is_some(), shared);
+            let (_, alias_drop) = measure(|| drop(alias));
+            assert!(backing.upgrade().is_none());
+            if shared {
+                assert!(
+                    alias_drop.released_bytes
+                        >= count * std::mem::size_of::<InterpValue>() + (count - 3) * 128
+                );
+            }
+            let (_, output_drop) = measure(|| drop(window));
+            assert!(
+                output_drop.released_bytes
+                    >= output_capacity * std::mem::size_of::<InterpValue>() + 3 * 128
+            );
+            eprintln!(
+                "slice n={count} shared={shared}: view_backing={} header bytes + {} text bytes; view={view_cost:?}; materialize={materialization:?}; output_capacity={output_capacity}; alias_drop={alias_drop:?}; output_drop={output_drop:?}",
+                capacity * std::mem::size_of::<InterpValue>(),
+                count * 128
+            );
+        }
+    }
+}

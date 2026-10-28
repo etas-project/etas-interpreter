@@ -13,6 +13,7 @@ mod closures;
 mod collection_conformance;
 mod compiler_definitions;
 mod compiler_syntax;
+mod container_limits;
 mod conversation;
 mod generic_calls;
 mod handler;
