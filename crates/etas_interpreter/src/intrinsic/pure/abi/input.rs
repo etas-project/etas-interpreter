@@ -49,15 +49,12 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                 return Err(type_mismatch(ty, &value));
             };
             entries
-                .into_values()
-                .into_iter()
-                .map(|(entry_key, entry_value)| {
+                .try_map_values(|(entry_key, entry_value)| {
                     Ok((
                         into_builtin_for_type(entry_key, *key, projector)?,
                         into_builtin_for_type(entry_value, *value_ty, projector)?,
                     ))
                 })
-                .collect::<Result<Vec<_>, _>>()
                 .map(BuiltinValue::Map)
         }
         AbiShape::Range(index) => {
@@ -163,17 +160,14 @@ fn sequence_into_builtin(
     projector: &PureAbiProjector,
     kind: SequenceKind,
 ) -> Result<BuiltinValue, AdapterError> {
+    let project = |value| into_builtin_for_type(value, inner, projector);
     let values = match (kind, value) {
-        (SequenceKind::Array, InterpValue::Array(values)) => values.into_values(),
-        (SequenceKind::List, InterpValue::List(values)) => values.into_values(),
-        (SequenceKind::Slice, InterpValue::Slice(values)) => values.into_values(),
-        (SequenceKind::Set, InterpValue::Set(values)) => values.into_values(),
+        (SequenceKind::Array, InterpValue::Array(values)) => values.try_map_values(project)?,
+        (SequenceKind::List, InterpValue::List(values)) => values.try_map_values(project)?,
+        (SequenceKind::Slice, InterpValue::Slice(values)) => values.try_map_values(project)?,
+        (SequenceKind::Set, InterpValue::Set(values)) => values.try_map_values(project)?,
         (_, other) => return Err(type_mismatch(ty, &other)),
     };
-    let values = values
-        .into_iter()
-        .map(|value| into_builtin_for_type(value, inner, projector))
-        .collect::<Result<Vec<_>, _>>()?;
     Ok(match kind {
         SequenceKind::Array => BuiltinValue::Array(values),
         SequenceKind::List => BuiltinValue::List(values),
@@ -280,36 +274,13 @@ pub(in crate::intrinsic::pure) fn into_builtin(
         InterpValue::Number(value) => numeric_into_builtin(value),
         InterpValue::String(value) => Ok(BuiltinValue::String(value.into_string())),
         InterpValue::Bytes(value) => Ok(BuiltinValue::Bytes(value.into_vec())),
-        InterpValue::Array(values) => values
-            .into_values()
-            .into_iter()
-            .map(into_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(BuiltinValue::Array),
-        InterpValue::List(values) => values
-            .into_values()
-            .into_iter()
-            .map(into_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(BuiltinValue::List),
-        InterpValue::Slice(values) => values
-            .into_values()
-            .into_iter()
-            .map(into_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(BuiltinValue::Slice),
+        InterpValue::Array(values) => values.try_map_values(into_builtin).map(BuiltinValue::Array),
+        InterpValue::List(values) => values.try_map_values(into_builtin).map(BuiltinValue::List),
+        InterpValue::Slice(values) => values.try_map_values(into_builtin).map(BuiltinValue::Slice),
         InterpValue::Map(entries) => entries
-            .into_values()
-            .into_iter()
-            .map(|(key, value)| Ok((into_builtin(key)?, into_builtin(value)?)))
-            .collect::<Result<Vec<_>, _>>()
+            .try_map_values(|(key, value)| Ok((into_builtin(key)?, into_builtin(value)?)))
             .map(BuiltinValue::Map),
-        InterpValue::Set(values) => values
-            .into_values()
-            .into_iter()
-            .map(into_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(BuiltinValue::Set),
+        InterpValue::Set(values) => values.try_map_values(into_builtin).map(BuiltinValue::Set),
         InterpValue::Record(fields) => fields
             .into_values()
             .into_iter()

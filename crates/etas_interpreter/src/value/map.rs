@@ -117,6 +117,16 @@ impl MapValue {
         }
     }
 
+    pub(crate) fn try_map_values<T, E>(
+        self,
+        map: impl FnMut((InterpValue, InterpValue)) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        match Rc::try_unwrap(self.0) {
+            Ok(data) => data.entries.into_iter().map(map).collect(),
+            Err(shared) => super::aggregate::try_map_cloned(&shared.entries, map),
+        }
+    }
+
     pub fn make_unique(&mut self) {
         Rc::make_mut(&mut self.0);
     }

@@ -76,6 +76,16 @@ impl SetValue {
         }
     }
 
+    pub(crate) fn try_map_values<T, E>(
+        self,
+        map: impl FnMut(InterpValue) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        match Rc::try_unwrap(self.0) {
+            Ok(storage) => storage.values.into_iter().map(map).collect(),
+            Err(shared) => super::aggregate::try_map_cloned(&shared.values, map),
+        }
+    }
+
     pub(super) fn into_unique_values(self) -> Option<Vec<InterpValue>> {
         Rc::try_unwrap(self.0).ok().map(|storage| storage.values)
     }
