@@ -140,10 +140,17 @@ pub(super) async fn resume(
                     .into(),
             );
         }
+        let ordering = crate::eval::machine::snapshot::ordering::OrderedRestoreChecks::default();
         let args = super::revision::restore_arguments(
-            project,
+            crate::value::CheckedExecutionProgram {
+                checked: project.clone(),
+                plan: Arc::new(plan.clone()),
+                definitions: options.code_definitions.clone(),
+                revision: prepared.cloned(),
+            },
             checkpoint,
             options.checkpoint_revisions.clone(),
+            ordering.clone(),
         )?;
         let span = profile.span("interpreter.prepare", "interpreter");
         if state.is_none() {
@@ -187,16 +194,15 @@ pub(super) async fn resume(
         );
         eval.revision = prepared;
         span.finish_ok();
-        let signal = eval.execute_from_checkpoint_signal(checkpoint);
         let mut span = profile
             .span("interpreter.eval", "interpreter")
             .unfinished_status(etas_utils::ProfileSpanStatus::Abandoned);
         let outcome = driver::execute_entry_from_snapshot(
             &mut eval,
-            signal,
             host,
-            &checkpoint.machine,
+            checkpoint,
             options.checkpoint_revisions,
+            ordering,
         )
         .await
         .into_outcome();

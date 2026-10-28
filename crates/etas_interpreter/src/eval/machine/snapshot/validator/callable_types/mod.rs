@@ -81,7 +81,7 @@ enum Task<'a> {
 #[derive(Clone, Copy)]
 enum ExpectedInterface {
     Value(TypeId),
-    PriorityComparison(TypeId),
+    KeyComparison(TypeId),
 }
 
 impl SnapshotValidator<'_> {
@@ -102,17 +102,13 @@ impl SnapshotValidator<'_> {
         self.reference_interface(root, ExpectedInterface::Value(expected), bindings)
     }
 
-    pub(super) fn priority_comparator_interface(
+    pub(super) fn key_comparator_interface(
         &self,
         target: &Target,
         priority: TypeId,
         bindings: &Bindings,
     ) -> Result<(), String> {
-        self.reference_interface(
-            target,
-            ExpectedInterface::PriorityComparison(priority),
-            bindings,
-        )
+        self.reference_interface(target, ExpectedInterface::KeyComparison(priority), bindings)
     }
 
     fn reference_interface(
@@ -123,7 +119,7 @@ impl SnapshotValidator<'_> {
     ) -> Result<(), String> {
         let key = match expected {
             ExpectedInterface::Value(expected) => root_key(root, expected, bindings),
-            ExpectedInterface::PriorityComparison(_) => None,
+            ExpectedInterface::KeyComparison(_) => None,
         };
         if key
             .as_ref()
@@ -139,10 +135,10 @@ impl SnapshotValidator<'_> {
                 Some(_) => None,
                 None => return Err("checkpoint callable slot type is missing".into()),
             },
-            ExpectedInterface::PriorityComparison(_) => None,
+            ExpectedInterface::KeyComparison(_) => None,
         };
         let allowed = match expected {
-            ExpectedInterface::PriorityComparison(_) => Some(etas_types::EffectRowRef {
+            ExpectedInterface::KeyComparison(_) => Some(etas_types::EffectRowRef {
                 effects: Vec::new(),
                 tail: None,
             }),
@@ -250,7 +246,7 @@ impl SnapshotValidator<'_> {
             .pop()
             .ok_or("checkpoint callable has no checked interface")?;
         let matches = match (expected, signature) {
-            (ExpectedInterface::PriorityComparison(priority), _) => {
+            (ExpectedInterface::KeyComparison(priority), _) => {
                 let priority = bindings
                     .substitution(&self.checked.type_store)
                     .substitute(priority)

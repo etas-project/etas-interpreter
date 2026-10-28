@@ -109,6 +109,7 @@ impl EvalMachine {
                 limits,
                 revisions: None,
                 root: None,
+                ordering: None,
             },
         )
     }
@@ -142,7 +143,10 @@ impl EvalMachine {
                 &table,
                 &machine.active_call_depth,
                 current,
-                &resources.locked_model,
+                super::suspension::checkpoint::RestoreOptions {
+                    locked_model: &resources.locked_model,
+                    ordering: resources.ordering.as_ref(),
+                },
             )?;
             Some(table)
         };
@@ -160,8 +164,13 @@ impl EvalMachine {
                 );
                 context.suspensions = suspensions.clone();
                 context.locked_model = resources.locked_model.clone();
+                context.ordering = resources.ordering.clone();
                 context
             });
+            context.execution_program = scope
+                .as_ref()
+                .map(|scope| scope.program.clone())
+                .or_else(|| resources.root.as_ref().map(|root| root.program.clone()));
             if let MachineFrameSnapshot::ProgramReturn(frame) = frame {
                 super::snapshot::program::resolve_destination(
                     &frame,
@@ -217,13 +226,13 @@ impl EvalMachine {
         args: &[InterpValue],
     ) -> Result<super::snapshot::CapturedMachineSnapshot, String> {
         let mut context = super::snapshot::CaptureContext::default();
-        for argument in self
+        let args = self
             .checkpoint_root
             .as_ref()
             .map_or(args, |root| &root.args)
-        {
-            context.value(argument)?;
-        }
+            .iter()
+            .map(|argument| context.value(argument))
+            .collect::<Result<Vec<_>, _>>()?;
         let scopes = super::snapshot::program::capture_scopes(self)?;
         let mut frames = Vec::with_capacity(self.stack.len());
         for (index, frame) in self.stack.iter().enumerate() {
@@ -245,6 +254,7 @@ impl EvalMachine {
         machine.suspended_programs = suspended_programs;
         Ok(super::snapshot::CapturedMachineSnapshot {
             root: self.checkpoint_root.clone(),
+            args,
             machine,
             revisions: context.revisions,
         })

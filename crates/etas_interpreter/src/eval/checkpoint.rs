@@ -149,7 +149,7 @@ impl<'a> EvalContext<'a> {
                 crate::orchestration::CheckpointCodeRevision::for_revision(revision)
             }),
             entry_item: entry,
-            args: root.args,
+            args: captured.args,
             machine: captured.machine,
             model_policy: crate::eval::machine::snapshot::capture_model_policy(&self.model_policy),
             handlers: HandlerSnapshot {

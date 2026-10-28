@@ -39,6 +39,10 @@ impl<'a> Iterator for Walk<'a> {
 enum Children<'a> {
     Fixed(std::array::IntoIter<Option<&'a ValueSnapshot>, 2>),
     Values(Iter<'a, ValueSnapshot>),
+    OrderedValues {
+        values: Iter<'a, ValueSnapshot>,
+        comparator: Option<&'a ValueSnapshot>,
+    },
     Pairs {
         entries: Iter<'a, (ValueSnapshot, ValueSnapshot)>,
         value: Option<&'a ValueSnapshot>,
@@ -52,6 +56,9 @@ impl<'a> Iterator for Children<'a> {
         match self {
             Self::Fixed(values) => values.find_map(|value| value),
             Self::Values(values) => values.next(),
+            Self::OrderedValues { values, comparator } => {
+                comparator.take().or_else(|| values.next())
+            }
             Self::Fields(values) => values.next().map(|(_, value)| value),
             Self::Messages(values) => values.next().map(|message| message.payload.as_ref()),
             Self::Pairs { entries, value } => {
@@ -79,9 +86,18 @@ fn children(value: &ValueSnapshot) -> Children<'_> {
         | V::Deque(values)
         | V::Queue(values)
         | V::Stack(values)
-        | V::OrderedSet(values)
         | V::Variant { fields: values, .. } => return Children::Values(values.iter()),
+        V::OrderedSet { values, comparator } => {
+            return Children::OrderedValues {
+                values: values.iter(),
+                comparator: comparator.as_deref(),
+            };
+        }
         V::PriorityQueue {
+            entries,
+            comparator,
+        }
+        | V::OrderedMap {
             entries,
             comparator,
         } => {
@@ -90,7 +106,7 @@ fn children(value: &ValueSnapshot) -> Children<'_> {
                 value: comparator.as_deref(),
             };
         }
-        V::Map(values) | V::OrderedMap(values) => {
+        V::Map(values) => {
             return Children::Pairs {
                 entries: values.iter(),
                 value: None,

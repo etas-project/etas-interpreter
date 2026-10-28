@@ -386,6 +386,7 @@ impl<'a> EvalContext<'a> {
             Continuation::PriorityQueueUpdate(state) => {
                 self.continue_priority_update(*state, value)
             }
+            Continuation::OrderedSearch(state) => self.continue_ordered_search(*state, value),
             Continuation::StreamReadReduction(state) => self.continue_stream_read(*state, value),
             Continuation::ContinueBlock {
                 block,

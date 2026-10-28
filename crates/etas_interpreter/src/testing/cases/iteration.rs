@@ -283,7 +283,7 @@ flow main() -> i32 {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v50`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v51`")
     );
 
     let mut bad = checkpoint.clone();

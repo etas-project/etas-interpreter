@@ -9,6 +9,8 @@ pub(crate) struct RestoreContext {
     pub(in crate::eval::machine) locked_model: Option<etas_host::ModelName>,
     pub(in crate::eval::machine) suspensions: Option<SuspensionRestoreTable>,
     pub(super) revision_program: Option<etas_frontend::CheckedProgram>,
+    pub(in crate::eval::machine) execution_program: Option<crate::value::CheckedExecutionProgram>,
+    pub(in crate::eval::machine) ordering: Option<super::ordering::OrderedRestoreChecks>,
     pub(super) revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
     frames: std::collections::HashMap<u64, (LocalsSnapshot, Frame)>,
     active: std::collections::HashSet<u64>,
@@ -42,6 +44,73 @@ pub(super) struct ProgramRestoreCaches {
 }
 
 impl RestoreContext {
+    pub(crate) fn for_execution(
+        program: crate::value::CheckedExecutionProgram,
+        revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
+        ordering: super::ordering::OrderedRestoreChecks,
+    ) -> Self {
+        Self {
+            revision_program: Some(program.checked.clone()),
+            execution_program: Some(program),
+            revisions,
+            ordering: Some(ordering),
+            ..Default::default()
+        }
+    }
+    pub(super) fn restore_ordered_map(
+        &self,
+        entries: Vec<(crate::value::InterpValue, crate::value::InterpValue)>,
+        comparator: Option<crate::control::CallTarget>,
+    ) -> Result<crate::value::OrderedMapValue, String> {
+        use crate::value::{OrderedMapValue, ordered::OrderedTree};
+        if comparator.is_none() {
+            return OrderedMapValue::try_from_entries(entries);
+        }
+        let ordering = self
+            .ordering
+            .as_ref()
+            .ok_or("key comparison restoration requires a checked run-owned restore context")?;
+        let program = self
+            .execution_program
+            .clone()
+            .ok_or("key comparison restoration has no checked execution owner")?;
+        let value =
+            OrderedMapValue::from_tree(OrderedTree::from_pending_entries(entries)?, comparator);
+        ordering.register(
+            program,
+            super::ordering::RestoredOrderedValue::Map(value.clone()),
+        )?;
+        Ok(value)
+    }
+    pub(super) fn restore_ordered_set(
+        &self,
+        keys: Vec<crate::value::InterpValue>,
+        comparator: Option<crate::control::CallTarget>,
+    ) -> Result<crate::value::OrderedSetValue, String> {
+        use crate::value::{InterpValue, OrderedSetValue, ordered::OrderedTree};
+        if comparator.is_none() {
+            return OrderedSetValue::try_from_values(keys);
+        }
+        let ordering = self
+            .ordering
+            .as_ref()
+            .ok_or("key comparison restoration requires a checked run-owned restore context")?;
+        let program = self
+            .execution_program
+            .clone()
+            .ok_or("key comparison restoration has no checked execution owner")?;
+        let entries = keys
+            .into_iter()
+            .map(|key| (key, InterpValue::Unit))
+            .collect();
+        let value =
+            OrderedSetValue::from_tree(OrderedTree::from_pending_entries(entries)?, comparator);
+        ordering.register(
+            program,
+            super::ordering::RestoredOrderedValue::Set(value.clone()),
+        )?;
+        Ok(value)
+    }
     pub(super) fn suspension(
         &self,
         id: u32,

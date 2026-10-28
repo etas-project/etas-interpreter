@@ -63,17 +63,17 @@ pub(super) fn validate_checkpoint(
 }
 
 pub(super) fn restore_arguments(
-    project: &CheckedProject,
+    program: crate::value::CheckedExecutionProgram,
     checkpoint: &InterpreterCheckpoint,
     revisions: Option<Arc<crate::api::code::PreparedRevisionSet>>,
+    ordering: crate::eval::machine::snapshot::ordering::OrderedRestoreChecks,
 ) -> Result<Vec<crate::value::InterpValue>, String> {
     let mut context =
-        crate::eval::machine::snapshot::RestoreContext::for_program(project.clone(), revisions);
+        crate::eval::machine::snapshot::RestoreContext::for_execution(program, revisions, ordering);
     checkpoint
         .args
         .iter()
-        .map(|argument| {
-            crate::orchestration::ValueSnapshot::capture(argument)?.restore_with(&mut context)
-        })
+        .cloned()
+        .map(|argument| argument.restore_with(&mut context))
         .collect()
 }

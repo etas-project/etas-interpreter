@@ -5,6 +5,45 @@ use crate::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn calling_a_lambda_does_not_retain_parameters_in_its_capture_frame() {
+    let checked = checked_project(
+        r#"
+module app.main;
+flow make(base: i32) -> i32 -> i32 { return (value: i32) => base + value; }
+flow main() -> i32 -> i32 {
+    let f = make(7);
+    let first = f(1);
+    let second = f(2);
+    return f;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let Some(InterpValue::Callable(CallTarget::Lambda { captured, .. })) = result.value() else {
+        panic!("returned closure")
+    };
+    let names = captured
+        .sorted_locals()
+        .into_iter()
+        .map(|(symbol, _)| checked.symbols.get(symbol).unwrap().name.clone())
+        .collect::<Vec<_>>();
+    assert_eq!(names, ["base"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn closure_does_not_retain_unused_payloads_or_project_slots() {
     let checked = checked_project(
         r#"

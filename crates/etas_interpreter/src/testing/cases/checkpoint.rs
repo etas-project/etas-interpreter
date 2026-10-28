@@ -231,22 +231,25 @@ flow main() -> unit {
         .first()
         .expect("checkpoint record")
         .clone();
-    checkpoint.args.push(value::InterpValue::Callable(
-        crate::control::CallTarget::StdIntrinsic(
-            crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
-                origin: etas_hir::HirExprId(0),
-                substitutions: Vec::new(),
-                identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
-                    intrinsic: etas_std::StdIntrinsicId(
-                        etas_std::intrinsic::runtime::NET_TCP_CONNECT,
-                    ),
-                    dispatch: etas_std::IntrinsicDispatch::Host,
+    checkpoint.args.push(
+        crate::orchestration::ValueSnapshot::capture(&value::InterpValue::Callable(
+            crate::control::CallTarget::StdIntrinsic(
+                crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+                    origin: etas_hir::HirExprId(0),
+                    substitutions: Vec::new(),
+                    identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                        intrinsic: etas_std::StdIntrinsicId(
+                            etas_std::intrinsic::runtime::NET_TCP_CONNECT,
+                        ),
+                        dispatch: etas_std::IntrinsicDispatch::Host,
+                    },
+                    parameter_types: Vec::new(),
+                    result_type: etas_types::TypeId(0),
                 },
-                parameter_types: Vec::new(),
-                result_type: etas_types::TypeId(0),
-            },
-        ),
-    ));
+            ),
+        ))
+        .unwrap(),
+    );
 
     let rejected = Interpreter
         .resume_checkpoint(

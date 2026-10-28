@@ -53,6 +53,7 @@ fn run_lambda(
     let mut eval = EvalContext::new(input, &mut runtime);
     let mut machine = EvalMachine::new();
     machine.resume(ControlSignal::pending_call(PendingCall {
+        purity: crate::control::CallPurity::Ordinary,
         site: None,
         target: CallTarget::Lambda {
             expr,

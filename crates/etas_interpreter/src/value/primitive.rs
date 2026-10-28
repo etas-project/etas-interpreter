@@ -59,8 +59,8 @@ pub enum InterpValue {
     Queue(DequeValue),
     Stack(ArrayValue),
     PriorityQueue(super::PriorityQueueValue),
-    OrderedMap(MapValue),
-    OrderedSet(SetValue),
+    OrderedMap(super::OrderedMapValue),
+    OrderedSet(super::OrderedSetValue),
     Range(RangeValue),
     Record(RecordValue),
     Variant {

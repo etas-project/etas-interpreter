@@ -221,11 +221,11 @@ impl ValueSnapshot {
             | Self::List(_)
             | Self::Slice(_)
             | Self::Set(_)
-            | Self::OrderedSet(_)
+            | Self::OrderedSet { .. }
             | Self::Deque(_)
             | Self::Queue(_)
             | Self::Map(_)
-            | Self::OrderedMap(_)
+            | Self::OrderedMap { .. }
             | Self::PriorityQueue { .. } => {
                 return Err("compound checkpoint value must use its restore builder".into());
             }

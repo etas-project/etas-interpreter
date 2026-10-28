@@ -42,11 +42,23 @@ impl HostValueProjection for BorrowedValue<'_> {
                 }
                 visitor.map(v.iter().map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))))
             }
-            InterpValue::Map(v) | InterpValue::OrderedMap(v) => visitor.map(
+            InterpValue::Map(v) => visitor.map(
                 v.borrow()
                     .iter()
                     .map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))),
             ),
+            InterpValue::OrderedMap(v) => {
+                if v.comparator().is_some() {
+                    return Err(projection_error(
+                        "a key comparison flow is not host-encodable",
+                    ));
+                }
+                visitor.map(
+                    v.borrow()
+                        .iter()
+                        .map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))),
+                )
+            }
             InterpValue::Record(v) => visitor.record(
                 v.borrow()
                     .iter()

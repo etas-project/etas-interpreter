@@ -112,13 +112,22 @@ fn write<'a>(node: Node<'a>, slot: &'a mut Value, mut child: impl FnMut(Node<'a>
         InterpValue::Deque(values) => sequence("deque", values.borrow().iter(), slot, child),
         InterpValue::Queue(values) => sequence("queue", values.borrow().iter(), slot, child),
         InterpValue::Stack(values) => sequence("stack", values.borrow().iter(), slot, child),
-        InterpValue::OrderedSet(values) => {
-            sequence("ordered_set", values.borrow().iter(), slot, child)
-        }
+        InterpValue::OrderedSet(values) => sequence_header(
+            "ordered_set",
+            values.borrow().iter(),
+            values.comparator(),
+            slot,
+            child,
+        ),
         InterpValue::Map(values) => entries("map", "key", values.borrow().iter(), slot, child),
-        InterpValue::OrderedMap(values) => {
-            entries("ordered_map", "key", values.borrow().iter(), slot, child)
-        }
+        InterpValue::OrderedMap(values) => entries_header(
+            "ordered_map",
+            "key",
+            values.borrow().iter(),
+            values.comparator(),
+            slot,
+            child,
+        ),
         InterpValue::PriorityQueue(values) => {
             *slot = json!({"kind":"priority_queue", "entries":null, "comparator":null});
             if let Value::Object(fields) = slot {
@@ -248,9 +257,26 @@ fn sequence<'a>(
     kind: &str,
     values: impl ExactSizeIterator<Item = &'a InterpValue>,
     slot: &'a mut Value,
+    child: impl FnMut(Node<'a>, &'a mut Value),
+) {
+    sequence_header(kind, values, None, slot, child)
+}
+
+fn sequence_header<'a>(
+    kind: &str,
+    values: impl ExactSizeIterator<Item = &'a InterpValue>,
+    comparator: Option<&crate::control::CallTarget>,
+    slot: &'a mut Value,
     mut child: impl FnMut(Node<'a>, &'a mut Value),
 ) {
     *slot = json!({"kind":kind,"values":null});
+    if kind == "ordered_set" {
+        slot["comparator"] = Value::Null;
+    }
+    if let Some(target) = comparator {
+        slot["comparator"] =
+            json!({"kind":"callable", "target":machine::call_target_snapshot(target)});
+    }
     let count = values.len();
     for (value, slot) in values.zip(array(&mut slot["values"], count)) {
         child(Node::Value(value), slot);
@@ -262,9 +288,27 @@ fn entries<'a>(
     key_name: &str,
     entries: impl ExactSizeIterator<Item = &'a (InterpValue, InterpValue)>,
     slot: &'a mut Value,
+    child: impl FnMut(Node<'a>, &'a mut Value),
+) {
+    entries_header(kind, key_name, entries, None, slot, child)
+}
+
+fn entries_header<'a>(
+    kind: &str,
+    key_name: &str,
+    entries: impl ExactSizeIterator<Item = &'a (InterpValue, InterpValue)>,
+    comparator: Option<&crate::control::CallTarget>,
+    slot: &'a mut Value,
     mut child: impl FnMut(Node<'a>, &'a mut Value),
 ) {
     *slot = json!({"kind":kind,"entries":null});
+    if kind == "ordered_map" {
+        slot["comparator"] = Value::Null;
+    }
+    if let Some(target) = comparator {
+        slot["comparator"] =
+            json!({"kind":"callable", "target":machine::call_target_snapshot(target)});
+    }
     let count = entries.len();
     for ((key, value), slot) in entries.zip(array(&mut slot["entries"], count)) {
         *slot = json!({key_name:null,"value":null});

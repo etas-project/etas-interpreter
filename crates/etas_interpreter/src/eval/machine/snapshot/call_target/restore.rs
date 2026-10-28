@@ -7,12 +7,7 @@ use crate::{
 use etas_types::TypeId;
 
 enum PendingParent {
-    Scoped {
-        metadata: Box<crate::orchestration::ScopedCallableMetadata>,
-        parent: etas_frontend::CheckedProgram,
-        native: crate::value::CheckedExecutionProgram,
-        projections: Vec<std::sync::Arc<crate::plan::code::CallableValueProjection>>,
-    },
+    Scoped(Box<ScopedRestore>),
     Specialized(
         Vec<(String, TypeId)>,
         Vec<(String, etas_types::EffectRowRef)>,
@@ -24,6 +19,14 @@ enum PendingParent {
         values: Vec<CallTarget>,
         source: Option<(*const Vec<CallTargetSnapshot>, CallTargetSnapshotChildren)>,
     },
+}
+
+struct ScopedRestore {
+    metadata: Box<crate::orchestration::ScopedCallableMetadata>,
+    parent: etas_frontend::CheckedProgram,
+    parent_execution: Option<crate::value::CheckedExecutionProgram>,
+    native: crate::value::CheckedExecutionProgram,
+    projections: Vec<std::sync::Arc<crate::plan::code::CallableValueProjection>>,
 }
 
 pub(in crate::eval::machine::snapshot) fn restore_call_target(
@@ -45,12 +48,14 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                 let projections = revisions.callable_projections(&metadata, &parent)?;
                 let native = revisions.execution_callable(&metadata, &target)?;
                 context.select_program(native.checked.clone());
-                pending.push(PendingParent::Scoped {
+                let parent_execution = context.execution_program.replace(native.clone());
+                pending.push(PendingParent::Scoped(Box::new(ScopedRestore {
                     metadata,
                     parent,
+                    parent_execution,
                     native,
                     projections,
-                });
+                })));
                 current = target.into_value();
                 continue;
             }
@@ -122,13 +127,16 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
         };
         loop {
             match pending.pop() {
-                Some(PendingParent::Scoped {
-                    metadata,
-                    parent,
-                    native,
-                    projections,
-                }) => {
+                Some(PendingParent::Scoped(state)) => {
+                    let ScopedRestore {
+                        metadata,
+                        parent,
+                        parent_execution,
+                        native,
+                        projections,
+                    } = *state;
                     context.select_program(parent);
+                    context.execution_program = parent_execution;
                     value =
                         CallTarget::Scoped(crate::value::ScopedCallableValue::restore_checkpoint(
                             native,

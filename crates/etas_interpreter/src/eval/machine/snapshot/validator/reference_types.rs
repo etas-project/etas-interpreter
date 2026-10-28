@@ -279,7 +279,7 @@ impl SnapshotValidator<'_> {
                         let ValueSnapshot::Callable(target) = comparator.as_ref() else {
                             return Err("checkpoint priority comparison is not a callable".into());
                         };
-                        self.priority_comparator_interface(target, args[1], bindings)?;
+                        self.key_comparator_interface(target, args[1], bindings)?;
                     }
                     for (priority, value) in entries.iter() {
                         pending.push((priority, args[1]));
@@ -291,6 +291,42 @@ impl SnapshotValidator<'_> {
                 | (Type::Slice(inner), ValueSnapshot::Slice(values))
                 | (Type::Set(inner), ValueSnapshot::Set(values)) => {
                     pending.extend(values.iter().map(|value| (value, *inner)))
+                }
+                (
+                    Type::Applied { constructor, args },
+                    ValueSnapshot::OrderedMap {
+                        entries,
+                        comparator,
+                    },
+                ) if self.checked.types.known_std_types.ordered_map
+                    == Some(TypeId(constructor.0))
+                    && args.len() == 2 =>
+                {
+                    if let Some(value) = comparator {
+                        let ValueSnapshot::Callable(target) = value.as_ref() else {
+                            return Err("checkpoint key comparison is not a callable".into());
+                        };
+                        self.key_comparator_interface(target, args[0], bindings)?;
+                    }
+                    for (key, value) in entries.iter() {
+                        pending.push((key, args[0]));
+                        pending.push((value, args[1]));
+                    }
+                }
+                (
+                    Type::Applied { constructor, args },
+                    ValueSnapshot::OrderedSet { values, comparator },
+                ) if self.checked.types.known_std_types.ordered_set
+                    == Some(TypeId(constructor.0))
+                    && args.len() == 1 =>
+                {
+                    if let Some(value) = comparator {
+                        let ValueSnapshot::Callable(target) = value.as_ref() else {
+                            return Err("checkpoint key comparison is not a callable".into());
+                        };
+                        self.key_comparator_interface(target, args[0], bindings)?;
+                    }
+                    pending.extend(values.iter().map(|value| (value, args[0])));
                 }
                 (Type::Option(inner), ValueSnapshot::OptionSome(value)) => {
                     pending.push((value, *inner))

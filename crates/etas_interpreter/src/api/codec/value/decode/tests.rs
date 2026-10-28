@@ -4,10 +4,13 @@ use crate::{orchestration::ValueSnapshot, testing::allocation::measure};
 #[test]
 fn set_decoders_reject_duplicates_instead_of_changing_the_saved_iteration() {
     for kind in ["set", "ordered_set"] {
-        let wire = json!({"kind":kind, "values":[
+        let mut wire = json!({"kind":kind, "values":[
             {"kind":"number", "type":"i32", "value":"1"},
             {"kind":"number", "type":"i32", "value":"1"}
         ]});
+        if kind == "ordered_set" {
+            wire["comparator"] = Value::Null;
+        }
         let limits = etas_host::StorageLimits::default();
         assert!(
             decode::<InterpValue>(&limits, &wire)

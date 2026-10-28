@@ -11,6 +11,7 @@ mod message;
 #[cfg(test)]
 mod message_tests;
 mod model;
+pub(crate) mod ordering;
 pub(crate) mod program;
 mod validator;
 mod value;
@@ -30,6 +31,7 @@ pub(crate) struct SnapshotRestoreResources<'a> {
     pub limits: &'a etas_host::StorageLimits,
     pub revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
     pub root: Option<CheckpointRoot>,
+    pub ordering: Option<ordering::OrderedRestoreChecks>,
 }
 
 #[derive(Clone)]
@@ -40,6 +42,7 @@ pub(crate) struct CheckpointRoot {
 
 pub(crate) struct CapturedMachineSnapshot {
     pub root: Option<CheckpointRoot>,
+    pub args: Vec<crate::orchestration::ValueSnapshot>,
     pub machine: crate::orchestration::MachineSnapshot,
     pub revisions: std::collections::BTreeMap<
         etas_code::RevisionKey,

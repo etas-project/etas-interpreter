@@ -74,6 +74,8 @@ enum Frame<'a, T> {
         kind: Sequence,
         input: &'a [Value],
         output: Vec<T>,
+        comparator_input: Option<&'a Value>,
+        comparator: Option<T>,
     },
     Record {
         input: &'a [Value],
@@ -136,6 +138,12 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
                 },
             )?;
             return Ok(Some(Self::Sequence {
+                comparator_input: if matches!(kind, Sequence::OrderedSet) {
+                    comparison_input(value)?
+                } else {
+                    None
+                },
+                comparator: None,
                 kind,
                 input,
                 output: Vec::with_capacity(input.len()),
@@ -154,16 +162,8 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
                 input,
                 output: Vec::with_capacity(input.len()),
                 key: None,
-                comparator_input: if matches!(kind, Pairs::PriorityQueue) {
-                    match value.get("comparator") {
-                        Some(Value::Null) => None,
-                        Some(value) => Some(value),
-                        None => {
-                            return Err(InterpreterCodecError::new(
-                                "priority queue is missing its comparator field",
-                            ));
-                        }
-                    }
+                comparator_input: if matches!(kind, Pairs::PriorityQueue | Pairs::OrderedMap) {
+                    comparison_input(value)?
                 } else {
                     None
                 },
@@ -190,7 +190,19 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
     fn next_child(&self) -> Result<Option<&'a Value>, InterpreterCodecError> {
         match self {
             Self::Unary { input, output, .. } => Ok(output.is_none().then_some(*input)),
-            Self::Sequence { input, output, .. } => Ok(input.get(output.len())),
+            Self::Sequence {
+                input,
+                output,
+                comparator_input,
+                comparator,
+                ..
+            } => Ok(input.get(output.len()).or_else(|| {
+                if comparator.is_none() {
+                    *comparator_input
+                } else {
+                    None
+                }
+            })),
             Self::Record { input, output } => input
                 .get(output.len())
                 .map(|field| {
@@ -245,7 +257,18 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
     fn accept(&mut self, value: T) -> Result<(), InterpreterCodecError> {
         match self {
             Self::Unary { output, .. } => *output = Some(value),
-            Self::Sequence { output, .. } => output.push(value),
+            Self::Sequence {
+                input,
+                output,
+                comparator,
+                ..
+            } => {
+                if output.len() < input.len() {
+                    output.push(value);
+                } else {
+                    *comparator = Some(value);
+                }
+            }
             Self::Record { input, output } => {
                 let field = input.get(output.len()).ok_or_else(invalid_builder)?;
                 output.push((required_str(field, "name")?.to_owned(), value));
@@ -279,7 +302,12 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
     fn finish(self) -> Result<T, InterpreterCodecError> {
         Ok(match self {
             Self::Unary { kind, output, .. } => T::unary(kind, output.ok_or_else(invalid_builder)?),
-            Self::Sequence { kind, output, .. } => T::sequence(kind, output)?,
+            Self::Sequence {
+                kind,
+                output,
+                comparator,
+                ..
+            } => T::sequence(kind, output, comparator)?,
             Self::Record { output, .. } => T::record(output),
             Self::Pairs {
                 kind,
@@ -309,7 +337,11 @@ pub(super) trait DecodedValue: Sized {
         value: &Value,
     ) -> Result<Self, InterpreterCodecError>;
     fn unary(kind: Unary, value: Self) -> Self;
-    fn sequence(kind: Sequence, values: Vec<Self>) -> Result<Self, InterpreterCodecError>;
+    fn sequence(
+        kind: Sequence,
+        values: Vec<Self>,
+        comparator: Option<Self>,
+    ) -> Result<Self, InterpreterCodecError>;
     fn pairs(
         kind: Pairs,
         values: Vec<(Self, Self)>,
@@ -324,4 +356,14 @@ mod snapshot;
 
 fn invalid_builder() -> InterpreterCodecError {
     InterpreterCodecError::new("invalid aggregate value decoder state")
+}
+
+fn comparison_input(value: &Value) -> Result<Option<&Value>, InterpreterCodecError> {
+    match value.get("comparator") {
+        Some(Value::Null) => Ok(None),
+        Some(value) => Ok(Some(value)),
+        None => Err(InterpreterCodecError::new(
+            "ordered collection is missing its comparator field",
+        )),
+    }
 }

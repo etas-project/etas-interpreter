@@ -67,11 +67,12 @@ pub async fn execute_entry(
 
 pub async fn execute_entry_from_snapshot(
     eval: &mut EvalContext<'_>,
-    signal: ControlSignal,
     host: &dyn HostServices,
-    snapshot: &crate::orchestration::MachineSnapshot,
+    checkpoint: &crate::orchestration::InterpreterCheckpoint,
     revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
+    ordering: crate::eval::machine::snapshot::ordering::OrderedRestoreChecks,
 ) -> EvaluationOutcome {
+    let snapshot = &checkpoint.machine;
     if snapshot.total_call_frames().map_or(true, |count| {
         count > eval.execution_limits.max_call_depth.get()
     }) {
@@ -98,6 +99,7 @@ pub async fn execute_entry_from_snapshot(
                 program: eval.checked_execution_program(),
                 args: eval.entry_args.to_vec(),
             }),
+            ordering: Some(ordering.clone()),
         },
     ) {
         Ok(machine) => machine,
@@ -111,10 +113,20 @@ pub async fn execute_entry_from_snapshot(
             return evaluation_failure(eval);
         }
     };
+    if let Err(message) = eval.seed_resume_counters(&checkpoint.trace) {
+        let span = crate::diagnostics::item_span(eval.checked, eval.entry_item);
+        eval.diagnostics
+            .push(crate::diagnostics::missing_checked_fact(span, message));
+        return evaluation_failure(eval);
+    }
+    if let Err(outcome) = super::restore_ordering::validate(eval, host, &ordering).await {
+        return outcome;
+    }
+    let signal = eval.execute_from_checkpoint_signal(checkpoint);
     drive_eval_signal(eval, signal, host, machine).await
 }
 
-pub(super) async fn drive_eval_signal(
+async fn drive_eval_signal(
     eval: &mut EvalContext<'_>,
     mut signal: ControlSignal,
     host: &dyn HostServices,

@@ -187,6 +187,7 @@ impl EvalMachine {
         let mut work = vec![pending];
         for frame in self.frames() {
             match frame {
+                EvalFrame::PureBoundary(_) => (),
                 EvalFrame::Handler(frame) => {
                     if found.insert(frame.scope_id, &frame.frame).is_some() {
                         return Err("handler scope has multiple lexical frame owners".into());

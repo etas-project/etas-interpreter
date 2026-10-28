@@ -390,60 +390,53 @@ impl<'a> EvalContext<'a> {
 
     fn eval_ordered_map_method_values(
         &mut self,
-        mut entries: MapValue,
+        entries: crate::value::OrderedMapValue,
         method: &str,
         args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match (method, args) {
+        use crate::eval::ordered_collection::OrderedResult;
+        let (key, value, result) = match (method, args) {
             ("len", EvaluatedLocalArgs::None) => {
-                ControlSignal::Value(InterpValue::usize(entries.borrow().len()))
+                return ControlSignal::Value(InterpValue::usize(entries.len()));
             }
             ("is_empty", EvaluatedLocalArgs::None) => {
-                ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty()))
+                return ControlSignal::Value(InterpValue::Bool(entries.is_empty()));
             }
-            ("contains_key", EvaluatedLocalArgs::One(arg)) => {
-                ControlSignal::Value(InterpValue::Bool(entries.contains_key(&arg)))
-            }
-            ("get", EvaluatedLocalArgs::One(arg)) => ControlSignal::Value(
-                entries
-                    .get(&arg)
-                    .map(crate::value::SharedValue::new)
-                    .map(InterpValue::OptionSome)
-                    .unwrap_or(InterpValue::OptionNone),
-            ),
+            ("contains_key", EvaluatedLocalArgs::One(key)) => (key, None, OrderedResult::Contains),
+            ("get", EvaluatedLocalArgs::One(key)) => (key, None, OrderedResult::Get),
             ("insert", EvaluatedLocalArgs::Two(key, value)) => {
-                entries.insert(key, value);
-                ControlSignal::Value(InterpValue::OrderedMap(entries))
+                (key, Some(value), OrderedResult::Map)
             }
-            _ => unsupported_collection_method(span, "OrderedMap", method),
-        }
+            _ => return unsupported_collection_method(span, "OrderedMap", method),
+        };
+        let comparator = entries.comparator().cloned();
+        self.start_ordered_search(entries.search(key, value), comparator, result, span)
     }
 
     fn eval_ordered_set_method_values(
         &mut self,
-        values: crate::value::SetValue,
+        values: crate::value::OrderedSetValue,
         method: &str,
         args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
-        match (method, args) {
+        use crate::eval::ordered_collection::OrderedResult;
+        let (key, value, result) = match (method, args) {
             ("len", EvaluatedLocalArgs::None) => {
-                ControlSignal::Value(InterpValue::usize(values.borrow().len()))
+                return ControlSignal::Value(InterpValue::usize(values.len()));
             }
             ("is_empty", EvaluatedLocalArgs::None) => {
-                ControlSignal::Value(InterpValue::Bool(values.borrow().is_empty()))
+                return ControlSignal::Value(InterpValue::Bool(values.is_empty()));
             }
-            ("contains", EvaluatedLocalArgs::One(arg)) => {
-                ControlSignal::Value(InterpValue::Bool(values.contains(&arg)))
+            ("contains", EvaluatedLocalArgs::One(key)) => (key, None, OrderedResult::Contains),
+            ("insert", EvaluatedLocalArgs::One(key)) => {
+                (key, Some(InterpValue::Unit), OrderedResult::Set)
             }
-            ("insert", EvaluatedLocalArgs::One(arg)) => {
-                let mut next = values;
-                next.insert(arg);
-                ControlSignal::Value(InterpValue::OrderedSet(next))
-            }
-            _ => unsupported_collection_method(span, "OrderedSet", method),
-        }
+            _ => return unsupported_collection_method(span, "OrderedSet", method),
+        };
+        let comparator = values.comparator().cloned();
+        self.start_ordered_search(values.search(key, value), comparator, result, span)
     }
 }
 

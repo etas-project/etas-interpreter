@@ -30,8 +30,7 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
         | V::Set(values)
         | V::Deque(values)
         | V::Queue(values)
-        | V::Stack(values)
-        | V::OrderedSet(values) => {
+        | V::Stack(values) => {
             let kind = match value {
                 V::Tuple(_) => "tuple",
                 V::Array(_) => "array",
@@ -41,7 +40,6 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
                 V::Deque(_) => "deque",
                 V::Queue(_) => "queue",
                 V::Stack(_) => "stack",
-                V::OrderedSet(_) => "ordered_set",
                 _ => unreachable!("sequence variant was matched"),
             };
             *slot = json!({"kind":kind, "values":null});
@@ -54,40 +52,42 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
         V::PriorityQueue {
             entries,
             comparator,
-        } => {
-            *slot = json!({"kind":"priority_queue", "entries":null, "comparator":null});
+        } => ordered_pairs(
+            "priority_queue",
+            "priority",
+            entries,
+            comparator.as_deref(),
+            slot,
+            pending,
+        ),
+        V::OrderedMap {
+            entries,
+            comparator,
+        } => ordered_pairs(
+            "ordered_map",
+            "key",
+            entries,
+            comparator.as_deref(),
+            slot,
+            pending,
+        ),
+        V::OrderedSet { values, comparator } => {
+            *slot = json!({"kind":"ordered_set", "values":null, "comparator":null});
             if let Value::Object(fields) = slot {
                 for (name, slot) in fields {
                     if name == "comparator" {
-                        if let Some(comparator) = comparator {
-                            pending.push((Node::Value(comparator), slot));
+                        if let Some(value) = comparator {
+                            pending.push((Node::Value(value), slot));
                         }
-                    } else if name == "entries" {
-                        for ((priority, value), entry) in
-                            entries.iter().zip(array(slot, entries.len()))
-                        {
-                            *entry = json!({"priority":null, "value":null});
-                            if let Value::Object(fields) = entry {
-                                for (name, slot) in fields {
-                                    pending.push((
-                                        Node::Value(if name == "priority" {
-                                            priority
-                                        } else {
-                                            value
-                                        }),
-                                        slot,
-                                    ));
-                                }
-                            }
-                        }
+                    } else if name == "values" {
+                        sequence(values, slot, pending);
                     }
                 }
             }
         }
-        V::Map(values) | V::OrderedMap(values) => {
+        V::Map(values) => {
             let (kind, key_name) = match value {
                 V::Map(_) => ("map", "key"),
-                V::OrderedMap(_) => ("ordered_map", "key"),
                 _ => unreachable!("pair variant was matched"),
             };
             *slot = json!({"kind":kind, "entries":null});
@@ -248,10 +248,10 @@ fn leaf(value: &ValueSnapshot) -> Value {
         | V::Deque(_)
         | V::Queue(_)
         | V::Stack(_)
-        | V::OrderedSet(_)
+        | V::OrderedSet { .. }
         | V::Variant { .. }
         | V::Map(_)
-        | V::OrderedMap(_)
+        | V::OrderedMap { .. }
         | V::PriorityQueue { .. }
         | V::Record(_)
         | V::Range { .. }
@@ -261,5 +261,37 @@ fn leaf(value: &ValueSnapshot) -> Value {
         | V::Json(_)
         | V::ModelResponse(_)
         | V::MemorySelection { .. } => unreachable!("compound value must fill child slots"),
+    }
+}
+
+fn ordered_pairs<'a>(
+    kind: &str,
+    key_name: &str,
+    entries: &'a [(ValueSnapshot, ValueSnapshot)],
+    comparator: Option<&'a ValueSnapshot>,
+    slot: &'a mut Value,
+    pending: &mut Pending<'a>,
+) {
+    *slot = json!({"kind":kind,"entries":null,"comparator":null});
+    if let Value::Object(fields) = slot {
+        for (name, slot) in fields {
+            if name == "comparator" {
+                if let Some(value) = comparator {
+                    pending.push((Node::Value(value), slot));
+                }
+            } else if name == "entries" {
+                for ((key, value), entry) in entries.iter().zip(array(slot, entries.len())) {
+                    *entry = json!({key_name:null,"value":null});
+                    if let Value::Object(fields) = entry {
+                        for (name, field) in fields {
+                            pending.push((
+                                Node::Value(if name == key_name { key } else { value }),
+                                field,
+                            ));
+                        }
+                    }
+                }
+            }
+        }
     }
 }

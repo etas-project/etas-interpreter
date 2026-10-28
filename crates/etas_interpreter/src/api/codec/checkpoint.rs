@@ -95,18 +95,6 @@ pub fn checkpoint_from_json_with_revisions(
     validator
         .validate_arguments(entry_item, &arguments)
         .map_err(InterpreterCodecError::new)?;
-    let mut restore = crate::eval::machine::snapshot::RestoreContext::for_program(
-        checked.clone(),
-        revisions.cloned(),
-    );
-    let arguments = arguments
-        .into_iter()
-        .map(|argument| {
-            argument
-                .restore_with(&mut restore)
-                .map_err(InterpreterCodecError::new)
-        })
-        .collect::<Result<Vec<_>, _>>()?;
     let checkpoint = InterpreterCheckpoint {
         retained_code: None,
         storage: serde_json::from_value(required_obj(checkpoint, "storage")?.clone()).map_err(
@@ -532,11 +520,7 @@ pub(super) fn checkpoint_json(
         checkpoint
             .args
             .iter()
-            .map(|value| {
-                let captured = crate::orchestration::ValueSnapshot::capture(value)
-                    .map_err(InterpreterCodecError::new)?;
-                snapshot::value_json_with_budget(&captured, &mut budget)
-            })
+            .map(|value| snapshot::value_json_with_budget(value, &mut budget))
             .collect::<Result<Vec<_>, _>>()?,
     );
     artifact.value_mut()["machine"] = machine_json_with_budget(&checkpoint.machine, &mut budget)?;

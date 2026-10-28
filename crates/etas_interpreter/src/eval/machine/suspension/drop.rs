@@ -33,6 +33,7 @@ fn discard_segment(program: SuspendedProgram, work: &mut Vec<Continuation>) {
     work.push(program.continuation);
     for frame in program.frames {
         match frame {
+            EvalFrame::PureBoundary(_) => (),
             EvalFrame::ProgramReturn(frame) => work.push(frame.outer),
             EvalFrame::Block(frame) => work.push(frame.continuation),
             EvalFrame::Call(frame) => work.push(frame.continuation),

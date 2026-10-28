@@ -26,6 +26,11 @@ impl ContinuationSnapshot {
                         .into(),
                 );
             }
+            Continuation::OrderedSearch(_) => {
+                return Err(
+                    "an in-progress pure key comparison cannot cross a checkpoint boundary".into(),
+                );
+            }
             Continuation::StreamReadReduction(state) => Self::StreamReadReduction {
                 call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
                     state.call.clone(),

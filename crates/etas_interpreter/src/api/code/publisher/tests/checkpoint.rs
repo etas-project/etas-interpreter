@@ -172,9 +172,15 @@ flow inspect() -> unit { let definition = ^Worker; return; }
         assert_eq!(result.value(), Some(&InterpValue::i32(9)));
         assert_eq!(result.checkpoints.len(), 1);
         assert_eq!(result.checkpoints[0].label.as_deref(), Some("after"));
-        let InterpValue::Callable(CallTarget::AgentRevision(argument)) =
-            &result.checkpoints[0].args[0]
-        else {
+        let mut restore = crate::eval::machine::snapshot::RestoreContext::for_program(
+            checked.clone(),
+            Some(revisions.clone()),
+        );
+        let argument = result.checkpoints[0].args[0]
+            .clone()
+            .restore_with(&mut restore)
+            .unwrap();
+        let InterpValue::Callable(CallTarget::AgentRevision(argument)) = &argument else {
             panic!("restored Agent argument")
         };
         assert!(Arc::ptr_eq(argument.prepared(), &revision));
