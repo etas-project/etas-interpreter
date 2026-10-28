@@ -8,6 +8,179 @@ use crate::{
 };
 
 #[test]
+fn shared_aggregate_dag_fingerprints_visit_backings_not_logical_expansion() {
+    let index = MembershipIndex::default();
+    for depth in [20, 1000, 2000, 4000] {
+        let value = (0..depth).fold(V::Bool(true), |child, _| {
+            V::Tuple(vec![child.clone(), child].into())
+        });
+        super::runtime::reset_visits();
+        let (_, cost) = measure(|| index.fingerprint(&value));
+        let visits = super::runtime::visits();
+        assert!(visits <= 4 * depth + 1, "depth={depth}, visits={visits}");
+        assert!(cost.bytes <= 1024 * depth + 4096, "{cost:?}");
+        assert_eq!(cost.bytes, cost.released_bytes);
+        eprintln!("shared aggregate hash depth={depth}, visits={visits}, scratch={cost:?}");
+    }
+}
+
+#[test]
+fn shared_record_dag_fingerprints_preserve_projection_context_without_expansion() {
+    let index = MembershipIndex::default();
+    for depth in [20, 1000, 2000, 4000] {
+        let value = (0..depth).fold(V::Bool(true), |child, _| {
+            V::Record(RecordValue::new(vec![
+                ("a".into(), child.clone()),
+                ("b".into(), child),
+            ]))
+        });
+        super::runtime::reset_visits();
+        let (_, cost) = measure(|| index.fingerprint(&value));
+        let visits = super::runtime::visits();
+        assert!(visits <= 8 * depth + 1, "depth={depth}, visits={visits}");
+        assert!(cost.bytes <= 2048 * depth + 4096, "{cost:?}");
+        assert_eq!(cost.bytes, cost.released_bytes);
+        eprintln!("shared record hash depth={depth}, visits={visits}, scratch={cost:?}");
+    }
+}
+
+#[test]
+fn aggregate_fingerprints_do_not_depend_on_physical_sharing_layout() {
+    fn node(family: usize, a: V, b: V) -> V {
+        match family {
+            0 => V::Tuple(vec![a, b].into()),
+            1 => V::Array(vec![a, b].into()),
+            2 => V::Stack(vec![a, b].into()),
+            3 => V::List(vec![a, b].into()),
+            4 => V::Deque(vec![a, b].into()),
+            5 => V::Queue(vec![a, b].into()),
+            6 => V::Record(RecordValue::new(vec![("a".into(), a), ("b".into(), b)])),
+            7 => V::Map(crate::value::MapValue::new(vec![
+                (V::i32(0), a),
+                (V::i32(1), b),
+            ])),
+            8 => V::Slice(crate::value::SliceValue::from(vec![a, b])),
+            9 => V::OrderedMap(
+                crate::value::OrderedMapValue::try_from_entries(vec![
+                    (V::i32(0), a),
+                    (V::i32(1), b),
+                ])
+                .unwrap(),
+            ),
+            10 => V::PriorityQueue(crate::value::PriorityQueueValue::from_entries(
+                vec![(V::i32(0), a), (V::i32(1), b)],
+                None,
+            )),
+            11 => V::Variant {
+                name: "Branch".into(),
+                fields: vec![a, b].into(),
+            },
+            _ => V::Nominal {
+                ty: etas_types::TypeId(19),
+                value: V::Tuple(vec![a, b].into()).into(),
+            },
+        }
+    }
+    fn graph(family: usize, depth: usize, shared: bool) -> V {
+        if depth == 0 {
+            return V::Bool(true);
+        }
+        let a = graph(family, depth - 1, shared);
+        let b = if shared {
+            a.clone()
+        } else {
+            graph(family, depth - 1, false)
+        };
+        node(family, a, b)
+    }
+    let index = MembershipIndex::default();
+    for family in 0..13 {
+        let shared = graph(family, 8, true);
+        let expanded = graph(family, 8, false);
+        assert!(shared == expanded, "family={family}");
+        assert_eq!(
+            index.fingerprint(&shared),
+            index.fingerprint(&expanded),
+            "family={family}"
+        );
+    }
+}
+
+#[test]
+fn hash_memo_retains_nominal_variant_and_slice_identity() {
+    let index = MembershipIndex::default();
+    let fields = crate::value::SharedFields::from(vec![V::Bool(true)]);
+    let value = V::Tuple(
+        vec![
+            V::Variant {
+                name: "A".into(),
+                fields: fields.clone(),
+            },
+            V::Variant {
+                name: "B".into(),
+                fields: fields.clone(),
+            },
+        ]
+        .into(),
+    );
+    let expanded = V::Tuple(
+        vec![
+            V::Variant {
+                name: "A".into(),
+                fields: vec![V::Bool(true)].into(),
+            },
+            V::Variant {
+                name: "B".into(),
+                fields: vec![V::Bool(true)].into(),
+            },
+        ]
+        .into(),
+    );
+    assert_eq!(index.fingerprint(&value), index.fingerprint(&expanded));
+    let payload: crate::value::SharedValue = V::Tuple(fields.clone()).into();
+    let value = V::Tuple(
+        vec![
+            V::Nominal {
+                ty: etas_types::TypeId(1),
+                value: payload.clone(),
+            },
+            V::Nominal {
+                ty: etas_types::TypeId(2),
+                value: payload,
+            },
+        ]
+        .into(),
+    );
+    let expanded = V::Tuple(
+        vec![
+            V::Nominal {
+                ty: etas_types::TypeId(1),
+                value: V::Tuple(vec![V::Bool(true)].into()).into(),
+            },
+            V::Nominal {
+                ty: etas_types::TypeId(2),
+                value: V::Tuple(vec![V::Bool(true)].into()).into(),
+            },
+        ]
+        .into(),
+    );
+    assert_eq!(index.fingerprint(&value), index.fingerprint(&expanded));
+    let a = V::Nominal {
+        ty: etas_types::TypeId(1),
+        value: V::Tuple(fields.clone()).into(),
+    };
+    let b = V::Nominal {
+        ty: etas_types::TypeId(2),
+        value: V::Tuple(fields).into(),
+    };
+    assert_ne!(index.fingerprint(&a), index.fingerprint(&b));
+    let array = crate::value::ArrayValue::new(vec![V::Bool(true), V::Bool(false)]);
+    let a = V::Slice(crate::value::SliceValue::from_array(array.clone(), 0..1).unwrap());
+    let b = V::Slice(crate::value::SliceValue::from_array(array, 1..2).unwrap());
+    assert_ne!(index.fingerprint(&a), index.fingerprint(&b));
+}
+
+#[test]
 fn hash_collisions_always_require_exact_membership_equality() {
     #[derive(PartialEq)]
     struct Collision(u32);

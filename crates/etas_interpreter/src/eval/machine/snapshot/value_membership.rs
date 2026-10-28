@@ -32,6 +32,7 @@ impl MembershipValue for ValueSnapshot {
 }
 
 impl StructuralPartition for ValueSnapshot {
+    type Identity = ();
     type Cursor<'a> = Cursor<'a>;
 
     fn start(&self, state: &mut impl Hasher) -> Option<Cursor<'_>> {

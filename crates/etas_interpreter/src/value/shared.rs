@@ -13,11 +13,21 @@ pub struct SharedValue(Rc<ValueNode>);
 #[derive(Clone, PartialEq, Eq)]
 struct ValueNode(InterpValue);
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 pub struct SharedFields(Rc<FieldsNode>);
 
-#[derive(Clone, Default, PartialEq, Eq)]
+#[derive(Clone, Default)]
 struct FieldsNode(Vec<InterpValue>);
+
+impl PartialEq for SharedFields {
+    fn eq(&self, other: &Self) -> bool {
+        super::comparison::value_equal(
+            &InterpValue::Tuple(self.clone()),
+            &InterpValue::Tuple(other.clone()),
+        )
+    }
+}
+impl Eq for SharedFields {}
 
 impl SharedValue {
     pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {

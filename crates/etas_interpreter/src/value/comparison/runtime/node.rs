@@ -1,4 +1,6 @@
+use super::context::Pair;
 use super::{Children, Context, Cursor, ordered::OrderedComparison, set_comparison, target};
+use crate::value::identity::ValueIdentity;
 use crate::value::{InterpValue as V, comparison::Comparison};
 
 pub(super) fn message_headers_equal(
@@ -20,14 +22,21 @@ pub(super) fn compare_node<'c>(
     context: &'c Context,
 ) -> Comparison<Cursor<'c>> {
     context.visit();
-    let children = loop {
-        match (a, b) {
+    loop {
+        let pair = ValueIdentity::of(a)
+            .zip(ValueIdentity::of(b))
+            .map(|(a, b)| Pair::Values(a, b));
+        if pair.as_ref().is_some_and(|pair| context.known(pair)) {
+            return Comparison::Ready(true);
+        }
+        let children = match (a, b) {
             (V::Nominal { ty: at, value: av }, V::Nominal { ty: bt, value: bv }) => {
                 if at != bt {
                     return Comparison::Ready(false);
                 }
                 a = av;
                 b = bv;
+                continue;
             }
             (
                 V::Trust {
@@ -44,10 +53,12 @@ pub(super) fn compare_node<'c>(
                 }
                 a = av;
                 b = bv;
+                continue;
             }
             (V::OptionSome(av), V::OptionSome(bv)) => {
                 a = av;
                 b = bv;
+                continue;
             }
             (V::Message(av), V::Message(bv)) => {
                 if !message_headers_equal(av, bv) {
@@ -55,6 +66,7 @@ pub(super) fn compare_node<'c>(
                 }
                 a = &av.payload;
                 b = &bv.payload;
+                continue;
             }
             (V::Conversation(av), V::Conversation(bv)) => {
                 if av.session != bv.session
@@ -68,13 +80,13 @@ pub(super) fn compare_node<'c>(
                 if std::ptr::eq(av.messages.as_ptr(), bv.messages.as_ptr()) {
                     return Comparison::Ready(true);
                 }
-                break Children::Messages(av.messages.clone(), bv.messages.clone());
+                Children::Messages(av.messages.clone(), bv.messages.clone())
             }
             (V::Tuple(av), V::Tuple(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Fields(av.clone(), bv.clone());
+                Children::Fields(av.clone(), bv.clone())
             }
             (
                 V::Variant {
@@ -89,69 +101,69 @@ pub(super) fn compare_node<'c>(
                 if an != bn || av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Fields(av.clone(), bv.clone());
+                Children::Fields(av.clone(), bv.clone())
             }
             (V::Array(av), V::Array(bv)) | (V::Stack(av), V::Stack(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Array(av.clone(), bv.clone());
+                Children::Array(av.clone(), bv.clone())
             }
             (V::Slice(av), V::Slice(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Slice(av.clone(), bv.clone());
+                Children::Slice(av.clone(), bv.clone())
             }
             (V::Deque(av), V::Deque(bv)) | (V::Queue(av), V::Queue(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Deque(av.clone(), bv.clone());
+                Children::Deque(av.clone(), bv.clone())
             }
             (V::List(av), V::List(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::List(av.clone(), bv.clone());
+                Children::List(av.clone(), bv.clone())
             }
             (V::PriorityQueue(av), V::PriorityQueue(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::PriorityQueue {
+                Children::PriorityQueue {
                     a: av.clone(),
                     b: bv.clone(),
                     a_slot: 0,
                     b_slot: 0,
-                };
+                }
             }
             (V::Map(av), V::Map(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Map(av.clone(), bv.clone());
+                Children::Map(av.clone(), bv.clone())
             }
             (V::OrderedMap(av), V::OrderedMap(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Ordered(Box::new(OrderedComparison::map(av, bv)));
+                Children::Ordered(Box::new(OrderedComparison::map(av, bv)))
             }
             (V::Record(av), V::Record(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Record(av.clone(), bv.clone());
+                Children::Record(av.clone(), bv.clone())
             }
             (V::Set(av), V::Set(bv)) => {
-                return set_comparison(av, bv, context);
+                return context.memoized_result(pair, set_comparison(av, bv, context));
             }
             (V::OrderedSet(av), V::OrderedSet(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::Ordered(Box::new(OrderedComparison::set(av, bv)));
+                Children::Ordered(Box::new(OrderedComparison::set(av, bv)))
             }
             (V::Callable(a), V::Callable(b)) => return target::target(a, b, context),
             (
@@ -181,15 +193,19 @@ pub(super) fn compare_node<'c>(
                     (Some(av), Some(bv)) => {
                         a = av;
                         b = bv;
+                        continue;
                     }
                     (None, None) => return Comparison::Ready(true),
                     _ => return Comparison::Ready(false),
                 }
             }
             _ => return Comparison::Ready(leaf_equal(a, b)),
-        }
-    };
-    context.pending(children)
+        };
+        return match pair {
+            Some(pair) => context.memoized(pair, || Some(children)),
+            None => context.pending(children),
+        };
+    }
 }
 
 fn leaf_equal(a: &V, b: &V) -> bool {

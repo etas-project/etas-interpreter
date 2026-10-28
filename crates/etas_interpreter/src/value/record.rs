@@ -32,6 +32,14 @@ struct RecordData {
     layout: OnceCell<Arc<RecordLayout>>,
 }
 
+impl Drop for RecordData {
+    fn drop(&mut self) {
+        for (_, value) in std::mem::take(&mut self.fields) {
+            super::release_value(value);
+        }
+    }
+}
+
 impl RecordData {
     fn layout(&self) -> &RecordLayout {
         self.layout
@@ -55,7 +63,9 @@ impl RecordValue {
     }
 
     pub(super) fn into_unique_values(self) -> Option<Vec<(String, InterpValue)>> {
-        Rc::try_unwrap(self.0).ok().map(|data| data.fields)
+        Rc::try_unwrap(self.0)
+            .ok()
+            .map(|mut data| std::mem::take(&mut data.fields))
     }
 
     pub fn new(fields: Vec<(String, InterpValue)>) -> Self {
@@ -133,7 +143,7 @@ impl RecordValue {
 
     pub fn into_values(self) -> Vec<(String, InterpValue)> {
         match Rc::try_unwrap(self.0) {
-            Ok(data) => data.fields,
+            Ok(mut data) => std::mem::take(&mut data.fields),
             Err(shared) => shared.fields.clone(),
         }
     }
@@ -153,7 +163,10 @@ impl fmt::Debug for RecordValue {
 
 impl PartialEq for RecordValue {
     fn eq(&self, other: &Self) -> bool {
-        *self.borrow() == *other.borrow()
+        super::comparison::value_equal(
+            &InterpValue::Record(self.clone()),
+            &InterpValue::Record(other.clone()),
+        )
     }
 }
 
@@ -164,3 +177,6 @@ impl From<Vec<(String, InterpValue)>> for RecordValue {
         Self::new(fields)
     }
 }
+
+#[cfg(test)]
+mod tests;

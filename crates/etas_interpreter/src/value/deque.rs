@@ -63,7 +63,10 @@ impl From<Vec<InterpValue>> for DequeValue {
 
 impl PartialEq for DequeValue {
     fn eq(&self, other: &Self) -> bool {
-        self.borrow() == other.borrow()
+        super::comparison::value_equal(
+            &InterpValue::Deque(self.clone()),
+            &InterpValue::Deque(other.clone()),
+        )
     }
 }
 
