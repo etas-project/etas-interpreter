@@ -48,6 +48,7 @@ async fn nominal_record_equality_by_field_name_preserves_effect_order_and_checkp
 module app.main;
 import std.io.println;
 import std.runtime.checkpoint;
+import std.collections.contains_key;
 type Row = { status: i32, state: i32 }
 flow field(label: string, value: i32) -> i32 { println(label); return value; }
 flow main() -> bool {
@@ -58,7 +59,8 @@ flow main() -> bool {
     checkpoint("records");
     var count = 0;
     for key in keys limit Iterations(4) { count = count + 1; }
-    return left == right && count == 1 && map.contains_key(right) && map.get(right) == Some("kept");
+    return left == right && count == 1 && map.contains_key(right) && contains_key(map, right)
+        && map.get(right) == Some("kept");
 }
 "#,
     );
