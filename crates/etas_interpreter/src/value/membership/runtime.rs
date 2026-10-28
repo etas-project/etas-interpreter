@@ -241,6 +241,6 @@ impl StructuralPartition for InterpValue {
     }
 
     fn unordered(cursor: &Cursor) -> bool {
-        matches!(cursor.storage, Storage::Set(_))
+        matches!(cursor.storage, Storage::Set(_) | Storage::Record(_))
     }
 }

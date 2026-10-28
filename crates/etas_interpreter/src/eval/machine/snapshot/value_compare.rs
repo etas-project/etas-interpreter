@@ -44,29 +44,69 @@ impl<'a> Pending<'a> {
 }
 
 fn equal(root: Comparison<'_>) -> bool {
-    let mut pending = Pending(Vec::new());
-    let mut next = Some(root);
-    let mut seen = Seen::default();
-    while let Some(pair) = next.take().or_else(|| pending.0.pop()) {
-        let same = match pair {
-            Comparison::Value(a, b) => same_node(a, b, &mut pending),
-            Comparison::Target(a, b) => callables::target(a, b, &mut pending, &mut next, &mut seen),
-            Comparison::Frame(a, b) => callables::frame(a, b, &mut pending, &mut seen),
-            Comparison::Targets(mut pairs) => {
-                if let Some((a, b)) = pairs.next() {
-                    if pairs.len() > 0 {
-                        pending.0.push(Comparison::Targets(pairs));
-                    }
-                    next = Some(Comparison::Target(a, b));
-                }
-                true
-            }
-        };
-        if !same {
-            return false;
+    let mut pairs = ReferencePairs {
+        pending: Pending(Vec::new()),
+        next: Some(root),
+        seen: Seen::default(),
+        compare_frame_ids: true,
+    };
+    loop {
+        match pairs.next_values() {
+            Ok(Some((a, b))) if same_node(a, b, &mut pairs.pending) => {}
+            Ok(None) => return true,
+            _ => return false,
         }
     }
-    true
+}
+
+struct ReferencePairs<'a> {
+    pending: Pending<'a>,
+    next: Option<Comparison<'a>>,
+    seen: Seen,
+    compare_frame_ids: bool,
+}
+
+impl<'a> ReferencePairs<'a> {
+    fn from_pending(pending: Pending<'a>) -> Self {
+        Self {
+            pending,
+            next: None,
+            seen: Seen::default(),
+            // Frame IDs name artifact definitions, not captured language values.
+            compare_frame_ids: false,
+        }
+    }
+
+    fn next_values(&mut self) -> Result<Option<(&'a ValueSnapshot, &'a ValueSnapshot)>, ()> {
+        while let Some(pair) = self.next.take().or_else(|| self.pending.0.pop()) {
+            let same = match pair {
+                Comparison::Value(a, b) => return Ok(Some((a, b))),
+                Comparison::Target(a, b) => {
+                    callables::target(a, b, &mut self.pending, &mut self.next, &mut self.seen)
+                }
+                Comparison::Frame(a, b) => callables::frame(
+                    a,
+                    b,
+                    &mut self.pending,
+                    &mut self.seen,
+                    self.compare_frame_ids,
+                ),
+                Comparison::Targets(mut pairs) => {
+                    if let Some((a, b)) = pairs.next() {
+                        if pairs.len() > 0 {
+                            self.pending.0.push(Comparison::Targets(pairs));
+                        }
+                        self.next = Some(Comparison::Target(a, b));
+                    }
+                    true
+                }
+            };
+            if !same {
+                return Err(());
+            }
+        }
+        Ok(None)
+    }
 }
 
 pub(crate) fn equal_targets(

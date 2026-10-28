@@ -158,6 +158,6 @@ impl StructuralPartition for ValueSnapshot {
     }
 
     fn unordered(cursor: &Cursor<'_>) -> bool {
-        matches!(cursor.storage, Storage::Set(_))
+        matches!(cursor.storage, Storage::Set(_) | Storage::Record(_))
     }
 }

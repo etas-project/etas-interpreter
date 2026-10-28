@@ -36,8 +36,8 @@ struct Frame<C, H> {
     context: *const (),
 }
 
-/// Bottom-up keyed fingerprints with a heap traversal stack. Set child hashes
-/// combine commutatively; ordered aggregates retain position and field labels.
+/// Bottom-up keyed fingerprints with a heap traversal stack. Set members and
+/// labeled record fields combine commutatively; sequences retain position.
 /// Fingerprints are only partitions: callers must still compare exact values.
 pub(crate) fn hash_structure<V: StructuralPartition, H: Hasher + Clone>(value: &V, state: &mut H) {
     let seed = state.clone();

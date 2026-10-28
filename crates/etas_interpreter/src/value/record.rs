@@ -17,12 +17,20 @@ impl RecordLayout {
         }
     }
 
-    fn from_values(fields: &[(String, InterpValue)]) -> Self {
+    pub(crate) fn from_fields<T>(fields: &[(String, T)]) -> Self {
         let mut slots: Vec<_> = (0..fields.len()).collect();
         slots.sort_unstable_by(|a, b| fields[*a].0.cmp(&fields[*b].0).then(a.cmp(b)));
         Self {
             sorted_to_storage: slots.into_boxed_slice(),
         }
+    }
+
+    pub(crate) fn field_at<'a, T>(
+        &self,
+        fields: &'a [(String, T)],
+        slot: usize,
+    ) -> Option<&'a (String, T)> {
+        fields.get(*self.sorted_to_storage.get(slot)?)
     }
 }
 
@@ -43,7 +51,7 @@ impl Drop for RecordData {
 impl RecordData {
     fn layout(&self) -> &RecordLayout {
         self.layout
-            .get_or_init(|| Arc::new(RecordLayout::from_values(&self.fields)))
+            .get_or_init(|| Arc::new(RecordLayout::from_fields(&self.fields)))
     }
 
     fn field_storage(&self, field: &str) -> Option<usize> {
@@ -193,3 +201,6 @@ impl From<Vec<(String, InterpValue)>> for RecordValue {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod equality_tests;
