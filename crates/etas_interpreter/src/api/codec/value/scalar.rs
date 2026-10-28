@@ -13,6 +13,7 @@ pub(super) enum ScalarValue {
     Bytes(BytesValue),
     Json(HostJsonSupportValue),
     Prompt(PromptValue),
+    Schema(TypeId),
     Provenance(ProvenanceValue),
     ModelResponse(ModelResponseValue),
     Command {
@@ -51,6 +52,9 @@ pub(super) fn decode(
     value: &Value,
 ) -> Result<ScalarValue, InterpreterCodecError> {
     match required_str(value, "kind")? {
+        "syntax_block" => Err(InterpreterCodecError::new(
+            "structured syntax must be parsed from source; a runtime rendering is not a restorable syntax object",
+        )),
         "unit" => Ok(ScalarValue::Unit),
         "bool" => Ok(ScalarValue::Bool(required_bool(value, "value")?)),
         "number" => Ok(ScalarValue::Number(numeric_value_from_json(value)?)),
@@ -61,6 +65,7 @@ pub(super) fn decode(
         "json" => Ok(ScalarValue::Json(host_json_support_value_from_json(
             required_obj(value, "value")?,
         )?)),
+        "type_schema" => Ok(ScalarValue::Schema(TypeId(required_u32(value, "ty")?))),
         "prompt" => Ok(ScalarValue::Prompt(
             required_array(value, "messages")?
                 .iter()
@@ -182,6 +187,7 @@ impl From<ScalarValue> for InterpValue {
             ScalarValue::Bytes(value) => Self::Bytes(value),
             ScalarValue::Json(value) => Self::Json(value),
             ScalarValue::Prompt(value) => Self::Prompt(value),
+            ScalarValue::Schema(ty) => Self::Schema(ty),
             ScalarValue::Provenance(value) => Self::Provenance(value),
             ScalarValue::ModelResponse(value) => Self::ModelResponse(value),
             ScalarValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value),
@@ -247,6 +253,7 @@ impl From<ScalarValue> for crate::orchestration::ValueSnapshot {
             ScalarValue::Bytes(value) => Self::Bytes(value),
             ScalarValue::Json(value) => Self::Json(value),
             ScalarValue::Prompt(value) => Self::Prompt(value),
+            ScalarValue::Schema(ty) => Self::Schema(ty),
             ScalarValue::Provenance(value) => Self::Provenance(value),
             ScalarValue::ModelResponse(value) => Self::ModelResponse(value),
             ScalarValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value),

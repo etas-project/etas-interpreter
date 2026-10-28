@@ -5,6 +5,7 @@ fn deep_continuation(depth: usize) -> ContinuationSnapshot {
     let mut continuation = ContinuationSnapshot::Return;
     for _ in 0..depth {
         continuation = ContinuationSnapshot::CallBoundary {
+            span: crate::testing::synthetic_span(),
             outer: continuation.into(),
         };
     }
@@ -14,6 +15,8 @@ fn deep_continuation(depth: usize) -> ContinuationSnapshot {
 #[test]
 fn machine_encoding_budget_is_shared_across_frames_and_releases_completed_frames() {
     let machine = MachineSnapshot {
+        program_owners: Default::default(),
+        suspended_programs: Vec::new(),
         frames: vec![
             MachineFrameSnapshot::Continuation {
                 continuation: deep_continuation(30_000),

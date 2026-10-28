@@ -59,6 +59,15 @@ impl EvalMachine {
         }
 
         for index in (0..self.frames().len()).rev() {
+            if matches!(
+                self.frames()[index],
+                super::frame::EvalFrame::ProgramReturn(_)
+            ) {
+                return Some(ControlSignal::missing_checked_fact(
+                    "cross-revision retry requires a checked continuation transition",
+                    span,
+                ));
+            }
             let Some(continuation) = self.frames()[index].retry_continuation() else {
                 continue;
             };

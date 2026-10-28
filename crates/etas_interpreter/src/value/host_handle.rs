@@ -57,6 +57,13 @@ impl HostHandleValue {
         self.nominal_type
     }
 
+    // The revision bridge has already proved the nominal type correspondence.
+    // Preserve the sealed capability; only its program-local type tag changes.
+    pub(crate) fn into_revision_type(mut self, ty: etas_types::TypeId) -> Self {
+        self.nominal_type = ty;
+        self
+    }
+
     pub(crate) fn kind(&self) -> HostHandleKind {
         match self.payload {
             HostHandlePayload::TcpStream(_) => HostHandleKind::TcpStream,

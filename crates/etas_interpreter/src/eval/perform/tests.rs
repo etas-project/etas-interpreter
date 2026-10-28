@@ -26,8 +26,10 @@ fn perform_suspension_does_not_copy_named_argument_descriptors() {
             .find_map(|(id, value)| matches!(value, HirExpr::Perform { .. }).then_some(id))
             .unwrap();
         let options = RunOptions::default();
-        let mut eval = EvalContext::new(EvalContextInput {
+        let (program, mut run_state) = EvalContextInput {
             storage_limits: Default::default(),
+            code_definitions: None,
+            syntax_limits: Default::default(),
             event_observer: None,
             execution: etas_host::execution::ExecutionScope::new_owned(),
             checked: &checked,
@@ -39,7 +41,9 @@ fn perform_suspension_does_not_copy_named_argument_descriptors() {
             current_session: None,
             entry_item: checked.entry.unwrap(),
             entry_args: &[],
-        });
+        }
+        .into_parts();
+        let mut eval = EvalContext::new(program, &mut run_state);
         let mut frame = Frame::new(plan.slots.clone());
         let (signal, cost) = measure(|| eval.eval_expr_frame(expr, &mut frame));
         eprintln!("perform entry n={count}: {cost:?}");
@@ -92,6 +96,8 @@ fn perform_suspension_does_not_copy_named_argument_descriptors() {
             &limits,
         );
         let machine = |continuation| crate::orchestration::MachineSnapshot {
+            program_owners: Default::default(),
+            suspended_programs: Vec::new(),
             frames: vec![crate::orchestration::MachineFrameSnapshot::Continuation { continuation }],
         };
         validator.validate_machine(&machine(alias.clone())).unwrap();
@@ -162,5 +168,111 @@ fn perform_args(value: &Continuation) -> Option<&Continuation> {
         Continuation::PerformArgs { .. } => Some(value),
         Continuation::Chain { inner, outer } => perform_args(inner).or_else(|| perform_args(outer)),
         _ => None,
+    }
+}
+
+#[test]
+fn abortive_errors_restore_model_policy_but_resumable_actions_keep_the_scope() {
+    let checked = crate::testing::project::checked_project(
+        "module app.main; effect Probe { action query() -> i32; } flow probe() -> i32 ![Probe.query] { return perform Probe.query(); } flow main() -> unit ![Error<i32>] { perform Error<i32>.raise(7); }",
+    );
+    let plan = crate::Interpreter
+        .plan(&checked, crate::api::PlanOptions)
+        .plan
+        .unwrap();
+    let (expr, action, error_type, span) = checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(expr, node)| {
+            let HirExpr::Perform { action, span, .. } = node else {
+                return None;
+            };
+            if action.action != "raise" {
+                return None;
+            }
+            let error = checked.effects.performed_actions[&expr]
+                .summary
+                .escaping_effects
+                .effects
+                .iter()
+                .find_map(|effect| match effect {
+                    etas_effects::Effect::Error(ty) => Some(*ty),
+                    _ => None,
+                })?;
+            Some((expr, action.clone(), error, *span))
+        })
+        .unwrap();
+    let (probe_expr, probe, probe_span) = checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(expr, node)| match node {
+            HirExpr::Perform { action, span, .. } if action.action == "query" => {
+                Some((expr, action.clone(), *span))
+            }
+            _ => None,
+        })
+        .unwrap();
+    for abortive in [true, false] {
+        let options = RunOptions::default();
+        let mut previous = options.model_policy.clone();
+        previous.model = etas_host::ModelName("previous".into());
+        let mut active = options.model_policy;
+        active.model = etas_host::ModelName("active".into());
+        let (program, mut run_state) = EvalContextInput {
+            storage_limits: Default::default(),
+            code_definitions: None,
+            syntax_limits: Default::default(),
+            event_observer: None,
+            execution: etas_host::execution::ExecutionScope::new_owned(),
+            checked: &checked,
+            plan: &plan,
+            host_context: options.host_context,
+            model_policy: active.clone(),
+            execution_limits: options.execution_limits,
+            consumed_steps: 0,
+            current_session: None,
+            entry_item: checked.entry.unwrap(),
+            entry_args: &[],
+        }
+        .into_parts();
+        let mut eval = EvalContext::new(program, &mut run_state);
+        let signal = eval.propagate_perform_signal(PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            expr: Some(if abortive { expr } else { probe_expr }),
+            action: if abortive {
+                action.clone()
+            } else {
+                probe.clone()
+            },
+            error_type: abortive.then_some(error_type),
+            inference: None,
+            args: if abortive {
+                vec![InterpValue::i32(7)]
+            } else {
+                vec![]
+            },
+            span: if abortive { span } else { probe_span },
+            continuation: Continuation::RestoreModelPolicy {
+                previous: Box::new(previous.clone()),
+                inner: Continuation::Return.into(),
+            },
+        });
+        let ControlSignal::Perform(pending) = signal else {
+            panic!("pending action")
+        };
+        if abortive {
+            assert_eq!(eval.model_policy, previous);
+            assert!(matches!(pending.continuation, Continuation::Return));
+        } else {
+            assert_eq!(eval.model_policy, active);
+            assert!(matches!(
+                pending.continuation,
+                Continuation::RestoreModelPolicy { .. }
+            ));
+        }
     }
 }

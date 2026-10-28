@@ -14,6 +14,25 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     pending: &mut Pending<'a>,
 ) {
     match continuation {
+        Continuation::ProgramResume { id } => object! { slot, pending;
+            "kind": json!("program_resume"), "id": json!(id),
+        },
+        Continuation::StreamReadReduction {
+            call,
+            args,
+            limit,
+            deadline_unix_ms,
+            body,
+            span,
+        } => object! { slot, pending;
+            "kind": json!("stream_read_reduction"),
+            "call": Node::CallTarget(call),
+            "args": Node::Values(args),
+            "limit": json!(limit),
+            "deadline_unix_ms": json!(deadline_unix_ms),
+            "body": Node::Value(body),
+            "span": json!(span_snapshot(*span)),
+        },
         Continuation::ContinueBlock {
             block,
             next_stmt_index,
@@ -209,12 +228,18 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
-        Continuation::IndexValue { expr, base, span } => {
+        Continuation::IndexValue {
+            expr,
+            base,
+            span,
+            frame,
+        } => {
             object! { slot, pending;
             "kind": json!("index_value"),
                 "expr": json!(expr.0),
                 "base": Node::Value(base),
                 "span": json!(span_snapshot(*span)),
+                "frame": Node::Frame(frame),
             }
         }
         Continuation::SliceBase { eval, frame } => {
@@ -232,12 +257,18 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "frame": Node::Frame(frame),
             }
         }
-        Continuation::SliceEnd { eval, base, start } => {
+        Continuation::SliceEnd {
+            eval,
+            base,
+            start,
+            frame,
+        } => {
             object! { slot, pending;
             "kind": json!("slice_end"),
                 "eval": json!(slice_eval_snapshot(eval)),
                 "base": Node::Value(base),
                 "start": Node::Value(start),
+                "frame": Node::Frame(frame),
             }
         }
         Continuation::MethodReceiver {
@@ -334,31 +365,36 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
-        Continuation::CalleeEval { args, span, frame } => {
+        Continuation::CalleeEval {
+            call,
+            args,
+            span,
+            frame,
+        } => {
             object! { slot, pending;
             "kind": json!("callee_eval"),
+                "call": json!(call.0),
                 "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
                 "span": json!(span_snapshot(*span)),
                 "frame": Node::Frame(frame),
             }
         }
         Continuation::PipelineStageTarget {
-            stages,
+            expr,
             next_stage_index,
             targets,
-            current_limits,
             span,
             frame,
         } => object! { slot, pending;
             "kind": json!("pipeline_stage_target"),
-            "stages": json!(stages.iter().map(stage_snapshot).collect::<Vec<_>>()),
+            "expr": json!(expr.0),
             "next_stage_index": json!(next_stage_index),
             "targets": Node::CallTargets(targets),
-            "current_limits": json!(current_limits.iter().map(runtime_limit_snapshot).collect::<Vec<_>>()),
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
         Continuation::CallArgs {
+            call,
             target,
             args,
             next_arg_index,
@@ -367,6 +403,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             frame,
         } => object! { slot, pending;
             "kind": json!("call_args"),
+            "call": json!(call.0),
             "target": Node::CallTarget(target),
             "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
             "next_arg_index": json!(next_arg_index),
@@ -524,27 +561,35 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
-        Continuation::PipelineInput {
-            stages,
-            span,
-            frame,
-        } => object! { slot, pending;
+        Continuation::PipelineInput { expr, span, frame } => object! { slot, pending;
             "kind": json!("pipeline_input"),
-            "stages": json!(stages.iter().map(stage_snapshot).collect::<Vec<_>>()),
+            "expr": json!(expr.0),
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
-        Continuation::PipelineTarget { input, span } => {
+        Continuation::PipelineTarget {
+            expr,
+            input,
+            span,
+            frame,
+        } => {
             object! { slot, pending;
             "kind": json!("pipeline_target"),
+                "expr": json!(expr.0),
                 "input": Node::Value(input),
                 "span": json!(span_snapshot(*span)),
+                "frame": Node::Frame(frame),
             }
         }
-        Continuation::ComposedCall { remaining, span } => {
+        Continuation::ComposedCall {
+            remaining,
+            span,
+            site,
+        } => {
             object! { slot, pending;
             "kind": json!("composed_call"),
                 "remaining": Node::CallTargets(remaining),
+                "site": Node::CallSite(site.as_ref()),
                 "span": json!(span_snapshot(*span)),
             }
         }
@@ -667,15 +712,15 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "outer": Node::Continuation(outer),
             }
         }
-        Continuation::AgentPromptBody {
-            item,
+        Continuation::AgentInference {
+            expr,
             span,
             model_policy,
         } => object! { slot, pending;
-            "kind": json!("agent_prompt_body"),
-            "item": json!(item.0),
+            "kind": json!("agent_inference"),
+            "expr": json!(expr.0),
             "span": json!(span_snapshot(*span)),
-            "model_policy": json!(model_policy.as_ref().map(|policy| model_policy_snapshot(policy))),
+            "model_policy": json!(model_policy_snapshot(model_policy)),
         },
         Continuation::ScopedModelPolicy { policy, inner } => {
             object! { slot, pending;
@@ -684,9 +729,10 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "inner": Node::Continuation(inner),
             }
         }
-        Continuation::CallBoundary { outer } => {
+        Continuation::CallBoundary { span, outer } => {
             object! { slot, pending;
             "kind": json!("call_boundary"),
+                "span": json!(span_snapshot(*span)),
                 "outer": Node::Continuation(outer),
             }
         }

@@ -11,7 +11,7 @@ impl<'a> EvalContext<'a> {
         };
         matches!(
             self.checked.symbols.get(symbol)?.def,
-            SymbolDef::EnumVariant { .. }
+            SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. }
         )
         .then_some(symbol)
     }
@@ -68,29 +68,15 @@ impl<'a> EvalContext<'a> {
                 "enum variant symbol is missing from checked symbol table",
             ));
         };
-        let SymbolDef::EnumVariant {
-            enum_item,
-            variant_index,
-        } = symbol_data.def
+        let Some((_, _, variant)) = self
+            .checked
+            .types
+            .enum_constructor(&self.checked.type_store, symbol_data)
         else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
-                "enum variant constructor does not point at a variant definition",
-            ));
-        };
-        let Some(HirItem::Enum(enum_decl)) = self.checked.hir.items.get(enum_item) else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "enum variant constructor target item is missing",
-            ));
-        };
-        let Some(variant) = enum_decl.variants.get(variant_index as usize) else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "enum variant constructor index is out of bounds",
+                "enum variant constructor has no checked layout",
             ));
         };
         let expected_arity = variant.fields.len();

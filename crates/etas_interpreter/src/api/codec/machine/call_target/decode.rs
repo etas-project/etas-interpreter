@@ -42,6 +42,7 @@ fn decode_many<T: TargetValue>(
 }
 
 enum PendingParent<'a, T: TargetValue> {
+    Scoped(Box<crate::orchestration::ScopedCallableMetadata>),
     Specialized(&'a Value),
     Limited(&'a Value),
     Composed {
@@ -65,6 +66,20 @@ fn decode<T: TargetValue>(
     loop {
         let kind = required_str(current, "kind")?;
         let mut value = match kind {
+            "scoped_callable" => {
+                let raw = required(current, "metadata")?;
+                super::revision::bounded_json(limits, raw)?;
+                let metadata = serde_json::from_value(raw.clone()).map_err(|error| {
+                    format!("invalid checkpoint scoped callable metadata: {error}")
+                })?;
+                pending.push(PendingParent::Scoped(metadata));
+                current = required(current, "target")?;
+                continue;
+            }
+            "agent_revision" => {
+                let reference = super::revision::decode(limits, required(current, "reference")?)?;
+                T::agent_reference(reference)?
+            }
             "specialized" | "limited" => {
                 let child = required(current, "target")?;
                 pending.push(if kind == "specialized" {
@@ -91,6 +106,10 @@ fn decode<T: TargetValue>(
         };
         loop {
             let target = match pending.pop() {
+                Some(PendingParent::Scoped(metadata)) => {
+                    value = T::scoped(metadata, value)?;
+                    continue;
+                }
                 Some(PendingParent::Specialized(parent)) => {
                     let type_bindings = required(parent, "type_bindings")?
                         .as_array()
@@ -108,6 +127,9 @@ fn decode<T: TargetValue>(
                     DecodedTarget::Specialized {
                         target: value,
                         type_bindings,
+                        effect_row_bindings: super::super::frame::effect_rows_from_snapshot(
+                            parent,
+                        )?,
                     }
                 }
                 Some(PendingParent::Limited(parent)) => {
@@ -177,6 +199,8 @@ fn decode_leaf<T: TargetValue>(
             result_type: etas_types::TypeId(required_u32(value, "result_type")?),
         },
         "std_intrinsic" => DecodedTarget::StdIntrinsic {
+            origin: HirExprId(required_u32(value, "origin")?),
+            substitutions: substitutions(limits, required(value, "substitutions")?)?,
             intrinsic: etas_std::StdIntrinsicId(required_u32(value, "intrinsic")?),
             dispatch: intrinsic_dispatch_from_name(required_str(value, "dispatch")?)?,
             parameter_types: required(value, "parameter_types")?
@@ -197,4 +221,49 @@ fn decode_leaf<T: TargetValue>(
         },
         other => return Err(format!("unknown machine call target `{other}`")),
     })
+}
+
+fn substitutions(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<Vec<Vec<(String, etas_types::TypeId)>>, String> {
+    let steps = value
+        .as_array()
+        .ok_or("intrinsic substitutions must be an array")?;
+    let mut nodes = steps.len();
+    let mut bytes = 0usize;
+    if nodes > limits.max_nodes {
+        return Err("intrinsic substitutions exceed node budget".into());
+    }
+    let mut output = Vec::with_capacity(steps.len());
+    for step in steps {
+        let step = step
+            .as_array()
+            .ok_or("intrinsic substitution bindings must be an array")?;
+        nodes = nodes
+            .checked_add(step.len())
+            .ok_or("intrinsic substitutions exceed node budget")?;
+        if step.is_empty() || nodes > limits.max_nodes {
+            return Err("intrinsic substitution is empty or exceeds node budget".into());
+        }
+        let mut names = std::collections::HashSet::new();
+        let mut bindings = Vec::with_capacity(step.len());
+        for binding in step {
+            let name = required_str(binding, "name")?;
+            bytes = bytes
+                .checked_add(name.len())
+                .ok_or("intrinsic substitutions exceed byte budget")?;
+            if name.is_empty() || !names.insert(name) || bytes > limits.max_value_bytes {
+                return Err(
+                    "intrinsic substitution has invalid names or exceeds byte budget".into(),
+                );
+            }
+            bindings.push((
+                name.to_owned(),
+                etas_types::TypeId(required_u32(binding, "type")?),
+            ));
+        }
+        output.push(bindings);
+    }
+    Ok(output)
 }

@@ -307,6 +307,7 @@ mod tests {
         let mut store = TypeStore::new();
         let i64_ty = store.intern(Type::Primitive(PrimitiveType::I64));
         let parameter = store.intern(Type::Named(etas_types::NamedTypeRef {
+            source_parameter: None,
             name: "T".to_owned(),
         }));
         let representation = store.intern(Type::Record(RecordType {

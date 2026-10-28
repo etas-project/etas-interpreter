@@ -44,7 +44,9 @@ impl PreparedExecution {
         let host = FakeHost::new(Default::default());
         let options = RunOptions::default();
         let execution = etas_host::execution::ExecutionScope::new_owned();
-        let mut eval = EvalContext::new(EvalContextInput {
+        let (program, mut run_state) = EvalContextInput {
+            code_definitions: options.code_definitions.clone(),
+            syntax_limits: options.syntax_limits,
             checked: &self.checked,
             plan: &self.plan,
             storage_limits: options.storage_limits,
@@ -57,7 +59,9 @@ impl PreparedExecution {
             current_session: None,
             entry_item: self.checked.entry.unwrap(),
             entry_args: args,
-        });
+        }
+        .into_parts();
+        let mut eval = EvalContext::new(program, &mut run_state);
         let ((outcome, elapsed), cost) = measure(|| {
             let start = Instant::now();
             let signal = eval.execute_entry_signal(self.checked.entry.unwrap());

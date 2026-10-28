@@ -15,7 +15,7 @@ pub struct Frame {
     layout: Arc<SlotLayoutTable>,
     slots: Rc<RefCell<SlotStorage>>,
     restored: Option<Rc<RefCell<HashMap<SymbolId, InterpValue>>>>,
-    type_bindings: Arc<HashMap<String, etas_types::TypeId>>,
+    type_bindings: Arc<super::GenericBindings>,
 }
 
 #[derive(Debug)]
@@ -46,12 +46,12 @@ impl Eq for Frame {}
 
 impl Frame {
     pub fn new(layout: Arc<SlotLayoutTable>) -> Self {
-        Self::with_shared_type_bindings(layout, Arc::new(HashMap::new()))
+        Self::with_shared_type_bindings(layout, super::GenericBindings::new().shared())
     }
 
     fn with_shared_type_bindings(
         layout: Arc<SlotLayoutTable>,
-        type_bindings: Arc<HashMap<String, etas_types::TypeId>>,
+        type_bindings: Arc<super::GenericBindings>,
     ) -> Self {
         let slot_count = layout.slot_count();
         Self {
@@ -71,7 +71,24 @@ impl Frame {
         layout: Arc<SlotLayoutTable>,
         type_bindings: HashMap<String, etas_types::TypeId>,
     ) -> Self {
-        Self::with_shared_type_bindings(layout, Arc::new(type_bindings))
+        Self::with_shared_type_bindings(
+            layout,
+            type_bindings
+                .into_iter()
+                .collect::<super::GenericBindings>()
+                .shared(),
+        )
+    }
+
+    pub(crate) fn with_generic_bindings(
+        layout: Arc<SlotLayoutTable>,
+        bindings: super::GenericBindings,
+    ) -> Self {
+        Self::with_shared_type_bindings(layout, bindings.shared())
+    }
+
+    pub(crate) fn generic_bindings(&self) -> &super::GenericBindings {
+        &self.type_bindings
     }
 
     pub(crate) fn capture(
@@ -113,16 +130,16 @@ impl Frame {
                 scope_symbols: None,
             })),
             restored: Some(Rc::new(RefCell::new(restored))),
-            type_bindings: Arc::new(HashMap::new()),
+            type_bindings: super::GenericBindings::new().shared(),
         })
     }
 
-    pub(crate) fn from_snapshot_with_type_bindings(
+    pub(crate) fn from_snapshot_with_generic_bindings(
         locals: Vec<(SymbolId, InterpValue)>,
-        type_bindings: HashMap<String, etas_types::TypeId>,
+        bindings: super::GenericBindings,
     ) -> Result<Self, String> {
         let mut frame = Self::from_snapshot(locals)?;
-        frame.type_bindings = Arc::new(type_bindings);
+        frame.type_bindings = bindings.shared();
         Ok(frame)
     }
 

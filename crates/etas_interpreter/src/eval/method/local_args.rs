@@ -16,7 +16,13 @@ impl<'a> EvalContext<'a> {
             mut evaluated_args,
             span,
         } = state;
-        let Some(expected) = local_value_method_expected_arg_count(&receiver, &method) else {
+        let expected = self
+            .plan
+            .dispatch
+            .std_method(expr)
+            .map(|call| call.parameter_types.len() - 1)
+            .or_else(|| local_value_method_expected_arg_count(&receiver, &method));
+        let Some(expected) = expected else {
             return unsupported_method(span, local_receiver_name(&receiver), &method);
         };
         if args.len() != expected {
@@ -230,6 +236,40 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
+        }
+        if let Some(call) = self.plan.dispatch.std_method(expr).cloned() {
+            let mut values = Vec::with_capacity(evaluated_args.len() + 1);
+            values.push(receiver);
+            values.extend(evaluated_args);
+            if call.identity.dispatch == etas_std::IntrinsicDispatch::PureKernel {
+                let call = match call.specialize(&self.checked.type_store, frame.type_bindings()) {
+                    Ok(call) => call,
+                    Err(error) => return ControlSignal::missing_checked_fact(error, span),
+                };
+                return self.execute_call_target_frame(
+                    CallTarget::PureIntrinsic(
+                        crate::intrinsic::dispatch::CheckedPureIntrinsicCall {
+                            intrinsic: call.identity.intrinsic,
+                            parameter_types: call.parameter_types,
+                            result_type: call.result_type,
+                        },
+                    ),
+                    values,
+                    span,
+                    None,
+                );
+            }
+            let callable = match self.plan.dispatch.resolve_std_callable(call.identity) {
+                Ok(callable) => callable,
+                Err(error) => return ControlSignal::missing_checked_fact(error, span),
+            };
+            return self.execute_std_callable_with_type_bindings(
+                callable,
+                &call,
+                values,
+                span,
+                frame.type_bindings(),
+            );
         }
         self.eval_local_method_with_values(
             expr,

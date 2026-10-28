@@ -10,7 +10,7 @@ fn scheduling_a_leaf_continuation_reuses_the_machine_stack() {
         for _ in 0..1000 {
             machine.push_continuation_frames(Continuation::Return);
             assert!(matches!(
-                machine.pop_frame().unwrap().into_continuation(),
+                machine.pop_frame().unwrap().into_continuation().unwrap(),
                 Continuation::Return
             ));
             machine.push_continuation_frames(Continuation::BlockValue);
@@ -53,7 +53,8 @@ fn nested_shared_continuations_keep_inner_before_outer_order() {
     let mut machine = EvalMachine::new();
     machine.push_continuation_frames(tree);
     for expected in [0, 1, 2, 1, 2, 3] {
-        let Continuation::TryExpr { expr, .. } = machine.pop_frame().unwrap().into_continuation()
+        let Continuation::TryExpr { expr, .. } =
+            machine.pop_frame().unwrap().into_continuation().unwrap()
         else {
             panic!("wrong continuation kind");
         };
@@ -73,7 +74,10 @@ fn apply_keeps_the_first_leaf_and_preserves_outer_block_value_frames() {
     ));
     assert!(matches!(first, Some(Continuation::BlockValue)));
     for expected in [Some(0), None, Some(1), Some(99)] {
-        match (machine.pop_frame().unwrap().into_continuation(), expected) {
+        match (
+            machine.pop_frame().unwrap().into_continuation().unwrap(),
+            expected,
+        ) {
             (Continuation::TryExpr { expr, .. }, Some(expected)) => assert_eq!(expr.0, expected),
             (Continuation::BlockValue, None) => {}
             _ => panic!("Apply changed continuation order or skipped a leaf"),
@@ -97,7 +101,7 @@ fn deep_continuation_chains_schedule_without_rust_recursion() {
         machine.push_continuation_frames(tree);
         for index in 0..10000 {
             let Continuation::TryExpr { expr, .. } =
-                machine.pop_frame().unwrap().into_continuation()
+                machine.pop_frame().unwrap().into_continuation().unwrap()
             else {
                 panic!("wrong continuation kind");
             };

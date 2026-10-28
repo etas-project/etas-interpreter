@@ -1,5 +1,5 @@
 use etas_core::{SourceId, Span, TextRange, TextSize};
-use etas_hir::{HirBlockId, HirPatId, HirTypeId, ScopeId, SymbolId};
+use etas_hir::{HirBlockId, HirPatId, ScopeId, SymbolId};
 use serde_json::{Value, json};
 
 use crate::{
@@ -14,11 +14,10 @@ use super::value::{
 
 pub(super) fn handler_arm_snapshot(handler: &ActiveHandlerArmRecord) -> Value {
     json!({
+        "arm": handler.arm.0,
         "effect_segments": handler.effect_segments,
         "action": handler.action,
         "action_symbol": handler.action_symbol.map(|symbol| symbol.0),
-        "type_args": handler.type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
-        "effect_type_args": handler.effect_type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
         "patterns": handler.patterns.iter().map(|pat| pat.0).collect::<Vec<_>>(),
         "body": handler.body.0,
         "scope": handler.scope.0,
@@ -28,17 +27,10 @@ pub(super) fn handler_arm_snapshot(handler: &ActiveHandlerArmRecord) -> Value {
 
 pub(super) fn handler_arm_from_snapshot(value: &Value) -> Result<ActiveHandlerArmRecord, String> {
     Ok(ActiveHandlerArmRecord {
+        arm: etas_hir::HirHandlerArmId(required_u32(value, "arm")?),
         effect_segments: required_string_array(value, "effect_segments")?,
         action: required_str(value, "action")?.to_owned(),
         action_symbol: optional_u32(value, "action_symbol")?.map(SymbolId),
-        type_args: required_u32_array(value, "type_args")?
-            .into_iter()
-            .map(HirTypeId)
-            .collect(),
-        effect_type_args: required_u32_array(value, "effect_type_args")?
-            .into_iter()
-            .map(etas_types::TypeId)
-            .collect(),
         patterns: required_u32_array(value, "patterns")?
             .into_iter()
             .map(HirPatId)
@@ -60,6 +52,7 @@ pub(super) fn locals_from_snapshot(
         id: decoded.id,
         locals: std::rc::Rc::new(decoded.locals),
         type_bindings: decoded.type_bindings,
+        effect_row_bindings: decoded.effect_row_bindings,
     })
 }
 
@@ -71,9 +64,12 @@ pub(super) fn runtime_frame_from_snapshot(
         crate::api::codec::value_from_json_with_limits(limits, value)
             .map_err(|error| error.to_string())
     })?;
-    let mut frame = crate::control::Frame::from_snapshot_with_type_bindings(
+    let mut frame = crate::control::Frame::from_snapshot_with_generic_bindings(
         decoded.locals,
-        decoded.type_bindings.into_iter().collect(),
+        crate::control::GenericBindings {
+            types: decoded.type_bindings.into_iter().collect(),
+            rows: decoded.effect_row_bindings.into_iter().collect(),
+        },
     )?;
     frame.set_snapshot_id(decoded.id)?;
     Ok(frame)
@@ -83,6 +79,7 @@ struct DecodedLocals<T> {
     id: u64,
     locals: Vec<(SymbolId, T)>,
     type_bindings: Vec<(String, etas_types::TypeId)>,
+    effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
 }
 
 fn decode_locals<T>(
@@ -133,7 +130,25 @@ fn decode_locals<T>(
         id,
         locals,
         type_bindings,
+        effect_row_bindings: effect_rows_from_snapshot(value)?,
     })
+}
+
+pub(crate) fn effect_rows_from_snapshot(
+    value: &Value,
+) -> Result<Vec<(String, etas_types::EffectRowRef)>, String> {
+    let rows = <Vec<(String, etas_types::EffectRowRef)> as serde::Deserialize>::deserialize(
+        required(value, "effect_row_bindings")?,
+    )
+    .map_err(|error| format!("invalid snapshot effect-row bindings: {error}"))?;
+    let mut names = std::collections::HashSet::new();
+    if rows
+        .iter()
+        .any(|(name, _)| name.is_empty() || !names.insert(name))
+    {
+        return Err("invalid or duplicate snapshot effect-row binding".into());
+    }
+    Ok(rows)
 }
 
 pub(super) fn span_snapshot(span: Span) -> Value {

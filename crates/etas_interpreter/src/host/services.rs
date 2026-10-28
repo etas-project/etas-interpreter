@@ -17,6 +17,18 @@ pub type HostFuture<'a, T> = Pin<Box<dyn Future<Output = T> + Send + 'a>>;
 pub trait HostServices {
     fn availability(&self) -> HostServiceAvailability;
 
+    fn checked_candidate_resolver(
+        &self,
+    ) -> Option<&dyn etas_frontend::code::service::CheckedCandidateResolver> {
+        None
+    }
+
+    fn compiler<'a>(
+        &'a self,
+        operation: etas_host::execution::OperationContext,
+        request: etas_host::compiler::CompilerRequest,
+    ) -> HostFuture<'a, Result<etas_host::compiler::CompilerResponse, etas_host::HostError>>;
+
     fn model<'a>(
         &'a self,
         operation: etas_host::execution::OperationContext,

@@ -1,5 +1,15 @@
 mod aggregate;
 mod bytes;
+mod code;
+pub(crate) use code::CheckedExecutionProgram;
+pub(crate) use code::CodeIdentitySnapshot;
+pub(crate) use code::CodeMetadataPayload;
+pub use code::ScopedCallableValue;
+pub use code::{
+    AgentDefinitionValue, AgentRevisionValue, CallableDefinitionValue, CodeMetadataValue,
+    SyntaxBlockValue,
+};
+pub(crate) use code::{validate_snapshot_bounds, validate_snapshot_signature};
 pub(crate) mod codec;
 pub(crate) mod comparison;
 pub(crate) mod conversation;

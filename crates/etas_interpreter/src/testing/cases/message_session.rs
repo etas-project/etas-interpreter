@@ -975,7 +975,7 @@ import std.agent.message.Message;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: Message<string>) -> string {
-  return Prompt.new().user(Public(input.content));
+  return perform infer(Prompt.new().user(Public(input.content)));
 }
 
 flow main(ticket: string, input: string) -> string {

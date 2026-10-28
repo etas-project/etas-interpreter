@@ -25,7 +25,7 @@ impl ContinuationLink {
         }
     }
 
-    fn into_unique(self) -> Option<Continuation> {
+    pub(crate) fn into_unique(self) -> Option<Continuation> {
         Rc::try_unwrap(self.0)
             .ok()
             .map(|mut node| std::mem::replace(&mut node.0, Continuation::BlockValue))
@@ -69,7 +69,8 @@ impl Drop for Node {
         let mut pending = Vec::new();
         while let Some(node) = next.take().or_else(|| pending.pop()) {
             match node {
-                Continuation::CallBoundary { outer } | Continuation::HandlerDispatch { outer } => {
+                Continuation::CallBoundary { outer, .. }
+                | Continuation::HandlerDispatch { outer } => {
                     next = outer.into_unique();
                 }
                 Continuation::RestoreModelPolicy { inner, .. }

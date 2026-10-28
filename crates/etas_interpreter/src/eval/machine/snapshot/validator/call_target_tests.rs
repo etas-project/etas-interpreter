@@ -11,6 +11,7 @@ fn tree(mut leaf: CallTargetSnapshot, depth: usize, mode: usize) -> TargetTree {
                 limits: vec![],
             },
             1 => CallTargetSnapshot::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: leaf.into(),
                 type_bindings: vec![],
             },
@@ -125,6 +126,7 @@ fn call_target_validation_preserves_child_binding_and_sibling_error_order() {
     let good = || CallTargetSnapshot::FlowItem(checked.entry.unwrap());
     let bad = || CallTargetSnapshot::FlowItem(HirItemId(u32::MAX));
     let specialize = |target: CallTargetSnapshot, name: &str| CallTargetSnapshot::Specialized {
+        effect_row_bindings: Vec::new(),
         target: target.into(),
         type_bindings: vec![(name.to_owned(), TypeId(u32::MAX))],
     };
@@ -216,6 +218,7 @@ fn deep_specialized_target_validates_every_nonempty_binding_after_its_child() {
         let mut target = CallTargetSnapshot::FlowItem(checked.entry.unwrap());
         for index in 0..30_000 {
             target = CallTargetSnapshot::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: target.into(),
                 type_bindings: if invalid_at == Some(index) {
                     vec![("T".into(), ty), ("T".into(), ty)]
@@ -241,14 +244,24 @@ fn deep_specialized_target_validates_every_nonempty_binding_after_its_child() {
 #[test]
 fn machine_validation_checks_deep_call_target_before_argument_frame() {
     let checked = crate::testing::project::checked_project(
-        "module app.main; flow main() -> unit { return; }",
+        "module app.main; flow main(value: i32) -> i32 { return value; } flow invoke() -> i32 { return main(1); }",
     );
     let plan = crate::Interpreter
         .plan(&checked, crate::api::PlanOptions)
         .plan
         .unwrap();
     let limits = etas_host::StorageLimits::default();
-    let span = checked.hir.blocks.iter().next().unwrap().1.span;
+    let (call, args, span) = checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(id, expr)| match expr {
+            etas_hir::HirExpr::Call { args, span, .. } => {
+                Some((id, std::sync::Arc::from(args.as_slice()), *span))
+            }
+            _ => None,
+        })
+        .unwrap();
     for (valid_target, frame_id) in [(true, 1), (true, 0), (false, 0)] {
         let mut root = tree(
             CallTargetSnapshot::FlowItem(if valid_target {
@@ -257,17 +270,21 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
                 HirItemId(u32::MAX)
             }),
             30_000,
-            2,
+            1,
         );
         let mut machine = MachineSnapshot {
+            program_owners: Default::default(),
+            suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation {
                 continuation: ContinuationSnapshot::CallArgs {
+                    call,
                     target: root.0.take().unwrap(),
-                    args: vec![].into(),
-                    next_arg_index: 0,
+                    args: std::sync::Arc::clone(&args),
+                    next_arg_index: 1,
                     evaluated_args: vec![],
                     span,
                     frame: LocalsSnapshot {
+                        effect_row_bindings: Vec::new(),
                         id: frame_id,
                         locals: Default::default(),
                         type_bindings: vec![],

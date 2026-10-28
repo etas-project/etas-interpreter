@@ -1,5 +1,6 @@
 pub(super) mod approval;
 pub(super) mod command;
+pub(super) mod compiler;
 pub(super) mod console;
 pub(super) mod error;
 pub(super) mod host;

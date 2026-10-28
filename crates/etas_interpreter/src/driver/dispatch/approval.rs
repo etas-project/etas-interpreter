@@ -56,12 +56,15 @@ pub(in crate::driver) async fn dispatch(
                 etas_host::ApprovalDecision::Approved { .. } => InterpValue::Bool(true),
                 etas_host::ApprovalDecision::Denied { .. } => InterpValue::Bool(false),
             };
-            eval.record_completed_host_boundary(
+            if let Err(fault) = eval.record_completed_host_boundary(
                 crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                 "approval",
                 key,
                 value.clone(),
-            );
+                perform.span,
+            ) {
+                return Some(ControlSignal::Fault(Box::new(fault)));
+            }
             Some(eval.resume_perform_signal(perform, value))
         }
         Err(error) => {

@@ -2,6 +2,8 @@ use super::*;
 
 fn machine(continuation: ContinuationSnapshot) -> MachineSnapshot {
     MachineSnapshot {
+        program_owners: Default::default(),
+        suspended_programs: Vec::new(),
         frames: vec![MachineFrameSnapshot::Continuation { continuation }],
     }
 }
@@ -51,7 +53,7 @@ fn shared_dag_machine_restore_runs_checked_validation_without_expansion() {
                 &limits,
             )
             .unwrap();
-            let root = live.pop_frame().unwrap().into_continuation();
+            let root = live.pop_frame().unwrap().into_continuation().unwrap();
             let mut cursor = &root;
             for _ in 0..depth {
                 let Continuation::Chain { inner, outer } = cursor else {
@@ -98,6 +100,7 @@ fn shared_dag_validation_keeps_duplicate_scopes_and_invalid_leaves_fail_closed()
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
             type_bindings: vec![],
@@ -156,7 +159,10 @@ fn deep_continuation_validation_does_not_overflow_or_copy_snapshot_edges() {
             let mut root = ContinuationSnapshot::Return;
             for _ in 0..depth {
                 root = match mode {
-                    0 => ContinuationSnapshot::CallBoundary { outer: root.into() },
+                    0 => ContinuationSnapshot::CallBoundary {
+                        span: crate::testing::synthetic_span(),
+                        outer: root.into(),
+                    },
                     1 => ContinuationSnapshot::Chain {
                         inner: root.into(),
                         outer: ContinuationSnapshot::Finish.into(),
@@ -199,6 +205,7 @@ fn boundary(scope_id: u32, inner: ContinuationSnapshot) -> ContinuationSnapshot 
         handlers: vec![],
         span: span(),
         frame: LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
             type_bindings: vec![],
@@ -214,6 +221,9 @@ fn checkpoint(
     use crate::orchestration::*;
     let entry = checked.entry.unwrap();
     InterpreterCheckpoint {
+        retained_code: None,
+        model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),
+        code_revision: None,
         id: CheckpointId(1),
         label: None,
         compilation: CheckpointCompilationIdentity::for_project(checked, entry).unwrap(),
@@ -255,7 +265,10 @@ fn checkpoint(
 
 fn wrap(mut root: ContinuationSnapshot, depth: usize) -> ContinuationSnapshot {
     for _ in 0..depth {
-        root = ContinuationSnapshot::CallBoundary { outer: root.into() };
+        root = ContinuationSnapshot::CallBoundary {
+            span: crate::testing::synthetic_span(),
+            outer: root.into(),
+        };
     }
     root
 }
@@ -353,6 +366,7 @@ fn deep_validator_preserves_leaf_checks_and_handler_validation_order() {
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
             type_bindings: vec![],
@@ -412,10 +426,10 @@ fn deep_machine_snapshot_passes_checked_validation_then_restores() {
         )
         .unwrap();
         assert_eq!(restored.frames().len(), 1);
-        let root = restored.pop_frame().unwrap().into_continuation();
+        let root = restored.pop_frame().unwrap().into_continuation().unwrap();
         let mut node = &root;
         let mut edges = 0;
-        while let Continuation::CallBoundary { outer } = node {
+        while let Continuation::CallBoundary { outer, .. } = node {
             node = outer;
             edges += 1;
         }

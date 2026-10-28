@@ -159,17 +159,41 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn eval_lambda_expr(&mut self, expr: HirExprId, frame: &mut Frame) -> ControlSignal {
         let span = self.checked.hir.exprs[expr].span(&self.checked.hir.blocks);
-        let Some(layout) = self.plan.closures.get(expr) else {
-            return ControlSignal::missing_checked_fact(
-                "lambda is missing its checked capture layout",
+        match self.capture_lambda_value(expr, span, Some(frame)) {
+            Ok(value) => ControlSignal::Value(value),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
+    }
+
+    pub(super) fn capture_lambda_value(
+        &self,
+        expr: HirExprId,
+        span: Span,
+        frame: Option<&Frame>,
+    ) -> Result<InterpValue, crate::control::ExecutionFault> {
+        let invalid = |message| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
-            );
+                message,
+            )
         };
-        let captured = match frame.capture(layout.slots.clone(), &layout.captures) {
-            Ok(captured) => captured,
-            Err(message) => return ControlSignal::missing_checked_fact(message, span),
+        let layout =
+            self.plan.closures.get(expr).ok_or_else(|| {
+                invalid("lambda is missing its checked capture layout".to_owned())
+            })?;
+        let captured = match frame {
+            Some(frame) => frame
+                .capture(layout.slots.clone(), &layout.captures)
+                .map_err(invalid)?,
+            None if layout.captures.is_empty() => Frame::new(layout.slots.clone()),
+            None => {
+                return Err(invalid(
+                    "constant lambda has runtime lexical captures".to_owned(),
+                ));
+            }
         };
-        ControlSignal::Value(InterpValue::Callable(CallTarget::Lambda { expr, captured }))
+        Ok(InterpValue::Callable(CallTarget::Lambda { expr, captured }))
     }
 
     pub(super) fn eval_record_expr(

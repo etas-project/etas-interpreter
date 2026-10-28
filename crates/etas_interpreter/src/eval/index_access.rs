@@ -40,7 +40,12 @@ impl<'a> EvalContext<'a> {
             signal if is_pending_host_boundary_signal(&signal) => {
                 return compose_signal_continuation(
                     signal,
-                    Continuation::IndexValue { expr, base, span },
+                    Continuation::IndexValue {
+                        expr,
+                        base,
+                        span,
+                        frame: frame.clone(),
+                    },
                 );
             }
             other => return other,
@@ -197,6 +202,10 @@ impl<'a> EvalContext<'a> {
             );
         };
         ControlSignal::pending_perform(PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            inference: None,
             expr: None,
             error_type: Some(error_type),
             action: ResolvedActionRef {

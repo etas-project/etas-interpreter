@@ -1,7 +1,7 @@
 use std::{fmt, path::PathBuf};
 
 use etas_core::{Diagnostic, SourceId, Span, TextRange, TextSize};
-use etas_hir::{HirBlockId, HirExprId, HirItemId, HirPatId, HirTypeId, ScopeId, SymbolId};
+use etas_hir::{HirBlockId, HirExprId, HirItemId, HirPatId, ScopeId, SymbolId};
 use etas_host::{
     Budget, CostBudget, ExecutionBudgetSnapshot, HostJsonValue, HostRequestId, HostValue,
     ModelContent, ModelMessage, ModelName, ModelProviderId, ModelRole, ModelToolCall, TimeBudget,
@@ -32,13 +32,15 @@ mod report;
 mod snapshot;
 mod value;
 
+pub(crate) use checkpoint::ResumeHeader;
 pub use checkpoint::event_json;
 use checkpoint::*;
-pub(crate) use checkpoint::{budget_from_json, budget_json};
 pub use checkpoint::{
-    checkpoint_artifact_json, checkpoint_from_json, checkpoint_from_json_with_limits,
-    checkpoint_id, sources_and_flow_from_checkpoint_json,
+    SourceCheckpoint, checkpoint_artifact_json, checkpoint_from_json,
+    checkpoint_from_json_with_limits, checkpoint_from_json_with_revisions, checkpoint_id,
+    sources_and_flow_from_checkpoint_json,
 };
+pub(crate) use checkpoint::{budget_from_json, budget_json};
 pub use file::{
     CheckpointDocument, CheckpointFileLimits, checkpoint_file_from_bytes, checkpoint_file_to_bytes,
 };

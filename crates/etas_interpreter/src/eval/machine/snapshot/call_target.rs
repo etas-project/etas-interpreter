@@ -19,6 +19,16 @@ fn capture_leaf(
     Ok(match target {
         CallTarget::FlowItem(item) => CallTargetSnapshot::FlowItem(*item),
         CallTarget::AgentItem(item) => CallTargetSnapshot::AgentItem(*item),
+        CallTarget::AgentRevision(value) => {
+            context
+                .revisions
+                .entry(value.prepared().revision().key())
+                .or_insert_with(|| value.prepared().clone());
+            CallTargetSnapshot::AgentRevision(Box::new(value.checkpoint_reference()?))
+        }
+        CallTarget::Scoped(_) => {
+            return Err("scoped callable must use its capture builder".into());
+        }
         CallTarget::ToolItem(item) => CallTargetSnapshot::ToolItem(*item),
         CallTarget::SpecImplMethod(symbol) => CallTargetSnapshot::SpecImplMethod(*symbol),
         CallTarget::Lambda { expr, captured } => CallTargetSnapshot::Lambda {
@@ -33,6 +43,8 @@ fn capture_leaf(
             result_type: call.result_type,
         },
         CallTarget::StdIntrinsic(call) => CallTargetSnapshot::StdIntrinsic {
+            origin: call.origin,
+            substitutions: call.substitutions.clone(),
             intrinsic: call.identity.intrinsic,
             dispatch: call.identity.dispatch,
             parameter_types: call.parameter_types.clone(),
@@ -51,6 +63,9 @@ fn restore_leaf(
     Ok(match snapshot {
         CallTargetSnapshot::FlowItem(item) => CallTarget::FlowItem(item),
         CallTargetSnapshot::AgentItem(item) => CallTarget::AgentItem(item),
+        CallTargetSnapshot::AgentRevision(reference) => {
+            CallTarget::AgentRevision(context.agent_reference(&reference)?)
+        }
         CallTargetSnapshot::ToolItem(item) => CallTarget::ToolItem(item),
         CallTargetSnapshot::SpecImplMethod(symbol) => CallTarget::SpecImplMethod(symbol),
         CallTargetSnapshot::Lambda { expr, captured } => CallTarget::Lambda {
@@ -69,11 +84,15 @@ fn restore_leaf(
             result_type,
         }),
         CallTargetSnapshot::StdIntrinsic {
+            origin,
+            substitutions,
             intrinsic,
             dispatch,
             parameter_types,
             result_type,
         } => CallTarget::StdIntrinsic(crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+            origin,
+            substitutions,
             identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
                 intrinsic,
                 dispatch,
@@ -81,7 +100,8 @@ fn restore_leaf(
             parameter_types,
             result_type,
         }),
-        CallTargetSnapshot::Specialized { .. }
+        CallTargetSnapshot::Scoped { .. }
+        | CallTargetSnapshot::Specialized { .. }
         | CallTargetSnapshot::Limited { .. }
         | CallTargetSnapshot::Composed(_) => {
             return Err("compound call target must use its restore builder".into());

@@ -73,6 +73,10 @@ impl Default for ExecutionLimits {
 
 #[derive(Clone, Debug, Default)]
 pub struct RunOptions {
+    pub code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
+    /// Native code used to rebind restored values; this grants no Host authority.
+    pub checkpoint_revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
+    pub syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     pub storage_limits: etas_host::StorageLimits,
     pub event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
     pub plan: PlanOptions,

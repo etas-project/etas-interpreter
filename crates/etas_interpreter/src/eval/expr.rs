@@ -19,7 +19,23 @@ impl<'a> EvalContext<'a> {
                 Ok(value) => ControlSignal::Value(value),
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),
             },
-            HirExpr::Path(path) => self.eval_path_signal(path.resolution.clone(), path.span, frame),
+            HirExpr::Path(path) => {
+                let signal = match self.eval_std_callable_value(expr, frame, path.span) {
+                    Ok(Some(value)) => ControlSignal::Value(value),
+                    Ok(None) => self.eval_path_signal(path.resolution.clone(), path.span, frame),
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                };
+                match signal {
+                    ControlSignal::Value(InterpValue::Callable(target)) => {
+                        match self.specialize_call_target_for_call(expr, target, frame, path.span) {
+                            Ok(target) => ControlSignal::Value(InterpValue::Callable(target)),
+                            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                        }
+                    }
+                    other => other,
+                }
+            }
+            HirExpr::Reflect(reflection) => self.eval_reflection(expr, reflection.span, frame),
             HirExpr::Field { base, field, span } => {
                 self.eval_field(expr, *base, field, *span, frame)
             }
@@ -71,8 +87,12 @@ impl<'a> EvalContext<'a> {
                 span,
                 ..
             } => {
-                let Some(type_args) = self.checked_type_args_from_generic_args(generic_args) else {
-                    return ControlSignal::invalid_arguments("effect-row generic argument reached runtime perform dispatch without checked instantiation facts".to_owned(), *span);
+                let Some(type_args) = self.checked_type_args_from_generic_args(expr, generic_args)
+                else {
+                    return ControlSignal::missing_checked_fact(
+                        "perform generic arguments require checked instantiation or selector facts",
+                        *span,
+                    );
                 };
                 let Some(args) = self.plan.arguments.get(expr) else {
                     return ControlSignal::missing_checked_fact(
@@ -93,6 +113,7 @@ impl<'a> EvalContext<'a> {
                     frame,
                 )
             }
+            HirExpr::Infer { span, .. } => self.eval_agent_inference(expr, frame, *span),
             HirExpr::Handler { handlers, span } => {
                 self.eval_handler_value_expr(expr, handlers, *span)
             }
@@ -102,8 +123,12 @@ impl<'a> EvalContext<'a> {
                 args,
                 span,
             } => {
-                let Some(type_args) = self.checked_type_args_from_generic_args(generic_args) else {
-                    return ControlSignal::invalid_arguments("effect-row generic argument reached runtime call dispatch without checked instantiation facts".to_owned(), *span);
+                let Some(type_args) = self.checked_type_args_from_generic_args(expr, generic_args)
+                else {
+                    return ControlSignal::missing_checked_fact(
+                        "call generic arguments require checked instantiation facts",
+                        *span,
+                    );
                 };
                 if let Some(signal) =
                     self.eval_static_collection_constructor_call(*callee, &type_args, args, *span)
@@ -120,8 +145,12 @@ impl<'a> EvalContext<'a> {
                 span,
                 ..
             } => {
-                let Some(type_args) = self.checked_type_args_from_generic_args(generic_args) else {
-                    return ControlSignal::invalid_arguments("effect-row generic argument reached runtime method dispatch without checked instantiation facts".to_owned(), *span);
+                let Some(type_args) = self.checked_type_args_from_generic_args(expr, generic_args)
+                else {
+                    return ControlSignal::missing_checked_fact(
+                        "method generic arguments require checked instantiation facts",
+                        *span,
+                    );
                 };
                 self.eval_method_call(
                     crate::eval::method::MethodDispatch {
@@ -171,14 +200,10 @@ impl<'a> EvalContext<'a> {
                 span,
             } => self.eval_match_expr(*scrutinee, arms, *span, frame),
             HirExpr::Lambda { .. } => self.eval_lambda_expr(expr, frame),
-            HirExpr::StageCompose { stages, span } => {
-                self.eval_stage_compose_expr(stages, *span, frame)
+            HirExpr::StageCompose { span, .. } => self.eval_stage_compose_expr(expr, *span, frame),
+            HirExpr::Pipeline { input, span, .. } => {
+                self.eval_pipeline_expr(expr, *input, *span, frame)
             }
-            HirExpr::Pipeline {
-                input,
-                stages,
-                span,
-            } => self.eval_pipeline_expr(*input, stages, *span, frame),
             HirExpr::Block(block) => self.execute_block(*block, frame),
             HirExpr::Error { span } => ControlSignal::fault(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -190,13 +215,41 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn checked_type_args_from_generic_args(
         &self,
+        expr: HirExprId,
         generic_args: &[HirGenericArg],
     ) -> Option<Vec<HirTypeId>> {
         let mut type_args = Vec::with_capacity(generic_args.len());
         for arg in generic_args {
             match arg {
                 HirGenericArg::Type(ty) => type_args.push(*ty),
-                HirGenericArg::Wildcard { .. } | HirGenericArg::EffectRow(_) => return None,
+                HirGenericArg::EffectRow(_) => {
+                    if self
+                        .checked
+                        .types
+                        .generic_instantiations
+                        .get(&expr)
+                        .is_none_or(|fact| fact.effect_row_bindings.is_empty())
+                    {
+                        return None;
+                    }
+                }
+                HirGenericArg::Wildcard { .. } => {
+                    let callable = self
+                        .checked
+                        .types
+                        .generic_instantiations
+                        .get(&expr)
+                        .is_some_and(|fact| {
+                            !fact.type_bindings.is_empty() || !fact.effect_row_bindings.is_empty()
+                        });
+                    let selector = matches!(
+                        self.checked.hir.exprs.get(expr),
+                        Some(HirExpr::Perform { .. })
+                    ) && self.checked.effects.performed_actions.contains_key(&expr);
+                    if !callable && !selector {
+                        return None;
+                    }
+                }
             }
         }
         Some(type_args)

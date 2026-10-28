@@ -1,5 +1,5 @@
 use etas_core::{Diagnostic, Span};
-use etas_frontend::CheckedProject;
+use etas_frontend::{CheckedCallableRoot, CheckedProject};
 use etas_utils::{PassDescriptor, PassKind, UnitKey, UnitOrder, UnitProvider, UnitSelector};
 
 use crate::api::EntryPoint;
@@ -11,6 +11,7 @@ use super::{
 
 pub(super) struct PlanContext<'a> {
     pub(super) project: &'a CheckedProject,
+    pub(super) requested_root: Option<CheckedCallableRoot>,
     pub(super) diagnostics: Vec<Diagnostic>,
     pub(super) entry: Option<EntryPoint>,
     pub(super) slots: Option<SlotLayoutTable>,
@@ -30,6 +31,7 @@ impl<'a> PlanContext<'a> {
     pub(super) fn new(project: &'a CheckedProject) -> Self {
         Self {
             project,
+            requested_root: project.entry.map(CheckedCallableRoot::Item),
             diagnostics: Vec::new(),
             entry: None,
             slots: None,

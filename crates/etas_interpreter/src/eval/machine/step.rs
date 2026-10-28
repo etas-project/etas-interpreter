@@ -13,9 +13,27 @@ use crate::{
 #[cfg(test)]
 mod tests;
 
+macro_rules! local_continuation {
+    ($frame:expr, $span:expr) => {
+        match $frame.into_continuation() {
+            Ok(continuation) => continuation,
+            Err(reason) => return machine_fault(reason, $span),
+        }
+    };
+}
+
 impl EvalMachine {
     pub(crate) fn run_until_yield(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
         let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
+        if let Some(scope) = &self.program_scope
+            && (!std::sync::Arc::ptr_eq(ctx.checked, scope.program())
+                || ctx.handler_floor != scope.handler_floor)
+        {
+            return machine_fault(
+                "evaluation machine revision disagrees with the active checked program scope",
+                step_span,
+            );
+        }
         // A previously produced fault remains primary if stop races its delivery.
         if let Some(MachineInput::Signal(ControlSignal::Fault(_))) = &self.input {
             if let Some(MachineInput::Signal(ControlSignal::Fault(fault))) = self.input.take() {
@@ -32,6 +50,9 @@ impl EvalMachine {
             );
         };
         let mut signal = match input {
+            MachineInput::EnterProgram { call, args, span } => {
+                self.start_program_body(ctx, call, args, span)
+            }
             MachineInput::Signal(signal) => signal,
             MachineInput::ModelResult(result) => match self.resume_model_host_result(ctx, result) {
                 Ok(signal) => signal,
@@ -69,6 +90,9 @@ impl EvalMachine {
                     };
                     match pending.input {
                         ContinuationInput::Value(value) => {
+                            if let Continuation::ProgramResume(continuation) = first {
+                                return self.resume_program_continuation(ctx, continuation, value);
+                            }
                             ctx.apply_continuation_frame(first, value)
                         }
                         ContinuationInput::Return(value) => {
@@ -91,7 +115,7 @@ impl EvalMachine {
                 ControlSignal::Checkpoint(pending) => {
                     let pending = *pending;
                     self.push_continuation_frames(pending.continuation);
-                    let machine = match self.snapshot() {
+                    let machine = match self.capture_snapshot(ctx.entry_args) {
                         Ok(machine) => machine,
                         Err(message) => {
                             return machine_fault(
@@ -132,12 +156,40 @@ impl EvalMachine {
                     let pending = *pending;
                     match ctx.prepare_call_target(pending.target, pending.continuation) {
                         Ok((target, continuation)) => {
+                            let target = match super::scoped_call::ProgramCall::select(
+                                target,
+                                ctx.checked,
+                            ) {
+                                Ok(Ok(call)) => Err(call),
+                                Ok(Err(target)) => Ok(target),
+                                Err(reason) => return machine_fault(reason, pending.span),
+                            };
+                            let target = match target {
+                                Err(call) => {
+                                    return self
+                                        .enter_program(
+                                            ctx,
+                                            call,
+                                            pending.args,
+                                            pending.span,
+                                            continuation,
+                                            pending.site,
+                                        )
+                                        .unwrap_or_else(MachinePoll::Fault);
+                                }
+                                Ok(target) => target,
+                            };
                             self.push_continuation_frames(continuation);
                             self.push_frame(EvalFrame::Call(CallFrame {
                                 continuation: Continuation::BlockValue,
                                 span: pending.span,
                             }));
-                            ctx.execute_call_target_frame(target, pending.args, pending.span)
+                            ctx.execute_call_target_frame(
+                                target,
+                                pending.args,
+                                pending.span,
+                                pending.site,
+                            )
                         }
                         Err(signal) => *signal,
                     }
@@ -147,6 +199,9 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::ProgramReturn(frame) => {
+                            return self.return_program(ctx, *frame, value);
+                        }
                         EvalFrame::Block(frame) => ctx
                             .continue_chain_signal(ControlSignal::Value(value), frame.continuation),
                         EvalFrame::Call(frame) => ctx.apply_continuation(frame.continuation, value),
@@ -155,7 +210,7 @@ impl EvalMachine {
                         }
                         EvalFrame::Expr(frame) => ctx.apply_continuation(frame.continuation, value),
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
-                            ctx.apply_continuation(frame.into_continuation(), value)
+                            ctx.apply_continuation(local_continuation!(frame, step_span), value)
                         }
                         EvalFrame::SourceToolReturn(frame) => {
                             match self.resume_source_tool_value(ctx, frame, value) {
@@ -173,6 +228,9 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::ProgramReturn(frame) => {
+                            return self.return_program(ctx, *frame, value);
+                        }
                         EvalFrame::Block(frame) => ctx.continue_chain_signal(
                             ControlSignal::Return(value),
                             frame.continuation,
@@ -186,7 +244,7 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => ctx
                             .continue_chain_signal(
                                 ControlSignal::Return(value),
-                                frame.into_continuation(),
+                                local_continuation!(frame, step_span),
                             ),
                         EvalFrame::SourceToolReturn(frame) => {
                             match self.resume_source_tool_value(ctx, frame, value) {
@@ -200,18 +258,46 @@ impl EvalMachine {
                     }
                 }
                 ControlSignal::Perform(mut pending) => {
+                    // Default handling suspends the current stack; it does not exit
+                    // unrelated lexical scopes. Typed errors still visit try frames.
+                    if pending.error_type.is_none() {
+                        match self.has_action_handler_in(
+                            ctx,
+                            &pending,
+                            ctx.handler_floor..ctx.handler_stack.len(),
+                        ) {
+                            Ok(false) => {
+                                match self.has_outer_action_handler(ctx, &pending) {
+                                    Ok(true) => return self.suspend_program_action(ctx, *pending),
+                                    Ok(false) => {}
+                                    Err(fault) => return MachinePoll::Fault(fault),
+                                }
+                                if pending.default_boundary.is_some() {
+                                    signal = ctx.execute_checked_default_action(*pending);
+                                    continue;
+                                }
+                                return MachinePoll::Yield(PendingBoundary::Perform(pending));
+                            }
+                            Ok(true) => {}
+                            Err(fault) => return MachinePoll::Fault(fault),
+                        }
+                    }
                     let Some(frame) = self.pop_frame() else {
                         return MachinePoll::Yield(PendingBoundary::Perform(pending));
                     };
                     let continuation = match frame {
+                        EvalFrame::ProgramReturn(frame) => {
+                            return self.unwind_program_error(ctx, *frame, *pending);
+                        }
                         EvalFrame::Block(frame) => frame.continuation,
                         EvalFrame::Call(frame) => Continuation::CallBoundary {
+                            span: frame.span,
                             outer: frame.continuation.into(),
                         },
                         EvalFrame::Continuation(frame) => frame.continuation,
                         EvalFrame::Expr(frame) => frame.continuation,
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
-                            frame.into_continuation()
+                            local_continuation!(frame, step_span)
                         }
                         EvalFrame::SourceToolReturn(frame) => {
                             self.push_frame(EvalFrame::SourceToolReturn(frame));
@@ -254,6 +340,12 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::ProgramReturn(frame) => {
+                            return machine_fault(
+                                "resume escaped a revision call boundary",
+                                frame.span,
+                            );
+                        }
                         EvalFrame::Block(frame) => ctx.continue_chain_signal(
                             ControlSignal::Resume(value),
                             frame.continuation,
@@ -267,7 +359,7 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => ctx
                             .continue_chain_signal(
                                 ControlSignal::Resume(value),
-                                frame.into_continuation(),
+                                local_continuation!(frame, step_span),
                             ),
                         EvalFrame::SourceToolReturn(frame) => {
                             return machine_fault(
@@ -288,6 +380,12 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::ProgramReturn(frame) => {
+                            return machine_fault(
+                                "finish escaped a revision call boundary",
+                                frame.span,
+                            );
+                        }
                         EvalFrame::Block(frame) => ctx.continue_chain_signal(
                             ControlSignal::Finish(value),
                             frame.continuation,
@@ -301,7 +399,7 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => ctx
                             .continue_chain_signal(
                                 ControlSignal::Finish(value),
-                                frame.into_continuation(),
+                                local_continuation!(frame, step_span),
                             ),
                         EvalFrame::SourceToolReturn(frame) => {
                             return machine_fault(
@@ -325,6 +423,12 @@ impl EvalMachine {
                         );
                     };
                     match frame {
+                        EvalFrame::ProgramReturn(frame) => {
+                            return machine_fault(
+                                "loop control escaped a revision call boundary",
+                                frame.span,
+                            );
+                        }
                         EvalFrame::Block(frame) => {
                             ctx.continue_chain_signal(signal, frame.continuation)
                         }
@@ -337,7 +441,7 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => ctx
                             .propagate_loop_control_to_continuation(
                                 signal,
-                                frame.into_continuation(),
+                                local_continuation!(frame, step_span),
                             ),
                         EvalFrame::Call(frame) => {
                             return machine_fault(
@@ -363,7 +467,7 @@ impl EvalMachine {
         }
     }
 
-    fn push_continuation_frames(&mut self, continuation: Continuation) {
+    pub(super) fn push_continuation_frames(&mut self, continuation: Continuation) {
         visit_continuation_stack_order(continuation, |continuation| {
             if !matches!(continuation, Continuation::BlockValue) {
                 self.push_frame(EvalFrame::from_continuation(continuation));

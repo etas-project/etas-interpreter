@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::ExecutionFault;
+use etas_hir::HirHandlerArmId;
 
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_handler_value_expr(
@@ -158,7 +159,10 @@ impl<'a> EvalContext<'a> {
             let Some(body) = self.handler_arm_body(*handler_id) else {
                 return Err(missing_handler_value_fault(span));
             };
-            records.push(active_handler_arm(handler, fact, body));
+            if !self.checked.types.handler_actions.contains_key(handler_id) {
+                return Err(missing_handler_value_fault(span));
+            }
+            records.push(active_handler_arm(*handler_id, handler, body));
         }
         Ok(records)
     }
@@ -318,6 +322,9 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         loop {
+            if self.handler_stack.len() <= self.handler_floor {
+                return signal;
+            }
             let Some(record) = self.handler_stack.last().cloned() else {
                 return signal;
             };
@@ -340,9 +347,18 @@ impl<'a> EvalContext<'a> {
         handlers: &[ActiveHandlerArmRecord],
         frame: &Frame,
     ) -> Option<ControlSignal> {
-        let handler = handlers
-            .iter()
-            .find(|handler| self.handler_matches_perform(&perform, handler))?;
+        let mut matched = None;
+        for handler in handlers {
+            match self.handler_matches_perform(&perform, handler, Some(frame)) {
+                Ok(true) => {
+                    matched = Some(handler);
+                    break;
+                }
+                Ok(false) => {}
+                Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+            }
+        }
+        let handler = matched?;
         let mut handler_frame = frame.clone();
         let Some(layout) = self.plan.frames.get(handler.scope) else {
             return Some(ControlSignal::missing_checked_fact(
@@ -647,6 +663,13 @@ impl<'a> EvalContext<'a> {
         scope_id: HandlerScopeId,
         span: Span,
     ) -> Result<(), ExecutionFault> {
+        if self.handler_floor != 0 && self.handler_stack.len() <= self.handler_floor {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "handler scope does not belong to the active checked program",
+            ));
+        }
         let Some(active) = self.handler_stack.last() else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -671,24 +694,112 @@ impl<'a> EvalContext<'a> {
         Ok(())
     }
 
-    fn handler_matches_perform(
+    pub(in crate::eval) fn handler_matches_perform(
         &self,
         perform: &PendingPerform,
         handler: &ActiveHandlerArmRecord,
-    ) -> bool {
+        frame: Option<&Frame>,
+    ) -> Result<bool, ExecutionFault> {
         if is_error_raise_perform(perform) || is_error_raise_handler(handler) {
-            return self.error_raise_matches_record(perform, handler);
+            return self.error_raise_matches_record(perform, handler, frame);
         }
-        action_matches_record(&perform.action, handler)
+        if let Some(actual) = self.checked_perform_action(perform)? {
+            let effect = self
+                .checked
+                .effects
+                .handler_action_effects
+                .get(&handler.arm)
+                .ok_or_else(|| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        handler.span,
+                        "handler has no checked canonical action identity",
+                    )
+                })?;
+            let mut effect = effect.clone();
+            if let Some(frame) = frame
+                && let etas_effects::Effect::AppliedAction(instance) = &mut effect
+            {
+                for arg in &mut instance.args {
+                    if let etas_types::EffectArgRef::Type(ty) = arg {
+                        *ty = etas_types::substitute_named_params_in_store(
+                            &self.checked.type_store,
+                            *ty,
+                            frame.type_bindings(),
+                        )
+                        .map_err(|error| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                handler.span,
+                                format!("handler selector cannot be instantiated: {error}"),
+                            )
+                        })?;
+                    }
+                }
+            }
+            let coverage = etas_effects::EffectCoverage {
+                registry: &self.checked.effect_registry,
+                types: &self.checked.type_store,
+            };
+            return Ok(coverage.covers(&effect, &actual));
+        }
+        if !action_matches_record(&perform.action, handler) {
+            return Ok(false);
+        }
+        let Some(pattern) = self.checked.types.handler_actions.get(&handler.arm) else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                handler.span,
+                "active handler is missing checked action selector facts",
+            ));
+        };
+        if pattern.selectors.is_empty() {
+            return Ok(true);
+        }
+        let Some(expr) = perform.expr else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                perform.span,
+                "parameterized action is missing its checked perform expression",
+            ));
+        };
+        let Some(performed) = self.checked.effects.performed_actions.get(&expr) else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                perform.span,
+                "parameterized action is missing its checked selector instance",
+            ));
+        };
+        let coverage = etas_effects::EffectCoverage {
+            registry: &self.checked.effect_registry,
+            types: &self.checked.type_store,
+        };
+        Ok(performed
+            .summary
+            .requested_actions
+            .effects
+            .iter()
+            .any(|effect| {
+                let etas_effects::Effect::AppliedAction(instance) = effect else {
+                    return false;
+                };
+                let expected =
+                    etas_effects::Effect::AppliedAction(etas_effects::ActionInstanceRef {
+                        action: instance.action.clone(),
+                        args: pattern.selectors.clone(),
+                    });
+                coverage.covers(&expected, effect)
+            }))
     }
 
     fn error_raise_matches_record(
         &self,
         perform: &PendingPerform,
         handler: &ActiveHandlerArmRecord,
-    ) -> bool {
+        frame: Option<&Frame>,
+    ) -> Result<bool, ExecutionFault> {
         if perform.error_type.is_none() {
-            return false;
+            return Ok(false);
         }
         if perform.action.action != "raise"
             || perform
@@ -699,7 +810,7 @@ impl<'a> EvalContext<'a> {
                 .last()
                 .is_none_or(|segment| segment.name != "Error")
         {
-            return false;
+            return Ok(false);
         }
         if handler.action != "raise"
             || handler
@@ -707,15 +818,47 @@ impl<'a> EvalContext<'a> {
                 .last()
                 .is_none_or(|segment| segment != "Error")
         {
-            return false;
+            return Ok(false);
         }
-        let [handler_error] = handler.effect_type_args.as_slice() else {
-            return false;
+        let missing = |reason| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                handler.span,
+                reason,
+            )
+        };
+        let fact = self
+            .checked
+            .types
+            .handler_actions
+            .get(&handler.arm)
+            .ok_or_else(|| missing("Error handler has no checked action fact".to_owned()))?;
+        let [etas_types::EffectArgRef::Type(handler_error)] = fact.selectors.as_slice() else {
+            return Err(missing(
+                "Error handler has no single checked type selector".to_owned(),
+            ));
         };
         let Some(perform_error) = perform.error_type else {
-            return false;
+            return Ok(false);
         };
-        type_ids_match(&self.checked.type_store, perform_error, *handler_error)
+        let frame = frame.ok_or_else(|| {
+            missing("Error handler matching requires its lexical type environment".to_owned())
+        })?;
+        let handler_error = etas_types::substitute_named_params_in_store(
+            &self.checked.type_store,
+            *handler_error,
+            frame.type_bindings(),
+        )
+        .map_err(|error| {
+            missing(format!(
+                "Error handler type cannot be instantiated: {error}"
+            ))
+        })?;
+        Ok(type_ids_match(
+            &self.checked.type_store,
+            perform_error,
+            handler_error,
+        ))
     }
 }
 
@@ -732,11 +875,12 @@ fn handler_rows_compatible(
 }
 
 fn active_handler_arm(
+    arm: HirHandlerArmId,
     handler: &HirHandlerArm,
-    fact: &etas_effects::HandlerArmFact,
     body: HirBlockId,
 ) -> ActiveHandlerArmRecord {
     ActiveHandlerArmRecord {
+        arm,
         effect_segments: handler
             .action
             .effect
@@ -747,24 +891,6 @@ fn active_handler_arm(
             .collect(),
         action: handler.action.action.clone(),
         action_symbol: resolved_symbol(&handler.action.action_symbol),
-        type_args: handler
-            .generic_args
-            .iter()
-            .map(|arg| match arg {
-                HirGenericArg::Type(ty) => *ty,
-                HirGenericArg::EffectRow(_) => {
-                    panic!(
-                        "effect-row generic argument reached runtime handler record without checked instantiation facts"
-                    )
-                }
-                HirGenericArg::Wildcard { .. } => {
-                    panic!(
-                        "wildcard generic argument reached runtime handler record without checked instantiation facts"
-                    )
-                }
-            })
-            .collect(),
-        effect_type_args: fact.action.effect_type_args.clone(),
         patterns: handler.patterns.clone(),
         body,
         scope: handler.scope,

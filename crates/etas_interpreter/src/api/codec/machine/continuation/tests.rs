@@ -21,7 +21,7 @@ fn shared_continuation_edges_preserve_wire_and_checked_identity_validation() {
         .unwrap();
     let limits = etas_host::StorageLimits::default();
     let wire = json!({"kind":"chain", "inner":{"kind":"return"},
-        "outer":{"kind":"call_boundary", "outer":{"kind":"block_value"}}});
+        "outer":{"kind":"call_boundary", "span":span_snapshot(crate::testing::synthetic_span()), "outer":{"kind":"block_value"}}});
     let original = continuation_from_snapshot(&limits, &wire, &checked).unwrap();
     assert_eq!(codec::snapshot::continuation_json(&original), wire);
     let runtime = original
@@ -38,6 +38,8 @@ fn shared_continuation_edges_preserve_wire_and_checked_identity_validation() {
         &limits,
     );
     let machine = |continuation| MachineSnapshot {
+        program_owners: Default::default(),
+        suspended_programs: Vec::new(),
         frames: vec![MachineFrameSnapshot::Continuation { continuation }],
     };
     validator
@@ -47,13 +49,14 @@ fn shared_continuation_edges_preserve_wire_and_checked_identity_validation() {
     let ContinuationSnapshot::Chain { outer, .. } = &mut changed else {
         panic!("chain")
     };
-    let ContinuationSnapshot::CallBoundary { outer } = outer.as_mut() else {
+    let ContinuationSnapshot::CallBoundary { outer, .. } = outer.as_mut() else {
         panic!("call boundary")
     };
     *outer.as_mut() = ContinuationSnapshot::ContinueBlock {
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
             type_bindings: vec![],
@@ -85,7 +88,7 @@ fn continuation_decode_builds_snapshot_locals_without_a_temporary_runtime_frame(
     for count in [1000, 2000, 4000] {
         let wire = json!({
             "kind":"continue_block", "block":0, "next_stmt_index":0,
-            "frame": { "id":73, "type_bindings":[], "locals":
+            "frame": { "id":73, "effect_row_bindings": [], "type_bindings":[], "locals":
                 (0..count).map(|symbol| json!({"symbol":symbol,
                     "value":{"kind":"string", "value":"x".repeat(1024)}})).collect::<Vec<_>>()
             }
@@ -165,7 +168,7 @@ fn direct_continuation_decode_preserves_deep_payloads_and_rejects_late_invalid_n
         };
         assert_eq!(actual, expected);
         let mut invalid = json!({"kind":"aggregate_element", "expr":0, "next_index":0,
-            "frame":{"id":1,"locals":[],"type_bindings":[]}, "values":[]});
+            "frame":{"id":1,"locals":[],"effect_row_bindings": [], "type_bindings":[]}, "values":[]});
         // A completed deep child must be released safely if the next node fails.
         let mut expected_wire =
             codec::snapshot::continuation_json(&ContinuationSnapshot::ListConsTail {
@@ -197,11 +200,11 @@ fn direct_continuation_decode_preserves_deep_payloads_and_rejects_late_invalid_n
 fn direct_frame_decode_rejects_zero_identity_and_duplicate_bindings() {
     let limits = etas_host::StorageLimits::default();
     for wire in [
-        json!({"id":0,"locals":[],"type_bindings":[]}),
+        json!({"id":0,"locals":[],"effect_row_bindings": [], "type_bindings":[]}),
         json!({"id":1,"locals":[
             {"symbol":7,"value":{"kind":"unit"}},
-            {"symbol":7,"value":{"kind":"unit"}}],"type_bindings":[]}),
-        json!({"id":1,"locals":[],"type_bindings":[
+            {"symbol":7,"value":{"kind":"unit"}}],"effect_row_bindings": [], "type_bindings":[]}),
+        json!({"id":1,"locals":[],"effect_row_bindings": [], "type_bindings":[
             {"name":"T","type":1},{"name":"T","type":2}]}),
     ] {
         assert!(locals_from_snapshot(&limits, &wire).is_err());
@@ -213,7 +216,7 @@ fn callable_decode_preserves_artifact_frame_identity_in_both_representations() {
     let limits = etas_host::StorageLimits::default();
     let wire = json!({"kind":"lambda","expr":3,"captured":{
         "id":7341, "locals":[{"symbol":7,"value":{"kind":"string","value":"kept"}}],
-        "type_bindings":[{"name":"T","type":4}]
+        "effect_row_bindings": [], "type_bindings":[{"name":"T","type":4}]
     }});
     let snapshot =
         super::super::call_target::call_target_snapshot_from_json(&limits, &wire).unwrap();

@@ -317,6 +317,14 @@ flow main() -> Option<string> {
         ))
     );
     assert_eq!(replay_host.memory_call_count(), 1);
+    assert_eq!(resumed.checkpoints.len(), 1);
+    assert_eq!(
+        resumed.checkpoints[0]
+            .completed_host_boundaries
+            .completed
+            .len(),
+        1
+    );
     assert!(resumed.events.iter().any(|event| matches!(
         event,
         WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted { .. })
@@ -869,6 +877,14 @@ flow main() -> unit {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(resumed.value().cloned(), Some(value::InterpValue::Unit));
     assert_eq!(replay_host.memory_call_count(), 1);
+    assert_eq!(resumed.checkpoints.len(), 1);
+    assert_eq!(
+        resumed.checkpoints[0]
+            .completed_host_boundaries
+            .completed
+            .len(),
+        1
+    );
     assert_eq!(
         replay_host.memory_value(
             "project_memory",

@@ -2,8 +2,66 @@ use super::*;
 use etas_hir::HirItemId;
 
 #[test]
+fn effect_row_bindings_roundtrip_in_callable_wrappers_and_captured_frames() {
+    let row = etas_types::EffectRowRef {
+        effects: vec![etas_types::EffectRef {
+            name: "Console.stdout_write".into(),
+            args: vec![],
+        }],
+        tail: None,
+    };
+    let bindings = vec![("Z".into(), row.clone()), ("A".into(), row)];
+    let mut sorted = bindings.clone();
+    sorted.sort_unstable();
+    let target = CallTargetSnapshot::Specialized {
+        target: CallTargetSnapshot::Lambda {
+            expr: HirExprId(3),
+            captured: LocalsSnapshot {
+                id: 71,
+                locals: Rc::new(vec![]),
+                type_bindings: vec![],
+                effect_row_bindings: sorted.clone(),
+            },
+        }
+        .into(),
+        type_bindings: vec![],
+        effect_row_bindings: bindings.clone(),
+    };
+    let wire = encode(Node::CallTarget(&target));
+    let limits = etas_host::StorageLimits::default();
+    let decoded = codec::machine::call_target_snapshot_from_json(&limits, &wire).unwrap();
+    assert_eq!(decoded, target);
+    let runtime = codec::machine::call_target_from_artifact_snapshot(&limits, &wire).unwrap();
+    assert_eq!(codec::machine::call_target_snapshot(&runtime), wire);
+    let CallTarget::Specialized {
+        target: child,
+        effect_row_bindings,
+        ..
+    } = runtime
+    else {
+        panic!("specialized");
+    };
+    assert_eq!(effect_row_bindings, bindings);
+    let CallTarget::Lambda { captured, .. } = &*child else {
+        panic!("lambda");
+    };
+    assert_eq!(captured.generic_bindings().sorted_rows(), sorted);
+    for captured_frame in [false, true] {
+        let mut missing = wire.clone();
+        let node = if captured_frame {
+            &mut missing["target"]["captured"]
+        } else {
+            &mut missing
+        };
+        node.as_object_mut().unwrap().remove("effect_row_bindings");
+        assert!(codec::machine::call_target_snapshot_from_json(&limits, &missing).is_err());
+    }
+}
+
+#[test]
 fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() {
     let target = CallTargetSnapshot::Specialized {
+        effect_row_bindings: Vec::new(),
         target: CallTargetSnapshot::Limited {
             target: CallTargetSnapshot::Composed(
                 (vec![
@@ -22,7 +80,7 @@ fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() 
         "kind":"limited", "target": {"kind":"composed", "targets":[
             {"kind":"flow", "item":7}, {"kind":"enum_variant", "symbol":11}
         ]}, "limits":[]
-    }, "type_bindings":[{"name":"T", "type":3}]});
+    }, "effect_row_bindings": [], "type_bindings":[{"name":"T", "type":3}]});
     let retained = target.clone();
     let encoded = encode(Node::CallTarget(&target));
     assert_eq!(encoded, expected);
@@ -34,7 +92,7 @@ fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() 
     for changed in [
         json!({"kind":"limited", "target":null, "limits":[]}),
         json!({"kind":"composed", "targets":[{"kind":"flow", "item":7}, {"kind":"unknown"}]}),
-        json!({"kind":"specialized", "target":{"kind":"flow","item":7}, "type_bindings":[{"name":"T","type":-1}]}),
+        json!({"kind":"specialized", "target":{"kind":"flow","item":7}, "effect_row_bindings": [], "type_bindings":[{"name":"T","type":-1}]}),
     ] {
         assert!(codec::machine::call_target_snapshot_from_json(&limits, &changed).is_err());
     }
@@ -43,6 +101,7 @@ fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() 
 #[test]
 fn shared_call_target_snapshot_encoding_does_not_change_after_copy_on_write() {
     let frame = LocalsSnapshot {
+        effect_row_bindings: Vec::new(),
         id: 1,
         locals: Rc::new(vec![(SymbolId(1), ValueSnapshot::String("saved".into()))]),
         type_bindings: vec![],
@@ -92,6 +151,7 @@ fn iterative_call_target_decode_roundtrips_deep_bindings_limits_and_frames_on_wi
     let mut target = CallTargetSnapshot::Lambda {
         expr: HirExprId(7),
         captured: LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 19,
             locals: Rc::new(vec![(SymbolId(9), ValueSnapshot::String("saved".into()))]),
             type_bindings: vec![("U".into(), TypeId(3))],
@@ -99,6 +159,7 @@ fn iterative_call_target_decode_roundtrips_deep_bindings_limits_and_frames_on_wi
     };
     for i in 0..4000 {
         target = CallTargetSnapshot::Specialized {
+            effect_row_bindings: Vec::new(),
             target: CallTargetSnapshot::Limited {
                 target: target.into(),
                 limits: vec![RuntimeLimit {

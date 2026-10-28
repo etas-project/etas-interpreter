@@ -110,10 +110,6 @@ impl ControlSignal {
         Self::Session(Box::new(pending))
     }
 
-    pub fn pending_console(pending: PendingConsole) -> Self {
-        Self::Console(Box::new(pending))
-    }
-
     pub fn pending_command(pending: PendingCommand) -> Self {
         Self::Command(Box::new(pending))
     }
@@ -166,6 +162,7 @@ pub struct PendingExpr {
 
 #[derive(Clone, Debug)]
 pub struct PendingCall {
+    pub site: Option<super::CallSite>,
     pub target: CallTarget,
     pub args: Vec<InterpValue>,
     pub span: Span,
@@ -174,12 +171,47 @@ pub struct PendingCall {
 
 #[derive(Clone, Debug)]
 pub struct PendingPerform {
+    pub checked_action: Option<super::CheckedActionInvocation>,
+    pub default_boundary: Option<Box<super::DefaultActionBoundary>>,
+    pub forwarded_call: Option<crate::intrinsic::dispatch::CheckedStdIntrinsicCall>,
     pub expr: Option<HirExprId>,
     pub action: ResolvedActionRef,
     pub error_type: Option<etas_types::TypeId>,
+    pub inference: Option<Box<crate::api::ModelExecutionPolicy>>,
     pub args: Vec<InterpValue>,
     pub span: Span,
     pub continuation: Continuation,
+}
+
+impl PendingPerform {
+    pub(crate) fn typed_error(
+        ty: etas_types::TypeId,
+        payload: InterpValue,
+        span: Span,
+        continuation: Continuation,
+    ) -> Self {
+        Self {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            expr: None,
+            action: ResolvedActionRef {
+                effect: etas_hir::HirEffectRef {
+                    path: etas_hir::unresolved_path_from_segments(&["Error"], span),
+                    args: Vec::new(),
+                    span,
+                },
+                action: "raise".into(),
+                action_symbol: etas_hir::ResolveResult::Unresolved,
+                span,
+            },
+            error_type: Some(ty),
+            inference: None,
+            args: vec![payload],
+            span,
+            continuation,
+        }
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -245,6 +277,22 @@ pub enum HostBoundaryRequest {
     Browser(BrowserProtocolRequest),
 }
 
+impl HostBoundaryRequest {
+    pub(crate) fn bind_authority(&mut self, current: etas_host::AuthorityContext) {
+        match self {
+            Self::SessionHistory(request) => request.authority = current,
+            Self::SessionContext(request) => request.authority = current,
+            Self::MemoryWrite(request) => request.authority = current,
+            Self::Filesystem(request) => request.authority = current,
+            Self::Tcp(request) => request.authority = current,
+            Self::Stream(request) => request.authority = current,
+            Self::Tls(request) => request.authority = current,
+            Self::Secret(request) => request.authority = current,
+            Self::Browser(request) => request.authority = current,
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub struct SourceToolBinding {
     pub name: String,
@@ -302,9 +350,8 @@ pub enum HostBoundaryDecode {
     FilesystemStat,
     TcpStream,
     StreamRead,
-    StreamBytes,
     TlsStream,
-    SecretValue,
+    SecretValue { result_type: etas_types::TypeId },
     SecretBytes { result_type: etas_types::TypeId },
     BrowserPayload,
 }

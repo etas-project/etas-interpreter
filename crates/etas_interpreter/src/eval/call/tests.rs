@@ -40,8 +40,10 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
             panic!("flow")
         };
         let options = RunOptions::default();
-        let mut eval = EvalContext::new(EvalContextInput {
+        let (program, mut run_state) = EvalContextInput {
             storage_limits: Default::default(),
+            code_definitions: None,
+            syntax_limits: Default::default(),
             event_observer: None,
             execution: etas_host::execution::ExecutionScope::new_owned(),
             checked: &checked,
@@ -53,7 +55,9 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
             current_session: None,
             entry_item: checked.entry.unwrap(),
             entry_args: &[],
-        });
+        }
+        .into_parts();
+        let mut eval = EvalContext::new(program, &mut run_state);
         let mut frame = Frame::new(plan.slots.clone());
         for _ in 0..2 {
             let (signal, cost) =
@@ -107,6 +111,8 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
                 &limits,
             );
             let machine = |continuation| crate::orchestration::MachineSnapshot {
+                program_owners: Default::default(),
+                suspended_programs: Vec::new(),
                 frames: vec![crate::orchestration::MachineFrameSnapshot::Continuation {
                     continuation,
                 }],
@@ -134,11 +140,14 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
         let results_pointer = evaluated.as_ptr();
         let (signal, cost) = measure(|| {
             eval.resume_call_args(
-                CallTarget::FlowItem(item),
-                args,
-                count / 2,
-                evaluated,
-                span,
+                CallArgsState {
+                    call,
+                    target: CallTarget::FlowItem(item),
+                    args,
+                    start_arg_index: count / 2,
+                    evaluated_args: evaluated,
+                    span,
+                },
                 &mut frame,
             )
         });

@@ -24,10 +24,17 @@ type FrameIdentity = (*const (), u64);
 /// owned by the borrowed root, including its captured frames. No cache escapes.
 #[derive(Default)]
 pub(in crate::eval::machine) struct CaptureContext {
+    pub(in crate::eval::machine) revisions: std::collections::BTreeMap<
+        etas_code::RevisionKey,
+        std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+    >,
     pub(super) values: HashMap<CaptureIdentity, ValueSnapshot>,
     pub(super) call_nodes: HashMap<*const CallTarget, CallTargetSnapshotLink>,
     pub(super) call_tables: HashMap<*const Vec<CallTarget>, CallTargetSnapshotChildren>,
     pub(super) continuations: HashMap<NonNull<Continuation>, ContinuationSnapshotLink>,
+    suspension_ids: HashMap<usize, u32>,
+    action_providers: HashMap<u32, usize>,
+    pending_suspensions: Vec<super::super::suspension::ProgramContinuation>,
     first_frame: Option<(FrameIdentity, LocalsSnapshot)>,
     frames: HashMap<FrameIdentity, LocalsSnapshot>,
     first_active: Option<*const ()>,
@@ -35,6 +42,56 @@ pub(in crate::eval::machine) struct CaptureContext {
 }
 
 impl CaptureContext {
+    pub(super) fn suspension(
+        &mut self,
+        continuation: &super::super::suspension::ProgramContinuation,
+    ) -> Result<u32, String> {
+        let identity = continuation.checkpoint_identity()?;
+        if let Some(id) = self.suspension_ids.get(&identity) {
+            return Ok(*id);
+        }
+        let id = u32::try_from(self.pending_suspensions.len())
+            .ok()
+            .and_then(|id| id.checked_add(1))
+            .ok_or("too many suspended program segments in checkpoint")?;
+        self.suspension_ids.insert(identity, id);
+        self.action_providers
+            .insert(id, continuation.projected_action()?.evidence_identity()?);
+        self.pending_suspensions.push(continuation.clone());
+        Ok(id)
+    }
+
+    pub(in crate::eval::machine) fn action_origin(
+        &mut self,
+        projection: &crate::plan::code::ActionProjection,
+        continuation: &crate::orchestration::ContinuationSnapshot,
+    ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
+        let key = projection.source_identity()?;
+        let mut found = None;
+        for id in continuation.suspension_ids() {
+            if self.action_providers.get(&id) == Some(&key) {
+                if found.is_some() {
+                    return Err("action invocation has multiple suspended origin owners".into());
+                }
+                found = Some(id);
+            }
+        }
+        match found {
+            Some(id) => Ok(crate::orchestration::ActionInvocationSnapshot::FromSuspension { id }),
+            None => projection.checkpoint_origin(&mut self.revisions),
+        }
+    }
+
+    pub(in crate::eval::machine) fn capture_suspensions(
+        &mut self,
+    ) -> Result<Vec<crate::orchestration::SuspendedProgramSnapshot>, String> {
+        let mut result = Vec::new();
+        while result.len() < self.pending_suspensions.len() {
+            let pending = self.pending_suspensions[result.len()].clone();
+            result.push(pending.capture(self)?);
+        }
+        Ok(result)
+    }
     pub(super) fn call_target(
         &mut self,
         target: &CallTarget,
@@ -42,14 +99,17 @@ impl CaptureContext {
         super::call_target::capture_call_target_with(target, self)
     }
 
-    pub(super) fn continuation(
+    pub(in crate::eval::machine) fn continuation(
         &mut self,
         continuation: &crate::control::Continuation,
     ) -> Result<crate::orchestration::ContinuationSnapshot, String> {
         crate::orchestration::ContinuationSnapshot::capture_with(continuation, self)
     }
 
-    pub(super) fn value(&mut self, value: &InterpValue) -> Result<ValueSnapshot, String> {
+    pub(in crate::eval::machine) fn value(
+        &mut self,
+        value: &InterpValue,
+    ) -> Result<ValueSnapshot, String> {
         super::value_capture::capture_with(value, self)
     }
 
@@ -69,6 +129,7 @@ impl CaptureContext {
                 id: frame.snapshot_id(),
                 locals: Rc::new(locals),
                 type_bindings: frame.sorted_type_bindings(),
+                effect_row_bindings: frame.generic_bindings().sorted_rows(),
             });
         if let Some(key @ (backing, _)) = identity {
             if self.first_active == Some(backing) {

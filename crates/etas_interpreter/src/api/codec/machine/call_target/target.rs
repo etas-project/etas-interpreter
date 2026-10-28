@@ -12,6 +12,13 @@ pub(super) trait TargetValue: Sized {
     type Frame;
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String>;
     fn build(target: DecodedTarget<Self::Frame, Self>) -> Self;
+    fn agent_reference(
+        reference: crate::orchestration::CheckpointAgentReference,
+    ) -> Result<Self, String>;
+    fn scoped(
+        metadata: Box<crate::orchestration::ScopedCallableMetadata>,
+        target: Self,
+    ) -> Result<Self, String>;
 }
 
 pub(super) enum DecodedTarget<F, T> {
@@ -31,6 +38,8 @@ pub(super) enum DecodedTarget<F, T> {
         result_type: TypeId,
     },
     StdIntrinsic {
+        origin: HirExprId,
+        substitutions: Vec<Vec<(String, TypeId)>>,
         intrinsic: StdIntrinsicId,
         dispatch: IntrinsicDispatch,
         parameter_types: Vec<TypeId>,
@@ -39,6 +48,7 @@ pub(super) enum DecodedTarget<F, T> {
     Specialized {
         target: T,
         type_bindings: Vec<(String, TypeId)>,
+        effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     },
     Limited {
         target: T,
@@ -49,6 +59,20 @@ pub(super) enum DecodedTarget<F, T> {
 
 impl TargetValue for CallTargetSnapshot {
     type Frame = LocalsSnapshot;
+    fn scoped(
+        metadata: Box<crate::orchestration::ScopedCallableMetadata>,
+        target: Self,
+    ) -> Result<Self, String> {
+        Ok(Self::Scoped {
+            metadata,
+            target: target.into(),
+        })
+    }
+    fn agent_reference(
+        reference: crate::orchestration::CheckpointAgentReference,
+    ) -> Result<Self, String> {
+        Ok(Self::AgentRevision(Box::new(reference)))
+    }
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
         locals_from_snapshot(limits, value)
     }
@@ -65,9 +89,11 @@ impl TargetValue for CallTargetSnapshot {
             DecodedTarget::Specialized {
                 target,
                 type_bindings,
+                effect_row_bindings,
             } => Self::Specialized {
                 target: target.into(),
                 type_bindings,
+                effect_row_bindings,
             },
             DecodedTarget::Limited { target, limits } => Self::Limited {
                 target: target.into(),
@@ -84,11 +110,15 @@ impl TargetValue for CallTargetSnapshot {
                 result_type,
             },
             DecodedTarget::StdIntrinsic {
+                origin,
+                substitutions,
                 intrinsic,
                 dispatch,
                 parameter_types,
                 result_type,
             } => Self::StdIntrinsic {
+                origin,
+                substitutions,
                 intrinsic,
                 dispatch,
                 parameter_types,
@@ -100,6 +130,15 @@ impl TargetValue for CallTargetSnapshot {
 
 impl TargetValue for CallTarget {
     type Frame = Frame;
+    fn scoped(
+        _: Box<crate::orchestration::ScopedCallableMetadata>,
+        _: Self,
+    ) -> Result<Self, String> {
+        Err("checkpoint scoped callable requires checked native revision restoration".into())
+    }
+    fn agent_reference(_: crate::orchestration::CheckpointAgentReference) -> Result<Self, String> {
+        Err("checkpoint agent reference requires checked native revision restoration".into())
+    }
     fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
         runtime_frame_from_snapshot(limits, value)
     }
@@ -116,9 +155,11 @@ impl TargetValue for CallTarget {
             DecodedTarget::Specialized {
                 target,
                 type_bindings,
+                effect_row_bindings,
             } => Self::Specialized {
                 target: target.into(),
                 type_bindings,
+                effect_row_bindings,
             },
             DecodedTarget::Limited { target, limits } => Self::Limited {
                 target: target.into(),
@@ -135,11 +176,15 @@ impl TargetValue for CallTarget {
                 result_type,
             }),
             DecodedTarget::StdIntrinsic {
+                origin,
+                substitutions,
                 intrinsic,
                 dispatch,
                 parameter_types,
                 result_type,
             } => Self::StdIntrinsic(crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+                origin,
+                substitutions,
                 identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
                     intrinsic,
                     dispatch,

@@ -14,8 +14,19 @@ impl CheckedStdIntrinsicCall {
             substitute_named_params_in_store(store, ty, bindings)
                 .map_err(|error| format!("checked intrinsic ABI is not materialized: {error}"))
         };
+        let mut substitutions = self.substitutions.clone();
+        if !bindings.is_empty() {
+            let mut step = bindings
+                .iter()
+                .map(|(name, ty)| (name.clone(), *ty))
+                .collect::<Vec<_>>();
+            step.sort_by(|left, right| left.0.cmp(&right.0));
+            substitutions.push(step);
+        }
         Ok(Self {
             identity: self.identity,
+            origin: self.origin,
+            substitutions,
             parameter_types: self
                 .parameter_types
                 .iter()
@@ -24,6 +35,34 @@ impl CheckedStdIntrinsicCall {
                 .collect::<Result<_, _>>()?,
             result_type: substitute(self.result_type)?,
         })
+    }
+
+    pub(crate) fn instantiate_type(&self, store: &TypeStore, ty: TypeId) -> Result<TypeId, String> {
+        Self::instantiate_type_with(store, ty, &self.substitutions)
+    }
+
+    pub(crate) fn instantiate_type_with(
+        store: &TypeStore,
+        mut ty: TypeId,
+        steps: &[Vec<(String, TypeId)>],
+    ) -> Result<TypeId, String> {
+        for step in steps {
+            let bindings = step.iter().cloned().collect::<HashMap<_, _>>();
+            if step.is_empty()
+                || bindings.len() != step.len()
+                || step
+                    .iter()
+                    .any(|(name, ty)| name.is_empty() || store.get(*ty).is_none())
+            {
+                return Err(
+                    "checked intrinsic substitution has invalid or duplicate bindings".into(),
+                );
+            }
+            ty = substitute_named_params_in_store(store, ty, &bindings).map_err(|error| {
+                format!("checked intrinsic substitution is not materialized: {error}")
+            })?;
+        }
+        Ok(ty)
     }
 }
 
@@ -36,7 +75,10 @@ mod tests {
     #[test]
     fn checked_abi_specialization_requires_materialized_parameter_and_result_types() {
         let mut interner = TypeInterner::new();
-        let parameter = interner.intern(Type::Named(NamedTypeRef { name: "K".into() }));
+        let parameter = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "K".into(),
+        }));
         let generic = interner.intern(Type::List(parameter));
         let concrete = interner.primitive(PrimitiveType::String);
         let bindings = HashMap::from([("K".into(), concrete)]);
@@ -45,6 +87,8 @@ mod tests {
                 intrinsic: etas_std::StdIntrinsicId(etas_std::intrinsic::runtime::MEMORY_COMMIT),
                 dispatch: etas_std::IntrinsicDispatch::Runtime,
             },
+            origin: etas_hir::HirExprId(7),
+            substitutions: Vec::new(),
             parameter_types: vec![generic],
             result_type: generic,
         };
@@ -57,6 +101,59 @@ mod tests {
         assert_eq!(actual.parameter_types, [specialized]);
         assert_eq!(actual.result_type, specialized);
         assert_eq!(actual.identity, call.identity);
+        assert_eq!(actual.origin, call.origin);
+        assert_eq!(
+            actual.instantiate_type(interner.store(), generic).unwrap(),
+            specialized
+        );
         assert_eq!(call.parameter_types, [generic]);
+    }
+
+    #[test]
+    fn checked_intrinsic_substitutions_preserve_owner_and_callee_scope_order() {
+        let mut interner = TypeInterner::new();
+        let key = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "K".into(),
+        }));
+        let value = interner.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "V".into(),
+        }));
+        let generic = interner.intern(Type::Tuple(vec![value, key]));
+        let integer = interner.primitive(PrimitiveType::I32);
+        let string = interner.primitive(PrimitiveType::String);
+        let concrete = interner.intern(Type::Tuple(vec![string, integer]));
+        let call = CheckedStdIntrinsicCall {
+            identity: StdIntrinsicIdentity {
+                intrinsic: etas_std::StdIntrinsicId(etas_std::intrinsic::runtime::MEMORY_COMMIT),
+                dispatch: etas_std::IntrinsicDispatch::Runtime,
+            },
+            origin: etas_hir::HirExprId(7),
+            substitutions: vec![],
+            parameter_types: vec![generic],
+            result_type: generic,
+        };
+        let owner = HashMap::from([("K".into(), integer), ("V".into(), string)]);
+        let callee = HashMap::from([("K".into(), string), ("V".into(), integer)]);
+        let specialized = call
+            .specialize(interner.store(), &owner)
+            .unwrap()
+            .specialize(interner.store(), &callee)
+            .unwrap();
+        assert_eq!(specialized.parameter_types, [concrete]);
+        assert_eq!(
+            specialized
+                .instantiate_type(interner.store(), generic)
+                .unwrap(),
+            concrete
+        );
+        assert_eq!(
+            specialized
+                .instantiate_type(interner.store(), value)
+                .unwrap(),
+            string
+        );
+        assert_eq!(specialized.substitutions.len(), 2);
     }
 }

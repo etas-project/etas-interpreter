@@ -1,8 +1,11 @@
 mod prepare;
+mod resume;
+mod revision;
 mod run;
 mod shutdown;
 
-pub(crate) use prepare::{resume_checkpoint_inner, run_checked_inner};
+pub(crate) use prepare::run_checked_inner;
+pub(crate) use resume::{resume_checkpoint_inner, resume_source_inner};
 pub(crate) use run::drive_invocation;
 
 pub(crate) struct BodyResult {

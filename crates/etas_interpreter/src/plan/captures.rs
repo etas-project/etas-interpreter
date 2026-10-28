@@ -117,6 +117,9 @@ impl ClosureLayoutTable {
             };
             match data {
                 HirExpr::Path(path) => record_use(&path.resolution)?,
+                HirExpr::Reflect(reflection) => {
+                    record_use(&reflection.target.root_path().resolution)?
+                }
                 HirExpr::Record(record) => {
                     for field in &record.fields {
                         if let HirFieldInit::Shorthand { resolution, .. } = field {

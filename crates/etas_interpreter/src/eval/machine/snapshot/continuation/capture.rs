@@ -37,7 +37,7 @@ impl ContinuationSnapshot {
                 Continuation::RestoreModelPolicy { inner, .. }
                 | Continuation::HandleBoundary { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. }
-                | Continuation::CallBoundary { outer: inner }
+                | Continuation::CallBoundary { outer: inner, .. }
                 | Continuation::HandlerDispatch { outer: inner } => {
                     if let Some(saved) = saved_link(inner, context) {
                         capture_parent(current, saved, context)?
@@ -138,7 +138,10 @@ fn capture_parent(
                 inner: child,
             }
         }
-        Continuation::CallBoundary { .. } => ContinuationSnapshot::CallBoundary { outer: child },
+        Continuation::CallBoundary { span, .. } => ContinuationSnapshot::CallBoundary {
+            span: *span,
+            outer: child,
+        },
         Continuation::HandlerDispatch { .. } => {
             ContinuationSnapshot::HandlerDispatch { outer: child }
         }

@@ -61,6 +61,10 @@ impl<'a> EvalContext<'a> {
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
         let perform = PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            inference: None,
             expr: None,
             action: error_raise_action(console.span),
             error_type: Some(error_type),

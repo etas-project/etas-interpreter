@@ -80,6 +80,7 @@ fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
                 for _ in 0..depth {
                     snapshot = match mode {
                         0 => ContinuationSnapshot::CallBoundary {
+                            span: crate::testing::synthetic_span(),
                             outer: snapshot.into(),
                         },
                         1 => ContinuationSnapshot::Chain {
@@ -108,7 +109,7 @@ fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
                 let mut cursor = runtime.0.as_ref().unwrap();
                 for _ in 0..depth {
                     cursor = match (mode, cursor) {
-                        (0, Continuation::CallBoundary { outer }) => outer,
+                        (0, Continuation::CallBoundary { outer, .. }) => outer,
                         (1, Continuation::Chain { inner, outer }) => {
                             assert!(matches!(**outer, Continuation::Finish));
                             inner
@@ -125,7 +126,7 @@ fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
                     let mut cursor = &retained;
                     for _ in 0..depth {
                         cursor = match (mode, cursor) {
-                            (0, ContinuationSnapshot::CallBoundary { outer }) => outer,
+                            (0, ContinuationSnapshot::CallBoundary { outer, .. }) => outer,
                             (1, ContinuationSnapshot::Chain { inner, .. }) => inner,
                             (2, ContinuationSnapshot::Chain { outer, .. }) => outer,
                             _ => panic!("changed retained snapshot"),
@@ -140,6 +141,7 @@ fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
 
 fn frame(id: u64) -> LocalsSnapshot {
     LocalsSnapshot {
+        effect_row_bindings: Vec::new(),
         id,
         locals: std::rc::Rc::new(vec![(
             etas_hir::SymbolId(1),
@@ -160,6 +162,7 @@ fn restored_shared_links_preserve_frames_and_validate_every_parent() {
     }
     .into();
     let first = ContinuationSnapshot::CallBoundary {
+        span: crate::testing::synthetic_span(),
         outer: shared.clone(),
     };
     let second = ContinuationSnapshot::HandlerDispatch {
@@ -168,7 +171,7 @@ fn restored_shared_links_preserve_frames_and_validate_every_parent() {
     let mut context = RestoreContext::default();
     let first = first.restore_with(&mut context).unwrap();
     let second = second.restore_with(&mut context).unwrap();
-    let (Continuation::CallBoundary { outer: a }, Continuation::HandlerDispatch { outer: b }) =
+    let (Continuation::CallBoundary { outer: a, .. }, Continuation::HandlerDispatch { outer: b }) =
         (&first, &second)
     else {
         panic!("parent kind changed")
@@ -192,10 +195,13 @@ fn restored_shared_links_preserve_frames_and_validate_every_parent() {
     let error = bad_parent.restore_with(&mut context).unwrap_err();
     assert!(error.contains("conflicting definitions"), "{error}");
 
-    let fresh = ContinuationSnapshot::CallBoundary { outer: shared }
-        .restore_with(&mut RestoreContext::default())
-        .unwrap();
-    let Continuation::CallBoundary { outer } = fresh else {
+    let fresh = ContinuationSnapshot::CallBoundary {
+        span: crate::testing::synthetic_span(),
+        outer: shared,
+    }
+    .restore_with(&mut RestoreContext::default())
+    .unwrap();
+    let Continuation::CallBoundary { outer, .. } = fresh else {
         panic!("boundary")
     };
     let Continuation::ContinueBlock { frame: fresh, .. } = outer.as_ref() else {
@@ -262,6 +268,7 @@ fn mixed_restore_preserves_metadata_frame_aliases_and_retained_definitions() {
         for i in 0..depth {
             snapshot = match i % 5 {
                 0 => ContinuationSnapshot::CallBoundary {
+                    span: crate::testing::synthetic_span(),
                     outer: snapshot.into(),
                 },
                 1 => ContinuationSnapshot::HandlerDispatch {
@@ -294,7 +301,7 @@ fn mixed_restore_preserves_metadata_frame_aliases_and_retained_definitions() {
         let mut outer_frame = None;
         for i in (0..depth).rev() {
             cursor = match (i % 5, cursor) {
-                (0, Continuation::CallBoundary { outer })
+                (0, Continuation::CallBoundary { outer, .. })
                 | (1, Continuation::HandlerDispatch { outer }) => outer,
                 (
                     2,
@@ -346,7 +353,7 @@ fn mixed_restore_preserves_metadata_frame_aliases_and_retained_definitions() {
         let mut cursor = &retained;
         loop {
             cursor = match cursor {
-                ContinuationSnapshot::CallBoundary { outer }
+                ContinuationSnapshot::CallBoundary { outer, .. }
                 | ContinuationSnapshot::HandlerDispatch { outer } => outer,
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => inner,
@@ -377,6 +384,7 @@ fn restore_rejects_late_invalid_frames_and_releases_completed_deep_branches() {
             for i in 0..30_000 {
                 inner = match i % 6 {
                     0 => ContinuationSnapshot::CallBoundary {
+                        span: crate::testing::synthetic_span(),
                         outer: inner.into(),
                     },
                     1 => ContinuationSnapshot::HandlerDispatch {

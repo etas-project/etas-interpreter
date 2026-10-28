@@ -328,7 +328,7 @@ flow main() -> unit {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
             && diagnostic
                 .message
-                .contains("memory-region resource handle is missing checked resource handle facts")
+                .contains(&format!("MissingResourceFact({project_memory_symbol:?})"))
     }));
     assert_eq!(result.diagnostics.len(), 1);
 }
@@ -438,7 +438,7 @@ flow main() -> unit {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
             && diagnostic
                 .message
-                .contains("memory-region resource handle is missing checked resource handle facts")
+                .contains(&format!("MissingResourceFact({project_memory_symbol:?})"))
     }));
     assert_eq!(result.diagnostics.len(), 1);
 }

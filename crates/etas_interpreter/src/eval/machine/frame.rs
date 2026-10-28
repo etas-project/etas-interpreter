@@ -86,6 +86,7 @@ pub(crate) struct SourceToolReturnFrame {
 
 #[derive(Debug)]
 pub(crate) enum EvalFrame {
+    ProgramReturn(Box<ProgramReturnFrame>),
     Block(BlockFrame),
     Call(CallFrame),
     Continuation(ContinuationFrame),
@@ -96,9 +97,25 @@ pub(crate) enum EvalFrame {
     SourceToolReturn(SourceToolReturnFrame),
 }
 
+#[derive(Debug)]
+pub(crate) struct ProgramReturnFrame {
+    pub site: Option<crate::control::CallSite>,
+    pub parent: Option<super::state::ProgramScope>,
+    pub parent_program: crate::value::CheckedExecutionProgram,
+    pub parent_model_policy: crate::api::ModelExecutionPolicy,
+    pub call: super::scoped_call::ProgramCall,
+    pub outer: Continuation,
+    pub span: Span,
+    pub retry_depth: usize,
+}
+
 impl EvalFrame {
     pub(crate) fn from_continuation(continuation: Continuation) -> Self {
         match continuation {
+            Continuation::CallBoundary { span, outer } => Self::Call(CallFrame {
+                continuation: outer.into_value(),
+                span,
+            }),
             Continuation::HandleBoundary {
                 scope_id,
                 inner,
@@ -133,8 +150,14 @@ impl EvalFrame {
         }
     }
 
-    pub(crate) fn into_continuation(self) -> Continuation {
-        match self {
+    pub(crate) fn into_continuation(self) -> Result<Continuation, String> {
+        Ok(match self {
+            Self::ProgramReturn(_) => {
+                return Err(
+                    "revision boundary cannot be flattened into a program-local continuation"
+                        .into(),
+                );
+            }
             Self::Block(frame) => frame.continuation,
             Self::Call(frame) => frame.continuation,
             Self::Continuation(frame) => frame.continuation,
@@ -157,11 +180,12 @@ impl EvalFrame {
             },
             Self::ModelLoop(frame) => frame.outer_continuation,
             Self::SourceToolReturn(frame) => frame.model_loop.outer_continuation,
-        }
+        })
     }
 
     pub(crate) fn retry_continuation(&self) -> Option<Continuation> {
         let continuation = match self {
+            Self::ProgramReturn(_) => return None,
             Self::Block(frame) => &frame.continuation,
             Self::Call(frame) => &frame.continuation,
             Self::Continuation(frame) => &frame.continuation,

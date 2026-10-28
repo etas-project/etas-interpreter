@@ -1,3 +1,4 @@
+pub mod code;
 pub mod codec;
 pub mod lifecycle;
 
@@ -7,7 +8,7 @@ mod options;
 mod result;
 
 pub use crate::{
-    orchestration::{InterpreterCheckpoint, WorkflowEvent},
+    orchestration::{CheckpointCodeRevision, InterpreterCheckpoint, WorkflowEvent},
     plan::InterpreterPlan,
     value::InterpValue,
 };

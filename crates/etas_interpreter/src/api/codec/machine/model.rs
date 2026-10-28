@@ -4,7 +4,7 @@ use super::value::{
     optional_string, optional_u32, required, required_bool, required_str, required_usize,
 };
 
-pub(super) fn model_policy_snapshot(
+pub(in crate::api::codec) fn model_policy_snapshot(
     policy: &crate::orchestration::ModelExecutionPolicySnapshot,
 ) -> Value {
     json!({
@@ -31,7 +31,7 @@ pub(super) fn model_policy_snapshot(
     })
 }
 
-pub(super) fn model_policy_from_snapshot(
+pub(in crate::api::codec) fn model_policy_from_snapshot(
     value: &Value,
 ) -> Result<crate::orchestration::ModelExecutionPolicySnapshot, String> {
     let provider_capabilities = match value.get("provider_capabilities") {

@@ -161,6 +161,10 @@ impl EvalContext<'_> {
             Err(error) => return ControlSignal::missing_checked_fact(error, span),
         };
         self.propagate_perform_signal(PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            inference: None,
             expr: None,
             action: ResolvedActionRef {
                 effect: etas_hir::HirEffectRef {

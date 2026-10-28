@@ -29,16 +29,39 @@ pub(super) fn equal(left: &[CallTargetSnapshot], right: &[CallTargetSnapshot]) -
             use CallTargetSnapshot as T;
             match (left, right) {
                 (
+                    T::Scoped {
+                        metadata: a,
+                        target: at,
+                    },
+                    T::Scoped {
+                        metadata: b,
+                        target: bt,
+                    },
+                ) => {
+                    if a != b {
+                        return false;
+                    }
+                    if !already_seen(
+                        at.0.as_ref().expect("live scoped callable snapshot"),
+                        bt.0.as_ref().expect("live scoped callable snapshot"),
+                        &mut seen_nodes,
+                    ) {
+                        next = Some((at, bt));
+                    }
+                }
+                (
                     T::Specialized {
                         target: a,
                         type_bindings: ab,
+                        effect_row_bindings: ar,
                     },
                     T::Specialized {
                         target: b,
                         type_bindings: bb,
+                        effect_row_bindings: br,
                     },
                 ) => {
-                    if ab != bb {
+                    if ab != bb || ar != br {
                         return false;
                     }
                     if !already_seen(
@@ -88,8 +111,14 @@ pub(super) fn equal(left: &[CallTargetSnapshot], right: &[CallTargetSnapshot]) -
                         }
                     }
                 }
-                (T::Specialized { .. } | T::Limited { .. } | T::Composed(_), _)
-                | (_, T::Specialized { .. } | T::Limited { .. } | T::Composed(_)) => return false,
+                (
+                    T::Scoped { .. } | T::Specialized { .. } | T::Limited { .. } | T::Composed(_),
+                    _,
+                )
+                | (
+                    _,
+                    T::Scoped { .. } | T::Specialized { .. } | T::Limited { .. } | T::Composed(_),
+                ) => return false,
                 (a, b) => {
                     if a != b {
                         return false;

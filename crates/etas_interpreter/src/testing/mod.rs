@@ -127,6 +127,9 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                handler_requests: None,
+                returned_callables: None,
+                default_handler_effects: None,
                 item: tool_path,
                 public_effects: ProjectExternalEffectRowInput::default(),
                 requested_actions: ProjectExternalEffectRowInput::default(),
@@ -143,3 +146,9 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
 }
 
 mod cases;
+pub(crate) fn synthetic_span() -> etas_core::Span {
+    etas_core::Span::new(
+        etas_core::SourceId(0),
+        etas_core::TextRange::empty(etas_core::TextSize(0)),
+    )
+}

@@ -153,11 +153,10 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
     let original = InterpValue::Array(ArrayValue::new(vec![InterpValue::i32(7)]));
     let mut locals = Frame::from_snapshot(vec![(symbol, original.clone())]).unwrap();
     let arm = ActiveHandlerArmRecord {
+        arm: etas_hir::HirHandlerArmId(7),
         effect_segments: vec!["Test".into()],
         action: "probe".into(),
         action_symbol: Some(SymbolId(8)),
-        type_args: vec![],
-        effect_type_args: vec![],
         patterns: vec![],
         body: HirBlockId(9),
         scope: ScopeId(2),

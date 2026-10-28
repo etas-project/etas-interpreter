@@ -212,7 +212,7 @@ fn literal_snapshot(value: &mut C) -> Option<&mut C> {
         | C::MapKey { .. }
         | C::MapValue { .. } => Some(value),
         C::Chain { inner, outer } => literal_snapshot(inner).or_else(|| literal_snapshot(outer)),
-        C::CallBoundary { outer } | C::HandlerDispatch { outer } => literal_snapshot(outer),
+        C::CallBoundary { outer, .. } | C::HandlerDispatch { outer } => literal_snapshot(outer),
         C::HandleBoundary { inner, .. }
         | C::ScopedModelPolicy { inner, .. }
         | C::RestoreModelPolicy { inner, .. } => literal_snapshot(inner),

@@ -36,6 +36,9 @@ fn same_node<'a>(
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
         (V::MemoryWriteIntent(a), V::MemoryWriteIntent(b)) => a == b,
+        (V::CodeIdentity { ty: a, identity: x }, V::CodeIdentity { ty: b, identity: y }) => {
+            a == b && x == y
+        }
         (V::Nominal { ty: a, value: x }, V::Nominal { ty: b, value: y }) => {
             pending.push((x, y));
             a == b

@@ -6,6 +6,25 @@ pub(super) fn decode(
     value: &Value,
 ) -> Result<ValueSnapshot, InterpreterCodecError> {
     match required_str(value, "kind")? {
+        "compiler_identity" => {
+            reject_unknown_fields(
+                value,
+                &["kind", "schema", "ty", "value"],
+                "compiler identity",
+            )?;
+            if required_u32(value, "schema")? != 1 {
+                return Err(InterpreterCodecError::new(
+                    "unsupported compiler identity schema",
+                ));
+            }
+            let identity = serde::Deserialize::deserialize(required_obj(value, "value")?).map_err(
+                |error| InterpreterCodecError::new(format!("invalid compiler identity: {error}")),
+            )?;
+            Ok(ValueSnapshot::CodeIdentity {
+                ty: TypeId(required_u32(value, "ty")?),
+                identity,
+            })
+        }
         "message" => session::message_parts(limits, value, snapshot_from_json_with_limits)
             .map(|message| ValueSnapshot::Message(message.into())),
         "conversation" => {
@@ -35,3 +54,6 @@ pub(super) fn decode(
         _ => scalar::decode(limits, value).map(Into::into),
     }
 }
+
+#[cfg(test)]
+mod tests;

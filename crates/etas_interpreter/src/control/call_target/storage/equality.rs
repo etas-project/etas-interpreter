@@ -30,13 +30,15 @@ pub(super) fn equal(left: &[CallTarget], right: &[CallTarget]) -> bool {
                     T::Specialized {
                         target: a,
                         type_bindings: ab,
+                        effect_row_bindings: ar,
                     },
                     T::Specialized {
                         target: b,
                         type_bindings: bb,
+                        effect_row_bindings: br,
                     },
                 ) => {
-                    if ab != bb {
+                    if ab != bb || ar != br {
                         return false;
                     }
                     if !already_seen(

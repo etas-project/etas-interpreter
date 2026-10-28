@@ -25,7 +25,7 @@ enum HostBoundaryFailure {
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
-    boundary: PendingHostBoundary,
+    mut boundary: PendingHostBoundary,
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
     let kind = host_boundary_kind(&boundary.request);
@@ -77,6 +77,7 @@ pub(in crate::driver) async fn dispatch(
         ));
         return None;
     }
+    boundary.request.bind_authority(eval.host_authority());
     if let Err(error) = host_boundary_budget(&boundary.request).check_time() {
         if matches!(
             &boundary.request,
@@ -99,16 +100,13 @@ pub(in crate::driver) async fn dispatch(
         );
     }
     let result = match boundary.request.clone() {
-        HostBoundaryRequest::SessionContext(mut request) => {
-            request.authority = eval.host_authority();
+        HostBoundaryRequest::SessionContext(request) => {
             return Some(super::session_context::dispatch(eval, host, boundary, request).await);
         }
-        HostBoundaryRequest::SessionHistory(mut request) => {
-            request.authority = eval.host_authority();
+        HostBoundaryRequest::SessionHistory(request) => {
             return Some(super::session_history::dispatch(eval, host, boundary, request).await);
         }
-        HostBoundaryRequest::MemoryWrite(mut request) => {
-            request.authority = eval.host_authority();
+        HostBoundaryRequest::MemoryWrite(request) => {
             return Some(super::memory_commit::dispatch(eval, host, boundary, request).await);
         }
         HostBoundaryRequest::Filesystem(request) => match HostDispatch::execute(
@@ -205,7 +203,6 @@ pub(in crate::driver) async fn dispatch(
                 .map(|secret| {
                     host_boundary_value_from_secret(
                         boundary.decode,
-                        eval.known_std_types.secret_value,
                         secret,
                         &eval.checked.type_store,
                     )
@@ -240,7 +237,15 @@ pub(in crate::driver) async fn dispatch(
     match result {
         Ok(Ok(value)) => {
             if host_boundary_is_replayable(&boundary.request) {
-                eval.record_completed_host_boundary(occurrence, kind, key, value.clone());
+                if let Err(fault) = eval.record_completed_host_boundary(
+                    occurrence,
+                    kind,
+                    key,
+                    value.clone(),
+                    boundary.span,
+                ) {
+                    return Some(ControlSignal::Fault(Box::new(fault)));
+                }
             }
             Some(eval.resume_host_signal(boundary, value))
         }
@@ -422,12 +427,6 @@ pub(in crate::driver) fn host_boundary_value_from_stream_payload(
                 fields: Vec::new().into(),
             })
         }
-        (HostBoundaryDecode::StreamBytes, StreamPayload::Read(StreamRead::Data(bytes))) => {
-            Ok(InterpValue::Bytes(bytes.into()))
-        }
-        (HostBoundaryDecode::StreamBytes, StreamPayload::Read(StreamRead::Eof)) => {
-            Ok(InterpValue::Bytes(Vec::new().into()))
-        }
         (HostBoundaryDecode::Unit, StreamPayload::Unit) => Ok(InterpValue::Unit),
         (decode, payload) => Err(format!(
             "stream response payload {:?} does not match decode {:?}",
@@ -455,17 +454,16 @@ pub(in crate::driver) fn host_boundary_value_from_tls_stream(
 
 pub(in crate::driver) fn host_boundary_value_from_secret(
     decode: HostBoundaryDecode,
-    nominal_type: Option<etas_types::TypeId>,
     payload: SecretPayload,
     store: &etas_types::TypeStore,
 ) -> Result<InterpValue, String> {
     match (decode, payload) {
-        (HostBoundaryDecode::SecretValue, SecretPayload::Value(secret)) => {
-            let nominal_type = nominal_type.ok_or_else(|| {
-                "secret response requires checked std.secret.SecretValue type".to_owned()
+        (HostBoundaryDecode::SecretValue { result_type }, SecretPayload::Value(secret)) => {
+            store.get(result_type).ok_or_else(|| {
+                "secret response requires its checked instantiated result type".to_owned()
             })?;
             Ok(InterpValue::HostHandle(HostHandleValue::secret_value(
-                nominal_type,
+                result_type,
                 secret,
             )))
         }
@@ -783,7 +781,6 @@ mod tests {
             HostBoundaryDecode::SecretBytes {
                 result_type: digest,
             },
-            None,
             SecretPayload::Bytes(vec![7; 32]),
             types.store(),
         )
@@ -797,7 +794,6 @@ mod tests {
             assert!(
                 host_boundary_value_from_secret(
                     HostBoundaryDecode::SecretBytes { result_type },
-                    None,
                     SecretPayload::Bytes(vec![7; 32]),
                     types.store(),
                 )
@@ -833,20 +829,30 @@ mod tests {
             7
         );
 
+        let mut types = etas_types::TypeInterner::new();
+        let key = types.primitive(etas_types::PrimitiveType::String);
+        let constructor = types.intern(etas_types::Type::Named(etas_types::NamedTypeRef {
+            source_parameter: None,
+            name: "std.secret.SecretValue".into(),
+        }));
+        let result_type = types.intern(etas_types::Type::Applied {
+            constructor: etas_types::TypeConstructorId(constructor.0),
+            args: vec![key],
+        });
         let secret = host_boundary_value_from_secret(
-            HostBoundaryDecode::SecretValue,
-            Some(etas_types::TypeId(102)),
+            HostBoundaryDecode::SecretValue { result_type },
             etas_host::SecretPayload::Value(etas_host::SecretValue::new(
                 etas_host::SecretRef::new("secret-1"),
                 "<redacted>",
             )),
-            etas_types::TypeInterner::new().store(),
+            types.store(),
         )
         .expect("secret response should decode");
         let InterpValue::HostHandle(secret) = secret else {
             panic!("secret response must produce a sealed host handle");
         };
         assert_eq!(secret.kind_name(), "secret_value");
+        assert_eq!(secret.nominal_type(), result_type);
         assert_eq!(
             secret
                 .secret_ref()

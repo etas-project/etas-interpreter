@@ -38,6 +38,11 @@ pub(crate) enum PendingToolDispatch {
 }
 
 pub(super) enum MachineInput {
+    EnterProgram {
+        call: super::scoped_call::ProgramCall,
+        args: Vec<InterpValue>,
+        span: Span,
+    },
     Signal(ControlSignal),
     ModelResult(Result<ModelResponse, HostError>),
     ToolResult(Result<ToolResponse, HostError>),
@@ -45,6 +50,7 @@ pub(super) enum MachineInput {
 }
 
 pub(crate) enum MachinePoll {
+    ProgramChanged,
     CooperativeYield,
     Cancelled(etas_host::execution::CancellationCause),
     Complete(Box<InterpValue>),
@@ -54,16 +60,34 @@ pub(crate) enum MachinePoll {
 
 #[derive(Default)]
 pub(crate) struct EvalMachine {
-    stack: Vec<EvalFrame>,
-    active_call_depth: u32,
+    pub(super) checkpoint_root: Option<super::snapshot::CheckpointRoot>,
+    pub(super) program_scope: Option<ProgramScope>,
+    pub(super) stack: Vec<EvalFrame>,
+    pub(super) active_call_depth: std::rc::Rc<std::cell::Cell<u32>>,
     pub(super) input: Option<MachineInput>,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct ProgramScope {
+    pub program: crate::value::CheckedExecutionProgram,
+    pub handler_floor: usize,
+}
+
+impl ProgramScope {
+    pub(crate) fn program(&self) -> &etas_frontend::CheckedProgram {
+        &self.program.checked
+    }
+}
+
 impl EvalMachine {
+    pub(crate) fn program_scope(&self) -> Option<ProgramScope> {
+        self.program_scope.clone()
+    }
     pub(crate) fn new() -> Self {
         Self::default()
     }
 
+    #[cfg(test)]
     pub(crate) fn from_snapshot(
         snapshot: &MachineSnapshot,
         checked: &etas_frontend::CheckedProject,
@@ -73,96 +97,180 @@ impl EvalMachine {
         current: &crate::api::HostExecutionContext,
         limits: &etas_host::StorageLimits,
     ) -> Result<Self, String> {
+        Self::from_snapshot_with_resources(
+            snapshot,
+            checked,
+            slots,
+            dispatch,
+            closures,
+            current,
+            super::snapshot::SnapshotRestoreResources {
+                locked_model: None,
+                limits,
+                revisions: None,
+                root: None,
+            },
+        )
+    }
+
+    pub(crate) fn from_snapshot_with_resources(
+        snapshot: &MachineSnapshot,
+        checked: &etas_frontend::CheckedProject,
+        slots: std::sync::Arc<crate::plan::SlotLayoutTable>,
+        dispatch: &crate::plan::IntrinsicDispatchTable,
+        closures: &crate::plan::ClosureLayoutTable,
+        current: &crate::api::HostExecutionContext,
+        resources: super::snapshot::SnapshotRestoreResources<'_>,
+    ) -> Result<Self, String> {
+        let limits = resources.limits;
         super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, closures, limits)
+            .with_revisions(resources.revisions.as_deref())
             .validate_machine(snapshot)?;
-        let mut context = super::snapshot::RestoreContext::default();
-        let stack = snapshot
-            .frames
-            .iter()
-            .cloned()
-            .map(|frame| -> Result<_, String> {
-                Ok(match frame {
-                    MachineFrameSnapshot::Block { continuation } => {
-                        EvalFrame::Block(super::frame::BlockFrame {
-                            continuation: continuation.restore_with(&mut context)?,
-                        })
-                    }
-                    MachineFrameSnapshot::Expr { continuation } => {
-                        EvalFrame::Expr(super::frame::ExprFrame {
-                            continuation: continuation.restore_with(&mut context)?,
-                        })
-                    }
-                    MachineFrameSnapshot::Call { continuation, span } => {
-                        EvalFrame::Call(super::frame::CallFrame {
-                            continuation: continuation.restore_with(&mut context)?,
-                            span,
-                        })
-                    }
-                    MachineFrameSnapshot::Continuation { continuation } => {
-                        EvalFrame::Continuation(super::frame::ContinuationFrame {
-                            continuation: continuation.restore_with(&mut context)?,
-                        })
-                    }
-                    MachineFrameSnapshot::Handler { continuation } => {
-                        let frame =
-                            EvalFrame::from_continuation(continuation.restore_with(&mut context)?);
-                        if !matches!(frame, EvalFrame::Handler(_)) {
-                            return Err(
-                                "checkpoint handler frame does not contain a handler boundary"
-                                    .to_owned(),
-                            );
-                        }
-                        frame
-                    }
-                    MachineFrameSnapshot::Retry { continuation } => {
-                        let frame =
-                            EvalFrame::from_continuation(continuation.restore_with(&mut context)?);
-                        if !matches!(frame, EvalFrame::Retry(_)) {
-                            return Err("checkpoint retry frame does not contain a retry attempt"
-                                .to_owned());
-                        }
-                        frame
-                    }
-                    MachineFrameSnapshot::ModelLoop(frame) => {
-                        EvalFrame::ModelLoop(Box::new(frame.restore(current, &mut context)?))
-                    }
-                    MachineFrameSnapshot::SourceToolReturn(frame) => {
-                        EvalFrame::SourceToolReturn(frame.restore(current, &mut context)?)
-                    }
-                })
-            })
-            .collect::<Result<Vec<_>, _>>()?;
+        let mut contexts = std::collections::HashMap::new();
         let mut machine = Self::new();
+        let suspensions = if snapshot.suspended_programs.is_empty() {
+            None
+        } else {
+            let table = std::rc::Rc::new(std::cell::RefCell::new(std::collections::HashMap::new()));
+            super::suspension::checkpoint::restore_graph(
+                snapshot,
+                resources
+                    .revisions
+                    .as_ref()
+                    .ok_or("suspended checkpoint has no prepared revision environment")?,
+                &mut contexts,
+                &table,
+                &machine.active_call_depth,
+                current,
+                &resources.locked_model,
+            )?;
+            Some(table)
+        };
+        let mut scope: Option<ProgramScope> = None;
+        let mut stack = Vec::with_capacity(snapshot.frames.len());
+        for frame in snapshot.frames.iter().cloned() {
+            let parent_checked = scope
+                .as_ref()
+                .map_or(checked, |scope| &scope.program.checked);
+            let key = std::sync::Arc::as_ptr(parent_checked) as usize;
+            let context = contexts.entry(key).or_insert_with(|| {
+                let mut context = super::snapshot::RestoreContext::for_program(
+                    parent_checked.clone(),
+                    resources.revisions.clone(),
+                );
+                context.suspensions = suspensions.clone();
+                context.locked_model = resources.locked_model.clone();
+                context
+            });
+            if let MachineFrameSnapshot::ProgramReturn(frame) = frame {
+                super::snapshot::program::resolve_destination(
+                    &frame,
+                    parent_checked,
+                    resources.revisions.as_deref(),
+                    limits,
+                )?;
+                let call = super::scoped_call::ProgramCall::restore_target(
+                    context.restore_call_target(frame.call)?,
+                    parent_checked,
+                )?;
+                let destination = call.destination()?;
+                let parent_program = scope
+                    .as_ref()
+                    .map(|scope| scope.program.clone())
+                    .or_else(|| resources.root.as_ref().map(|root| root.program.clone()))
+                    .ok_or("active checkpoint has no checked root execution program")?;
+                stack.push(EvalFrame::ProgramReturn(Box::new(
+                    super::frame::ProgramReturnFrame {
+                        site: Some(frame.call_site.restore(context)?),
+                        parent: scope.clone(),
+                        parent_program,
+                        parent_model_policy: super::snapshot::program::restore_model_policy(
+                            frame.parent_model_policy,
+                        ),
+                        call,
+                        outer: frame.outer.restore_with(context)?,
+                        span: frame.span,
+                        retry_depth: frame.retry_depth,
+                    },
+                )));
+                scope = Some(ProgramScope {
+                    program: destination,
+                    handler_floor: frame.handler_floor,
+                });
+                continue;
+            }
+            stack.push(frame.restore_local(current, context)?);
+        }
+        machine.program_scope = scope;
+        machine.checkpoint_root = resources.root;
         machine.restore_frames(stack);
         Ok(machine)
     }
 
+    #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Result<MachineSnapshot, String> {
+        self.capture_snapshot(&[]).map(|snapshot| snapshot.machine)
+    }
+
+    pub(crate) fn capture_snapshot(
+        &self,
+        args: &[InterpValue],
+    ) -> Result<super::snapshot::CapturedMachineSnapshot, String> {
         let mut context = super::snapshot::CaptureContext::default();
-        let mut frames = Vec::with_capacity(self.stack.len());
-        for frame in &self.stack {
-            frames.push(MachineFrameSnapshot::capture(frame, &mut context)?);
+        for argument in self
+            .checkpoint_root
+            .as_ref()
+            .map_or(args, |root| &root.args)
+        {
+            context.value(argument)?;
         }
-        Ok(MachineSnapshot { frames })
+        let scopes = super::snapshot::program::capture_scopes(self)?;
+        let mut frames = Vec::with_capacity(self.stack.len());
+        for (index, frame) in self.stack.iter().enumerate() {
+            frames.push(match frame {
+                EvalFrame::ProgramReturn(frame) => MachineFrameSnapshot::ProgramReturn(Box::new(
+                    super::snapshot::program::capture(
+                        frame,
+                        scopes
+                            .get(&index)
+                            .ok_or("program boundary has no captured scope")?,
+                        &mut context,
+                    )?,
+                )),
+                _ => MachineFrameSnapshot::capture(frame, &mut context)?,
+            });
+        }
+        let suspended_programs = context.capture_suspensions()?;
+        let mut machine = MachineSnapshot::capture(frames);
+        machine.suspended_programs = suspended_programs;
+        Ok(super::snapshot::CapturedMachineSnapshot {
+            root: self.checkpoint_root.clone(),
+            machine,
+            revisions: context.revisions,
+        })
     }
 
     pub(super) fn push_frame(&mut self, frame: EvalFrame) {
-        if matches!(frame, EvalFrame::Call(_)) {
-            self.active_call_depth = self
-                .active_call_depth
-                .checked_add(1)
-                .expect("machine call depth cannot exceed u32::MAX");
+        if matches!(frame, EvalFrame::Call(_) | EvalFrame::ProgramReturn(_)) {
+            self.active_call_depth.set(
+                self.active_call_depth
+                    .get()
+                    .checked_add(1)
+                    .expect("machine call depth cannot exceed u32::MAX"),
+            );
         }
         self.stack.push(frame);
     }
 
     pub(super) fn pop_frame(&mut self) -> Option<EvalFrame> {
         let frame = self.stack.pop()?;
-        if matches!(frame, EvalFrame::Call(_)) {
-            self.active_call_depth = self
-                .active_call_depth
-                .checked_sub(1)
-                .expect("machine call-depth counter must match the frame stack");
+        if matches!(frame, EvalFrame::Call(_) | EvalFrame::ProgramReturn(_)) {
+            self.active_call_depth.set(
+                self.active_call_depth
+                    .get()
+                    .checked_sub(1)
+                    .expect("machine call-depth counter must match the frame stack"),
+            );
         }
         Some(frame)
     }
@@ -171,20 +279,32 @@ impl EvalMachine {
         assert!(len <= self.stack.len(), "cannot extend stack by truncation");
         let removed_calls = self.stack[len..]
             .iter()
-            .filter(|frame| matches!(frame, EvalFrame::Call(_)))
+            .filter(|frame| matches!(frame, EvalFrame::Call(_) | EvalFrame::ProgramReturn(_)))
             .count() as u32;
-        self.active_call_depth = self
-            .active_call_depth
-            .checked_sub(removed_calls)
-            .expect("machine call-depth counter must match the frame stack");
+        self.active_call_depth.set(
+            self.active_call_depth
+                .get()
+                .checked_sub(removed_calls)
+                .expect("machine call-depth counter must match the frame stack"),
+        );
         self.stack.truncate(len);
     }
 
     pub(super) fn restore_frames(&mut self, frames: Vec<EvalFrame>) {
-        self.active_call_depth = frames
-            .iter()
-            .filter(|frame| matches!(frame, EvalFrame::Call(_)))
-            .count() as u32;
+        self.truncate_to(0);
+        self.active_call_depth.set(
+            self.active_call_depth
+                .get()
+                .checked_add(
+                    frames
+                        .iter()
+                        .filter(|frame| {
+                            matches!(frame, EvalFrame::Call(_) | EvalFrame::ProgramReturn(_))
+                        })
+                        .count() as u32,
+                )
+                .expect("restored call frames cannot exceed u32::MAX"),
+        );
         self.stack = frames;
     }
 
@@ -193,6 +313,6 @@ impl EvalMachine {
     }
 
     pub(super) fn active_call_depth(&self) -> u32 {
-        self.active_call_depth
+        self.active_call_depth.get()
     }
 }

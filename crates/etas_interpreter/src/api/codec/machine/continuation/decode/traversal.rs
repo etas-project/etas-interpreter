@@ -5,7 +5,7 @@ use crate::orchestration::{
 
 enum PendingParent<'a> {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
-    CallBoundary,
+    CallBoundary(etas_core::Span),
     HandlerDispatch,
     HandleBoundary {
         scope_id: HandlerScopeId,
@@ -32,7 +32,9 @@ pub(crate) fn continuation_from_snapshot(
                 continue;
             }
             "call_boundary" => {
-                pending.push(PendingParent::CallBoundary);
+                pending.push(PendingParent::CallBoundary(span_from_snapshot(required(
+                    value, "span",
+                )?)?));
                 value = required(value, "outer")?;
                 continue;
             }
@@ -70,9 +72,10 @@ pub(crate) fn continuation_from_snapshot(
                         inner: node.into(),
                     }
                 }
-                Some(PendingParent::CallBoundary) => {
-                    ContinuationSnapshot::CallBoundary { outer: node.into() }
-                }
+                Some(PendingParent::CallBoundary(span)) => ContinuationSnapshot::CallBoundary {
+                    span,
+                    outer: node.into(),
+                },
                 Some(PendingParent::HandlerDispatch) => {
                     ContinuationSnapshot::HandlerDispatch { outer: node.into() }
                 }

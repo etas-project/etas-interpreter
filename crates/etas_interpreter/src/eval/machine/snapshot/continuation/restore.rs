@@ -7,13 +7,13 @@ use crate::orchestration::{
 
 enum UnaryParent {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
-    CallBoundary,
+    CallBoundary(etas_core::Span),
     HandlerDispatch,
     HandleBoundary {
         scope_id: HandlerScopeId,
         handlers: Vec<ActiveHandlerArmRecord>,
         span: etas_core::Span,
-        frame: LocalsSnapshot,
+        frame: Box<LocalsSnapshot>,
     },
     ScopedModelPolicy(Box<ModelExecutionPolicySnapshot>),
 }
@@ -45,7 +45,7 @@ impl ContinuationSnapshot {
                     Self::RestoreModelPolicy { previous, inner } => {
                         (UnaryParent::RestoreModelPolicy(previous), inner)
                     }
-                    Self::CallBoundary { outer } => (UnaryParent::CallBoundary, outer),
+                    Self::CallBoundary { span, outer } => (UnaryParent::CallBoundary(span), outer),
                     Self::HandlerDispatch { outer } => (UnaryParent::HandlerDispatch, outer),
                     Self::HandleBoundary {
                         scope_id,
@@ -58,7 +58,7 @@ impl ContinuationSnapshot {
                             scope_id,
                             handlers,
                             span,
-                            frame,
+                            frame: Box::new(frame),
                         },
                         inner,
                     ),
@@ -135,7 +135,7 @@ fn restored_link(
     context: &RestoreContext,
 ) -> Option<ContinuationLink> {
     link.shared_identity()
-        .and_then(|key| context.continuations.get(&key))
+        .and_then(|key| context.caches.continuations.get(&key))
         .map(|(_, restored)| restored.clone())
 }
 
@@ -146,7 +146,7 @@ fn completed_link(
 ) -> ContinuationLink {
     let link: ContinuationLink = value.into();
     if let Some(source) = source {
-        context.continuations.insert(
+        context.caches.continuations.insert(
             std::ptr::NonNull::from(source.as_ref()),
             (source, link.clone()),
         );
@@ -164,7 +164,7 @@ fn restore_parent(
             previous: Box::new(restore_model_policy(*previous)),
             inner: child,
         },
-        UnaryParent::CallBoundary => Continuation::CallBoundary { outer: child },
+        UnaryParent::CallBoundary(span) => Continuation::CallBoundary { span, outer: child },
         UnaryParent::HandlerDispatch => Continuation::HandlerDispatch { outer: child },
         UnaryParent::HandleBoundary {
             scope_id,
@@ -176,7 +176,7 @@ fn restore_parent(
             inner: child,
             handlers,
             span,
-            frame: super::super::frame::restore_frame(frame, context)?,
+            frame: super::super::frame::restore_frame(*frame, context)?,
         },
         UnaryParent::ScopedModelPolicy(policy) => Continuation::ScopedModelPolicy {
             policy: Box::new(restore_model_policy(*policy)),

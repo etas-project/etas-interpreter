@@ -20,6 +20,7 @@ fn shared_capture_preserves_parent_identity_and_freezes_live_frames() {
     }
     .into();
     let first = Continuation::CallBoundary {
+        span: crate::testing::synthetic_span(),
         outer: leaf.clone(),
     };
     let second = Continuation::HandlerDispatch { outer: leaf };
@@ -31,7 +32,7 @@ fn shared_capture_preserves_parent_identity_and_freezes_live_frames() {
         )
     };
     let (
-        ContinuationSnapshot::CallBoundary { outer: a },
+        ContinuationSnapshot::CallBoundary { outer: a, .. },
         ContinuationSnapshot::HandlerDispatch { outer: b },
     ) = (&saved_first, &saved_second)
     else {
@@ -44,7 +45,7 @@ fn shared_capture_preserves_parent_identity_and_freezes_live_frames() {
     };
     assert!(saved.locals[0].1.clone().restore().unwrap() == InterpValue::i32(1));
     let newer = ContinuationSnapshot::capture(&first).unwrap();
-    let ContinuationSnapshot::CallBoundary { outer } = newer else {
+    let ContinuationSnapshot::CallBoundary { outer, .. } = newer else {
         panic!("parent")
     };
     let ContinuationSnapshot::ContinueBlock { frame: saved, .. } = outer.as_ref() else {
@@ -70,11 +71,13 @@ fn shared_dag_capture_failure_releases_memoized_nodes() {
     let root = Continuation::Chain {
         inner: root.into(),
         outer: Continuation::PipelineTarget {
+            expr: etas_hir::HirExprId(0),
             input: InterpValue::HostHandle(HostHandleValue::browser_session(
                 etas_types::TypeId(1),
                 "live-session".into(),
             )),
             span: span(),
+            frame: crate::control::Frame::from_snapshot(vec![]).unwrap(),
         }
         .into(),
     };
@@ -224,7 +227,10 @@ fn deep_continuation_capture_uses_explicit_traversal_without_stack_overflow() {
             let mut node = Continuation::Return;
             for _ in 0..depth {
                 node = match mode {
-                    0 => Continuation::CallBoundary { outer: node.into() },
+                    0 => Continuation::CallBoundary {
+                        span: crate::testing::synthetic_span(),
+                        outer: node.into(),
+                    },
                     1 => Continuation::Chain {
                         inner: node.into(),
                         outer: Continuation::Finish.into(),
@@ -249,7 +255,7 @@ fn deep_continuation_capture_uses_explicit_traversal_without_stack_overflow() {
             let mut cursor = &snapshot;
             for _ in 0..depth {
                 cursor = match (mode, cursor) {
-                    (0, ContinuationSnapshot::CallBoundary { outer }) => outer,
+                    (0, ContinuationSnapshot::CallBoundary { outer, .. }) => outer,
                     (1, ContinuationSnapshot::Chain { inner, outer }) => {
                         assert!(matches!(**outer, ContinuationSnapshot::Finish));
                         inner
@@ -281,22 +287,26 @@ fn machine_capture_preserves_its_deep_runtime_continuation_stack() {
     for depth in [1000, 4000, 30_000] {
         let mut root = Continuation::Return;
         for _ in 0..depth {
-            root = Continuation::CallBoundary { outer: root.into() };
+            root = Continuation::CallBoundary {
+                span: crate::testing::synthetic_span(),
+                outer: root.into(),
+            };
         }
         let mut runtime = RuntimeTree(None);
         let mut machine = EvalMachine::new();
         machine.push_frame(EvalFrame::from_continuation(root));
         let result = machine.snapshot();
         let frame_count = machine.frames().len();
-        runtime.0 = Some(machine.pop_frame().unwrap().into_continuation());
+        runtime.0 = Some(machine.pop_frame().unwrap().into_continuation().unwrap());
         assert_eq!(frame_count, 1);
         let snapshot = result.unwrap();
-        let MachineFrameSnapshot::Continuation { continuation } = &snapshot.frames[0] else {
+        let MachineFrameSnapshot::Call { continuation, span } = &snapshot.frames[0] else {
             panic!("wrong machine frame kind")
         };
+        assert_eq!(*span, crate::testing::synthetic_span());
         let mut cursor = continuation;
-        for _ in 0..depth {
-            let ContinuationSnapshot::CallBoundary { outer } = cursor else {
+        for _ in 1..depth {
+            let ContinuationSnapshot::CallBoundary { outer, .. } = cursor else {
                 panic!("missing captured edge")
             };
             cursor = outer;
@@ -316,7 +326,10 @@ fn mixed_capture_preserves_wrapper_metadata_and_detaches_live_frames() {
     let depth = 30_000;
     for i in 0..depth {
         node = match i % 5 {
-            0 => Continuation::CallBoundary { outer: node.into() },
+            0 => Continuation::CallBoundary {
+                span: crate::testing::synthetic_span(),
+                outer: node.into(),
+            },
             1 => Continuation::HandlerDispatch { outer: node.into() },
             2 => Continuation::HandleBoundary {
                 scope_id: HandlerScopeId(i as u32),
@@ -347,7 +360,7 @@ fn mixed_capture_preserves_wrapper_metadata_and_detaches_live_frames() {
     let mut cursor = &snapshot;
     for i in (0..depth).rev() {
         cursor = match (i % 5, cursor) {
-            (0, ContinuationSnapshot::CallBoundary { outer })
+            (0, ContinuationSnapshot::CallBoundary { outer, .. })
             | (1, ContinuationSnapshot::HandlerDispatch { outer }) => outer,
             (
                 2,
@@ -399,6 +412,7 @@ fn capture_rejects_late_live_handles_and_releases_completed_deep_subtrees() {
         let mut inner = Continuation::Return;
         for _ in 0..30_000 {
             inner = Continuation::CallBoundary {
+                span: crate::testing::synthetic_span(),
                 outer: inner.into(),
             };
         }
@@ -418,8 +432,10 @@ fn capture_rejects_late_live_handles_and_releases_completed_deep_subtrees() {
             Continuation::Chain {
                 inner: inner.into(),
                 outer: Continuation::PipelineTarget {
+                    expr: etas_hir::HirExprId(0),
                     input: handle,
                     span: span(),
+                    frame: Frame::from_snapshot(vec![]).unwrap(),
                 }
                 .into(),
             }

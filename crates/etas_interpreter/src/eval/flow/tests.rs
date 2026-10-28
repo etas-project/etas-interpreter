@@ -19,8 +19,10 @@ fn flow_entry_allocation_does_not_scale_with_unrelated_project_locals() {
             .plan
             .unwrap();
         let options = RunOptions::default();
-        let mut eval = EvalContext::new(EvalContextInput {
+        let (program, mut run_state) = EvalContextInput {
             storage_limits: Default::default(),
+            code_definitions: None,
+            syntax_limits: Default::default(),
             event_observer: None,
             execution: etas_host::execution::ExecutionScope::new_owned(),
             checked: &checked,
@@ -32,7 +34,9 @@ fn flow_entry_allocation_does_not_scale_with_unrelated_project_locals() {
             current_session: None,
             entry_item: checked.entry.unwrap(),
             entry_args: &[],
-        });
+        }
+        .into_parts();
+        let mut eval = EvalContext::new(program, &mut run_state);
         let item = checked.entry.unwrap();
         let HirItem::Flow(flow) = &checked.hir.items[item] else {
             panic!("flow")

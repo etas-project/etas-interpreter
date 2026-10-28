@@ -19,8 +19,10 @@ pub(super) fn with_prompt_eval(test: impl FnOnce(&EvalContext<'_>, Span)) {
         })
         .unwrap();
     let options = RunOptions::default();
-    let eval = EvalContext::new(EvalContextInput {
+    let (program, mut run_state) = EvalContextInput {
         storage_limits: Default::default(),
+        code_definitions: None,
+        syntax_limits: Default::default(),
         event_observer: None,
         execution: etas_host::execution::ExecutionScope::new_owned(),
         checked: &checked,
@@ -32,7 +34,9 @@ pub(super) fn with_prompt_eval(test: impl FnOnce(&EvalContext<'_>, Span)) {
         current_session: None,
         entry_item: checked.entry.unwrap(),
         entry_args: &[],
-    });
+    }
+    .into_parts();
+    let eval = EvalContext::new(program, &mut run_state);
     test(&eval, span);
 }
 

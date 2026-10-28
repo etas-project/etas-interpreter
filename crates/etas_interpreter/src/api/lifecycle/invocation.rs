@@ -14,8 +14,13 @@ pub(crate) enum InvocationInput<'a> {
     Run {
         entry: EntryPoint,
         args: Vec<InterpValue>,
+        prepared: Option<&'a std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
     },
-    Resume(&'a InterpreterCheckpoint),
+    Resume {
+        checkpoint: &'a InterpreterCheckpoint,
+        prepared: Option<&'a std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+    },
+    ResumeSource(&'a crate::api::codec::SourceCheckpoint),
 }
 
 /// Single-use execution ownership, established before any planning or polling.
@@ -35,7 +40,33 @@ impl<'a> RunInvocation<'a> {
         host: &'a dyn HostServices,
         options: RunOptions,
     ) -> Self {
-        Self::new(project, host, options, InvocationInput::Run { entry, args })
+        Self::new(
+            project,
+            host,
+            options,
+            InvocationInput::Run {
+                entry,
+                args,
+                prepared: None,
+            },
+        )
+    }
+    pub(crate) fn prepared(
+        revision: &'a std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+        args: Vec<InterpValue>,
+        host: &'a dyn HostServices,
+        options: RunOptions,
+    ) -> Self {
+        Self::new(
+            revision.program(),
+            host,
+            options,
+            InvocationInput::Run {
+                entry: revision.entry(),
+                args,
+                prepared: Some(revision),
+            },
+        )
     }
     pub(crate) fn resume(
         project: &'a CheckedProject,
@@ -43,7 +74,44 @@ impl<'a> RunInvocation<'a> {
         host: &'a dyn HostServices,
         options: RunOptions,
     ) -> Self {
-        Self::new(project, host, options, InvocationInput::Resume(checkpoint))
+        Self::new(
+            project,
+            host,
+            options,
+            InvocationInput::Resume {
+                checkpoint,
+                prepared: None,
+            },
+        )
+    }
+    pub(crate) fn resume_prepared(
+        revision: &'a std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+        checkpoint: &'a InterpreterCheckpoint,
+        host: &'a dyn HostServices,
+        options: RunOptions,
+    ) -> Self {
+        Self::new(
+            revision.program(),
+            host,
+            options,
+            InvocationInput::Resume {
+                checkpoint,
+                prepared: Some(revision),
+            },
+        )
+    }
+    pub(crate) fn resume_source(
+        project: &'a CheckedProject,
+        checkpoint: &'a crate::api::codec::SourceCheckpoint,
+        host: &'a dyn HostServices,
+        options: RunOptions,
+    ) -> Self {
+        Self::new(
+            project,
+            host,
+            options,
+            InvocationInput::ResumeSource(checkpoint),
+        )
     }
     fn new(
         project: &'a CheckedProject,

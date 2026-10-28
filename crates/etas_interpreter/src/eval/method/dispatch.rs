@@ -104,22 +104,6 @@ impl<'a> EvalContext<'a> {
                 frame,
             );
         }
-        if method == "run" {
-            match self.resolve_static_call_target(receiver, frame, span) {
-                Ok(Some(CallTarget::AgentItem(item))) => {
-                    return self.resume_call_args(
-                        CallTarget::AgentItem(item),
-                        args.into(),
-                        0,
-                        Vec::new(),
-                        span,
-                        frame,
-                    );
-                }
-                Ok(_) => {}
-                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-            }
-        }
         let receiver = match self.eval_expr(receiver, frame) {
             ControlSignal::Value(value) => value,
             ControlSignal::Apply(pending) => {
@@ -280,7 +264,34 @@ impl<'a> EvalContext<'a> {
             args,
             span,
         } = dispatch;
-        if let Some(expected) = local_value_method_expected_arg_count(&receiver, method) {
+        if self.checked.types.agent_method_calls.contains_key(&expr) {
+            let target = match self.checked_agent_method_target(expr, receiver, span) {
+                Ok(target) => target,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            let target = match self.specialize_call_target_for_call(expr, target, frame, span) {
+                Ok(target) => target,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            return self.resume_call_args(
+                CallArgsState {
+                    call: expr,
+                    target,
+                    args: args.into(),
+                    start_arg_index: 0,
+                    evaluated_args: Vec::new(),
+                    span,
+                },
+                frame,
+            );
+        }
+        let expected = self
+            .plan
+            .dispatch
+            .std_method(expr)
+            .map(|call| call.parameter_types.len() - 1)
+            .or_else(|| local_value_method_expected_arg_count(&receiver, method));
+        if let Some(expected) = expected {
             return self.resume_local_method_args(
                 LocalMethodArgsState {
                     expr,

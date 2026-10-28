@@ -1,17 +1,17 @@
-use super::{RestoreContext, capture_context::CaptureContext};
+use super::{
+    RestoreContext, capture_context::CaptureContext, capture_model_policy, restore_model_policy,
+};
 mod capture;
 mod restore;
 #[cfg(test)]
 mod tests;
 use std::collections::HashSet;
 
-use crate::api::{ModelExecutionPolicy, ModelResponseDecodePolicy};
 use crate::control::{Continuation, StaticMethodKind};
 use crate::eval::{LocalPlaceComponent, LocalPlaceSegment, SliceExprEval};
 use crate::orchestration::{
     ContinuationSnapshot, LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot,
-    ModelExecutionPolicySnapshot, ModelResponseDecodeSnapshot, SliceExprEvalSnapshot,
-    StaticMethodKindSnapshot, ValueSnapshot,
+    SliceExprEvalSnapshot, StaticMethodKindSnapshot, ValueSnapshot,
 };
 
 impl ContinuationSnapshot {
@@ -20,6 +20,19 @@ impl ContinuationSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match continuation {
+            Continuation::StreamReadReduction(state) => Self::StreamReadReduction {
+                call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
+                    state.call.clone(),
+                ))?,
+                args: capture_values(&state.args, context)?,
+                limit: state.limit,
+                deadline_unix_ms: state.deadline_unix_ms,
+                body: ValueSnapshot::Bytes(state.body.clone()),
+                span: state.span,
+            },
+            Continuation::ProgramResume(pending) => Self::ProgramResume {
+                id: context.suspension(pending)?,
+            },
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -192,10 +205,16 @@ impl ContinuationSnapshot {
                 span: *span,
                 frame: context.frame(frame)?,
             },
-            Continuation::IndexValue { expr, base, span } => Self::IndexValue {
+            Continuation::IndexValue {
+                expr,
+                base,
+                span,
+                frame,
+            } => Self::IndexValue {
                 expr: *expr,
                 base: context.value(base)?,
                 span: *span,
+                frame: context.frame(frame)?,
             },
             Continuation::SliceBase { eval, frame } => Self::SliceBase {
                 eval: capture_slice_eval(*eval),
@@ -206,10 +225,16 @@ impl ContinuationSnapshot {
                 base: context.value(base)?,
                 frame: context.frame(frame)?,
             },
-            Continuation::SliceEnd { eval, base, start } => Self::SliceEnd {
+            Continuation::SliceEnd {
+                eval,
+                base,
+                start,
+                frame,
+            } => Self::SliceEnd {
                 eval: capture_slice_eval(*eval),
                 base: context.value(base)?,
                 start: context.value(start)?,
+                frame: context.frame(frame)?,
             },
             Continuation::MethodReceiver {
                 expr,
@@ -300,30 +325,35 @@ impl ContinuationSnapshot {
                 span: *span,
                 frame: context.frame(frame)?,
             },
-            Continuation::CalleeEval { args, span, frame } => Self::CalleeEval {
+            Continuation::CalleeEval {
+                call,
+                args,
+                span,
+                frame,
+            } => Self::CalleeEval {
+                call: *call,
                 args: args.clone(),
                 span: *span,
                 frame: context.frame(frame)?,
             },
             Continuation::PipelineStageTarget {
-                stages,
+                expr,
                 next_stage_index,
                 targets,
-                current_limits,
                 span,
                 frame,
             } => Self::PipelineStageTarget {
-                stages: stages.clone(),
+                expr: *expr,
                 next_stage_index: *next_stage_index,
                 targets: targets
                     .iter()
                     .map(|target| context.call_target(target))
                     .collect::<Result<Vec<_>, _>>()?,
-                current_limits: current_limits.clone(),
                 span: *span,
                 frame: context.frame(frame)?,
             },
             Continuation::CallArgs {
+                call,
                 target,
                 args,
                 next_arg_index,
@@ -331,6 +361,7 @@ impl ContinuationSnapshot {
                 span,
                 frame,
             } => Self::CallArgs {
+                call: *call,
                 target: context.call_target(target)?,
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
@@ -485,21 +516,35 @@ impl ContinuationSnapshot {
                 span: *span,
                 frame: context.frame(frame)?,
             },
-            Continuation::PipelineInput {
-                stages,
-                span,
-                frame,
-            } => Self::PipelineInput {
-                stages: stages.clone(),
+            Continuation::PipelineInput { expr, span, frame } => Self::PipelineInput {
+                expr: *expr,
                 span: *span,
                 frame: context.frame(frame)?,
             },
-            Continuation::PipelineTarget { input, span } => Self::PipelineTarget {
+            Continuation::PipelineTarget {
+                expr,
+                input,
+                span,
+                frame,
+            } => Self::PipelineTarget {
+                expr: *expr,
                 input: context.value(input)?,
                 span: *span,
+                frame: context.frame(frame)?,
             },
-            Continuation::ComposedCall { remaining, span } => Self::ComposedCall {
+            Continuation::ComposedCall {
+                remaining,
+                next_index,
+                span,
+                site,
+            } => Self::ComposedCall {
+                site: site
+                    .as_ref()
+                    .map(|site| crate::orchestration::CallSiteSnapshot::capture(site, context))
+                    .transpose()?,
                 remaining: remaining
+                    .get(*next_index..)
+                    .ok_or("checkpoint composition cursor is out of bounds")?
                     .iter()
                     .map(|target| context.call_target(target))
                     .collect::<Result<Vec<_>, _>>()?,
@@ -591,17 +636,14 @@ impl ContinuationSnapshot {
                 next_index: *next_index,
                 span: *span,
             },
-            Continuation::AgentPromptBody {
-                item,
+            Continuation::AgentInference {
+                expr,
                 span,
                 model_policy,
-            } => Self::AgentPromptBody {
-                item: *item,
+            } => Self::AgentInference {
+                expr: *expr,
                 span: *span,
-                model_policy: model_policy
-                    .as_deref()
-                    .map(capture_model_policy)
-                    .map(Box::new),
+                model_policy: Box::new(capture_model_policy(model_policy)),
             },
             Continuation::RestoreModelPolicy { .. }
             | Continuation::CallBoundary { .. }
@@ -620,6 +662,32 @@ impl ContinuationSnapshot {
 
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
+            Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
+            Self::StreamReadReduction {
+                call,
+                args,
+                limit,
+                deadline_unix_ms,
+                body,
+                span,
+            } => {
+                let crate::control::CallTarget::StdIntrinsic(call) =
+                    super::call_target::restore_call_target(call, context)?
+                else {
+                    return Err("stream reducer requires a checked standard intrinsic".into());
+                };
+                let ValueSnapshot::Bytes(body) = body else {
+                    return Err("stream reducer buffer must be bytes".into());
+                };
+                Continuation::StreamReadReduction(Box::new(crate::control::StreamReadReduction {
+                    call,
+                    args: restore_values(args, context)?,
+                    limit,
+                    deadline_unix_ms,
+                    body,
+                    span,
+                }))
+            }
             Self::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -792,10 +860,16 @@ impl ContinuationSnapshot {
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
-            Self::IndexValue { expr, base, span } => Continuation::IndexValue {
+            Self::IndexValue {
+                expr,
+                base,
+                span,
+                frame,
+            } => Continuation::IndexValue {
                 expr,
                 base: base.restore_with(context)?,
                 span,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::SliceBase { eval, frame } => Continuation::SliceBase {
                 eval: restore_slice_eval(eval),
@@ -806,10 +880,16 @@ impl ContinuationSnapshot {
                 base: base.restore_with(context)?,
                 frame: super::frame::restore_frame(frame, context)?,
             },
-            Self::SliceEnd { eval, base, start } => Continuation::SliceEnd {
+            Self::SliceEnd {
+                eval,
+                base,
+                start,
+                frame,
+            } => Continuation::SliceEnd {
                 eval: restore_slice_eval(eval),
                 base: base.restore_with(context)?,
                 start: start.restore_with(context)?,
+                frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MethodReceiver {
                 expr,
@@ -900,30 +980,35 @@ impl ContinuationSnapshot {
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
-            Self::CalleeEval { args, span, frame } => Continuation::CalleeEval {
+            Self::CalleeEval {
+                call,
+                args,
+                span,
+                frame,
+            } => Continuation::CalleeEval {
+                call,
                 args,
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::PipelineStageTarget {
-                stages,
+                expr,
                 next_stage_index,
                 targets,
-                current_limits,
                 span,
                 frame,
             } => Continuation::PipelineStageTarget {
-                stages,
+                expr,
                 next_stage_index,
                 targets: targets
                     .into_iter()
                     .map(|target| super::call_target::restore_call_target(target, context))
                     .collect::<Result<Vec<_>, _>>()?,
-                current_limits,
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::CallArgs {
+                call,
                 target,
                 args,
                 next_arg_index,
@@ -931,6 +1016,7 @@ impl ContinuationSnapshot {
                 span,
                 frame,
             } => Continuation::CallArgs {
+                call,
                 target: super::call_target::restore_call_target(target, context)?,
                 args,
                 next_arg_index,
@@ -1085,24 +1171,34 @@ impl ContinuationSnapshot {
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
-            Self::PipelineInput {
-                stages,
-                span,
-                frame,
-            } => Continuation::PipelineInput {
-                stages,
+            Self::PipelineInput { expr, span, frame } => Continuation::PipelineInput {
+                expr,
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
-            Self::PipelineTarget { input, span } => Continuation::PipelineTarget {
+            Self::PipelineTarget {
+                expr,
+                input,
+                span,
+                frame,
+            } => Continuation::PipelineTarget {
+                expr,
                 input: input.restore_with(context)?,
                 span,
+                frame: super::frame::restore_frame(frame, context)?,
             },
-            Self::ComposedCall { remaining, span } => Continuation::ComposedCall {
+            Self::ComposedCall {
+                remaining,
+                span,
+                site,
+            } => Continuation::ComposedCall {
+                site: site.map(|site| site.restore(context)).transpose()?,
+                next_index: 0,
                 remaining: remaining
                     .into_iter()
                     .map(|target| super::call_target::restore_call_target(target, context))
-                    .collect::<Result<Vec<_>, _>>()?,
+                    .collect::<Result<Vec<_>, _>>()?
+                    .into(),
                 span,
             },
             Self::ForLoop {
@@ -1185,16 +1281,14 @@ impl ContinuationSnapshot {
                 next_index,
                 span,
             },
-            Self::AgentPromptBody {
-                item,
+            Self::AgentInference {
+                expr,
                 span,
                 model_policy,
-            } => Continuation::AgentPromptBody {
-                item,
+            } => Continuation::AgentInference {
+                expr,
                 span,
-                model_policy: model_policy
-                    .map(|policy| restore_model_policy(*policy))
-                    .map(Box::new),
+                model_policy: Box::new(restore_model_policy(*model_policy)),
             },
             Self::RestoreModelPolicy { .. }
             | Self::CallBoundary { .. }
@@ -1339,43 +1433,5 @@ fn restore_static_method_kind(value: StaticMethodKindSnapshot) -> StaticMethodKi
         StaticMethodKindSnapshot::AdvancedCollection(value) => {
             StaticMethodKind::AdvancedCollection(value)
         }
-    }
-}
-
-fn capture_model_policy(policy: &ModelExecutionPolicy) -> ModelExecutionPolicySnapshot {
-    ModelExecutionPolicySnapshot {
-        provider: policy.provider.clone(),
-        provider_capabilities: policy.provider_capabilities,
-        model: policy.model.clone(),
-        model_locked: policy.model_locked,
-        tools: policy.tools.clone(),
-        tool_choice: policy.tool_choice.clone(),
-        policy_ref: policy.policy_ref.clone(),
-        options: policy.options.clone(),
-        budget: policy.budget.clone(),
-        response_decode: match policy.response_decode {
-            ModelResponseDecodePolicy::String => ModelResponseDecodeSnapshot::String,
-            ModelResponseDecodePolicy::ModelResponse => ModelResponseDecodeSnapshot::ModelResponse,
-        },
-        max_tool_rounds: policy.max_tool_rounds,
-    }
-}
-
-fn restore_model_policy(policy: ModelExecutionPolicySnapshot) -> ModelExecutionPolicy {
-    ModelExecutionPolicy {
-        provider: policy.provider,
-        provider_capabilities: policy.provider_capabilities,
-        model: policy.model,
-        model_locked: policy.model_locked,
-        tools: policy.tools,
-        tool_choice: policy.tool_choice,
-        policy_ref: policy.policy_ref,
-        options: policy.options,
-        budget: policy.budget,
-        response_decode: match policy.response_decode {
-            ModelResponseDecodeSnapshot::String => ModelResponseDecodePolicy::String,
-            ModelResponseDecodeSnapshot::ModelResponse => ModelResponseDecodePolicy::ModelResponse,
-        },
-        max_tool_rounds: policy.max_tool_rounds,
     }
 }

@@ -1,6 +1,43 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn run_checked_rejects_handler_without_canonical_action_identity() {
+    let mut checked = checked_project(
+        r#"
+module app.main;
+effect Probe { action emit(value: i32) -> i32; }
+flow main() -> i32 {
+    return handle { return perform Probe.emit(7); }
+        with { Probe.emit(value) => { resume value; } };
+}
+"#,
+    );
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+        .handler_action_effects
+        .clear();
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &FakeHost::new(availability(&[])),
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.value().is_none());
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
+            && diagnostic.message.contains("canonical action identity")),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn first_class_handler_slots_preserve_caller_locals_across_checkpoint() {
     use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
     let checked = checked_project(

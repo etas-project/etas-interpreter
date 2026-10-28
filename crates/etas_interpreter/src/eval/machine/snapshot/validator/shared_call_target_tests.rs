@@ -3,7 +3,7 @@ use crate::testing::allocation::measure;
 
 fn with_validator(test: impl FnOnce(&SnapshotValidator<'_>, HirItemId)) {
     let checked = crate::testing::project::checked_project(
-        "module app.main; flow main() -> unit { return; }",
+        "module app.main; flow main(value: i32) -> i32 { return value; } flow invoke() -> i32 { return main(1); }",
     );
     let plan = crate::Interpreter
         .plan(&checked, crate::api::PlanOptions)
@@ -64,6 +64,7 @@ fn shared_callable_validation_visits_one_graph_across_separate_roots() {
 fn failed_frame_validation_is_not_cached_as_success() {
     with_validator(|validator, _| {
         let invalid = LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
             type_bindings: vec![("T".into(), TypeId(u32::MAX))],
@@ -105,6 +106,7 @@ fn shared_callable_validation_cache_preserves_cow_and_outer_binding_errors() {
                 ("T", "missing checked type"),
             ] {
                 let wrapper = CallTargetSnapshot::Specialized {
+                    effect_row_bindings: Vec::new(),
                     target: retained.clone().into(),
                     type_bindings: vec![(name.into(), TypeId(u32::MAX))],
                 };
@@ -124,6 +126,7 @@ fn failed_shared_callable_parent_is_rechecked_after_completed_siblings() {
         for composed in [false, true] {
             let good = target(item, 128, composed);
             let invalid_binding = CallTargetSnapshot::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: good.clone().into(),
                 type_bindings: vec![("".into(), TypeId(u32::MAX))],
             };
@@ -195,21 +198,36 @@ fn callable_validation_cache_lifetime_releases_sources_and_preserves_new_identit
 #[test]
 fn checked_machine_validation_reuses_callable_graph_but_rejects_late_tampering() {
     with_validator(|validator, item| {
-        let span = validator.checked.hir.blocks.iter().next().unwrap().1.span;
+        let (call, args, span) = validator
+            .checked
+            .hir
+            .exprs
+            .iter()
+            .find_map(|(id, expr)| match expr {
+                etas_hir::HirExpr::Call { args, span, .. } => {
+                    Some((id, std::sync::Arc::from(args.as_slice()), *span))
+                }
+                _ => None,
+            })
+            .unwrap();
         for count in [1000, 2000, 4000] {
             let continuation = ContinuationSnapshot::CallArgs {
+                call,
                 target: target(item, 128, true),
-                args: vec![].into(),
-                next_arg_index: 0,
+                args: std::sync::Arc::clone(&args),
+                next_arg_index: 1,
                 evaluated_args: vec![],
                 span,
                 frame: LocalsSnapshot {
+                    effect_row_bindings: Vec::new(),
                     id: 1,
                     locals: Default::default(),
                     type_bindings: vec![],
                 },
             };
             let mut machine = MachineSnapshot {
+                program_owners: Default::default(),
+                suspended_programs: Vec::new(),
                 frames: (0..count)
                     .map(|_| MachineFrameSnapshot::Continuation {
                         continuation: continuation.clone(),

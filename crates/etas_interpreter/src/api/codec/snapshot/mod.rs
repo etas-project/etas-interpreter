@@ -23,8 +23,31 @@ pub(super) fn continuation_json_with_budget(
     encode_with_budget(Node::Continuation(value), budget)
 }
 
+pub(super) fn value_json_with_budget(
+    value: &ValueSnapshot,
+    budget: &mut EncodingBudget,
+) -> Result<Value, super::InterpreterCodecError> {
+    encode_with_budget(Node::Value(value), budget)
+}
+
+pub(super) fn call_target_json_with_budget(
+    value: &CallTargetSnapshot,
+    budget: &mut EncodingBudget,
+) -> Result<Value, super::InterpreterCodecError> {
+    encode_with_budget(Node::CallTarget(value), budget)
+}
+
+pub(super) fn call_site_json_with_budget(
+    value: &crate::orchestration::CallSiteSnapshot,
+    budget: &mut EncodingBudget,
+) -> Result<Value, super::InterpreterCodecError> {
+    encode_with_budget(Node::CallSite(Some(value)), budget)
+}
+
 #[derive(Clone, Copy)]
 pub(super) enum Node<'a> {
+    CallSite(Option<&'a crate::orchestration::CallSiteSnapshot>),
+    Composition(&'a crate::orchestration::ComposedInvocationSnapshot),
     Value(&'a ValueSnapshot),
     Json(&'a crate::value::HostJsonSupportValue),
     Host(&'a crate::value::HostSupportValue),
@@ -56,6 +79,29 @@ fn encode_with_budget(
     while let Some((node, slot)) = pending.pop() {
         budget.admit(node, pending.len())?;
         match node {
+            Node::CallSite(site) => match site {
+                Some(site) => write_object(
+                    [
+                        ("origin", json!(site.kind).into()),
+                        ("frame", Node::Frame(&site.frame).into()),
+                        (
+                            "composition",
+                            site.composition.as_ref().map(Node::Composition).into(),
+                        ),
+                    ],
+                    slot,
+                    &mut pending,
+                ),
+                None => *slot = Value::Null,
+            },
+            Node::Composition(composition) => write_object(
+                [
+                    ("root", Node::CallTarget(&composition.root).into()),
+                    ("path", json!(composition.path).into()),
+                ],
+                slot,
+                &mut pending,
+            ),
             Node::Value(value) => value::encode(value, slot, &mut pending),
             Node::Json(value) => super::json::write(value, slot, |value, slot| {
                 pending.push((Node::Json(value), slot));

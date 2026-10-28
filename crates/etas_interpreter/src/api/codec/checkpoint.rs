@@ -2,6 +2,10 @@ use super::*;
 use crate::orchestration::BoundaryOccurrenceId;
 use std::num::{NonZeroU32, NonZeroU64};
 
+mod source;
+mod suspension;
+pub(crate) use source::ResumeHeader;
+pub use source::SourceCheckpoint;
 #[cfg(test)]
 mod tests;
 
@@ -28,6 +32,17 @@ pub fn checkpoint_from_json_with_limits(
     limits: &etas_host::StorageLimits,
     value: &Value,
     checked: &etas_frontend::CheckedProject,
+) -> Result<InterpreterCheckpoint, InterpreterCodecError> {
+    checkpoint_from_json_with_revisions(limits, value, checked, None)
+}
+
+/// Resolves stored references through already rechecked native revisions, not
+/// through executable data or producer authority embedded in the artifact.
+pub fn checkpoint_from_json_with_revisions(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+    checked: &etas_frontend::CheckedProject,
+    revisions: Option<&std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
 ) -> Result<InterpreterCheckpoint, InterpreterCodecError> {
     limits
         .validate()
@@ -58,8 +73,42 @@ pub fn checkpoint_from_json_with_limits(
         .budget
         .restore()
         .map_err(|error| InterpreterCodecError::new(error.to_string()))?;
-    let machine = machine_from_json(limits, required_obj(checkpoint, "machine")?, checked)?;
+    let machine = machine_from_json_with_revisions(
+        limits,
+        required_obj(checkpoint, "machine")?,
+        checked,
+        revisions.map(|set| set.as_ref()),
+    )?;
+    let slots = crate::plan::SlotLayoutTable::for_project(checked);
+    let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
+        .map_err(|errors| InterpreterCodecError::new(errors.join("; ")))?;
+    let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)
+        .map_err(InterpreterCodecError::new)?;
+    let validator = crate::eval::machine::snapshot::SnapshotValidator::new(
+        checked, &slots, &dispatch, &closures, limits,
+    )
+    .with_revisions(revisions.map(|set| set.as_ref()));
+    let arguments = required_array(checkpoint, "args")?
+        .iter()
+        .map(|value| value::snapshot_from_json_with_limits(limits, value))
+        .collect::<Result<Vec<_>, _>>()?;
+    validator
+        .validate_arguments(entry_item, &arguments)
+        .map_err(InterpreterCodecError::new)?;
+    let mut restore = crate::eval::machine::snapshot::RestoreContext::for_program(
+        checked.clone(),
+        revisions.cloned(),
+    );
+    let arguments = arguments
+        .into_iter()
+        .map(|argument| {
+            argument
+                .restore_with(&mut restore)
+                .map_err(InterpreterCodecError::new)
+        })
+        .collect::<Result<Vec<_>, _>>()?;
     let checkpoint = InterpreterCheckpoint {
+        retained_code: None,
         storage: serde_json::from_value(required_obj(checkpoint, "storage")?.clone()).map_err(
             |error| {
                 InterpreterCodecError::new(format!("invalid checkpoint storage state: {error}"))
@@ -68,9 +117,29 @@ pub fn checkpoint_from_json_with_limits(
         id: CheckpointId(required_u32(checkpoint, "id")?),
         label: required_optional_string(checkpoint, "label")?,
         compilation,
+        code_revision: {
+            let raw = required_obj(checkpoint, "code_revision")?;
+            if raw.is_null() {
+                None
+            } else {
+                let revision: crate::orchestration::CheckpointCodeRevision =
+                    serde_json::from_value(raw.clone()).map_err(|error| {
+                        InterpreterCodecError::new(format!(
+                            "invalid checkpoint code revision: {error}"
+                        ))
+                    })?;
+                revision.validate().map_err(InterpreterCodecError::new)?;
+                Some(revision)
+            }
+        },
         entry_item,
-        args: values_from_array(limits, checkpoint, "args")?,
+        args: arguments,
         machine,
+        model_policy: machine::model_policy_from_snapshot(required_obj(
+            checkpoint,
+            "model_policy",
+        )?)
+        .map_err(InterpreterCodecError::new)?,
         handlers: HandlerSnapshot {
             handlers: required_array(checkpoint, "handlers")?
                 .iter()
@@ -128,16 +197,9 @@ pub fn checkpoint_from_json_with_limits(
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
         },
     };
-    let slots = crate::plan::SlotLayoutTable::for_project(checked);
-    let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
-        .map_err(|errors| InterpreterCodecError::new(errors.join("; ")))?;
-    let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)
+    validator
+        .validate_checkpoint(&checkpoint)
         .map_err(InterpreterCodecError::new)?;
-    crate::eval::machine::snapshot::SnapshotValidator::new(
-        checked, &slots, &dispatch, &closures, limits,
-    )
-    .validate_checkpoint(&checkpoint)
-    .map_err(InterpreterCodecError::new)?;
     Ok(checkpoint)
 }
 
@@ -402,6 +464,7 @@ fn host_outcome_json(outcome: &etas_host::HostOutcome) -> Value {
 
 fn host_request_kind_name(kind: etas_host::HostRequestKind) -> &'static str {
     match kind {
+        etas_host::HostRequestKind::Compiler => "compiler",
         etas_host::HostRequestKind::Model => "model",
         etas_host::HostRequestKind::Tool => "tool",
         etas_host::HostRequestKind::Approval => "approval",
@@ -427,9 +490,11 @@ pub(super) fn checkpoint_json(
         "id": checkpoint.id.0,
         "label": checkpoint.label,
         "compilation": compilation_identity_json(&checkpoint.compilation),
+        "code_revision": checkpoint.code_revision,
         "entry_item": checkpoint.entry_item.0,
         "args": null,
         "machine": null,
+        "model_policy": machine::model_policy_snapshot(&checkpoint.model_policy),
         "handlers": checkpoint.handlers.handlers.iter().map(|handler| {
             json!({
                 "id": handler.id.0,
@@ -462,8 +527,19 @@ pub(super) fn checkpoint_json(
             })
         }).collect::<Vec<_>>(),
     }));
-    artifact.value_mut()["args"] = Value::Array(checkpoint.args.iter().map(value_json).collect());
-    artifact.value_mut()["machine"] = machine_json(&checkpoint.machine)?;
+    let mut budget = snapshot::EncodingBudget::default();
+    artifact.value_mut()["args"] = Value::Array(
+        checkpoint
+            .args
+            .iter()
+            .map(|value| {
+                let captured = crate::orchestration::ValueSnapshot::capture(value)
+                    .map_err(InterpreterCodecError::new)?;
+                snapshot::value_json_with_budget(&captured, &mut budget)
+            })
+            .collect::<Result<Vec<_>, _>>()?,
+    );
+    artifact.value_mut()["machine"] = machine_json_with_budget(&checkpoint.machine, &mut budget)?;
     Ok(artifact.into_value())
 }
 
@@ -601,6 +677,7 @@ pub(super) fn compilation_identity_from_json(
     })
 }
 
+#[cfg(test)]
 pub(super) fn machine_json(machine: &MachineSnapshot) -> Result<Value, InterpreterCodecError> {
     machine_json_with_budget(machine, &mut snapshot::EncodingBudget::default())
 }
@@ -609,13 +686,30 @@ fn machine_json_with_budget(
     machine: &MachineSnapshot,
     budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
-    let mut object = CheckpointDocument::from_value(json!({"frames":[]}));
-    for frame in &machine.frames {
-        let frame = machine_frame_json(frame, budget)?;
+    machine
+        .validate_program_owners()
+        .map_err(InterpreterCodecError::new)?;
+    if !machine.suspended_programs.is_empty() {
+        machine
+            .suspension_order()
+            .map_err(InterpreterCodecError::new)?;
+    }
+    budget.register_suspensions(machine.suspended_programs.len());
+    let mut object = CheckpointDocument::from_value(json!({"frames":[], "suspended_programs":[]}));
+    for (index, frame) in machine.frames.iter().enumerate() {
+        let mut frame = machine_frame_json(frame, budget)?;
+        frame["program_owner"] = json!(machine.program_owner(index));
         object.value_mut()["frames"]
             .as_array_mut()
             .expect("machine frame array was initialized above")
             .push(frame);
+    }
+    for suspended in &machine.suspended_programs {
+        let node = suspension::encode(suspended, budget)?;
+        object.value_mut()["suspended_programs"]
+            .as_array_mut()
+            .ok_or_else(|| InterpreterCodecError::new("suspended program array is missing"))?
+            .push(node);
     }
     Ok(object.into_value())
 }
@@ -625,6 +719,9 @@ fn machine_frame_json(
     budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
     let (mut object, continuation) = match frame {
+        MachineFrameSnapshot::ProgramReturn(frame) => {
+            return machine::program_return_json(frame, budget);
+        }
         MachineFrameSnapshot::Block { continuation } => {
             (json!({"kind":"block","continuation":null}), continuation)
         }
@@ -660,18 +757,70 @@ fn machine_frame_json(
     Ok(object)
 }
 
-pub(super) fn machine_from_json(
+fn machine_from_json_with_revisions(
     limits: &etas_host::StorageLimits,
     value: &Value,
-    checked: &etas_frontend::CheckedProject,
+    root: &etas_frontend::CheckedProject,
+    revisions: Option<&crate::api::code::PreparedRevisionSet>,
 ) -> Result<MachineSnapshot, InterpreterCodecError> {
+    let mut machine = machine_frames_from_json(limits, value, root, revisions)?;
+    let nodes = required_array(value, "suspended_programs")?;
+    if nodes.len() > limits.max_nodes {
+        return Err(InterpreterCodecError::new(
+            "suspended program graph exceeds resource limits",
+        ));
+    }
+    machine.suspended_programs = nodes
+        .iter()
+        .map(|node| suspension::decode(limits, node, revisions))
+        .collect::<Result<_, _>>()?;
+    machine
+        .suspension_order()
+        .map_err(InterpreterCodecError::new)?;
+    Ok(machine)
+}
+
+fn machine_frames_from_json(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+    root: &etas_frontend::CheckedProject,
+    revisions: Option<&crate::api::code::PreparedRevisionSet>,
+) -> Result<MachineSnapshot, InterpreterCodecError> {
+    let mut active = root.clone();
+    let mut owner = 0usize;
+    let mut program_owners: Option<Vec<usize>> = None;
     let frames = value
         .get("frames")
         .and_then(Value::as_array)
         .ok_or_else(|| InterpreterCodecError::new("checkpoint machine is missing frame array"))?
         .iter()
-        .map(|frame| {
+        .enumerate()
+        .map(|(index, frame)| {
+            let saved = required_usize(frame, "program_owner")?;
+            if saved != owner {
+                return Err(InterpreterCodecError::new(
+                    "checkpoint frame program owner does not match its active boundary",
+                ));
+            }
+            if let Some(owners) = &mut program_owners {
+                owners.push(saved);
+            }
+            let checked = &active;
             match required_str(frame, "kind")? {
+                "program_return" => {
+                    let frame = machine::program_return_from_json(limits, frame, checked)
+                        .map_err(InterpreterCodecError::new)?;
+                    let destination = crate::eval::machine::snapshot::program::resolve_destination(
+                        &frame, checked, revisions, limits,
+                    )
+                    .map_err(InterpreterCodecError::new)?;
+                    active = destination.checked;
+                    if program_owners.is_none() {
+                        program_owners = Some(vec![0; index + 1]);
+                    }
+                    owner += 1;
+                    return Ok(MachineFrameSnapshot::ProgramReturn(Box::new(frame)));
+                }
                 "model_loop" => {
                     let frame =
                         model_loop_frame_from_json(limits, required_obj(frame, "model")?, checked)?;
@@ -723,7 +872,14 @@ pub(super) fn machine_from_json(
             }
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(MachineSnapshot { frames })
+    Ok(MachineSnapshot {
+        frames,
+        suspended_programs: Vec::new(),
+        program_owners: program_owners.map_or(
+            crate::orchestration::FrameProgramOwners::Root,
+            crate::orchestration::FrameProgramOwners::Scoped,
+        ),
+    })
 }
 
 pub(super) fn model_loop_frame_json(
@@ -1039,11 +1195,10 @@ pub(super) fn model_host_tool_call_from_json(
 
 pub(super) fn handler_arm_json(handler: &ActiveHandlerArmRecord) -> Value {
     json!({
+        "arm": handler.arm.0,
         "effect_segments": handler.effect_segments,
         "action": handler.action,
         "action_symbol": handler.action_symbol.map(|symbol| symbol.0),
-        "type_args": handler.type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
-        "effect_type_args": handler.effect_type_args.iter().map(|ty| ty.0).collect::<Vec<_>>(),
         "patterns": handler.patterns.iter().map(|pat| pat.0).collect::<Vec<_>>(),
         "body": handler.body.0,
         "scope": handler.scope.0,
@@ -1069,17 +1224,10 @@ pub(super) fn handler_arm_from_json(
     value: &Value,
 ) -> Result<ActiveHandlerArmRecord, InterpreterCodecError> {
     Ok(ActiveHandlerArmRecord {
+        arm: etas_hir::HirHandlerArmId(required_u32(value, "arm")?),
         effect_segments: string_array(value, "effect_segments")?,
         action: required_str(value, "action")?.to_owned(),
         action_symbol: optional_u32(value, "action_symbol")?.map(SymbolId),
-        type_args: u32_array(value, "type_args")?
-            .into_iter()
-            .map(HirTypeId)
-            .collect(),
-        effect_type_args: u32_array(value, "effect_type_args")?
-            .into_iter()
-            .map(TypeId)
-            .collect(),
         patterns: u32_array(value, "patterns")?
             .into_iter()
             .map(HirPatId)

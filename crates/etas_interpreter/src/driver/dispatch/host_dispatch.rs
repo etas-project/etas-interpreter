@@ -192,6 +192,23 @@ pub(super) trait TraceableHostResponse: etas_host::execution::OperationResponse 
     }
 }
 
+impl TraceableHostResponse for etas_host::compiler::CompilerResponse {
+    fn response_id(&self) -> HostRequestId {
+        self.id
+    }
+    fn outcome(&self) -> HostOutcome {
+        match &self.result {
+            Err(etas_host::compiler::CompilerFailure::Service { .. }) => {
+                HostOutcome::Failed(HostError::new(
+                    HostErrorCode::ProviderUnavailable,
+                    "compiler service failed",
+                ))
+            }
+            _ => HostOutcome::Succeeded,
+        }
+    }
+}
+
 macro_rules! result_response {
     ($response:ty) => {
         impl TraceableHostResponse for $response {

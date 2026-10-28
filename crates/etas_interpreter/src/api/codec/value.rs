@@ -287,17 +287,6 @@ pub(super) fn host_support_value_from_json(
     decode::host::decode(value)
 }
 
-pub(super) fn values_from_array(
-    limits: &etas_host::StorageLimits,
-    value: &Value,
-    field: &'static str,
-) -> Result<Vec<InterpValue>, InterpreterCodecError> {
-    required_array(value, field)?
-        .iter()
-        .map(|value| value_from_json_with_limits(limits, value))
-        .collect()
-}
-
 pub(crate) fn value_from_json_with_limits(
     limits: &etas_host::StorageLimits,
     value: &Value,

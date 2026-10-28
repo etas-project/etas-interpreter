@@ -1,12 +1,52 @@
 use super::{RestoreContext, capture_context::CaptureContext};
+use crate::api::{ModelExecutionPolicy, ModelResponseDecodePolicy};
 use crate::control::{ModelDecode, PendingModel, SourceToolBinding};
 use crate::eval::machine::frame::{
     HostToolProgress, ModelLoopFrame, ModelRepairState, SourceToolReturnFrame,
 };
 use crate::orchestration::{
-    HostToolProgressSnapshot, ModelDecodeSnapshot, ModelLoopFrameSnapshot, ModelRepairSnapshot,
-    PendingModelSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
+    HostToolProgressSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot,
+    ModelLoopFrameSnapshot, ModelRepairSnapshot, ModelResponseDecodeSnapshot, PendingModelSnapshot,
+    SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
 };
+
+pub(crate) fn capture_model_policy(policy: &ModelExecutionPolicy) -> ModelExecutionPolicySnapshot {
+    ModelExecutionPolicySnapshot {
+        provider: policy.provider.clone(),
+        provider_capabilities: policy.provider_capabilities,
+        model: policy.model.clone(),
+        model_locked: policy.model_locked,
+        tools: policy.tools.clone(),
+        tool_choice: policy.tool_choice.clone(),
+        policy_ref: policy.policy_ref.clone(),
+        options: policy.options.clone(),
+        budget: policy.budget.clone(),
+        response_decode: match policy.response_decode {
+            ModelResponseDecodePolicy::String => ModelResponseDecodeSnapshot::String,
+            ModelResponseDecodePolicy::ModelResponse => ModelResponseDecodeSnapshot::ModelResponse,
+        },
+        max_tool_rounds: policy.max_tool_rounds,
+    }
+}
+
+pub(crate) fn restore_model_policy(policy: ModelExecutionPolicySnapshot) -> ModelExecutionPolicy {
+    ModelExecutionPolicy {
+        provider: policy.provider,
+        provider_capabilities: policy.provider_capabilities,
+        model: policy.model,
+        model_locked: policy.model_locked,
+        tools: policy.tools,
+        tool_choice: policy.tool_choice,
+        policy_ref: policy.policy_ref,
+        options: policy.options,
+        budget: policy.budget,
+        response_decode: match policy.response_decode {
+            ModelResponseDecodeSnapshot::String => ModelResponseDecodePolicy::String,
+            ModelResponseDecodeSnapshot::ModelResponse => ModelResponseDecodePolicy::ModelResponse,
+        },
+        max_tool_rounds: policy.max_tool_rounds,
+    }
+}
 
 impl ModelLoopFrameSnapshot {
     pub(in crate::eval::machine::snapshot) fn capture(
@@ -85,7 +125,10 @@ impl PendingModelSnapshot {
         context: &mut RestoreContext,
     ) -> Result<PendingModel, String> {
         Ok(PendingModel {
-            request: self.request.restore(current),
+            request: self
+                .request
+                .restore(current, context.locked_model.as_ref())
+                .map_err(|error| error.to_string())?,
             decode: match self.decode {
                 ModelDecodeSnapshot::String => ModelDecode::String,
                 ModelDecodeSnapshot::ModelResponse => ModelDecode::ModelResponse,

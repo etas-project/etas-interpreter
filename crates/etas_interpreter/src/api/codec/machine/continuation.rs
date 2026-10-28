@@ -1,6 +1,6 @@
 use etas_hir::{
     HirArg, HirBlockId, HirElseBranch, HirExprId, HirMatchArm, HirMatchArmBody, HirPatId,
-    HirRangeBounds, HirStage, HirTypeId, ScopeId, SymbolId,
+    HirRangeBounds, HirTypeId, ScopeId, SymbolId,
 };
 use serde_json::{Value, json};
 

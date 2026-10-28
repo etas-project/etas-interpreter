@@ -7,13 +7,76 @@ use etas_std::{StdDecl, StdLimitKind};
 use etas_types::{PrimitiveType, SymbolTypeFact, ToolSignature, Type, TypeId};
 use serde_json::Value;
 
+mod inference;
+mod method;
+
 impl<'a> EvalContext<'a> {
     pub(super) fn execute_agent_call(
         &mut self,
         item: HirItemId,
         call_args: Vec<InterpValue>,
         span: Span,
+        type_bindings: std::collections::HashMap<String, TypeId>,
     ) -> ControlSignal {
+        self.execute_agent_call_with_generic_bindings(
+            item,
+            call_args,
+            span,
+            crate::control::GenericBindings {
+                types: type_bindings,
+                rows: Default::default(),
+            },
+        )
+    }
+
+    pub(super) fn execute_agent_call_with_generic_bindings(
+        &mut self,
+        item: HirItemId,
+        call_args: Vec<InterpValue>,
+        span: Span,
+        bindings: crate::control::GenericBindings,
+    ) -> ControlSignal {
+        let Some(etas_types::ItemSignature::Agent(signature)) =
+            self.checked.types.item_signatures.get(&item)
+        else {
+            return ControlSignal::missing_checked_fact(
+                "agent call requires its checked component signature",
+                span,
+            );
+        };
+        let Some(entry) = &signature.default_entry else {
+            return ControlSignal::invalid_arguments("agent has no default entry", span);
+        };
+        let Some(method) = entry
+            .method
+            .and_then(|method| self.checked.types.agent_methods.get(&method))
+        else {
+            return ControlSignal::missing_checked_fact(
+                "agent default entry has no checked method identity",
+                span,
+            );
+        };
+        if method.agent != item {
+            return ControlSignal::missing_checked_fact(
+                "agent default entry belongs to a different component",
+                span,
+            );
+        }
+        if method.body != item {
+            let Some(HirItem::Flow(flow)) = self.checked.hir.items.get(method.body) else {
+                return ControlSignal::missing_checked_fact(
+                    "agent default method has no canonical flow body",
+                    span,
+                );
+            };
+            self.record_agent_message_handoffs(item, &call_args);
+            return self.execute_flow_with_generic_bindings(
+                method.body,
+                flow,
+                &call_args,
+                bindings,
+            );
+        }
         let Some(HirItem::Agent(agent)) = self.checked.hir.items.get(item) else {
             return ControlSignal::fault(
                 AnalysisDiagnosticCode::InvalidArguments,
@@ -42,18 +105,20 @@ impl<'a> EvalContext<'a> {
 
         self.record_agent_message_handoffs(item, &call_args);
 
-        let mut frame = match self.callable_frame(agent.scope, Default::default(), span) {
+        let mut frame = match self.callable_frame_with_generics(agent.scope, bindings, span) {
             Ok(frame) => frame,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
         for (symbol, arg) in agent.params.iter().zip(call_args.into_iter()) {
             frame.insert(*symbol, arg);
         }
-        let body = self
-            .item_primary_block(item)
-            .expect("agent body block should be indexed by HirTreeView");
-        let signal = self.execute_block(body, &mut frame);
-        self.finish_agent_prompt_body(item, signal, span)
+        let Some(body) = self.item_primary_block(item) else {
+            return ControlSignal::missing_checked_fact(
+                "agent default body is missing its canonical HIR body slot",
+                span,
+            );
+        };
+        self.execute_block(body, &mut frame)
     }
 
     fn record_agent_message_handoffs(&mut self, target: HirItemId, args: &[InterpValue]) {
@@ -69,155 +134,6 @@ impl<'a> EvalContext<'a> {
                     session: message.session.clone(),
                     target_item: target.0,
                 });
-        }
-    }
-
-    pub(crate) fn finish_agent_prompt_body(
-        &mut self,
-        item: HirItemId,
-        signal: ControlSignal,
-        span: Span,
-    ) -> ControlSignal {
-        let prompt = match signal {
-            ControlSignal::Return(InterpValue::Prompt(prompt))
-            | ControlSignal::Value(InterpValue::Prompt(prompt)) => prompt,
-            ControlSignal::Return(other) | ControlSignal::Value(other) => {
-                return ControlSignal::fault(
-                    AnalysisDiagnosticCode::InvalidArguments,
-                    span,
-                    format!("agent body must evaluate to Prompt, got {other:?}"),
-                );
-            }
-            signal @ (ControlSignal::Apply(_)
-            | ControlSignal::Checkpoint(_)
-            | ControlSignal::Block(_)
-            | ControlSignal::Expr(_)
-            | ControlSignal::Call(_)
-            | ControlSignal::Perform(_)
-            | ControlSignal::Memory(_)
-            | ControlSignal::Session(_)
-            | ControlSignal::Console(_)
-            | ControlSignal::Command(_)
-            | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => {
-                return compose_signal_continuation(
-                    signal,
-                    self.agent_prompt_body_continuation(item, span),
-                );
-            }
-            ControlSignal::Resume(value) => return ControlSignal::Resume(value),
-            ControlSignal::Finish(value) => return ControlSignal::Finish(value),
-            ControlSignal::Break => return ControlSignal::Break,
-            ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
-            ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
-            ControlSignal::Continue => return ControlSignal::Continue,
-        };
-
-        let Some(HirItem::Agent(agent)) = self.checked.hir.items.get(item) else {
-            return ControlSignal::fault(
-                AnalysisDiagnosticCode::UnhandledRuntimeError,
-                span,
-                "agent prompt continuation target is not an executable agent",
-            );
-        };
-        let mut model_policy = self.model_policy.clone();
-        let mut source_tools = Vec::new();
-        let mut trace_plan = Vec::new();
-        if let Err(fault) = self.apply_agent_annotations(
-            item,
-            &mut model_policy,
-            &mut source_tools,
-            &mut trace_plan,
-        ) {
-            return ControlSignal::Fault(Box::new(fault));
-        }
-        if !trace_plan.is_empty() {
-            self.events
-                .push(crate::orchestration::WorkflowEvent::AgentTracePlan {
-                    item: item.0,
-                    trace: trace_plan,
-                });
-        }
-
-        let Some(output_ref) = agent.output_type else {
-            return ControlSignal::fault(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                agent.span,
-                "agent output type is missing from the declaration",
-            );
-        };
-        let Some(output_type) = self.checked.types.type_refs.get(&output_ref).copied() else {
-            return ControlSignal::fault(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                agent.span,
-                "agent output type is missing checked type facts",
-            );
-        };
-        let decode = self.agent_model_decode(output_type);
-        let response_schema = match decode {
-            ModelDecode::Typed(expected) => {
-                let schema = match self.host_schema_for_type(expected, span, 0) {
-                    Ok(schema) => schema,
-                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-                };
-                Some(schema)
-            }
-            ModelDecode::String | ModelDecode::ModelResponse => None,
-        };
-        if let Err(fault) =
-            self.model_provider_supports_request(&model_policy, response_schema.is_some(), span)
-        {
-            return ControlSignal::Fault(Box::new(fault));
-        }
-
-        let request_id = HostRequestId(self.next_host_request);
-        self.next_host_request += 1;
-        ControlSignal::pending_model(PendingModel {
-            request: ModelRequest {
-                id: request_id,
-                provider: model_policy.provider.clone(),
-                model: model_policy.model.clone(),
-                messages: prompt
-                    .into_iter()
-                    .map(|message| ModelMessage {
-                        role: match message.role {
-                            crate::value::PromptRole::System => ModelRole::System,
-                            crate::value::PromptRole::User | crate::value::PromptRole::Data => {
-                                ModelRole::User
-                            }
-                            crate::value::PromptRole::Assistant => ModelRole::Assistant,
-                        },
-                        content: vec![ModelContent::Text(message.text.into_string())],
-                        tool_call_id: None,
-                        tool_calls: Vec::new(),
-                    })
-                    .collect(),
-                tools: model_policy.tools.clone(),
-                tool_choice: model_policy.tool_choice.clone(),
-                response_schema,
-                policy_ref: model_policy.policy_ref.clone(),
-                options: model_policy.options.clone(),
-                authority: self.host_authority(),
-                trace: self.host_trace(),
-                budget: model_policy
-                    .budget
-                    .clone()
-                    .map(|limits| self.host_budget().with_limits(limits))
-                    .unwrap_or_else(|| self.host_budget()),
-            },
-            decode,
-            max_tool_rounds: model_policy.max_tool_rounds,
-            source_tools,
-            span,
-            continuation: Continuation::BlockValue,
-        })
-    }
-
-    fn agent_prompt_body_continuation(&self, item: HirItemId, span: Span) -> Continuation {
-        Continuation::AgentPromptBody {
-            item,
-            span,
-            model_policy: Some(Box::new(self.model_policy.clone())),
         }
     }
 

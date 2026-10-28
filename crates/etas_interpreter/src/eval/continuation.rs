@@ -48,9 +48,25 @@ impl<'a> EvalContext<'a> {
                     });
                     work.push(inner.into_value());
                 }
+                Continuation::RestoreModelPolicy { previous, inner }
+                    if !matches!(*inner, Continuation::BlockValue)
+                        && matches!(&signal, ControlSignal::Perform(pending) if pending.error_type.is_some()) =>
+                {
+                    work.push(Continuation::RestoreModelPolicy {
+                        previous,
+                        inner: Continuation::BlockValue.into(),
+                    });
+                    work.push(inner.into_value());
+                }
                 continuation => {
                     signal = match signal {
                         ControlSignal::Perform(mut pending) => match continuation {
+                            Continuation::RestoreModelPolicy { previous, .. }
+                                if pending.error_type.is_some() =>
+                            {
+                                self.model_policy = *previous;
+                                ControlSignal::Perform(pending)
+                            }
                             Continuation::TryExpr { expr, span } => {
                                 if self.can_capture_error_raise(expr, &pending) {
                                     self.capture_error_raise(expr, &pending, span)
@@ -176,11 +192,8 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::CallBoundary { outer } => {
+            Continuation::CallBoundary { outer, .. } => {
                 self.apply_continuation(outer.into_value(), value)
-            }
-            continuation @ Continuation::AgentPromptBody { .. } => {
-                self.apply_continuation(continuation, value)
             }
             Continuation::HandleBoundary { scope_id, span, .. } => {
                 match self.close_handler_scope(scope_id, span) {
@@ -370,6 +383,7 @@ impl<'a> EvalContext<'a> {
         value: InterpValue,
     ) -> ControlSignal {
         match continuation {
+            Continuation::StreamReadReduction(state) => self.continue_stream_read(*state, value),
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -514,9 +528,9 @@ impl<'a> EvalContext<'a> {
                 span,
                 mut frame,
             } => self.resume_index_base(expr, value, index, span, &mut frame),
-            Continuation::IndexValue { expr, base, span } => {
-                self.eval_index_value(expr, base, value, span)
-            }
+            Continuation::IndexValue {
+                expr, base, span, ..
+            } => self.eval_index_value(expr, base, value, span),
             Continuation::SliceBase { eval, mut frame } => {
                 self.resume_slice_base(eval, value, &mut frame)
             }
@@ -525,7 +539,9 @@ impl<'a> EvalContext<'a> {
                 base,
                 mut frame,
             } => self.resume_slice_start(eval, base, value, &mut frame),
-            Continuation::SliceEnd { eval, base, start } => {
+            Continuation::SliceEnd {
+                eval, base, start, ..
+            } => {
                 match self.eval_slice_value(eval.expr, base, start, value, eval.bounds, eval.span) {
                     Ok(value) => ControlSignal::Value(value),
                     Err(fault) => ControlSignal::Fault(Box::new(fault)),
@@ -616,7 +632,7 @@ impl<'a> EvalContext<'a> {
                 )
             }
             Continuation::SpecMethodReceiver {
-                expr: _,
+                expr,
                 receiver_expr,
                 spec_symbol,
                 spec_args,
@@ -626,6 +642,7 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => self.eval_spec_method_on_receiver_value(
                 crate::eval::spec_method::SpecMethodDispatch {
+                    expr,
                     receiver_expr,
                     receiver: value,
                     spec_symbol,
@@ -637,12 +654,28 @@ impl<'a> EvalContext<'a> {
                 &mut frame,
             ),
             Continuation::CalleeEval {
+                call,
                 args,
                 span,
                 mut frame,
             } => match value {
                 InterpValue::Callable(target) => {
-                    self.resume_call_args(target, args, 0, Vec::new(), span, &mut frame)
+                    let target =
+                        match self.specialize_call_target_for_call(call, target, &frame, span) {
+                            Ok(target) => target,
+                            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                        };
+                    self.resume_call_args(
+                        CallArgsState {
+                            call,
+                            target,
+                            args,
+                            start_arg_index: 0,
+                            evaluated_args: Vec::new(),
+                            span,
+                        },
+                        &mut frame,
+                    )
                 }
                 other => {
                     let message = format!("callee is not a callable runtime value: {:?}", other);
@@ -650,17 +683,16 @@ impl<'a> EvalContext<'a> {
                 }
             },
             Continuation::PipelineStageTarget {
-                stages,
+                expr,
                 next_stage_index,
                 mut targets,
-                current_limits,
                 span,
                 mut frame,
             } => match value {
                 InterpValue::Callable(target) => {
-                    targets.push(self.call_target_with_limits(target, current_limits));
+                    targets.push(target);
                     self.resume_pipeline_stage_compose(
-                        stages,
+                        expr,
                         next_stage_index,
                         targets,
                         span,
@@ -676,6 +708,7 @@ impl<'a> EvalContext<'a> {
                 }
             },
             Continuation::CallArgs {
+                call,
                 target,
                 args,
                 next_arg_index,
@@ -685,11 +718,14 @@ impl<'a> EvalContext<'a> {
             } => {
                 evaluated_args.push(value);
                 self.resume_call_args(
-                    target,
-                    args,
-                    next_arg_index,
-                    evaluated_args,
-                    span,
+                    CallArgsState {
+                        call,
+                        target,
+                        args,
+                        start_arg_index: next_arg_index,
+                        evaluated_args,
+                        span,
+                    },
                     &mut frame,
                 )
             }
@@ -843,14 +879,27 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => self.resume_handle_handler(handle_expr, body, handler, span, value, &mut frame),
             Continuation::PipelineInput {
-                stages,
+                expr,
                 span,
                 mut frame,
-            } => self.resume_pipeline_input(value, &stages, span, &mut frame),
-            Continuation::PipelineTarget { input, span } => match value {
-                InterpValue::Callable(CallTarget::Composed(targets)) => {
-                    self.execute_call_target(CallTarget::Composed(targets), vec![input], span)
-                }
+            } => self.resume_pipeline_input(expr, value, span, &mut frame),
+            Continuation::PipelineTarget {
+                expr,
+                input,
+                span,
+                frame,
+            } => match value {
+                InterpValue::Callable(CallTarget::Composed(targets)) => self
+                    .execute_call_target_at(
+                        CallTarget::Composed(targets),
+                        vec![input],
+                        span,
+                        Some(crate::control::CallSite {
+                            kind: crate::control::CallSiteKind::Pipeline { expr },
+                            frame,
+                            composition: None,
+                        }),
+                    ),
                 other => {
                     let message = format!(
                         "pipeline stages did not evaluate to a composed callable: {other:?}"
@@ -858,14 +907,17 @@ impl<'a> EvalContext<'a> {
                     ControlSignal::invalid_arguments(message, span)
                 }
             },
-            Continuation::ComposedCall { remaining, span } => {
-                self.resume_composed_call(value, remaining, span)
-            }
+            Continuation::ComposedCall {
+                remaining,
+                next_index,
+                span,
+                site,
+            } => self.resume_composed_call(value, remaining, next_index, span, site),
             Continuation::RestoreModelPolicy { previous, inner } => {
                 self.model_policy = *previous;
                 self.apply_continuation(inner.into_value(), value)
             }
-            Continuation::CallBoundary { outer } => {
+            Continuation::CallBoundary { outer, .. } => {
                 self.apply_continuation(outer.into_value(), value)
             }
             Continuation::ForLoop {
@@ -997,16 +1049,13 @@ impl<'a> EvalContext<'a> {
                     )
                 }
             }
-            Continuation::AgentPromptBody {
-                item,
+            Continuation::AgentInference {
+                expr,
                 span,
                 model_policy,
-            } => match model_policy {
-                Some(policy) => self.with_scoped_model_policy(*policy, |this| {
-                    this.finish_agent_prompt_body(item, ControlSignal::Value(value), span)
-                }),
-                None => self.finish_agent_prompt_body(item, ControlSignal::Value(value), span),
-            },
+            } => self.with_scoped_model_policy(*model_policy, |this| {
+                this.perform_agent_inference(expr, value, span)
+            }),
             Continuation::ScopedModelPolicy { policy, inner } => {
                 let previous = std::mem::replace(&mut self.model_policy, *policy);
                 self.apply_continuation(
@@ -1023,6 +1072,10 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
+            Continuation::ProgramResume(_) => ControlSignal::missing_checked_fact(
+                "program continuation must be resumed by its owning evaluation machine",
+                crate::diagnostics::item_span(self.checked, self.entry_item),
+            ),
             Continuation::Return => ControlSignal::Return(value),
             Continuation::Resume => ControlSignal::Resume(value),
             Continuation::Finish => ControlSignal::Finish(value),

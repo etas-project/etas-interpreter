@@ -22,6 +22,10 @@ impl<'a> EvalContext<'a> {
             ));
         };
         let perform = PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            inference: None,
             expr: None,
             action: network_error_raise_action(host.span),
             error_type: Some(error_type),

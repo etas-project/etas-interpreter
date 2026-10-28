@@ -58,7 +58,7 @@ import std.agent.prompt.Prompt;
 import std.runtime.checkpoint;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main() -> string {
@@ -234,6 +234,8 @@ flow main() -> unit {
     checkpoint.args.push(value::InterpValue::Callable(
         crate::control::CallTarget::StdIntrinsic(
             crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+                origin: etas_hir::HirExprId(0),
+                substitutions: Vec::new(),
                 identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
                     intrinsic: etas_std::StdIntrinsicId(
                         etas_std::intrinsic::runtime::NET_TCP_CONNECT,

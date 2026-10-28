@@ -661,6 +661,7 @@ flow main() -> string {
     Err(_) => "invalid-json"
   };
 }
+
 "#,
     );
 
@@ -681,6 +682,37 @@ flow main() -> string {
     assert_eq!(
         result.value().cloned(),
         Some(value::InterpValue::String("invalid-json".to_owned().into()))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn json_error_constructor_alias_has_an_exhaustive_checked_payload() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.json.{JsonError, InvalidJson as ParseFailure};
+flow describe(error: JsonError) -> string {
+    return match error { ParseFailure(message) => message };
+}
+flow main() -> string { return describe(ParseFailure("specific diagnostic")); }
+"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await
+        .expect("execution lifecycle infrastructure");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.value(),
+        Some(&value::InterpValue::String("specific diagnostic".into()))
     );
 }
 
@@ -1007,7 +1039,7 @@ import std.agent.prompt.Prompt;
 
 @model(model = "local-qwen")
 agent Pick(input: string) -> i32 ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> i32 {

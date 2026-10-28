@@ -41,6 +41,7 @@ fn deep_continuation_file_decode_avoids_recursive_descent_and_preserves_wire() {
             for _ in 0..depth {
                 original = match mode {
                     0 => ContinuationSnapshot::CallBoundary {
+                        span: crate::testing::synthetic_span(),
                         outer: original.into(),
                     },
                     1 => ContinuationSnapshot::Chain {
@@ -81,7 +82,10 @@ fn deep_continuation_file_decode_avoids_recursive_descent_and_preserves_wire() {
 fn deep_wire(depth: usize) -> Value {
     let mut root = ContinuationSnapshot::Return;
     for _ in 0..depth {
-        root = ContinuationSnapshot::CallBoundary { outer: root.into() };
+        root = ContinuationSnapshot::CallBoundary {
+            span: crate::testing::synthetic_span(),
+            outer: root.into(),
+        };
     }
     codec::snapshot::continuation_json(&root)
 }
@@ -148,7 +152,8 @@ fn continuation_decoder_rejects_late_errors_without_leaking_partial_deep_tree() 
                 "`kind`"
             }
             3 => {
-                wire["outer"] = json!({"kind":"pipeline_target","input":{"kind":"host_handle"}});
+                wire["outer"] =
+                    json!({"kind":"pipeline_target","expr":0,"input":{"kind":"host_handle"}});
                 "live host capability"
             }
             4 => {
@@ -208,7 +213,10 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
     let mut root = ContinuationSnapshot::Finish;
     for i in 0..4000 {
         root = match i % 6 {
-            0 => ContinuationSnapshot::CallBoundary { outer: root.into() },
+            0 => ContinuationSnapshot::CallBoundary {
+                span: crate::testing::synthetic_span(),
+                outer: root.into(),
+            },
             1 => ContinuationSnapshot::HandlerDispatch { outer: root.into() },
             2 => ContinuationSnapshot::HandleBoundary {
                 scope_id: HandlerScopeId(i as u32),
@@ -216,6 +224,7 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
                 handlers: vec![],
                 span,
                 frame: LocalsSnapshot {
+                    effect_row_bindings: Vec::new(),
                     id: i as u64 + 1,
                     locals: Default::default(),
                     type_bindings: vec![],
@@ -255,6 +264,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
                 block: HirBlockId(u32::MAX),
                 next_stmt_index: 0,
                 frame: LocalsSnapshot {
+                    effect_row_bindings: Vec::new(),
                     id: 1,
                     locals: Default::default(),
                     type_bindings: vec![],
@@ -264,15 +274,23 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
             ContinuationSnapshot::Return
         };
         for _ in 0..30_000 {
-            root = ContinuationSnapshot::CallBoundary { outer: root.into() };
+            root = ContinuationSnapshot::CallBoundary {
+                span: crate::testing::synthetic_span(),
+                outer: root.into(),
+            };
         }
         let saved = InterpreterCheckpoint {
+            retained_code: None,
+            model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),
+            code_revision: None,
             id: CheckpointId(1),
             label: None,
             compilation: CheckpointCompilationIdentity::for_project(&checked, entry).unwrap(),
             entry_item: entry,
             args: vec![],
             machine: MachineSnapshot {
+                program_owners: Default::default(),
+                suspended_programs: Vec::new(),
                 frames: vec![MachineFrameSnapshot::Continuation { continuation: root }],
             },
             handlers: Default::default(),

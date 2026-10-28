@@ -10,6 +10,28 @@ fn continuation_leaf_from_snapshot(
     kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match kind {
+        "program_resume" => ContinuationSnapshot::ProgramResume {
+            id: required_u32(value, "id")?,
+        },
+        "stream_read_reduction" => ContinuationSnapshot::StreamReadReduction {
+            call: call_target_snapshot_from_json(limits, required(value, "call")?)?,
+            args: required_values(limits, value, "args")?,
+            limit: required_usize(value, "limit")?,
+            deadline_unix_ms: match required(value, "deadline_unix_ms")? {
+                Value::Null => None,
+                deadline => Some(
+                    deadline
+                        .as_u64()
+                        .ok_or("stream reducer deadline must be u64 or null")?,
+                ),
+            },
+            body: crate::api::codec::value::snapshot_from_json_with_limits(
+                limits,
+                required(value, "body")?,
+            )
+            .map_err(|error| error.to_string())?,
+            span: span_from_snapshot(required(value, "span")?)?,
+        },
         "continue_block" => ContinuationSnapshot::ContinueBlock {
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
@@ -140,6 +162,7 @@ fn continuation_leaf_from_snapshot(
             )
             .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "slice_base" => ContinuationSnapshot::SliceBase {
             eval: slice_eval_from_snapshot(required(value, "eval")?)?,
@@ -166,6 +189,7 @@ fn continuation_leaf_from_snapshot(
                 required(value, "start")?,
             )
             .map_err(|error| error.to_string())?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "method_receiver" => ContinuationSnapshot::MethodReceiver {
             expr: HirExprId(required_u32(value, "expr")?),
@@ -231,19 +255,20 @@ fn continuation_leaf_from_snapshot(
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "callee_eval" => ContinuationSnapshot::CalleeEval {
+            call: HirExprId(required_u32(value, "call")?),
             args: args_from_snapshot(required(value, "args")?)?.into(),
             span: span_from_snapshot(required(value, "span")?)?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "pipeline_stage_target" => ContinuationSnapshot::PipelineStageTarget {
-            stages: stages_from_snapshot(required(value, "stages")?)?,
+            expr: HirExprId(required_u32(value, "expr")?),
             next_stage_index: required_usize(value, "next_stage_index")?,
             targets: call_target_snapshots_from_json(limits, required(value, "targets")?)?,
-            current_limits: runtime_limits_from_snapshot(required(value, "current_limits")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "call_args" => ContinuationSnapshot::CallArgs {
+            call: HirExprId(required_u32(value, "call")?),
             target: call_target_snapshot_from_json(limits, required(value, "target")?)?,
             args: args_from_snapshot(required(value, "args")?)?.into(),
             next_arg_index: required_usize(value, "next_arg_index")?,
@@ -348,19 +373,29 @@ fn continuation_leaf_from_snapshot(
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "pipeline_input" => ContinuationSnapshot::PipelineInput {
-            stages: stages_from_snapshot(required(value, "stages")?)?,
+            expr: HirExprId(required_u32(value, "expr")?),
             span: span_from_snapshot(required(value, "span")?)?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "pipeline_target" => ContinuationSnapshot::PipelineTarget {
+            expr: HirExprId(required_u32(value, "expr")?),
             input: crate::api::codec::value::snapshot_from_json_with_limits(
                 limits,
                 required(value, "input")?,
             )
             .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "composed_call" => ContinuationSnapshot::ComposedCall {
+            site: {
+                let value = required(value, "site")?;
+                if value.is_null() {
+                    None
+                } else {
+                    Some(super::super::call_site_from_json(limits, value)?)
+                }
+            },
             remaining: call_target_snapshots_from_json(limits, required(value, "remaining")?)?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
@@ -414,10 +449,13 @@ fn continuation_leaf_from_snapshot(
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "agent_prompt_body" => ContinuationSnapshot::AgentPromptBody {
-            item: etas_hir::HirItemId(required_u32(value, "item")?),
+        "agent_inference" => ContinuationSnapshot::AgentInference {
+            expr: HirExprId(required_u32(value, "expr")?),
             span: span_from_snapshot(required(value, "span")?)?,
-            model_policy: optional_model_policy(value, "model_policy")?.map(Box::new),
+            model_policy: Box::new(
+                optional_model_policy(value, "model_policy")?
+                    .ok_or("inference continuation requires scoped model policy")?,
+            ),
         },
         "restore_model_policy"
         | "handle_boundary"
