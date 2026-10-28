@@ -124,7 +124,7 @@ mod tests {
                 .unwrap_err()
                 .contains("locked definition environment")
         );
-        let rendered = crate::api::codec::value_json(&value);
+        let rendered = crate::api::codec::value_json(&value).unwrap();
         assert!(crate::api::codec::value_from_json(&rendered).is_err());
     }
 }

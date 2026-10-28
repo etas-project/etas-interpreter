@@ -71,7 +71,7 @@ flow main() -> Array<std.compiler.SpecInfo> { return (^Worker).specs; }
     assert!(
         matches!(&graph.effect_row(pattern.row).unwrap().effects[0].target, EffectTargetInfo::Action { effect, name } if effect.declaration() == ["Console"] && name == "stdout_write")
     );
-    let exported = crate::api::codec::value_json(result.value().unwrap());
+    let exported = crate::api::codec::value_json(result.value().unwrap()).unwrap();
     assert!(exported.to_string().contains("TraceConstraint"));
     assert!(!exported.to_string().contains("private_spec_catalog_field"));
 }
@@ -233,7 +233,9 @@ flow main() -> Array<std.compiler.AnnotationInfo> { return (^Worker).annotations
         static_argument(&annotations[3], 3).as_ref(),
         S::Literal(L::Character('x'))
     ));
-    let json = crate::api::codec::value_json(result.value().unwrap()).to_string();
+    let json = crate::api::codec::value_json(result.value().unwrap())
+        .unwrap()
+        .to_string();
     assert!(json.contains("annotated-model") && json.contains("StaticValue"));
 }
 
@@ -470,7 +472,7 @@ flow main() -> std.compiler.TypeInfo { return (^Worker.run).signature.output; }
         panic!("incorrect descriptor role")
     };
     assert!(graph.data().types.iter().any(|ty| matches!(ty, etas_code::descriptor::TypeInfo::Record(fields) if fields.iter().any(|field| field.name == "private_catalog_field"))));
-    let json = crate::api::codec::value_json(value);
+    let json = crate::api::codec::value_json(value).unwrap();
     assert!(!json.to_string().contains("private_catalog_field"));
     let exported = &json["value"]["Type"];
     assert_eq!(exported["root"], 0);

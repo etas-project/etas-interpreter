@@ -53,7 +53,7 @@ fn snapshot_json_encoding_preserves_scalar_bits_object_order_and_wire_validation
     let snapshot = ValueSnapshot::Json(value.clone());
     let wire = encode(Node::Value(&snapshot));
     let runtime = InterpValue::Json(value);
-    assert_eq!(wire, codec::value_json(&runtime));
+    assert_eq!(wire, codec::value_json(&runtime).unwrap());
     assert_eq!(codec::value_from_json(&wire).unwrap(), runtime);
     assert_eq!(wire["value"]["entries"][0]["key"], "z");
     assert_eq!(wire["value"]["entries"][2]["key"], "z");

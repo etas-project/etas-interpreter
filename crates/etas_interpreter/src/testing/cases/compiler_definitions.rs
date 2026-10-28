@@ -389,7 +389,10 @@ async fn compiler_definitions_cannot_leak_live_objects_into_host_or_checkpoint_c
                 .unwrap_err()
                 .contains("locked definition environment")
         );
-        assert!(crate::api::codec::value_from_json(&crate::api::codec::value_json(value)).is_err());
+        assert!(
+            crate::api::codec::value_from_json(&crate::api::codec::value_json(value).unwrap())
+                .is_err()
+        );
     }
 }
 

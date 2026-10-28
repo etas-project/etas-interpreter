@@ -190,7 +190,7 @@ async fn source_prepare_intent_checkpoints_without_storage_access_and_restores_s
     let operation = value.intent().operation_ref().clone();
     assert!(result.checkpoints[0].storage.writes.is_empty());
     assert_eq!(host.memory_call_count(), 0);
-    let encoded = crate::api::codec::value_json(result.value().unwrap());
+    let encoded = crate::api::codec::value_json(result.value().unwrap()).unwrap();
     assert_eq!(
         crate::api::codec::value_from_json(&encoded).unwrap(),
         *result.value().unwrap()
@@ -228,7 +228,8 @@ async fn source_prepare_intent_checkpoints_without_storage_access_and_restores_s
     malformed["ty"] = value.key_type.0.into();
     let bad_value = crate::api::codec::value_from_json(&malformed).unwrap();
     let mut injected = artifact.clone();
-    injected["checkpoint"]["args"] = serde_json::json!([malformed]);
+    injected["checkpoint"]["args"] =
+        serde_json::Value::Array(vec![std::mem::take(&mut *malformed)]);
     assert!(crate::api::codec::checkpoint_from_json(&injected, &checked).is_err());
     let mut in_memory = checkpoint.clone();
     in_memory.args = vec![crate::orchestration::ValueSnapshot::capture(&bad_value).unwrap()];

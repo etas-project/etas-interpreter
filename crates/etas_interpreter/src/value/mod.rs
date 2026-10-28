@@ -17,7 +17,9 @@ pub use conversation::PublishedContextValue;
 mod deque;
 #[cfg(test)]
 mod equality_tests;
+pub(crate) mod graph;
 mod host_handle;
+pub(crate) mod identity;
 pub(crate) mod iteration;
 pub(crate) mod json;
 #[cfg(test)]

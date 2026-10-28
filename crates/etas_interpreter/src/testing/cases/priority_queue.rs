@@ -348,9 +348,10 @@ flow main() -> bool {
                 .unwrap();
         let target = crate::api::codec::value_json(&InterpValue::Callable(
             crate::control::CallTarget::FlowItem(item),
-        ));
+        ))
+        .unwrap();
         assert!(edit_queue(&mut bad, &mut |queue| {
-            queue["comparator"] = target.clone();
+            queue["comparator"] = std::mem::take(&mut *target.clone());
         }));
         let error = crate::api::codec::checkpoint_from_json(&bad, &checked).unwrap_err();
         assert!(error.message().contains(expected), "{name}: {error}");

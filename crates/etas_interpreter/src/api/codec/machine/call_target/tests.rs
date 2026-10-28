@@ -1,4 +1,5 @@
 use super::*;
+use crate::control::CallTarget;
 use crate::{
     api::codec::{self, CheckpointDocument, CheckpointFileLimits},
     orchestration::CallTargetSnapshot,
@@ -23,7 +24,10 @@ fn standard_intrinsic_decode_requires_and_preserves_its_checked_origin() {
         "dispatch": "host", "parameter_types": [3], "result_type": 4,
     });
     let runtime = call_target_from_artifact_snapshot(&limits, &target).unwrap();
-    assert_eq!(call_target_snapshot(&runtime), target);
+    assert_eq!(
+        codec::value_json(&crate::value::InterpValue::Callable(runtime)).unwrap()["target"],
+        target
+    );
     let saved = call_target_snapshot_from_json(&limits, &target).unwrap();
     assert!(matches!(
         saved,
@@ -47,7 +51,10 @@ fn standard_intrinsic_substitution_decode_is_bounded_and_rejects_ambiguous_bindi
     let limits = etas_host::StorageLimits::default();
     let base = json!({ "kind": "std_intrinsic", "origin": 1, "intrinsic": etas_std::intrinsic::runtime::STREAM_READ, "dispatch": "host", "parameter_types": [3], "result_type": 4, "substitutions": [[{"name":"SourceStream", "type":5}], [{"name":"S", "type":5}]] });
     let runtime = call_target_from_artifact_snapshot(&limits, &base).unwrap();
-    assert_eq!(call_target_snapshot(&runtime), base);
+    assert_eq!(
+        codec::value_json(&crate::value::InterpValue::Callable(runtime)).unwrap()["target"],
+        base
+    );
     for substitutions in [
         json!([[]]),
         json!([[{"name":"S", "type":5}, {"name":"S", "type":6}]]),

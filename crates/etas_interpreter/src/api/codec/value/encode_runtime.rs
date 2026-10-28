@@ -1,25 +1,55 @@
 use super::*;
+use crate::control::{CallTarget, Frame};
+
+mod callable;
+mod frames;
 
 enum Node<'a> {
     Value(&'a InterpValue),
     Message(&'a crate::value::MessageValue),
+    Target(&'a CallTarget),
+    Frame(&'a Frame),
 }
 
-pub(super) fn encode(value: &InterpValue) -> Value {
+pub(super) fn encode(value: &InterpValue) -> Result<JsonDocument, InterpreterCodecError> {
+    let graph = frames::FrameGraph::discover(value)?;
+    let frames = graph.borrow()?;
     let mut output = CheckpointDocument::from_value(Value::Null);
     let mut pending = vec![(Node::Value(value), output.value_mut())];
     while let Some((node, slot)) = pending.pop() {
-        write(node, slot, |node, slot| pending.push((node, slot)));
+        write(node, slot, &frames, |node, slot| pending.push((node, slot)))?;
     }
-    output.into_value()
+    Ok(output)
 }
 
-fn write<'a>(node: Node<'a>, slot: &'a mut Value, mut child: impl FnMut(Node<'a>, &'a mut Value)) {
+fn write<'a>(
+    node: Node<'a>,
+    slot: &'a mut Value,
+    frames: &'a frames::BorrowedFrames<'_>,
+    mut child: impl FnMut(Node<'a>, &'a mut Value),
+) -> Result<(), InterpreterCodecError> {
     let value = match node {
         Node::Value(value) => value,
         Node::Message(message) => {
             write_message(message, slot, child);
-            return;
+            return Ok(());
+        }
+        Node::Target(target) => {
+            callable::write(target, slot, child);
+            return Ok(());
+        }
+        Node::Frame(frame) => {
+            let locals = frames.get(frame)?.sorted();
+            let count = locals.len();
+            *slot = json!({"id":frame.snapshot_id(),"locals":null,
+                "effect_row_bindings":frame.generic_bindings().sorted_rows(),
+                "type_bindings":frame.sorted_type_bindings().iter().map(|(name, ty)| json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
+            for ((symbol, value), slot) in locals.into_iter().zip(array(&mut slot["locals"], count))
+            {
+                *slot = json!({"symbol":symbol.0,"value":null});
+                child(Node::Value(value), &mut slot["value"]);
+            }
+            return Ok(());
         }
     };
     match value {
@@ -133,7 +163,10 @@ fn write<'a>(node: Node<'a>, slot: &'a mut Value, mut child: impl FnMut(Node<'a>
             if let Value::Object(fields) = slot {
                 for (name, slot) in fields {
                     if name == "comparator" {
-                        *slot = values.comparator().map_or(Value::Null, |target| json!({"kind":"callable", "target":machine::call_target_snapshot(target)}));
+                        if let Some(target) = values.comparator() {
+                            *slot = json!({"kind":"callable", "target":null});
+                            child(Node::Target(target), &mut slot["target"]);
+                        }
                     } else if name == "entries" {
                         for ((priority, value), slot) in
                             values.iter().zip(array(slot, values.len()))
@@ -188,7 +221,7 @@ fn write<'a>(node: Node<'a>, slot: &'a mut Value, mut child: impl FnMut(Node<'a>
         }
         InterpValue::Callable(target) => {
             *slot = json!({"kind":"callable","target":null});
-            slot["target"] = machine::call_target_snapshot(target);
+            child(Node::Target(target), &mut slot["target"]);
         }
         InterpValue::Handler {
             fact_expr,
@@ -239,6 +272,7 @@ fn write<'a>(node: Node<'a>, slot: &'a mut Value, mut child: impl FnMut(Node<'a>
             }
         }
     }
+    Ok(())
 }
 
 fn write_message<'a>(
@@ -264,8 +298,8 @@ fn sequence<'a>(
 
 fn sequence_header<'a>(
     kind: &str,
-    values: impl ExactSizeIterator<Item = &'a InterpValue>,
-    comparator: Option<&crate::control::CallTarget>,
+    mut values: impl ExactSizeIterator<Item = &'a InterpValue>,
+    comparator: Option<&'a crate::control::CallTarget>,
     slot: &'a mut Value,
     mut child: impl FnMut(Node<'a>, &'a mut Value),
 ) {
@@ -273,13 +307,20 @@ fn sequence_header<'a>(
     if kind == "ordered_set" {
         slot["comparator"] = Value::Null;
     }
-    if let Some(target) = comparator {
-        slot["comparator"] =
-            json!({"kind":"callable", "target":machine::call_target_snapshot(target)});
-    }
     let count = values.len();
-    for (value, slot) in values.zip(array(&mut slot["values"], count)) {
-        child(Node::Value(value), slot);
+    if let Value::Object(fields) = slot {
+        for (name, slot) in fields {
+            if name == "comparator" {
+                if let Some(target) = comparator {
+                    *slot = json!({"kind":"callable", "target":null});
+                    child(Node::Target(target), &mut slot["target"]);
+                }
+            } else if name == "values" {
+                for (value, slot) in values.by_ref().zip(array(slot, count)) {
+                    child(Node::Value(value), slot);
+                }
+            }
+        }
     }
 }
 
@@ -296,8 +337,8 @@ fn entries<'a>(
 fn entries_header<'a>(
     kind: &str,
     key_name: &str,
-    entries: impl ExactSizeIterator<Item = &'a (InterpValue, InterpValue)>,
-    comparator: Option<&crate::control::CallTarget>,
+    mut entries: impl ExactSizeIterator<Item = &'a (InterpValue, InterpValue)>,
+    comparator: Option<&'a crate::control::CallTarget>,
     slot: &'a mut Value,
     mut child: impl FnMut(Node<'a>, &'a mut Value),
 ) {
@@ -305,21 +346,29 @@ fn entries_header<'a>(
     if kind == "ordered_map" {
         slot["comparator"] = Value::Null;
     }
-    if let Some(target) = comparator {
-        slot["comparator"] =
-            json!({"kind":"callable", "target":machine::call_target_snapshot(target)});
-    }
     let count = entries.len();
-    for ((key, value), slot) in entries.zip(array(&mut slot["entries"], count)) {
-        *slot = json!({key_name:null,"value":null});
-        let Value::Object(fields) = slot else {
-            unreachable!("object initialized above")
-        };
-        for (name, slot) in fields {
-            child(
-                Node::Value(if name == key_name { key } else { value }),
-                slot,
-            );
+    let Value::Object(fields) = slot else {
+        unreachable!("object initialized above")
+    };
+    for (name, slot) in fields {
+        if name == "comparator" {
+            if let Some(target) = comparator {
+                *slot = json!({"kind":"callable", "target":null});
+                child(Node::Target(target), &mut slot["target"]);
+            }
+        } else if name == "entries" {
+            for ((key, value), slot) in entries.by_ref().zip(array(slot, count)) {
+                *slot = json!({key_name:null,"value":null});
+                let Value::Object(fields) = slot else {
+                    unreachable!("object initialized above")
+                };
+                for (name, slot) in fields {
+                    child(
+                        Node::Value(if name == key_name { key } else { value }),
+                        slot,
+                    );
+                }
+            }
         }
     }
 }

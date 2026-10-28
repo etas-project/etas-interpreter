@@ -96,7 +96,7 @@ fn command_trace_reports_trusted_execution_as_unconfined() {
         duration_micros: 2,
         command_isolation: Some(etas_host::CommandIsolationReport::trusted_unconfined()),
     });
-    let value = event_json(&event);
+    let value = event_json(&event).unwrap();
     assert!(value["command_isolation"]["backend"].is_null());
     for guarantee in ["filesystem", "network", "process"] {
         assert_eq!(value["command_isolation"]["requested"][guarantee], false);
@@ -232,7 +232,7 @@ fn approval_trace_json_redacts_sensitive_request_fields() {
         trace: request.trace,
     });
 
-    let encoded = event_json(&event);
+    let encoded = event_json(&event).unwrap();
     let encoded_text = encoded.to_string();
     assert!(!encoded_text.contains("do not persist this approval reason"));
     assert_eq!(encoded["payload"][0]["name"], "reason");
@@ -273,7 +273,7 @@ fn value_codec_round_trips_every_numeric_width_and_nominal_identity() {
         value: crate::value::SharedValue::new(InterpValue::Tuple(values.into())),
     };
 
-    let encoded = value_json(&expected);
+    let encoded = value_json(&expected).unwrap();
     let restored = value_from_json(&encoded).expect("numeric value codec must be lossless");
     assert_eq!(restored, expected);
 }
@@ -289,7 +289,7 @@ fn value_codec_round_trips_workspace_path_by_canonical_region_identity() {
         .expect("valid workspace path"),
     );
 
-    let encoded = value_json(&expected);
+    let encoded = value_json(&expected).unwrap();
     assert_eq!(encoded["region"], "app.workspace.ProjectRoot");
     assert_eq!(encoded["relative"], "src/main.es");
     assert!(encoded.get("ty").is_none());
@@ -315,7 +315,7 @@ fn value_codec_round_trips_command_working_directory_identity() {
         stdin: None,
     };
 
-    let encoded = value_json(&expected);
+    let encoded = value_json(&expected).unwrap();
     let restored = value_from_json(&encoded).expect("command cwd codec must be lossless");
 
     assert_eq!(restored, expected);
@@ -346,7 +346,7 @@ fn value_codec_redacts_and_rejects_sealed_host_capabilities() {
         ),
     ));
 
-    let encoded = value_json(&value);
+    let encoded = value_json(&value).unwrap();
     assert_eq!(encoded["kind"], "host_handle");
     assert_eq!(encoded["handle_kind"], "tcp_stream");
     assert!(!encoded.to_string().contains("private-stream-id"));
@@ -1579,7 +1579,7 @@ fn value_codec_round_trips_canonical_message_contract() {
         }),
     });
 
-    let encoded = value_json(&expected);
+    let encoded = value_json(&expected).unwrap();
     let restored = value_from_json(&encoded).expect("message codec should restore");
 
     assert_eq!(restored, expected);

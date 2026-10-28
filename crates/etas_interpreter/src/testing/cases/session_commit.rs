@@ -42,7 +42,7 @@ flow main(ticket: string) -> Conversation ![Memory.read<SessionId>, Memory.write
         panic!("conversation result")
     };
     let original = history.history_fence.clone().expect("backend-issued fence");
-    let encoded_value = crate::api::codec::value_json(first.value().unwrap());
+    let encoded_value = crate::api::codec::value_json(first.value().unwrap()).unwrap();
     assert_eq!(encoded_value["history_fence"], original.as_token());
     assert_eq!(
         &crate::api::codec::value_from_json(&encoded_value).unwrap(),
@@ -228,7 +228,7 @@ flow main(ticket: string) -> Conversation ![Memory.read<SessionId>, Memory.write
         .expect("published context retained");
     assert_eq!(context.content, publication.content);
     assert_eq!(context.fence, publication.fence);
-    let value = crate::api::codec::value_json(result.value().unwrap());
+    let value = crate::api::codec::value_json(result.value().unwrap()).unwrap();
     assert_eq!(
         crate::api::codec::value_from_json(&value).unwrap(),
         *result.value().unwrap()

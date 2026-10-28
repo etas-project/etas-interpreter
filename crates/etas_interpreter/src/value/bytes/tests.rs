@@ -51,7 +51,7 @@ fn byte_snapshot_is_independent_and_preserves_its_wire_value() {
     let restored = snapshot.restore().unwrap();
     assert_eq!(restored, InterpValue::Bytes(vec![0, 128, 255].into()));
     assert_eq!(
-        crate::api::codec::value_json(&restored),
+        crate::api::codec::value_json(&restored).unwrap(),
         serde_json::json!({"kind":"bytes", "value":[0,128,255]}),
     );
 }

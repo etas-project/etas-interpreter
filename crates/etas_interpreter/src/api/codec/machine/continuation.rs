@@ -4,12 +4,8 @@ use etas_hir::{
 };
 use serde_json::{Value, json};
 
-use crate::{
-    api::codec::value_json,
-    control::Frame,
-    orchestration::{
-        ContinuationSnapshot, RetryAttemptId, RetryAttemptRecord, StaticMethodKindSnapshot,
-    },
+use crate::orchestration::{
+    ContinuationSnapshot, RetryAttemptId, RetryAttemptRecord, StaticMethodKindSnapshot,
 };
 
 use super::{
@@ -19,6 +15,8 @@ use super::{
     model::{model_policy_from_snapshot, model_policy_snapshot, optional_model_policy},
     value::*,
 };
+#[cfg(test)]
+use crate::control::Frame;
 
 mod decode;
 mod encode;
@@ -29,4 +27,4 @@ mod tests;
 pub(crate) use decode::continuation_from_snapshot;
 pub(in crate::api::codec) use encode::write_continuation;
 pub(in crate::api::codec) use support::runtime_limit_snapshot;
-pub(super) use support::{frame_snapshot, runtime_limits_from_snapshot};
+pub(super) use support::runtime_limits_from_snapshot;
