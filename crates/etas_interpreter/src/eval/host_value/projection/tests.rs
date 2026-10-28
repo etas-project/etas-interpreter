@@ -6,6 +6,60 @@ use crate::value::{
 use etas_host::{HostValue, host_value_to_json_string};
 
 #[test]
+fn cold_ordered_host_projection_allocates_output_not_a_retained_runtime_view() {
+    let mut materialized = Vec::new();
+    for count in [1000, 2000, 4000] {
+        let reference = InterpValue::Map(
+            (0..count)
+                .map(|i| (InterpValue::i32(i as i32), InterpValue::Bool(i % 2 == 0)))
+                .collect::<Vec<_>>()
+                .into(),
+        );
+        let (reference, output_cost) =
+            crate::testing::allocation::measure(|| interp_to_host_value(&reference).unwrap());
+        let map = crate::value::OrderedMapValue::try_from_entries(
+            (0..count)
+                .map(|i| (InterpValue::i32(i as i32), InterpValue::Bool(i % 2 == 0)))
+                .collect(),
+        )
+        .unwrap();
+        let value = InterpValue::OrderedMap(map);
+        let (output, cost) =
+            crate::testing::allocation::measure(|| interp_to_host_value(&value).unwrap());
+        assert_eq!(output, reference);
+        let HostValue::Map(entries) = &output else {
+            panic!("host map")
+        };
+        assert_eq!(entries.len(), count);
+        assert_eq!(
+            entries.first(),
+            Some(&(HostValue::Int(0), HostValue::Bool(true)))
+        );
+        assert_eq!(
+            entries.last(),
+            Some(&(
+                HostValue::Int(count as i128 - 1),
+                HostValue::Bool((count - 1) % 2 == 0)
+            ))
+        );
+        let output_bytes = entries.capacity() * std::mem::size_of::<(HostValue, HostValue)>();
+        let (_, output_drop) = crate::testing::allocation::measure(|| drop(output));
+        eprintln!(
+            "cold ordered host projection n={count}: {cost:?}; reference_output={output_cost:?}; output_buffer={output_bytes}; release={output_drop:?}"
+        );
+        if cost.bytes > output_cost.bytes + 4096
+            || cost.bytes - cost.released_bytes != output_drop.released_bytes
+        {
+            materialized.push((count, cost, output_drop));
+        }
+    }
+    assert!(
+        materialized.is_empty(),
+        "host projection retained runtime views: {materialized:?}"
+    );
+}
+
+#[test]
 fn borrowed_projection_preserves_scalar_aggregate_nominal_and_trust_encoding() {
     let values = vec![
         InterpValue::Unit,

@@ -62,6 +62,54 @@ fn secret_scan_of_one_shared_backing_keeps_zero_allocation_cost() {
 }
 
 #[test]
+fn cold_ordered_secret_scans_do_not_materialize_or_retain_flat_views() {
+    let mut materialized = Vec::new();
+    for count in [1000, 2000, 4000] {
+        for secret_at in [None, Some(0), Some(count - 1)] {
+            let map = OrderedMapValue::try_from_entries(
+                (0..count)
+                    .map(|i| {
+                        (
+                            Value::i32(i as i32),
+                            if secret_at == Some(i) {
+                                secret()
+                            } else {
+                                Value::Bool(false)
+                            },
+                        )
+                    })
+                    .collect(),
+            )
+            .unwrap();
+            let value = Value::OrderedMap(map);
+            VISITS.set(0);
+            let (found, cost) = measure(|| contains_secret(&value));
+            assert_eq!(found, secret_at.is_some());
+            let expected = secret_at.map_or(2 * count + 1, |i| 2 * (i + 1) + 1);
+            assert_eq!(VISITS.get(), expected);
+            eprintln!("cold ordered map secret scan n={count} secret={secret_at:?}: {cost:?}");
+            if cost.bytes >= 4096 || cost.bytes != cost.released_bytes {
+                materialized.push((count, secret_at, cost));
+            }
+        }
+        let set =
+            OrderedSetValue::try_from_values((0..count).map(|i| Value::i32(i as i32)).collect())
+                .unwrap();
+        let value = Value::OrderedSet(set);
+        let (found, cost) = measure(|| contains_secret(&value));
+        assert!(!found);
+        eprintln!("cold ordered set secret scan n={count}: {cost:?}");
+        if cost.bytes >= 4096 || cost.bytes != cost.released_bytes {
+            materialized.push((count, None, cost));
+        }
+    }
+    assert!(
+        materialized.is_empty(),
+        "secret scan retained runtime views: {materialized:?}"
+    );
+}
+
+#[test]
 fn secret_scan_does_not_rescan_shared_list_suffixes() {
     for count in [1000, 2000, 4000] {
         let mut list = ListValue::new(vec![Value::Bool(false); count]);

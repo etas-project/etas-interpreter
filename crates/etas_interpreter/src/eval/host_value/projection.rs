@@ -53,11 +53,7 @@ impl HostValueProjection for BorrowedValue<'_> {
                         "a key comparison flow is not host-encodable",
                     ));
                 }
-                visitor.map(
-                    v.borrow()
-                        .iter()
-                        .map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))),
-                )
+                visitor.map(v.iter().map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))))
             }
             InterpValue::Record(v) => visitor.record(
                 v.borrow()

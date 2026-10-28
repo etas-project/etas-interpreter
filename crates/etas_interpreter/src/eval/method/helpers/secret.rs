@@ -17,6 +17,11 @@ enum Children<'a> {
     Deque(vec_deque::Iter<'a, Value>),
     List(ListIter<'a>),
     Fields(slice::Iter<'a, (String, Value)>),
+    OrderedKeys(crate::value::ordered::Iter<'a>),
+    OrderedPairs {
+        entries: crate::value::ordered::Iter<'a>,
+        value: Option<&'a Value>,
+    },
     Pairs {
         entries: slice::Iter<'a, (Value, Value)>,
         value: Option<&'a Value>,
@@ -40,7 +45,7 @@ impl<'a> Children<'a> {
             Value::Array(values) | Value::Stack(values) => Self::Values(values.borrow().iter()),
             Value::Slice(values) => Self::Values(values.borrow().iter()),
             Value::Set(values) => Self::Values(values.borrow().iter()),
-            Value::OrderedSet(values) => Self::Values(values.borrow().iter()),
+            Value::OrderedSet(values) => Self::OrderedKeys(values.iter()),
             Value::Deque(values) | Value::Queue(values) => Self::Deque(values.borrow().iter()),
             Value::List(values) => Self::List(values.iter()),
             Value::PriorityQueue(entries) => Self::PriorityQueue {
@@ -51,8 +56,8 @@ impl<'a> Children<'a> {
                 entries: entries.borrow().iter(),
                 value: None,
             },
-            Value::OrderedMap(entries) => Self::Pairs {
-                entries: entries.borrow().iter(),
+            Value::OrderedMap(entries) => Self::OrderedPairs {
+                entries: entries.iter(),
                 value: None,
             },
             Value::Record(fields) => Self::Fields(fields.borrow().iter()),
@@ -73,6 +78,8 @@ impl<'a> Children<'a> {
             Self::Deque(values) => values.len() == 0,
             Self::List(values) => values.len() == 0,
             Self::Fields(values) => values.len() == 0,
+            Self::OrderedKeys(values) => values.len() == 0,
+            Self::OrderedPairs { entries, value } => entries.len() == 0 && value.is_none(),
             Self::Pairs { entries, value } => entries.len() == 0 && value.is_none(),
             Self::PriorityQueue { entries, value } => entries.len() == 0 && value.is_none(),
             Self::Messages(values) => values.len() == 0,
@@ -92,6 +99,15 @@ impl<'a> Children<'a> {
                 .then(|| values.next())
                 .flatten(),
             Self::Fields(values) => values.next().map(|(_, value)| value),
+            Self::OrderedKeys(values) => values.next().map(|(key, _)| key),
+            Self::OrderedPairs { entries, value } => {
+                if value.is_some() {
+                    return value.take();
+                }
+                let (key, next) = entries.next()?;
+                *value = Some(next);
+                Some(key)
+            }
             Self::Pairs { entries, value } => {
                 if value.is_some() {
                     return value.take();

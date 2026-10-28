@@ -96,6 +96,26 @@ impl SharedFields {
         }
     }
 
+    pub(crate) fn try_map_indexed<T, E>(
+        self,
+        mut map: impl FnMut(usize, InterpValue) -> Result<T, E>,
+    ) -> Result<Vec<T>, E> {
+        match Rc::try_unwrap(self.0) {
+            Ok(mut node) => std::mem::take(&mut node.0)
+                .into_iter()
+                .enumerate()
+                .map(|(index, value)| map(index, value))
+                .collect(),
+            Err(node) => {
+                let mut output = Vec::with_capacity(node.0.len());
+                for (index, value) in node.0.iter().enumerate() {
+                    output.push(map(index, value.clone())?);
+                }
+                Ok(output)
+            }
+        }
+    }
+
     pub(crate) fn into_single(self) -> Option<InterpValue> {
         if self.len() != 1 {
             return None;
