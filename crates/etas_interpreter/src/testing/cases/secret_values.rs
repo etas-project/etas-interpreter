@@ -164,13 +164,13 @@ async fn hmac_rejects_a_sealed_handle_with_the_wrong_checked_key_type_before_dis
         .await
         .unwrap();
     assert!(
-        result.diagnostics.iter().any(|diagnostic| diagnostic
-            .message
-            .contains("does not match the checked SecretValue<K> parameter")),
+        result.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)),
         "{:?}",
         result.diagnostics
     );
     assert!(host.secret_requests().is_empty());
+    assert!(result.events.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]

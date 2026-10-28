@@ -15,6 +15,7 @@ mod scoped_callable;
 mod stream_reducer;
 mod suspension;
 mod traversal;
+mod value_contract;
 
 #[cfg(test)]
 mod call_target_tests;
@@ -101,6 +102,7 @@ impl<'a> SnapshotValidator<'a> {
             self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
         }
         self.validate_argument_references(item, values)?;
+        self.validate_argument_contract(item, values)?;
         Ok(())
     }
 

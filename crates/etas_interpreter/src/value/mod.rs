@@ -1,6 +1,7 @@
 mod aggregate;
 mod bytes;
 mod code;
+pub(crate) mod contract;
 pub(crate) use code::CheckedExecutionProgram;
 pub(crate) use code::CodeIdentitySnapshot;
 pub(crate) use code::CodeMetadataPayload;

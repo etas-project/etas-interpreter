@@ -13,6 +13,32 @@ enum Children<'a> {
     Object(std::slice::Iter<'a, (String, Json)>),
 }
 
+pub(crate) fn validate(value: &Json) -> Result<(), String> {
+    let mut seen = std::collections::HashSet::new();
+    let mut pending = vec![value];
+    while let Some(value) = pending.pop() {
+        match value {
+            Json::NumberBits(bits) if !f64::from_bits(*bits).is_finite() => {
+                return Err("JSON input has a non-finite number".into());
+            }
+            Json::Array(values) if seen.insert((0, values.as_ptr() as usize)) => {
+                pending.extend(values.iter())
+            }
+            Json::Object(fields) if seen.insert((1, fields.as_ptr() as usize)) => {
+                let mut names = std::collections::HashSet::new();
+                for (name, value) in fields.iter() {
+                    if !names.insert(name) {
+                        return Err("JSON input has duplicate object keys".into());
+                    }
+                    pending.push(value);
+                }
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
 impl<'a> Children<'a> {
     fn next(&mut self) -> Option<(Option<&'a str>, &'a Json)> {
         match self {

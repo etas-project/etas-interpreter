@@ -127,7 +127,7 @@ flow main(input: string) -> Option<Message<string>> {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_checked_message_cast_returns_none_on_payload_type_mismatch() {
+async fn run_checked_rejects_message_payload_mismatch_before_cast() {
     let checked = checked_project(
         r#"
 module app.main;
@@ -163,11 +163,14 @@ flow main(input: Message<string>) -> Option<Message<string>> {
         .await
         .expect("execution lifecycle infrastructure");
 
-    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(
-        result.value().cloned(),
-        Some(value::InterpValue::OptionNone)
+    assert!(result.value().is_none());
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| diagnostic.code
+            == DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)),
+        "{:?}",
+        result.diagnostics
     );
+    assert!(result.events.is_empty());
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -1057,10 +1060,9 @@ flow main(input: string, session: SessionConfig) -> Message<string> {
 
     assert_eq!(result.value().cloned(), None);
     assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic
-            .message
-            .contains("Message.with_session expects a SessionConfig value")
+        diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)
     }));
+    assert!(result.events.is_empty());
 }
 
 fn is_unix_timestamp(value: &str) -> bool {

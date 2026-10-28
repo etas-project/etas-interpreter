@@ -234,14 +234,14 @@ async fn inline_revision_rejects_equal_local_ids_from_an_unrelated_checked_progr
     assert!(
         result.diagnostics.iter().any(|diagnostic| diagnostic.code
             == etas_core::DiagnosticCode::Analysis(
-                etas_core::AnalysisDiagnosticCode::MissingCheckedFact
+                etas_core::AnalysisDiagnosticCode::InvalidArguments
             )
-            && diagnostic
-                .message
-                .contains("not in its checked source program")),
+            && diagnostic.message.contains("different checked program")),
         "{:?}",
         result.diagnostics
     );
+    assert!(result.events.is_empty());
+    assert_eq!(host.console_call_count(), 0);
 }
 
 #[test]
