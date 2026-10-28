@@ -42,6 +42,17 @@ impl<'a> EvalContext<'a> {
             .ok_or_else(|| {
                 missing("checked standard callable reference has no native target".to_owned())
             })?;
+        // Keep the checked template ABI and its lexical substitutions together;
+        // the callable may outlive the generic frame that created it.
+        let target = if frame.generic_bindings().is_empty() {
+            target
+        } else {
+            CallTarget::Specialized {
+                target: target.into(),
+                type_bindings: frame.sorted_type_bindings(),
+                effect_row_bindings: frame.generic_bindings().sorted_rows(),
+            }
+        };
         Ok(Some(InterpValue::Callable(target)))
     }
 
