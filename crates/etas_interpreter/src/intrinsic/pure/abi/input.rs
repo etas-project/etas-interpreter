@@ -1,7 +1,7 @@
 use etas_builtin::{BuiltinRangeBounds, BuiltinValue};
 use etas_types::{PrimitiveType, TypeId};
 
-use crate::value::{InterpValue, NumericValue, RangeBounds};
+use crate::value::{InterpValue, NumericValue, RangeBounds, RecordValue};
 
 use super::{AbiShape, AdapterError, PureAbiProjector, SequenceKind};
 
@@ -107,7 +107,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
             let InterpValue::Record(fields) = value else {
                 return Err(type_mismatch(ty, &value));
             };
-            checked_record_into_builtin(fields.into_values(), ty, expected_fields, projector)
+            checked_record_into_builtin(fields, ty, expected_fields, projector)
         }
         AbiShape::Tuple(types) => {
             let InterpValue::Tuple(values) = value else {
@@ -177,20 +177,17 @@ fn sequence_into_builtin(
 }
 
 fn checked_record_into_builtin(
-    values: Vec<(String, InterpValue)>,
+    values: RecordValue,
     ty: TypeId,
     layout: &super::record::RecordAbiLayout,
     projector: &PureAbiProjector,
 ) -> Result<BuiltinValue, AdapterError> {
-    layout
-        .reorder(values, ty)?
-        .into_iter()
-        .zip(layout.fields())
-        .map(|((name, value), field)| {
-            Ok((name, into_builtin_for_type(value, field.ty, projector)?))
-        })
-        .collect::<Result<Vec<_>, _>>()
-        .map(BuiltinValue::Record)
+    layout.check_arity(values.borrow().len(), ty)?;
+    let projected = values.try_map_values(|(name, value)| {
+        let field_type = layout.field_type(&name, ty)?;
+        Ok((name, into_builtin_for_type(value, field_type, projector)?))
+    })?;
+    layout.reorder(projected, ty).map(BuiltinValue::Record)
 }
 
 fn into_builtin_primitive(
@@ -282,10 +279,7 @@ pub(in crate::intrinsic::pure) fn into_builtin(
             .map(BuiltinValue::Map),
         InterpValue::Set(values) => values.try_map_values(into_builtin).map(BuiltinValue::Set),
         InterpValue::Record(fields) => fields
-            .into_values()
-            .into_iter()
-            .map(|(field, value)| Ok((field, into_builtin(value)?)))
-            .collect::<Result<Vec<_>, _>>()
+            .try_map_values(|(field, value)| Ok((field, into_builtin(value)?)))
             .map(BuiltinValue::Record),
         InterpValue::Range(range) => Ok(BuiltinValue::Range {
             start: Box::new(into_builtin(*range.start)?),

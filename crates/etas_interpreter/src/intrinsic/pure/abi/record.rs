@@ -42,17 +42,33 @@ impl RecordAbiLayout {
         self.runtime.clone()
     }
 
+    pub(super) fn check_arity(&self, actual: usize, ty: TypeId) -> Result<(), AdapterError> {
+        if actual == self.fields.len() {
+            Ok(())
+        } else {
+            Err(AdapterError::TypeMismatch {
+                expected: ty,
+                actual: format!("record with {actual} field(s)"),
+            })
+        }
+    }
+
+    pub(super) fn field_type(&self, name: &str, ty: TypeId) -> Result<TypeId, AdapterError> {
+        self.slots
+            .get(name)
+            .map(|slot| self.fields[*slot].ty)
+            .ok_or_else(|| AdapterError::TypeMismatch {
+                expected: ty,
+                actual: format!("record with unknown field `{name}`"),
+            })
+    }
+
     pub(super) fn reorder<V>(
         &self,
         mut values: Vec<(String, V)>,
         ty: TypeId,
     ) -> Result<Vec<(String, V)>, AdapterError> {
-        if values.len() != self.fields.len() {
-            return Err(AdapterError::TypeMismatch {
-                expected: ty,
-                actual: format!("record with {} field(s)", values.len()),
-            });
-        }
+        self.check_arity(values.len(), ty)?;
         for index in 0..values.len() {
             loop {
                 #[cfg(test)]

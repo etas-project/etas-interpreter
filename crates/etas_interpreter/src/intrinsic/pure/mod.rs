@@ -18,6 +18,8 @@ mod crypto_tests;
 #[cfg(test)]
 mod join_tests;
 #[cfg(test)]
+mod record_input_tests;
+#[cfg(test)]
 mod record_tests;
 #[cfg(test)]
 mod sequence_input_tests;
