@@ -29,6 +29,9 @@ impl HostValueProjection for BorrowedValue<'_> {
             InterpValue::String(v) => visitor.scalar(HostScalar::String(v)),
             InterpValue::Bytes(v) => visitor.scalar(HostScalar::Bytes(v)),
             InterpValue::Json(v) => visitor.json(&BorrowedJson(v)),
+            InterpValue::StdConstant(value) => {
+                visitor.variant(value.role().value_name(), std::iter::empty::<Self>())
+            }
             InterpValue::Tuple(v) => visitor.list(v.iter().map(BorrowedValue)),
             InterpValue::Array(v) | InterpValue::Stack(v) => {
                 visitor.list(v.borrow().iter().map(BorrowedValue))

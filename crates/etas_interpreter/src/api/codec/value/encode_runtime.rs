@@ -59,6 +59,9 @@ fn write<'a>(
         InterpValue::String(value) => *slot = json!({"kind":"string","value":value}),
         InterpValue::Bytes(value) => *slot = json!({"kind":"bytes","value":value}),
         InterpValue::Json(value) => *slot = super::super::json::wrapped(value),
+        InterpValue::StdConstant(value) => {
+            *slot = json!({"kind":"std_constant", "role":value.role(), "ty":value.ty().0})
+        }
         InterpValue::Schema(ty) => *slot = json!({"kind":"type_schema","ty":ty.0}),
         InterpValue::CodeMetadata(value) => {
             *slot = json!({"kind":"compiler_metadata","schema":1,"value":value.payload()})

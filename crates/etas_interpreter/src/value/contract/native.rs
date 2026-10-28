@@ -16,6 +16,12 @@ pub(super) fn validate<'a>(
         .ok_or("native input has no checked type")?;
     let role = checked.types.known_std_types.runtime_role(store, expected);
     match value {
+        Value::Runtime(R::StdConstant(value)) | Value::Snapshot(S::StdConstant(value)) => {
+            if value.ty() != expected {
+                return Err("standard constant has a different checked slot type".into());
+            }
+            value.validate(&checked.types.known_std_types)
+        }
         Value::Runtime(R::Callable(target)) => context.callable(Target::Runtime(target), expected),
         Value::Snapshot(S::Callable(target)) => {
             context.callable(Target::Snapshot(target), expected)

@@ -27,6 +27,22 @@ impl Walk<'_> {
             .get(from)
             .ok_or(Failure::MissingType)?;
         let target = self.target.type_store.get(to).ok_or(Failure::MissingType)?;
+        if let InterpValue::StdConstant(value) = value {
+            if value.ty() != from {
+                return Err(Failure::WrongNominalIdentity { actual: value.ty() });
+            }
+            value
+                .validate(&self.source.types.known_std_types)
+                .map_err(Failure::InvalidField)?;
+            let value = crate::value::StdConstantValue::checked(
+                value.role(),
+                to,
+                &self.target.types.known_std_types,
+            )
+            .map_err(Failure::InvalidField)?;
+            self.values.push(InterpValue::StdConstant(value));
+            return Ok(());
+        }
         if matches!(&value, InterpValue::CommandResult { .. }) {
             if self
                 .source
@@ -85,11 +101,12 @@ impl Walk<'_> {
                     Some(Type::Applied { constructor, .. }) => TypeId(constructor.0),
                     _ => ty,
                 };
-                program
-                    .types
-                    .known_std_types
-                    .opaque_values
-                    .contains(&constructor)
+                let known = &program.types.known_std_types;
+                !known
+                    .runtime_values
+                    .values()
+                    .any(|value_type| *value_type == ty)
+                    && known.opaque_values.contains(&constructor)
             };
             if !opaque(self.source, from) || !opaque(self.target, to) {
                 return Err(Failure::UnsupportedType);

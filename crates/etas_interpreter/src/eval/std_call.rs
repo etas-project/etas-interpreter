@@ -798,11 +798,10 @@ impl<'a> EvalContext<'a> {
                 "std.host.command.run first argument must be a Command support value",
             );
         };
-        if !matches!(
-            sandbox,
-            InterpValue::Variant { name, fields }
-                if name == "DefaultCommandSandbox" && fields.is_empty()
-        ) {
+        let valid = matches!(sandbox, InterpValue::StdConstant(value)
+            if value.role() == etas_std::StdValueRole::DefaultCommandSandbox
+                && value.validate(&self.checked.types.known_std_types).is_ok());
+        if !valid {
             return ControlSignal::fault(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,

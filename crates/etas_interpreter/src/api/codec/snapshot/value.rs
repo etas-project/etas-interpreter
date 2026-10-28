@@ -191,6 +191,9 @@ fn leaf(value: &ValueSnapshot) -> Value {
         }
         V::Unit => json!({"kind":"unit"}),
         V::Schema(ty) => json!({"kind":"type_schema","ty":ty.0}),
+        V::StdConstant(value) => {
+            json!({"kind":"std_constant", "role":value.role(), "ty":value.ty().0})
+        }
         V::CodeIdentity { ty, identity } => {
             json!({"kind":"compiler_identity","schema":1,"ty":ty.0,"value":identity})
         }

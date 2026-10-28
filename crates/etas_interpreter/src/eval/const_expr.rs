@@ -307,6 +307,17 @@ impl<'a> EvalContext<'a> {
             ));
         };
         let mut layouts = crate::plan::code::CheckedValueTypes::default();
+        if let Some(role) = value.runtime_role {
+            let value = crate::value::StdConstantValue::checked(
+                role,
+                *ty,
+                &self.checked.types.known_std_types,
+            )
+            .map_err(|reason| {
+                ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason)
+            })?;
+            return Ok(Some(InterpValue::StdConstant(value)));
+        }
         let variant = layouts
             .variant(self.checked, *ty, &value.name)
             .map_err(|error| {

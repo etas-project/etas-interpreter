@@ -53,6 +53,7 @@ mod session_publication;
 mod sets;
 mod shared_adt;
 mod std_callable_values;
+mod std_values;
 mod storage_outcomes;
 mod stream_reducer;
 mod stream_values;

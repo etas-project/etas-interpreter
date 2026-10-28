@@ -49,6 +49,63 @@ fn validate_both(checked: &etas_frontend::CheckedProject, value: &V, valid: bool
 }
 
 #[test]
+fn ingress_contract_requires_checked_standard_constant_role_and_owner() {
+    use crate::value::StdConstantValue;
+    use etas_std::StdValueRole;
+    let checked = checked(
+        "module app.main; flow main(value: std.host.sandbox.SandboxProfile) -> unit { let canonical = DefaultCommandSandbox; return; }",
+    );
+    let ty = parameter(&checked);
+    let native = StdConstantValue::checked(
+        StdValueRole::DefaultCommandSandbox,
+        ty,
+        &checked.types.known_std_types,
+    )
+    .unwrap();
+    validate_both(&checked, &V::StdConstant(native), true);
+    assert!(
+        validate(
+            &checked,
+            &V::HostHandle(crate::value::HostHandleValue::browser_session(
+                ty,
+                "forged-profile".into()
+            ))
+        )
+        .is_err()
+    );
+    validate_both(
+        &checked,
+        &V::StdConstant(StdConstantValue::from_parts(
+            StdValueRole::LogicalTraceLabel,
+            ty,
+        )),
+        false,
+    );
+    validate_both(
+        &checked,
+        &V::StdConstant(StdConstantValue::from_parts(
+            StdValueRole::DefaultCommandSandbox,
+            TypeId(u32::MAX),
+        )),
+        false,
+    );
+    validate_both(
+        &checked,
+        &V::Variant {
+            name: "DefaultCommandSandbox".into(),
+            fields: vec![].into(),
+        },
+        false,
+    );
+    let mut missing = checked.clone();
+    std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut missing).types)
+        .known_std_types
+        .runtime_values
+        .clear();
+    validate_both(&missing, &V::StdConstant(native), false);
+}
+
+#[test]
 fn ingress_contract_requires_canonical_session_and_limit_values() {
     for ty in ["SessionId", "ContextPolicy", "RetentionPolicy", "Limit"] {
         let checked = checked(&format!(

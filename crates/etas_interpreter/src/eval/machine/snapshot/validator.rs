@@ -969,6 +969,10 @@ impl<'a> SnapshotValidator<'a> {
                 ValueSnapshot::Schema(ty) => {
                     self.type_id(*ty, "checkpoint schema descriptor type")?
                 }
+                ValueSnapshot::StdConstant(value) => {
+                    self.type_id(value.ty(), "checkpoint standard constant type")?;
+                    value.validate(&self.checked.types.known_std_types)?;
+                }
                 ValueSnapshot::CodeIdentity { ty, identity } => {
                     self.type_id(*ty, "checkpoint compiler identity type")?;
                     identity.restore(&self.checked.types.known_std_types.code, *ty)?;

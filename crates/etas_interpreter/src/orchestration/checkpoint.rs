@@ -350,6 +350,7 @@ pub(crate) enum ValueSnapshot {
     Message(MessageSnapshot),
     Conversation(ConversationSnapshot),
     Provenance(ProvenanceValue),
+    StdConstant(crate::value::StdConstantValue),
     ModelResponse(ModelResponseValue),
     Command {
         argv: Vec<String>,

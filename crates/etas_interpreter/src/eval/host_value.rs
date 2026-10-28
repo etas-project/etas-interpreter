@@ -14,6 +14,11 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
         ),
         InterpValue::Unit => "unit".to_owned(),
         InterpValue::Schema(ty) => format!("schema:{}", ty.0),
+        InterpValue::StdConstant(value) => format!(
+            "std-constant:{}:{}",
+            value.ty().0,
+            value.role().value_name()
+        ),
         InterpValue::Bool(value) => format!("bool:{value}"),
         InterpValue::Number(value) => format!(
             "number:{}:{}",

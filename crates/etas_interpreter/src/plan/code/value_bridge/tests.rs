@@ -21,6 +21,50 @@ mod action;
 mod code;
 
 #[test]
+fn standard_constants_preserve_checked_declaration_roles_across_revisions() {
+    use crate::value::StdConstantValue;
+    use etas_std::StdValueRole;
+    let (prepared, scope, ty) = prepared(
+        "import std.host.sandbox.SandboxProfile; flow profile() -> SandboxProfile { return DefaultCommandSandbox; }",
+        "SandboxProfile",
+    );
+    let program = prepared.type_bridge().original_program();
+    let value = InterpValue::StdConstant(
+        StdConstantValue::checked(
+            StdValueRole::DefaultCommandSandbox,
+            ty,
+            &program.types.known_std_types,
+        )
+        .unwrap(),
+    );
+    assert_eq!(roundtrip(&prepared, &scope, ty, value.clone()), value);
+    assert!(
+        prepared
+            .type_bridge()
+            .value_to_candidate(
+                program,
+                &scope,
+                ty,
+                InterpValue::HostHandle(crate::value::HostHandleValue::browser_session(
+                    ty,
+                    "forged-profile".into()
+                ))
+            )
+            .is_err()
+    );
+    let invalid = InterpValue::StdConstant(StdConstantValue::from_parts(
+        StdValueRole::LogicalTraceLabel,
+        ty,
+    ));
+    assert!(
+        prepared
+            .type_bridge()
+            .value_to_candidate(program, &scope, ty, invalid)
+            .is_err()
+    );
+}
+
+#[test]
 fn native_command_results_preserve_checked_identity_and_output_storage_across_revisions() {
     let (prepared, scope, ty) = prepared("import std.host.command.CommandResult;", "CommandResult");
     let stdout = crate::value::BytesValue::from(vec![0, 128, 255]);

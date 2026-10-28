@@ -46,6 +46,11 @@ impl StructuralPartition for ValueSnapshot {
                 value.hash(state);
                 return None;
             }
+            Self::StdConstant(value) => {
+                (value.role() as u8).hash(state);
+                value.ty().hash(state);
+                return None;
+            }
             Self::String(value) => {
                 value.hash(state);
                 return None;

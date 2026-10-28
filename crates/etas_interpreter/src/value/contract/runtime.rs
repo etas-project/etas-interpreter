@@ -168,6 +168,7 @@ impl Context for RuntimeContext<'_> {
         match value {
             Value::Runtime(InterpValue::HostHandle(handle))
                 if handle.nominal_type() == expected
+                    && !known.runtime_values.values().any(|ty| *ty == expected)
                     && known.opaque_values.contains(&constructor) =>
             {
                 Ok(())

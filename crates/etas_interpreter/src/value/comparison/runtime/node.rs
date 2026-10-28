@@ -225,6 +225,7 @@ fn leaf_equal(a: &V, b: &V) -> bool {
         (V::CallableDefinition(a), V::CallableDefinition(b)) => a == b,
         (V::Prompt(a), V::Prompt(b)) => a == b,
         (V::Schema(a), V::Schema(b)) => a == b,
+        (V::StdConstant(a), V::StdConstant(b)) => a == b,
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
         (V::Range(a), V::Range(b)) => a == b,
