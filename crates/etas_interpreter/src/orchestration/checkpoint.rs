@@ -453,8 +453,6 @@ pub(crate) enum StaticMethodKindSnapshot {
     Message,
     SessionConfig,
     Conversation,
-    Range,
-    AdvancedCollection(String),
 }
 
 #[derive(Clone, Debug)]

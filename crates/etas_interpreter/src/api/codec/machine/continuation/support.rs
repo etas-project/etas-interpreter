@@ -284,10 +284,6 @@ pub(super) fn static_method_kind_snapshot(
         crate::orchestration::StaticMethodKindSnapshot::Conversation => {
             json!({ "kind": "conversation" })
         }
-        crate::orchestration::StaticMethodKindSnapshot::Range => json!({ "kind": "range" }),
-        crate::orchestration::StaticMethodKindSnapshot::AdvancedCollection(name) => {
-            json!({ "kind": "advanced_collection", "name": name })
-        }
     }
 }
 
@@ -299,10 +295,6 @@ pub(super) fn static_method_kind_from_snapshot(
         "message" => Ok(StaticMethodKindSnapshot::Message),
         "session_config" => Ok(StaticMethodKindSnapshot::SessionConfig),
         "conversation" => Ok(StaticMethodKindSnapshot::Conversation),
-        "range" => Ok(StaticMethodKindSnapshot::Range),
-        "advanced_collection" => Ok(StaticMethodKindSnapshot::AdvancedCollection(
-            required_str(value, "name")?.to_owned(),
-        )),
         other => Err(format!("unknown machine static method kind `{other}`")),
     }
 }

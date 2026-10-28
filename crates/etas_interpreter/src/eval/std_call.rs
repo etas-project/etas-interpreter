@@ -81,6 +81,9 @@ impl<'a> EvalContext<'a> {
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
         match kind {
+            StdCallable::Collection(operation) => {
+                self.execute_collection_intrinsic(operation, checked_call, call_args, span)
+            }
             StdCallable::ForwardAction => {
                 self.execute_action_forwarder(checked_call, call_args, span)
             }

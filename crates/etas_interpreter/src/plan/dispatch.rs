@@ -37,6 +37,7 @@ struct ProgramDispatch {
     default_actions: HashMap<HirExprId, default_actions::CheckedDefaultAction>,
     default_action_intrinsics: HashSet<StdIntrinsicId>,
     std_methods: HashMap<HirExprId, CheckedStdIntrinsicCall>,
+    std_type_members: HashSet<HirExprId>,
     std_call_origins: HashMap<HirExprId, CheckedStdIntrinsicCall>,
     pure_abi: PureAbiProjector,
     handlers: StdIntrinsicHandlerRegistry,
@@ -151,8 +152,9 @@ impl IntrinsicDispatchTable {
         if !errors.is_empty() {
             return Err(errors);
         }
-        let std_methods = checked_methods::lower(project, &handlers, &mut imported_intrinsics)
-            .map_err(|error| vec![error])?;
+        let (std_methods, std_type_members) =
+            checked_methods::lower(project, &handlers, &mut imported_intrinsics)
+                .map_err(|error| vec![error])?;
         let std_call_origins = checked_calls::lower(project, &std_intrinsics, &std_methods)
             .map_err(|error| vec![error])?;
         let forwarded_actions =
@@ -215,6 +217,7 @@ impl IntrinsicDispatchTable {
                 default_actions,
                 default_action_intrinsics,
                 std_methods,
+                std_type_members,
                 std_call_origins,
                 pure_abi,
                 handlers,
@@ -296,6 +299,14 @@ impl IntrinsicDispatchTable {
 
     pub(crate) fn std_method(&self, expr: HirExprId) -> Option<&CheckedStdIntrinsicCall> {
         self.program.std_methods.get(&expr)
+    }
+
+    pub(crate) fn std_type_member(&self, expr: HirExprId) -> Option<&CheckedStdIntrinsicCall> {
+        self.program
+            .std_type_members
+            .contains(&expr)
+            .then(|| self.program.std_methods.get(&expr))
+            .flatten()
     }
 
     pub(crate) fn reflection_required(&self) -> bool {

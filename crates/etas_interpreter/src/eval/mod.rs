@@ -50,6 +50,7 @@ pub(crate) mod priority_queue;
 mod reflection;
 mod run_state;
 pub use run_state::EvalRunState;
+mod collection_call;
 mod safe_point;
 mod session_context;
 mod session_history;

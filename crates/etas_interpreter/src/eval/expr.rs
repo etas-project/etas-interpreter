@@ -130,11 +130,6 @@ impl<'a> EvalContext<'a> {
                         *span,
                     );
                 };
-                if let Some(signal) = self.eval_static_collection_constructor_call(
-                    expr, *callee, &type_args, args, *span, frame,
-                ) {
-                    return signal;
-                }
                 self.eval_call(expr, *callee, &type_args, args, *span, frame)
             }
             HirExpr::MethodCall {

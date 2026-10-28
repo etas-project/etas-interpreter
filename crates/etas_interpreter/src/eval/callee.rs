@@ -222,6 +222,9 @@ impl<'a> EvalContext<'a> {
         frame: &Frame,
         span: Span,
     ) -> Result<Option<CallTarget>, crate::control::ExecutionFault> {
+        if let Some(checked) = self.plan.dispatch.std_type_member(call) {
+            return Ok(Some(CallTarget::StdIntrinsic(checked.clone())));
+        }
         let HirExpr::Path(path) = &self.checked.hir.exprs[callee] else {
             return Ok(None);
         };

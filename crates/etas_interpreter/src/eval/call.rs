@@ -14,61 +14,6 @@ pub(super) struct CallArgsState {
 }
 
 impl<'a> EvalContext<'a> {
-    pub(super) fn eval_static_collection_constructor_call(
-        &mut self,
-        expr: HirExprId,
-        callee: HirExprId,
-        type_args: &[etas_hir::HirTypeId],
-        args: &[HirArg],
-        span: Span,
-        frame: &mut Frame,
-    ) -> Option<ControlSignal> {
-        let HirExpr::Path(path) = &self.checked.hir.exprs[callee] else {
-            return None;
-        };
-        let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
-            return None;
-        };
-        let [method] = partial.remaining.as_slice() else {
-            return None;
-        };
-        if method != "new" {
-            return None;
-        }
-        let symbol = partial.resolved_prefix?;
-        let symbol_data = self.checked.symbols.get(symbol)?;
-        let SymbolDef::ImportAlias { path, .. } = &symbol_data.def else {
-            return None;
-        };
-        let collection = match path
-            .iter()
-            .map(String::as_str)
-            .collect::<Vec<_>>()
-            .as_slice()
-        {
-            ["std", "collections", "Deque"] => "Deque",
-            ["std", "collections", "Queue"] => "Queue",
-            ["std", "collections", "Stack"] => "Stack",
-            ["std", "collections", "PriorityQueue"] => "PriorityQueue",
-            ["std", "collections", "OrderedMap"] => "OrderedMap",
-            ["std", "collections", "OrderedSet"] => "OrderedSet",
-            _ => return None,
-        };
-        Some(self.resume_static_method_args(
-            crate::eval::method::StaticMethodArgsState {
-                expr,
-                kind: StaticMethodKind::AdvancedCollection(collection.into()),
-                method: method.clone(),
-                type_args: type_args.to_vec(),
-                args: args.to_vec(),
-                start_arg_index: 0,
-                evaluated_args: Vec::new(),
-                span,
-            },
-            frame,
-        ))
-    }
-
     pub(super) fn eval_call(
         &mut self,
         call: HirExprId,
