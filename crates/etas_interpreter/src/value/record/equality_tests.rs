@@ -124,3 +124,34 @@ fn record_equality_by_field_name_is_stack_safe_for_deep_nested_records() {
     let index = MembershipIndex::default();
     assert_eq!(index.fingerprint(&a), index.fingerprint(&b));
 }
+
+#[test]
+fn record_equality_by_field_name_reaches_captured_values_in_snapshot_membership() {
+    let callable = |record| {
+        InterpValue::Callable(crate::control::CallTarget::Lambda {
+            expr: etas_hir::HirExprId(7),
+            captured: crate::control::Frame::from_snapshot(vec![(etas_hir::SymbolId(1), record)])
+                .unwrap(),
+        })
+    };
+    let a = callable(row(1, &["state", "status"]));
+    let b = callable(row(1, &["status", "state"]));
+    assert_eq!(a, b);
+    let a = ValueSnapshot::capture(&a).unwrap();
+    let b = ValueSnapshot::capture(&b).unwrap();
+    assert!(a.member_eq(&b), "{a:?}\n{b:?}");
+
+    // Callable partitions deliberately collide; failed candidates must not seed equality.
+    let a = InterpValue::Set(SetValue::new(vec![
+        callable(row(1, &["state", "status"])),
+        callable(row(2, &["state", "status"])),
+    ]));
+    let b = InterpValue::Set(SetValue::new(vec![
+        callable(row(2, &["status", "state"])),
+        callable(row(1, &["status", "state"])),
+    ]));
+    assert_eq!(a, b);
+    let a = ValueSnapshot::capture(&a).unwrap();
+    let b = ValueSnapshot::capture(&b).unwrap();
+    assert!(a.member_eq(&b));
+}

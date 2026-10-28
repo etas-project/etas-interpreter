@@ -23,8 +23,9 @@ pub(super) fn frame<'a>(
     b: &'a LocalsSnapshot,
     pending: &mut Pending<'a>,
     seen: &mut Seen,
+    compare_ids: bool,
 ) -> bool {
-    if a.id != b.id
+    if (compare_ids && a.id != b.id)
         || a.type_bindings != b.type_bindings
         || a.effect_row_bindings != b.effect_row_bindings
         || a.locals.len() != b.locals.len()
