@@ -31,6 +31,8 @@ mod memory_source_commit;
 mod message_session;
 mod model_payload;
 mod native_actions;
+mod ordered_checkpoint;
+mod ordered_collections;
 mod priority_queue;
 mod prompt_data;
 mod pure_queries;

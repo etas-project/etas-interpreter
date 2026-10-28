@@ -15,6 +15,7 @@ enum Cursor<'a> {
         a: &'a [V],
         b: &'a [V],
         index: usize,
+        comparator: Option<(&'a V, &'a V)>,
     },
     Map {
         a: &'a [(V, V)],
@@ -71,7 +72,7 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                 b = bv;
                 continue;
             }
-            (V::Set(av), V::Set(bv)) | (V::OrderedSet(av), V::OrderedSet(bv)) => {
+            (V::Set(av), V::Set(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
@@ -80,6 +81,7 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                         a: av,
                         b: bv,
                         index: 0,
+                        comparator: None,
                     }
                 } else {
                     let mut index = MembershipIndex::with_capacity(bv.len());
@@ -109,6 +111,7 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                     a: av,
                     b: bv,
                     index: 0,
+                    comparator: None,
                 }
             }
             (
@@ -128,6 +131,7 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                     a: av,
                     b: bv,
                     index: 0,
+                    comparator: None,
                 }
             }
             (
@@ -150,7 +154,47 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                     comparator: ac.as_deref().zip(bc.as_deref()),
                 }
             }
-            (V::Map(av), V::Map(bv)) | (V::OrderedMap(av), V::OrderedMap(bv)) => {
+            (
+                V::OrderedSet {
+                    values: av,
+                    comparator: ac,
+                },
+                V::OrderedSet {
+                    values: bv,
+                    comparator: bc,
+                },
+            ) => {
+                if av.len() != bv.len() || ac.is_some() != bc.is_some() {
+                    return Comparison::Ready(false);
+                }
+                Cursor::Sequence {
+                    a: av,
+                    b: bv,
+                    index: 0,
+                    comparator: ac.as_deref().zip(bc.as_deref()),
+                }
+            }
+            (
+                V::OrderedMap {
+                    entries: av,
+                    comparator: ac,
+                },
+                V::OrderedMap {
+                    entries: bv,
+                    comparator: bc,
+                },
+            ) => {
+                if av.len() != bv.len() || ac.is_some() != bc.is_some() {
+                    return Comparison::Ready(false);
+                }
+                Cursor::Map {
+                    a: av,
+                    b: bv,
+                    index: 0,
+                    comparator: ac.as_deref().zip(bc.as_deref()),
+                }
+            }
+            (V::Map(av), V::Map(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
@@ -228,7 +272,15 @@ impl<'a> EqualityCursor for Cursor<'a> {
             return CursorStep::Complete(false);
         }
         let next = match self {
-            Self::Sequence { a, b, index } => {
+            Self::Sequence {
+                a,
+                b,
+                index,
+                comparator,
+            } => {
+                if let Some((a, b)) = comparator.take() {
+                    return CursorStep::Child(node(a, b));
+                }
                 let position = *index;
                 *index += 1;
                 a.get(position)

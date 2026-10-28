@@ -62,6 +62,9 @@ impl MachineFrameSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match frame {
+            EvalFrame::PureBoundary(_) => {
+                return Err("pure invocation scope cannot cross a checkpoint boundary".into());
+            }
             EvalFrame::ProgramReturn(_) => {
                 return Err(
                     "compiled revision checkpoint requires a checked artifact resolver".into(),

@@ -231,7 +231,7 @@ async fn source_prepare_intent_checkpoints_without_storage_access_and_restores_s
     injected["checkpoint"]["args"] = serde_json::json!([malformed]);
     assert!(crate::api::codec::checkpoint_from_json(&injected, &checked).is_err());
     let mut in_memory = checkpoint.clone();
-    in_memory.args = vec![bad_value];
+    in_memory.args = vec![crate::orchestration::ValueSnapshot::capture(&bad_value).unwrap()];
     let rejected = Interpreter
         .resume_checkpoint(&checked, &in_memory, &host, RunOptions::default())
         .await

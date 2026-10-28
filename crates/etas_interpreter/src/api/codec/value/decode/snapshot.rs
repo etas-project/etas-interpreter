@@ -17,7 +17,12 @@ impl DecodedValue for ValueSnapshot {
             Unary::Some => Self::OptionSome(value),
         }
     }
-    fn sequence(kind: Sequence, values: Vec<Self>) -> Result<Self, InterpreterCodecError> {
+    fn sequence(
+        kind: Sequence,
+        values: Vec<Self>,
+        comparator: Option<Self>,
+    ) -> Result<Self, InterpreterCodecError> {
+        validate_comparison(comparator.as_ref())?;
         if matches!(kind, Sequence::Set | Sequence::OrderedSet) {
             crate::value::membership::MembershipIndex::require_unique(&values)
                 .map_err(InterpreterCodecError::new)?;
@@ -31,7 +36,10 @@ impl DecodedValue for ValueSnapshot {
             Sequence::Deque => Self::Deque(values.into()),
             Sequence::Queue => Self::Queue(values.into()),
             Sequence::Stack => Self::Stack(values.into()),
-            Sequence::OrderedSet => Self::OrderedSet(values.into()),
+            Sequence::OrderedSet => Self::OrderedSet {
+                values: values.into(),
+                comparator: comparator.map(crate::orchestration::SnapshotBox::new),
+            },
             Sequence::Variant(name) => Self::Variant {
                 name,
                 fields: values.into(),
@@ -45,7 +53,13 @@ impl DecodedValue for ValueSnapshot {
     ) -> Result<Self, InterpreterCodecError> {
         Ok(match kind {
             Pairs::Map => Self::Map(values.into()),
-            Pairs::OrderedMap => Self::OrderedMap(values.into()),
+            Pairs::OrderedMap => {
+                validate_comparison(comparator.as_ref())?;
+                Self::OrderedMap {
+                    entries: values.into(),
+                    comparator: comparator.map(crate::orchestration::SnapshotBox::new),
+                }
+            }
             Pairs::PriorityQueue => {
                 if comparator
                     .as_ref()
@@ -71,5 +85,15 @@ impl DecodedValue for ValueSnapshot {
             end: crate::orchestration::SnapshotBox::new(end),
             bounds,
         }
+    }
+}
+
+fn validate_comparison(comparator: Option<&ValueSnapshot>) -> Result<(), InterpreterCodecError> {
+    if comparator.is_some_and(|value| !matches!(value, ValueSnapshot::Callable(_))) {
+        Err(InterpreterCodecError::new(
+            "key comparison must be a callable",
+        ))
+    } else {
+        Ok(())
     }
 }

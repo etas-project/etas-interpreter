@@ -38,7 +38,8 @@ impl<'a> EvalContext<'a> {
         if method != "new" {
             return unsupported_method(span, &format!("{collection} type"), method);
         }
-        if !args.is_empty() && collection != "PriorityQueue" {
+        if !args.is_empty() && !matches!(collection, "PriorityQueue" | "OrderedMap" | "OrderedSet")
+        {
             return ControlSignal::invalid_arguments(
                 format!("{collection}.new expects no method arguments"),
                 span,
@@ -55,30 +56,36 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         }
+        let comparator = if matches!(collection, "PriorityQueue" | "OrderedMap" | "OrderedSet") {
+            match args {
+                [] => None,
+                [InterpValue::Callable(target)] => {
+                    if let Err(message) = self.validate_collection_comparator(target) {
+                        return ControlSignal::invalid_arguments(message, span);
+                    }
+                    Some(target.clone())
+                }
+                _ => {
+                    return ControlSignal::invalid_arguments(
+                        format!(
+                            "{collection}.new expects zero arguments or one pure comparison flow"
+                        ),
+                        span,
+                    );
+                }
+            }
+        } else {
+            None
+        };
         let value = match collection {
             "Deque" => InterpValue::Deque(crate::value::DequeValue::new(Vec::new())),
             "Queue" => InterpValue::Queue(crate::value::DequeValue::new(Vec::new())),
             "Stack" => InterpValue::Stack(ArrayValue::new(Vec::new())),
             "PriorityQueue" => {
-                let comparator = match args {
-                    [] => None,
-                    [InterpValue::Callable(target)] => {
-                        if let Err(message) = self.validate_priority_comparator(target) {
-                            return ControlSignal::invalid_arguments(message, span);
-                        }
-                        Some(target.clone())
-                    }
-                    _ => {
-                        return ControlSignal::invalid_arguments(
-                            "PriorityQueue.new expects zero arguments or one pure comparison flow",
-                            span,
-                        );
-                    }
-                };
                 InterpValue::PriorityQueue(crate::value::PriorityQueueValue::new(comparator))
             }
-            "OrderedMap" => InterpValue::OrderedMap(MapValue::new(Vec::new())),
-            "OrderedSet" => InterpValue::OrderedSet(Vec::new().into()),
+            "OrderedMap" => InterpValue::OrderedMap(crate::value::OrderedMapValue::new(comparator)),
+            "OrderedSet" => InterpValue::OrderedSet(crate::value::OrderedSetValue::new(comparator)),
             _ => {
                 return ControlSignal::missing_checked_fact(
                     format!("unknown checked collection constructor `{collection}`"),

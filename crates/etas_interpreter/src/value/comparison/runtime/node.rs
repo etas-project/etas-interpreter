@@ -121,11 +121,17 @@ pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
                     b_slot: 0,
                 };
             }
-            (V::Map(av), V::Map(bv)) | (V::OrderedMap(av), V::OrderedMap(bv)) => {
+            (V::Map(av), V::Map(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
                     return Comparison::Ready(false);
                 }
                 break Children::Map(av.clone(), bv.clone());
+            }
+            (V::OrderedMap(av), V::OrderedMap(bv)) => {
+                if av.len() != bv.len() || av.comparator() != bv.comparator() {
+                    return Comparison::Ready(false);
+                }
+                break Children::OrderedMap(av.clone(), bv.clone());
             }
             (V::Record(av), V::Record(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
@@ -133,8 +139,14 @@ pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
                 }
                 break Children::Record(av.clone(), bv.clone());
             }
-            (V::Set(av), V::Set(bv)) | (V::OrderedSet(av), V::OrderedSet(bv)) => {
+            (V::Set(av), V::Set(bv)) => {
                 return set_comparison(av, bv);
+            }
+            (V::OrderedSet(av), V::OrderedSet(bv)) => {
+                if av.len() != bv.len() || av.comparator() != bv.comparator() {
+                    return Comparison::Ready(false);
+                }
+                break Children::OrderedSet(av.clone(), bv.clone());
             }
             _ => return Comparison::Ready(leaf_equal(a, b)),
         }

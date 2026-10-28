@@ -23,7 +23,9 @@ fn container_capture_allocates_only_snapshot_slots_and_one_shared_owner() {
             InterpValue::Deque(DequeValue::new(values())),
             InterpValue::Queue(DequeValue::new(values())),
             InterpValue::Stack(ArrayValue::new(values())),
-            InterpValue::OrderedSet(SetValue::new(values())),
+            InterpValue::OrderedSet(
+                crate::value::OrderedSetValue::try_from_values(values()).unwrap(),
+            ),
         ] {
             let (snapshot, cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());
             assert_eq!(
@@ -40,7 +42,9 @@ fn container_capture_allocates_only_snapshot_slots_and_one_shared_owner() {
         }
         for runtime in [
             InterpValue::Map(MapValue::new(pairs())),
-            InterpValue::OrderedMap(MapValue::new(pairs())),
+            InterpValue::OrderedMap(
+                crate::value::OrderedMapValue::try_from_entries(pairs()).unwrap(),
+            ),
             InterpValue::PriorityQueue(pairs().into()),
         ] {
             let (snapshot, cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());

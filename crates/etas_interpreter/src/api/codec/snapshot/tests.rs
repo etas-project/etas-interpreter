@@ -39,12 +39,15 @@ fn captured_value_json_preserves_the_runtime_wire_contract() {
         InterpValue::List(ListValue::new(values.clone())),
         InterpValue::Slice(SliceValue::new(values.clone())),
         InterpValue::Set(SetValue::new(values.clone())),
-        InterpValue::OrderedSet(SetValue::new(values.clone())),
+        InterpValue::OrderedSet(
+            OrderedSetValue::try_from_values(vec![InterpValue::i32(7), InterpValue::i32(9)])
+                .unwrap(),
+        ),
         InterpValue::Deque(values.clone().into()),
         InterpValue::Queue(values.clone().into()),
         InterpValue::Stack(ArrayValue::new(values)),
         InterpValue::Map(MapValue::new(pairs.clone())),
-        InterpValue::OrderedMap(MapValue::new(pairs.clone())),
+        InterpValue::OrderedMap(OrderedMapValue::try_from_entries(pairs.clone()).unwrap()),
         InterpValue::PriorityQueue(pairs.into()),
         InterpValue::Record(RecordValue::new(vec![("value".into(), leaf.clone())])),
         InterpValue::Variant {

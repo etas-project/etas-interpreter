@@ -33,7 +33,7 @@ pub struct InterpreterCheckpoint {
     pub compilation: CheckpointCompilationIdentity,
     pub code_revision: Option<CheckpointCodeRevision>,
     pub entry_item: HirItemId,
-    pub args: Vec<InterpValue>,
+    pub(crate) args: Vec<ValueSnapshot>,
     pub machine: MachineSnapshot,
     pub(crate) model_policy: ModelExecutionPolicySnapshot,
     pub handlers: HandlerSnapshot,
@@ -371,8 +371,14 @@ pub(crate) enum ValueSnapshot {
         entries: SnapshotChildren<(ValueSnapshot, ValueSnapshot)>,
         comparator: Option<SnapshotBox>,
     },
-    OrderedMap(SnapshotChildren<(ValueSnapshot, ValueSnapshot)>),
-    OrderedSet(SnapshotChildren<ValueSnapshot>),
+    OrderedMap {
+        entries: SnapshotChildren<(ValueSnapshot, ValueSnapshot)>,
+        comparator: Option<SnapshotBox>,
+    },
+    OrderedSet {
+        values: SnapshotChildren<ValueSnapshot>,
+        comparator: Option<SnapshotBox>,
+    },
     Range {
         start: SnapshotBox,
         end: SnapshotBox,

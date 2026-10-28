@@ -137,10 +137,14 @@ fn capture_identity_preserves_container_kinds_views_and_nominal_identity() {
             value: payload,
         },
         InterpValue::Map(map.clone()),
-        InterpValue::OrderedMap(map.clone()),
+        InterpValue::OrderedMap(
+            crate::value::OrderedMapValue::try_from_entries(map.snapshot()).unwrap(),
+        ),
         InterpValue::PriorityQueue(map.snapshot().into()),
         InterpValue::Set(set.clone()),
-        InterpValue::OrderedSet(set),
+        InterpValue::OrderedSet(
+            crate::value::OrderedSetValue::try_from_values(set.snapshot()).unwrap(),
+        ),
         InterpValue::Deque(deque.clone()),
         InterpValue::Queue(deque),
         InterpValue::List(list),

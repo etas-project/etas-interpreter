@@ -23,7 +23,7 @@ pub use fault::ExecutionFault;
 pub use frame::Frame;
 pub(crate) use generics::{CheckedCallBindings, GenericBindings};
 pub use signal::{
-    CommandDecode, ConsoleDecode, ContinuationInput, ControlSignal, HostBoundaryDecode,
+    CallPurity, CommandDecode, ConsoleDecode, ContinuationInput, ControlSignal, HostBoundaryDecode,
     HostBoundaryRequest, MemoryDecode, ModelDecode, PendingBlock, PendingCall, PendingCheckpoint,
     PendingCommand, PendingConsole, PendingContinuation, PendingExpr, PendingHostBoundary,
     PendingMemory, PendingModel, PendingPerform, PendingSession, SessionDecode, SourceToolBinding,

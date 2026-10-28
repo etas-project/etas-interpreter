@@ -221,10 +221,26 @@ fn iterative_secret_scan_covers_each_supported_container_child() {
             Value::Queue(DequeValue::new(vec![Value::Unit, child.clone()])),
             Value::Deque(DequeValue::new(vec![Value::Unit, child.clone()])),
             Value::Set(SetValue::new(vec![Value::Unit, child.clone()])),
-            Value::OrderedSet(SetValue::new(vec![Value::Unit, child.clone()])),
+            Value::OrderedSet(
+                // The secret scanner must also inspect malformed ingress values.
+                crate::value::OrderedSetValue::from_tree(
+                    crate::value::ordered::OrderedTree::from_pending_entries(vec![(
+                        child.clone(),
+                        Value::Unit,
+                    )])
+                    .unwrap(),
+                    None,
+                ),
+            ),
             Value::Map(MapValue::new(vec![(child.clone(), Value::Unit)])),
             Value::Map(MapValue::new(vec![(Value::Unit, child.clone())])),
-            Value::OrderedMap(MapValue::new(vec![(Value::Unit, child.clone())])),
+            Value::OrderedMap(
+                crate::value::OrderedMapValue::try_from_entries(vec![(
+                    Value::Bool(false),
+                    child.clone(),
+                )])
+                .unwrap(),
+            ),
             Value::PriorityQueue(vec![(child.clone(), Value::Unit)].into()),
             Value::Range(RangeValue {
                 start: Box::new(child.clone()),

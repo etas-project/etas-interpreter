@@ -24,12 +24,12 @@ enum SequenceKind {
     Deque,
     Queue,
     Stack,
-    OrderedSet,
+    OrderedSet(Option<crate::control::CallTarget>),
     Variant(String),
 }
 enum PairKind {
     Map,
-    OrderedMap,
+    OrderedMap(Option<crate::control::CallTarget>),
     PriorityQueue(Option<crate::control::CallTarget>),
 }
 enum UnaryState {
@@ -86,7 +86,7 @@ pub(super) fn restore(
                 }
             }
         } else {
-            let value = frame.finish()?;
+            let value = frame.finish(context)?;
             let Some(mut parent) = parents.pop() else {
                 return Ok(value);
             };
@@ -124,10 +124,19 @@ fn start(value: ValueSnapshot, context: &mut RestoreContext) -> Result<Started, 
         ValueSnapshot::Deque(v) => sequence(SequenceKind::Deque, v),
         ValueSnapshot::Queue(v) => sequence(SequenceKind::Queue, v),
         ValueSnapshot::Stack(v) => sequence(SequenceKind::Stack, v),
-        ValueSnapshot::OrderedSet(v) => sequence(SequenceKind::OrderedSet, v),
+        ValueSnapshot::OrderedSet { values, comparator } => sequence(
+            SequenceKind::OrderedSet(restore_comparator(comparator, context)?),
+            values,
+        ),
         ValueSnapshot::Variant { name, fields } => sequence(SequenceKind::Variant(name), fields),
         ValueSnapshot::Map(v) => pairs(PairKind::Map, v),
-        ValueSnapshot::OrderedMap(v) => pairs(PairKind::OrderedMap, v),
+        ValueSnapshot::OrderedMap {
+            entries,
+            comparator,
+        } => pairs(
+            PairKind::OrderedMap(restore_comparator(comparator, context)?),
+            entries,
+        ),
         ValueSnapshot::PriorityQueue {
             entries,
             comparator,
@@ -155,6 +164,18 @@ fn unary(kind: UnaryKind, value: ValueSnapshot) -> Frame {
         kind,
         state: UnaryState::Child(value),
     }
+}
+
+fn restore_comparator(
+    value: Option<crate::orchestration::SnapshotBox>,
+    context: &mut RestoreContext,
+) -> Result<Option<crate::control::CallTarget>, String> {
+    value
+        .map(|value| match value.into_value() {
+            ValueSnapshot::Callable(target) => context.restore_call_target(target),
+            _ => Err("checkpoint key comparison is not a callable".into()),
+        })
+        .transpose()
 }
 fn sequence(kind: SequenceKind, values: SnapshotChildren<ValueSnapshot>) -> Frame {
     Frame::Sequence {
@@ -249,7 +270,7 @@ impl Frame {
         }
         Ok(())
     }
-    fn finish(self) -> Result<InterpValue, String> {
+    fn finish(self, context: &mut RestoreContext) -> Result<InterpValue, String> {
         Ok(match self {
             Self::Conversation {
                 header,
@@ -283,7 +304,9 @@ impl Frame {
                 SequenceKind::Deque => InterpValue::Deque(values.into()),
                 SequenceKind::Queue => InterpValue::Queue(values.into()),
                 SequenceKind::Stack => InterpValue::Stack(ArrayValue::new(values)),
-                SequenceKind::OrderedSet => InterpValue::OrderedSet(SetValue::from_unique(values)?),
+                SequenceKind::OrderedSet(comparator) => {
+                    InterpValue::OrderedSet(context.restore_ordered_set(values, comparator)?)
+                }
                 SequenceKind::Variant(name) => InterpValue::Variant {
                     name: name.into(),
                     fields: values.into(),
@@ -301,7 +324,9 @@ impl Frame {
                 }
                 match kind {
                     PairKind::Map => InterpValue::Map(MapValue::new(values)),
-                    PairKind::OrderedMap => InterpValue::OrderedMap(MapValue::new(values)),
+                    PairKind::OrderedMap(comparator) => {
+                        InterpValue::OrderedMap(context.restore_ordered_map(values, comparator)?)
+                    }
                     PairKind::PriorityQueue(comparator) => InterpValue::PriorityQueue(
                         PriorityQueueValue::from_entries(values, comparator),
                     ),

@@ -2,6 +2,10 @@ use crate::orchestration::{MessageSnapshot, ValueSnapshot as Value};
 
 enum Children {
     Values(std::vec::IntoIter<Value>),
+    OrderedValues {
+        values: std::vec::IntoIter<Value>,
+        comparator: Option<Value>,
+    },
     Fields(std::vec::IntoIter<(String, Value)>),
     Pairs {
         pairs: std::vec::IntoIter<(Value, Value)>,
@@ -18,6 +22,7 @@ impl Children {
     fn is_empty(&self) -> bool {
         match self {
             Self::Values(values) => values.len() == 0,
+            Self::OrderedValues { values, comparator } => values.len() == 0 && comparator.is_none(),
             Self::Fields(values) => values.len() == 0,
             Self::Pairs { pairs, pending } => pairs.len() == 0 && pending.is_none(),
             Self::Range { start, end } => start.is_none() && end.is_none(),
@@ -31,6 +36,9 @@ impl Iterator for Children {
     fn next(&mut self) -> Option<Value> {
         match self {
             Self::Values(values) => values.next(),
+            Self::OrderedValues { values, comparator } => {
+                comparator.take().or_else(|| values.next())
+            }
             Self::Fields(values) => values.next().map(|(_, value)| value),
             Self::Pairs { pairs, pending } => {
                 if let Some(value) = pending.take() {
@@ -80,23 +88,30 @@ pub(super) fn release_value(mut current: Value) {
             | Value::Deque(values)
             | Value::Queue(values)
             | Value::Stack(values)
-            | Value::OrderedSet(values)
             | Value::Variant { fields: values, .. } => values
                 .into_unique()
                 .map(|v| Children::Values(v.into_iter())),
+            Value::OrderedSet { values, comparator } => {
+                values.into_unique().map(|v| Children::OrderedValues {
+                    values: v.into_iter(),
+                    comparator: comparator.and_then(|v| v.into_unique()),
+                })
+            }
             Value::PriorityQueue {
+                entries,
+                comparator,
+            }
+            | Value::OrderedMap {
                 entries,
                 comparator,
             } => entries.into_unique().map(|v| Children::Pairs {
                 pairs: v.into_iter(),
                 pending: comparator.and_then(|v| v.into_unique()),
             }),
-            Value::Map(values) | Value::OrderedMap(values) => {
-                values.into_unique().map(|v| Children::Pairs {
-                    pairs: v.into_iter(),
-                    pending: None,
-                })
-            }
+            Value::Map(values) => values.into_unique().map(|v| Children::Pairs {
+                pairs: v.into_iter(),
+                pending: None,
+            }),
             Value::Record(values) => values
                 .into_unique()
                 .map(|v| Children::Fields(v.into_iter())),

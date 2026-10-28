@@ -39,14 +39,19 @@ impl<'a> Children<'a> {
             }
             Value::Array(values) | Value::Stack(values) => Self::Values(values.borrow().iter()),
             Value::Slice(values) => Self::Values(values.borrow().iter()),
-            Value::Set(values) | Value::OrderedSet(values) => Self::Values(values.borrow().iter()),
+            Value::Set(values) => Self::Values(values.borrow().iter()),
+            Value::OrderedSet(values) => Self::Values(values.borrow().iter()),
             Value::Deque(values) | Value::Queue(values) => Self::Deque(values.borrow().iter()),
             Value::List(values) => Self::List(values.iter()),
             Value::PriorityQueue(entries) => Self::PriorityQueue {
                 entries: entries.iter(),
                 value: None,
             },
-            Value::Map(entries) | Value::OrderedMap(entries) => Self::Pairs {
+            Value::Map(entries) => Self::Pairs {
+                entries: entries.borrow().iter(),
+                value: None,
+            },
+            Value::OrderedMap(entries) => Self::Pairs {
                 entries: entries.borrow().iter(),
                 value: None,
             },

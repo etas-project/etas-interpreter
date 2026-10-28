@@ -24,6 +24,8 @@ pub(crate) mod json;
 mod json_tests;
 pub(crate) mod membership;
 mod numeric;
+pub(crate) mod ordered;
+pub use ordered::{OrderedMapValue, OrderedSetValue};
 mod primitive;
 pub(crate) mod priority_queue;
 pub use priority_queue::PriorityQueueValue;

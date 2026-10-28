@@ -18,17 +18,32 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
         ("deque", V::Deque(children.clone().into())),
         ("queue", V::Queue(children.clone().into())),
         ("stack", V::Stack(children.clone().into())),
-        ("ordered_set", V::OrderedSet(children.into())),
     ];
     for (kind, value) in sequences {
         let wire = codec::value_json(&value);
         assert_eq!(wire, json!({"kind":kind,"values":wire_children}));
         assert_eq!(codec::value_from_json(&wire).unwrap(), value);
     }
+    let ordered = V::OrderedSet(
+        crate::value::OrderedSetValue::try_from_values(vec![V::Bool(false), V::Bool(true)])
+            .unwrap(),
+    );
+    let wire = codec::value_json(&ordered);
+    assert_eq!(
+        wire,
+        json!({"kind":"ordered_set", "comparator":null, "values":[{"kind":"bool","value":false},{"kind":"bool","value":true}]})
+    );
+    assert_eq!(codec::value_from_json(&wire).unwrap(), ordered);
     let entries = vec![(V::String("key".into()), V::OptionSome(V::Bool(true).into()))];
     for (kind, key, value) in [
         ("map", "key", V::Map(entries.clone().into())),
-        ("ordered_map", "key", V::OrderedMap(entries.clone().into())),
+        (
+            "ordered_map",
+            "key",
+            V::OrderedMap(
+                crate::value::OrderedMapValue::try_from_entries(entries.clone()).unwrap(),
+            ),
+        ),
         (
             "priority_queue",
             "priority",
@@ -37,7 +52,7 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
     ] {
         let wire = codec::value_json(&value);
         let mut expected = json!({"kind":kind,"entries":[{key:{"kind":"string","value":"key"},"value":{"kind":"option_some","value":{"kind":"bool","value":true}}}]});
-        if kind == "priority_queue" {
+        if matches!(kind, "priority_queue" | "ordered_map") {
             expected["comparator"] = serde_json::Value::Null;
         }
         assert_eq!(wire, expected);

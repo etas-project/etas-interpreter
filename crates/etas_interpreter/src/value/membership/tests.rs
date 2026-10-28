@@ -34,10 +34,20 @@ fn aggregate_fingerprints_respect_nested_set_equality() {
             V::Queue(vec![child.clone()].into()),
             V::Stack(vec![child.clone()].into()),
             V::Map(vec![(V::i32(0), child.clone())].into()),
-            V::OrderedMap(vec![(V::i32(0), child.clone())].into()),
+            V::OrderedMap(
+                crate::value::OrderedMapValue::try_from_entries(vec![(V::i32(0), child.clone())])
+                    .unwrap(),
+            ),
             V::PriorityQueue(vec![(V::i32(0), child.clone())].into()),
             V::Set(vec![child.clone()].into()),
-            V::OrderedSet(vec![child.clone()].into()),
+            V::OrderedSet(crate::value::OrderedSetValue::from_tree(
+                crate::value::ordered::OrderedTree::from_pending_entries(vec![(
+                    child.clone(),
+                    V::Unit,
+                )])
+                .unwrap(),
+                Some(crate::control::CallTarget::FlowItem(etas_hir::HirItemId(0))),
+            )),
             V::Record(RecordValue::new(vec![("member".into(), child.clone())])),
             V::Variant {
                 name: "Node".into(),

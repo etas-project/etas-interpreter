@@ -86,6 +86,7 @@ pub(crate) struct SourceToolReturnFrame {
 
 #[derive(Debug)]
 pub(crate) enum EvalFrame {
+    PureBoundary(Span),
     ProgramReturn(Box<ProgramReturnFrame>),
     Block(BlockFrame),
     Call(CallFrame),
@@ -152,6 +153,9 @@ impl EvalFrame {
 
     pub(crate) fn into_continuation(self) -> Result<Continuation, String> {
         Ok(match self {
+            Self::PureBoundary(_) => {
+                return Err("pure invocation scope cannot be suspended as a continuation".into());
+            }
             Self::ProgramReturn(_) => {
                 return Err(
                     "revision boundary cannot be flattened into a program-local continuation"
@@ -185,6 +189,7 @@ impl EvalFrame {
 
     pub(crate) fn retry_continuation(&self) -> Option<Continuation> {
         let continuation = match self {
+            Self::PureBoundary(_) => return None,
             Self::ProgramReturn(_) => return None,
             Self::Block(frame) => &frame.continuation,
             Self::Call(frame) => &frame.continuation,

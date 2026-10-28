@@ -15,7 +15,16 @@ impl DecodedValue for InterpValue {
             Unary::Some => Self::OptionSome(value),
         }
     }
-    fn sequence(kind: Sequence, values: Vec<Self>) -> Result<Self, InterpreterCodecError> {
+    fn sequence(
+        kind: Sequence,
+        values: Vec<Self>,
+        comparator: Option<Self>,
+    ) -> Result<Self, InterpreterCodecError> {
+        if comparator.is_some() {
+            return Err(InterpreterCodecError::new(
+                "restoring executable key comparisons requires a checked checkpoint context",
+            ));
+        }
         Ok(match kind {
             Sequence::Tuple => Self::Tuple(values.into()),
             Sequence::Array => Self::Array(values.into()),
@@ -28,7 +37,8 @@ impl DecodedValue for InterpValue {
             Sequence::Queue => Self::Queue(values.into()),
             Sequence::Stack => Self::Stack(values.into()),
             Sequence::OrderedSet => Self::OrderedSet(
-                crate::value::SetValue::from_unique(values).map_err(InterpreterCodecError::new)?,
+                crate::value::OrderedSetValue::try_from_values(values)
+                    .map_err(InterpreterCodecError::new)?,
             ),
             Sequence::Variant(name) => Self::Variant {
                 name: name.into(),
@@ -41,9 +51,17 @@ impl DecodedValue for InterpValue {
         values: Vec<(Self, Self)>,
         comparator: Option<Self>,
     ) -> Result<Self, InterpreterCodecError> {
+        if matches!(kind, Pairs::OrderedMap) && comparator.is_some() {
+            return Err(InterpreterCodecError::new(
+                "restoring executable key comparisons requires a checked checkpoint context",
+            ));
+        }
         Ok(match kind {
             Pairs::Map => Self::Map(values.into()),
-            Pairs::OrderedMap => Self::OrderedMap(values.into()),
+            Pairs::OrderedMap => Self::OrderedMap(
+                crate::value::OrderedMapValue::try_from_entries(values)
+                    .map_err(InterpreterCodecError::new)?,
+            ),
             Pairs::PriorityQueue => {
                 let comparator = comparator
                     .map(|value| match value {

@@ -12,6 +12,7 @@ enum Children {
     Deque(vec_deque::IntoIter<Value>),
     List(ListValue),
     PriorityQueue(crate::value::priority_queue::PriorityQueueIntoIter),
+    Ordered(crate::value::ordered::IntoValues),
     Messages(std::vec::IntoIter<crate::value::MessageValue>),
     Range {
         start: Option<Box<Value>>,
@@ -32,6 +33,7 @@ impl Children {
             Self::Deque(values) => values.len() == 0,
             Self::List(values) => values.is_empty(),
             Self::PriorityQueue(_) => false,
+            Self::Ordered(_) => false,
             Self::Messages(values) => values.len() == 0,
             Self::Range { start, end } => start.is_none() && end.is_none(),
         }
@@ -56,6 +58,7 @@ impl Iterator for Children {
             Self::Deque(values) => values.next(),
             Self::List(values) => values.pop_unique_front_for_drop(),
             Self::PriorityQueue(values) => values.next(),
+            Self::Ordered(values) => values.next(),
             Self::Messages(values) => values.next().map(Value::Message),
             Self::Range { start, end } => start.take().or_else(|| end.take()).map(|value| *value),
         }
@@ -85,9 +88,9 @@ pub(crate) fn release_value(mut current: Value) {
                 values.into_unique_values().map(Children::values)
             }
             Value::Slice(values) => values.into_unique_backing().map(Children::values),
-            Value::Set(values) | Value::OrderedSet(values) => {
-                values.into_unique_values().map(Children::values)
-            }
+            Value::Set(values) => values.into_unique_values().map(Children::values),
+            Value::OrderedSet(values) => values.into_unique_values().map(Children::Ordered),
+            Value::OrderedMap(values) => values.into_unique_values().map(Children::Ordered),
             Value::Deque(values) | Value::Queue(values) => values
                 .into_unique_values()
                 .map(|values| Children::Deque(values.into_iter())),
@@ -98,12 +101,10 @@ pub(crate) fn release_value(mut current: Value) {
             Value::PriorityQueue(values) => {
                 values.into_unique_values().map(Children::PriorityQueue)
             }
-            Value::Map(values) | Value::OrderedMap(values) => {
-                values.into_unique_values().map(|values| Children::Entries {
-                    entries: values.into_iter(),
-                    value: None,
-                })
-            }
+            Value::Map(values) => values.into_unique_values().map(|values| Children::Entries {
+                entries: values.into_iter(),
+                value: None,
+            }),
             Value::Message(message) => {
                 if let Ok(mut node) = Rc::try_unwrap(message.payload.0) {
                     current = std::mem::replace(&mut node.0, Value::Unit);

@@ -4,9 +4,9 @@ mod access;
 mod call_site;
 mod call_target;
 mod callable_types;
+mod comparison;
 mod construction;
 mod frame;
-mod priority_queue;
 mod program;
 mod reference_presence;
 mod reference_type_presence;
@@ -173,12 +173,7 @@ impl<'a> SnapshotValidator<'a> {
         if let Some(revision) = &checkpoint.code_revision {
             revision.validate()?;
         }
-        let arguments = checkpoint
-            .args
-            .iter()
-            .map(ValueSnapshot::capture)
-            .collect::<Result<Vec<_>, _>>()?;
-        self.validate_arguments(checkpoint.entry_item, &arguments)?;
+        self.validate_arguments(checkpoint.entry_item, &checkpoint.args)?;
         let mut boundary_scopes = BTreeSet::new();
         self.validate_machine_with_handler_scopes(&checkpoint.machine, &mut boundary_scopes)?;
         if checkpoint.machine.total_call_frames()?
@@ -907,10 +902,55 @@ impl<'a> SnapshotValidator<'a> {
                     let ValueSnapshot::Callable(target) = comparator.as_ref() else {
                         return Err("checkpoint priority comparison is not a callable".into());
                     };
-                    self.priority_comparator(target, scope)?;
+                    self.collection_comparator(target, scope)?;
                 }
-                ValueSnapshot::Set(values) | ValueSnapshot::OrderedSet(values) => {
+                ValueSnapshot::Set(values) => {
                     crate::value::membership::MembershipIndex::require_unique(values)?;
+                }
+                ValueSnapshot::OrderedSet { values, comparator } => {
+                    if let Some(value) = comparator {
+                        let ValueSnapshot::Callable(target) = value.as_ref() else {
+                            return Err("checkpoint key comparison is not a callable".into());
+                        };
+                        self.collection_comparator(target, scope)?;
+                        continue;
+                    }
+                    for key in values.iter() {
+                        crate::value::ordered::snapshot_order(key, key)?;
+                    }
+                    for pair in values.windows(2) {
+                        if crate::value::ordered::snapshot_order(&pair[0], &pair[1])?
+                            != std::cmp::Ordering::Less
+                        {
+                            return Err(
+                                "checkpoint ordered set has duplicate or out-of-order keys".into(),
+                            );
+                        }
+                    }
+                }
+                ValueSnapshot::OrderedMap {
+                    entries,
+                    comparator,
+                } => {
+                    if let Some(value) = comparator {
+                        let ValueSnapshot::Callable(target) = value.as_ref() else {
+                            return Err("checkpoint key comparison is not a callable".into());
+                        };
+                        self.collection_comparator(target, scope)?;
+                        continue;
+                    }
+                    for (key, _) in entries.iter() {
+                        crate::value::ordered::snapshot_order(key, key)?;
+                    }
+                    for pair in entries.windows(2) {
+                        if crate::value::ordered::snapshot_order(&pair[0].0, &pair[1].0)?
+                            != std::cmp::Ordering::Less
+                        {
+                            return Err(
+                                "checkpoint ordered map has duplicate or out-of-order keys".into(),
+                            );
+                        }
+                    }
                 }
                 ValueSnapshot::MemoryWriteIntent(value) => {
                     value.validate(self.checked, self.limits)?
@@ -986,16 +1026,16 @@ impl<'a> SnapshotValidator<'a> {
             | ValueSnapshot::Deque(values)
             | ValueSnapshot::Queue(values)
             | ValueSnapshot::Stack(values)
-            | ValueSnapshot::OrderedSet(values) => {
+            | ValueSnapshot::OrderedSet { values, .. } => {
                 self.index_at_most(position, values.len(), context)?
             }
             ValueSnapshot::Map(values)
             | ValueSnapshot::PriorityQueue {
                 entries: values, ..
             }
-            | ValueSnapshot::OrderedMap(values) => {
-                self.index_at_most(position, values.len(), context)?
-            }
+            | ValueSnapshot::OrderedMap {
+                entries: values, ..
+            } => self.index_at_most(position, values.len(), context)?,
             ValueSnapshot::Range { start, end, bounds } => {
                 let (ValueSnapshot::Number(start), ValueSnapshot::Number(end)) = (&**start, &**end)
                 else {

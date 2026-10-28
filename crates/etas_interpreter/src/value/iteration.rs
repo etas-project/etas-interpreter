@@ -9,6 +9,7 @@ pub(crate) struct IterationSource {
     value: InterpValue,
     list_cursor: RefCell<Option<(usize, ListValue)>>,
     queue_cursor: RefCell<(usize, usize)>,
+    ordered_cursor: RefCell<Option<(usize, super::ordered::Cursor)>>,
 }
 
 impl IterationSource {
@@ -35,6 +36,7 @@ impl IterationSource {
             value,
             list_cursor: RefCell::new(None),
             queue_cursor: RefCell::new((0, 0)),
+            ordered_cursor: RefCell::new(None),
         })
     }
 
@@ -68,9 +70,9 @@ impl IterationSource {
                 remaining.get(0).cloned()
             }
             InterpValue::Slice(values) => values.borrow().get(index).cloned(),
-            InterpValue::Set(values) | InterpValue::OrderedSet(values) => {
-                values.borrow().get(index).cloned()
-            }
+            InterpValue::Set(values) => values.borrow().get(index).cloned(),
+            InterpValue::OrderedMap(values) => self.ordered_get(index, || values.cursor(), true),
+            InterpValue::OrderedSet(values) => self.ordered_get(index, || values.cursor(), false),
             InterpValue::PriorityQueue(values) => {
                 let mut cursor = self.queue_cursor.borrow_mut();
                 if cursor.0 > index {
@@ -91,7 +93,7 @@ impl IterationSource {
                     cursor.1 += 1;
                 }
             }
-            InterpValue::Map(values) | InterpValue::OrderedMap(values) => values
+            InterpValue::Map(values) => values
                 .borrow()
                 .get(index)
                 .map(|(key, value)| InterpValue::Tuple(vec![key.clone(), value.clone()].into())),
@@ -100,6 +102,33 @@ impl IterationSource {
                 .map_err(|e| format!("invalid checked integer range: {e:?}"))?
                 .map(InterpValue::Number),
             _ => return Err("invalid iteration source".into()),
+        })
+    }
+
+    fn ordered_get(
+        &self,
+        index: usize,
+        create: impl FnOnce() -> super::ordered::Cursor,
+        pairs: bool,
+    ) -> Option<InterpValue> {
+        let mut cursor = self.ordered_cursor.borrow_mut();
+        if cursor
+            .as_ref()
+            .is_some_and(|(position, _)| *position > index)
+        {
+            *cursor = None;
+        }
+        let (position, source) = cursor.get_or_insert_with(|| (0, create()));
+        while *position < index {
+            source.next()?;
+            *position += 1;
+        }
+        let (key, value) = source.next()?;
+        *position += 1;
+        Some(if pairs {
+            InterpValue::Tuple(vec![key, value].into())
+        } else {
+            key
         })
     }
 }

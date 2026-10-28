@@ -162,11 +162,34 @@ pub struct PendingExpr {
 
 #[derive(Clone, Debug)]
 pub struct PendingCall {
+    pub purity: CallPurity,
     pub site: Option<super::CallSite>,
     pub target: CallTarget,
     pub args: Vec<InterpValue>,
     pub span: Span,
     pub continuation: Continuation,
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CallPurity {
+    Ordinary,
+    Pure,
+}
+
+impl ControlSignal {
+    pub(crate) fn requested_operation_span(&self, invocation: Span) -> Option<Span> {
+        Some(match self {
+            Self::Checkpoint(_) => invocation,
+            Self::Perform(value) => value.span,
+            Self::Memory(value) => value.span,
+            Self::Session(value) => value.span,
+            Self::Console(value) => value.span,
+            Self::Command(value) => value.span,
+            Self::Model(value) => value.span,
+            Self::Host(value) => value.span,
+            _ => return None,
+        })
+    }
 }
 
 #[derive(Clone, Debug)]

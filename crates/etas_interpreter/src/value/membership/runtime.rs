@@ -23,6 +23,8 @@ enum Storage {
     Deque(DequeValue),
     Set(SetValue),
     Map(MapValue),
+    OrderedSet(crate::value::OrderedSetValue),
+    OrderedMap(crate::value::OrderedMapValue),
     PriorityQueue {
         queue: crate::value::PriorityQueueValue,
         slot: usize,
@@ -104,9 +106,13 @@ impl StructuralPartition for InterpValue {
                 values.borrow().len().hash(state);
                 Storage::Deque(values.clone())
             }
-            Self::Set(values) | Self::OrderedSet(values) => {
+            Self::Set(values) => {
                 values.borrow().len().hash(state);
                 Storage::Set(values.clone())
+            }
+            Self::OrderedSet(values) => {
+                values.len().hash(state);
+                Storage::OrderedSet(values.clone())
             }
             Self::PriorityQueue(values) => {
                 values.len().hash(state);
@@ -115,9 +121,13 @@ impl StructuralPartition for InterpValue {
                     slot: 0,
                 }
             }
-            Self::Map(values) | Self::OrderedMap(values) => {
+            Self::Map(values) => {
                 values.borrow().len().hash(state);
                 Storage::Map(values.clone())
+            }
+            Self::OrderedMap(values) => {
+                values.len().hash(state);
+                Storage::OrderedMap(values.clone())
             }
             Self::Record(values) => {
                 values.borrow().len().hash(state);
@@ -148,6 +158,7 @@ impl StructuralPartition for InterpValue {
             Storage::Slice(values) => values.borrow().get(index)?.start(state),
             Storage::Deque(values) => values.borrow().get(index)?.start(state),
             Storage::Set(values) => values.borrow().get(index)?.start(state),
+            Storage::OrderedSet(values) => values.borrow().get(index)?.start(state),
             Storage::List(values) => {
                 let child = values.get(0)?.start(state);
                 values.advance();
@@ -168,6 +179,14 @@ impl StructuralPartition for InterpValue {
             Storage::Map(values) => {
                 let values = values.borrow();
                 let pair = values.get(index / 2)?;
+                if index % 2 == 0 {
+                    pair.0.start(state)
+                } else {
+                    pair.1.start(state)
+                }
+            }
+            Storage::OrderedMap(values) => {
+                let pair = values.borrow().get(index / 2)?;
                 if index % 2 == 0 {
                     pair.0.start(state)
                 } else {

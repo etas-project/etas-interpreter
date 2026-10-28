@@ -61,6 +61,8 @@ enum Children {
     Deque(DequeValue, DequeValue),
     List(ListValue, ListValue),
     Map(MapValue, MapValue),
+    OrderedMap(crate::value::OrderedMapValue, crate::value::OrderedMapValue),
+    OrderedSet(crate::value::OrderedSetValue, crate::value::OrderedSetValue),
     PriorityQueue {
         a: crate::value::PriorityQueueValue,
         b: crate::value::PriorityQueueValue,
@@ -141,6 +143,24 @@ impl EqualityCursor for Cursor {
                 .get(position)
                 .zip(b.borrow().get(position))
                 .map(|(a, b)| compare_node(a, b)),
+            Children::OrderedSet(a, b) => a
+                .borrow()
+                .get(position)
+                .zip(b.borrow().get(position))
+                .map(|(a, b)| compare_node(a, b)),
+            Children::OrderedMap(a, b) => {
+                let pair = position / 2;
+                a.borrow()
+                    .get(pair)
+                    .zip(b.borrow().get(pair))
+                    .map(|(a, b)| {
+                        if position % 2 == 0 {
+                            compare_node(&a.0, &b.0)
+                        } else {
+                            compare_node(&a.1, &b.1)
+                        }
+                    })
+            }
             Children::List(a, b) => {
                 let next = a.get(0).zip(b.get(0)).map(|(a, b)| compare_node(a, b));
                 a.advance();

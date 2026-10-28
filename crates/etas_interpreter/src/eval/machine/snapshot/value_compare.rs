@@ -67,14 +67,29 @@ fn same_node<'a>(
         | (V::Set(a), V::Set(b))
         | (V::Deque(a), V::Deque(b))
         | (V::Queue(a), V::Queue(b))
-        | (V::Stack(a), V::Stack(b))
-        | (V::OrderedSet(a), V::OrderedSet(b)) => {
+        | (V::Stack(a), V::Stack(b)) => {
             pending.extend(a.iter().zip(b));
             a.len() == b.len()
         }
         (V::Variant { name: a, fields: x }, V::Variant { name: b, fields: y }) => {
             pending.extend(x.iter().zip(y));
             a == b && x.len() == y.len()
+        }
+        (
+            V::OrderedSet {
+                values: a,
+                comparator: ac,
+            },
+            V::OrderedSet {
+                values: b,
+                comparator: bc,
+            },
+        ) => {
+            pending.extend(a.iter().zip(b));
+            if let Some((a, b)) = ac.as_deref().zip(bc.as_deref()) {
+                pending.push((a, b));
+            }
+            a.len() == b.len() && ac.is_some() == bc.is_some()
         }
         (
             V::PriorityQueue {
@@ -98,7 +113,26 @@ fn same_node<'a>(
             }
             a.len() == b.len()
         }
-        (V::Map(a), V::Map(b)) | (V::OrderedMap(a), V::OrderedMap(b)) => {
+        (
+            V::OrderedMap {
+                entries: a,
+                comparator: ac,
+            },
+            V::OrderedMap {
+                entries: b,
+                comparator: bc,
+            },
+        ) => {
+            if let Some((a, b)) = ac.as_deref().zip(bc.as_deref()) {
+                pending.push((a, b));
+            }
+            for ((ak, av), (bk, bv)) in a.iter().zip(b) {
+                pending.push((ak, bk));
+                pending.push((av, bv));
+            }
+            a.len() == b.len() && ac.is_some() == bc.is_some()
+        }
+        (V::Map(a), V::Map(b)) => {
             for ((ak, av), (bk, bv)) in a.iter().zip(b) {
                 pending.push((ak, bk));
                 pending.push((av, bv));

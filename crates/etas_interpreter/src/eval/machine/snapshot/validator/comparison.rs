@@ -2,7 +2,7 @@ use super::*;
 use etas_frontend::CheckedCallableRoot;
 
 impl SnapshotValidator<'_> {
-    pub(super) fn priority_comparator(
+    pub(super) fn collection_comparator(
         &self,
         target: &CallTargetSnapshot,
         scope: call_target::ReferenceScope,
@@ -82,7 +82,7 @@ impl SnapshotValidator<'_> {
             let summary = checked
                 .checked_callable_effects(root)
                 .map_err(|error| error.to_string())?;
-            crate::eval::priority_queue::validate_pure_summary(summary)?;
+            crate::eval::collection_ordering::validate_pure_summary(summary)?;
         }
         Ok(())
     }
@@ -140,7 +140,7 @@ mod tests {
             &limits,
         );
         validator
-            .priority_comparator(&target, call_target::ReferenceScope::NoCheckedSlot)
+            .collection_comparator(&target, call_target::ReferenceScope::NoCheckedSlot)
             .unwrap();
     }
 }

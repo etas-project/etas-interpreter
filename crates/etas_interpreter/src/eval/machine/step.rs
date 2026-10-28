@@ -75,6 +75,18 @@ impl EvalMachine {
                 self.input = Some(MachineInput::Signal(signal));
                 return poll;
             }
+            if let Some(span) = signal.requested_operation_span(step_span)
+                && self
+                    .stack
+                    .iter()
+                    .any(|frame| matches!(frame, EvalFrame::PureBoundary(_)))
+            {
+                return MachinePoll::Fault(ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    span,
+                    "pure comparison cannot request effects or Host operations",
+                ));
+            }
             if let Err(fault) = ctx.consume_execution_step(step_span) {
                 return MachinePoll::Fault(fault);
             }
@@ -155,7 +167,12 @@ impl EvalMachine {
                     }
                     let pending = *pending;
                     match ctx.prepare_call_target(pending.target, pending.continuation) {
-                        Ok((target, continuation)) => {
+                        Ok((target, mut continuation)) => {
+                            if pending.purity == crate::control::CallPurity::Pure {
+                                self.push_continuation_frames(continuation);
+                                self.push_frame(EvalFrame::PureBoundary(pending.span));
+                                continuation = Continuation::BlockValue;
+                            }
                             let target = match super::scoped_call::ProgramCall::select(
                                 target,
                                 ctx.checked,
@@ -199,6 +216,7 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::PureBoundary(_) => ControlSignal::Value(value),
                         EvalFrame::ProgramReturn(frame) => {
                             return self.return_program(ctx, *frame, value);
                         }
@@ -228,6 +246,7 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::PureBoundary(_) => ControlSignal::Return(value),
                         EvalFrame::ProgramReturn(frame) => {
                             return self.return_program(ctx, *frame, value);
                         }
@@ -286,6 +305,12 @@ impl EvalMachine {
                         return MachinePoll::Yield(PendingBoundary::Perform(pending));
                     };
                     let continuation = match frame {
+                        EvalFrame::PureBoundary(span) => {
+                            return machine_fault(
+                                "effect request crossed a pure comparison boundary",
+                                span,
+                            );
+                        }
                         EvalFrame::ProgramReturn(frame) => {
                             return self.unwind_program_error(ctx, *frame, *pending);
                         }
@@ -340,6 +365,7 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::PureBoundary(_) => ControlSignal::Resume(value),
                         EvalFrame::ProgramReturn(frame) => {
                             return machine_fault(
                                 "resume escaped a revision call boundary",
@@ -380,6 +406,7 @@ impl EvalMachine {
                         return MachinePoll::Complete(Box::new(value));
                     };
                     match frame {
+                        EvalFrame::PureBoundary(_) => ControlSignal::Finish(value),
                         EvalFrame::ProgramReturn(frame) => {
                             return machine_fault(
                                 "finish escaped a revision call boundary",
@@ -423,6 +450,7 @@ impl EvalMachine {
                         );
                     };
                     match frame {
+                        EvalFrame::PureBoundary(_) => signal,
                         EvalFrame::ProgramReturn(frame) => {
                             return machine_fault(
                                 "loop control escaped a revision call boundary",

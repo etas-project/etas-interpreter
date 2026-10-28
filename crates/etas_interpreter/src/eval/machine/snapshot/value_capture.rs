@@ -31,17 +31,18 @@ enum SequenceKind {
     Deque,
     Queue,
     Stack,
-    OrderedSet,
+    OrderedSet(Option<SnapshotBox>),
     Variant(String),
 }
 enum PairKind {
     Map,
-    OrderedMap,
+    OrderedMap(Option<SnapshotBox>),
     PriorityQueue(Option<SnapshotBox>),
 }
 
 enum PairSource {
     Map(MapValue),
+    OrderedMap(OrderedMapValue),
     PriorityQueue {
         value: PriorityQueueValue,
         slot: usize,
@@ -52,6 +53,7 @@ impl PairSource {
     fn get(&self, index: usize) -> Option<&(InterpValue, InterpValue)> {
         match self {
             Self::Map(value) => value.borrow().get(index),
+            Self::OrderedMap(value) => value.entry(index),
             Self::PriorityQueue { value, slot } => {
                 (*slot..value.slot_count()).find_map(|slot| value.slot(slot))
             }
@@ -73,6 +75,7 @@ enum SequenceSource {
     List(ListValue),
     Slice(SliceValue),
     Set(SetValue),
+    OrderedSet(OrderedSetValue),
     Deque(DequeValue),
 }
 
@@ -210,9 +213,9 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
             values.borrow().len(),
         ),
         InterpValue::OrderedSet(values) => sequence(
-            SequenceKind::OrderedSet,
-            SequenceSource::Set(values.clone()),
-            values.borrow().len(),
+            SequenceKind::OrderedSet(capture_comparator(values.comparator(), cache)?),
+            SequenceSource::OrderedSet(values.clone()),
+            values.len(),
         ),
         InterpValue::Deque(values) => sequence(
             SequenceKind::Deque,
@@ -225,7 +228,12 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
             values.borrow().len(),
         ),
         InterpValue::Map(values) => pairs(PairKind::Map, values),
-        InterpValue::OrderedMap(values) => pairs(PairKind::OrderedMap, values),
+        InterpValue::OrderedMap(values) => Frame::Pairs {
+            kind: PairKind::OrderedMap(capture_comparator(values.comparator(), cache)?),
+            source: PairSource::OrderedMap(values.clone()),
+            key: None,
+            values: Vec::with_capacity(values.len()),
+        },
         InterpValue::PriorityQueue(values) => Frame::Pairs {
             kind: PairKind::PriorityQueue(
                 values
@@ -261,6 +269,19 @@ fn sequence(kind: SequenceKind, source: SequenceSource, count: usize) -> Frame {
     }
 }
 
+fn capture_comparator(
+    target: Option<&crate::control::CallTarget>,
+    cache: &mut CaptureContext,
+) -> Result<Option<SnapshotBox>, String> {
+    target
+        .map(|target| {
+            cache
+                .call_target(target)
+                .map(|target| SnapshotBox::new(ValueSnapshot::Callable(target)))
+        })
+        .transpose()
+}
+
 fn pairs(kind: PairKind, source: &MapValue) -> Frame {
     Frame::Pairs {
         kind,
@@ -278,6 +299,7 @@ impl SequenceSource {
             Self::Array(values) => values.borrow().get(index).map(start).transpose(),
             Self::Slice(values) => values.borrow().get(index).map(start).transpose(),
             Self::Set(values) => values.borrow().get(index).map(start).transpose(),
+            Self::OrderedSet(values) => values.key(index).map(start).transpose(),
             Self::Deque(values) => values.borrow().get(index).map(start).transpose(),
             Self::List(values) => values.get(0).map(start).transpose(),
         }
@@ -384,7 +406,10 @@ impl Frame {
                 SequenceKind::Deque => ValueSnapshot::Deque(values.into()),
                 SequenceKind::Queue => ValueSnapshot::Queue(values.into()),
                 SequenceKind::Stack => ValueSnapshot::Stack(values.into()),
-                SequenceKind::OrderedSet => ValueSnapshot::OrderedSet(values.into()),
+                SequenceKind::OrderedSet(comparator) => ValueSnapshot::OrderedSet {
+                    values: values.into(),
+                    comparator,
+                },
                 SequenceKind::Variant(name) => ValueSnapshot::Variant {
                     name,
                     fields: values.into(),
@@ -398,7 +423,10 @@ impl Frame {
                 }
                 match kind {
                     PairKind::Map => ValueSnapshot::Map(values.into()),
-                    PairKind::OrderedMap => ValueSnapshot::OrderedMap(values.into()),
+                    PairKind::OrderedMap(comparator) => ValueSnapshot::OrderedMap {
+                        entries: values.into(),
+                        comparator,
+                    },
                     PairKind::PriorityQueue(comparator) => ValueSnapshot::PriorityQueue {
                         entries: values.into(),
                         comparator,

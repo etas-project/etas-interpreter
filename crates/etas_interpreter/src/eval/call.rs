@@ -352,7 +352,7 @@ impl<'a> EvalContext<'a> {
     fn execute_lambda_call(
         &mut self,
         expr: HirExprId,
-        mut captured: Frame,
+        captured: Frame,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -361,6 +361,16 @@ impl<'a> EvalContext<'a> {
                 "lambda callable does not point at a lambda expression",
                 span,
             );
+        };
+        let Some(layout) = self.plan.closures.get(expr) else {
+            return ControlSignal::missing_checked_fact(
+                "lambda call has no checked capture layout",
+                span,
+            );
+        };
+        let mut captured = match captured.capture(layout.slots.clone(), &layout.captures) {
+            Ok(frame) => frame,
+            Err(message) => return ControlSignal::missing_checked_fact(message, span),
         };
         if params.len() != call_args.len() {
             return ControlSignal::fault(
@@ -407,6 +417,7 @@ impl<'a> EvalContext<'a> {
         site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
         ControlSignal::pending_call(PendingCall {
+            purity: crate::control::CallPurity::Ordinary,
             site,
             target,
             args: call_args,

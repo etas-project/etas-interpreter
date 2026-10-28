@@ -631,6 +631,7 @@ fn source_tool_identity(binding: &SourceToolBinding) -> &str {
 
 fn frame_span(frame: &EvalFrame) -> Span {
     match frame {
+        EvalFrame::PureBoundary(span) => *span,
         EvalFrame::Call(frame) => frame.span,
         EvalFrame::Handler(frame) => frame.span,
         EvalFrame::ModelLoop(frame) => frame.pending.span,
