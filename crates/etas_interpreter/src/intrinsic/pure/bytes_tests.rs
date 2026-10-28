@@ -11,7 +11,7 @@ fn checked_bytes_len_borrows_shared_inputs_without_payload_materialization() {
     let mut types = TypeInterner::new();
     let bytes = types.primitive(PrimitiveType::Bytes);
     let size = types.primitive(PrimitiveType::USize);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::BYTES_LEN),
         parameter_types: vec![bytes],
@@ -33,7 +33,7 @@ fn owned_bytes_abi_moves_unique_buffers_and_copies_shared_buffers_once() {
     let bytes = types.primitive(PrimitiveType::Bytes);
     let option = types.intern(Type::Option(bytes));
     let boolean = types.primitive(PrimitiveType::Bool);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for count in [1000, 2000, 4000] {
         let input = vec![7; count];
         let pointer = input.as_ptr();
@@ -113,7 +113,7 @@ fn borrowed_bytes_projection_rejects_invalid_checked_identity_and_payloads() {
         wrapper: TrustWrapper::Trusted,
         inner: left,
     });
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::BYTES_LEN),
         parameter_types: vec![trusted],

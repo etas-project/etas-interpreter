@@ -59,6 +59,9 @@ fn write<'a>(
         InterpValue::String(value) => *slot = json!({"kind":"string","value":value}),
         InterpValue::Bytes(value) => *slot = json!({"kind":"bytes","value":value}),
         InterpValue::Json(value) => *slot = super::super::json::wrapped(value),
+        InterpValue::StdConstant(value) => {
+            *slot = json!({"kind":"std_constant", "role":value.role(), "ty":value.ty().0})
+        }
         InterpValue::Schema(ty) => *slot = json!({"kind":"type_schema","ty":ty.0}),
         InterpValue::CodeMetadata(value) => {
             *slot = json!({"kind":"compiler_metadata","schema":1,"value":value.payload()})
@@ -263,10 +266,11 @@ fn write<'a>(
             key_type,
             value_type,
             kind,
+            predicate_type,
             predicate,
             limit,
         } => {
-            *slot = json!({"kind":"memory_selection","region_stable_id":region_stable_id,"path":path,"key_type":key_type.0,"value_type":value_type.0,"selection":value_codec::memory_selection_kind_json(kind),"predicate":null,"limit":limit});
+            *slot = json!({"kind":"memory_selection","region_stable_id":region_stable_id,"path":path,"key_type":key_type.0,"value_type":value_type.0,"selection":value_codec::memory_selection_kind_json(kind),"predicate_type":predicate_type.map(|ty| ty.0),"predicate":null,"limit":limit});
             if let Some(predicate) = predicate {
                 child(Node::Value(predicate), &mut slot["predicate"]);
             }

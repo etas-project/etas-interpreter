@@ -9,12 +9,12 @@ mod construction;
 mod frame;
 mod program;
 mod reference_presence;
-mod reference_type_presence;
 mod reference_types;
 mod scoped_callable;
 mod stream_reducer;
 mod suspension;
 mod traversal;
+mod value_contract;
 
 #[cfg(test)]
 mod call_target_tests;
@@ -50,7 +50,6 @@ pub(crate) struct SnapshotValidator<'a> {
     reference_presence: std::cell::RefCell<reference_presence::ReferencePresence>,
     callable_specs: std::cell::OnceCell<etas_types::SpecFacts>,
     typed_callables: std::cell::RefCell<callable_types::TypedCallables>,
-    reference_type_presence: std::cell::RefCell<std::collections::HashMap<TypeId, bool>>,
     checked: &'a CheckedProject,
     slots: &'a SlotLayoutTable,
     dispatch: &'a IntrinsicDispatchTable,
@@ -75,7 +74,6 @@ impl<'a> SnapshotValidator<'a> {
             reference_presence: Default::default(),
             callable_specs: Default::default(),
             typed_callables: Default::default(),
-            reference_type_presence: Default::default(),
             checked,
             slots,
             dispatch,
@@ -100,7 +98,7 @@ impl<'a> SnapshotValidator<'a> {
         for value in values {
             self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
         }
-        self.validate_argument_references(item, values)?;
+        self.validate_argument_contract(item, values)?;
         Ok(())
     }
 
@@ -731,11 +729,23 @@ impl<'a> SnapshotValidator<'a> {
                 self.index_at_most(*next_arg_index, args.len(), context)?;
                 self.snapshot_values(evaluated_args)?;
                 if let ContinuationSnapshot::MemorySelectionLimitArgs {
-                    predicate: Some(predicate),
+                    kind,
+                    predicate_type,
+                    predicate,
                     ..
                 } = continuation
                 {
-                    self.snapshot_value(predicate)?;
+                    let seed = crate::value::contract::selection_query(
+                        kind,
+                        *predicate_type,
+                        predicate
+                            .as_ref()
+                            .map(crate::value::contract::Value::Snapshot),
+                    )?;
+                    crate::value::contract::validate(self, seed, &frame.generic_bindings())?;
+                    if let Some(predicate) = predicate {
+                        self.snapshot_value(predicate)?;
+                    }
                 }
                 self.frame(frame, context)
             }
@@ -893,6 +903,7 @@ impl<'a> SnapshotValidator<'a> {
         scope: call_target::ReferenceScope,
     ) -> Result<(), String> {
         // Iterator frames track depth, not the width of a collection.
+        let mut query_seeds = Vec::new();
         for value in root.walk() {
             match value {
                 ValueSnapshot::PriorityQueue {
@@ -958,6 +969,10 @@ impl<'a> SnapshotValidator<'a> {
                 ValueSnapshot::Schema(ty) => {
                     self.type_id(*ty, "checkpoint schema descriptor type")?
                 }
+                ValueSnapshot::StdConstant(value) => {
+                    self.type_id(value.ty(), "checkpoint standard constant type")?;
+                    value.validate(&self.checked.types.known_std_types)?;
+                }
                 ValueSnapshot::CodeIdentity { ty, identity } => {
                     self.type_id(*ty, "checkpoint compiler identity type")?;
                     identity.restore(&self.checked.types.known_std_types.code, *ty)?;
@@ -998,11 +1013,26 @@ impl<'a> SnapshotValidator<'a> {
                 } => {
                     self.type_id(*key_type, "checkpoint memory key type")?;
                     self.type_id(*value_type, "checkpoint memory value type")?;
+                    if let ValueSnapshot::MemorySelection {
+                        kind,
+                        predicate_type,
+                        predicate,
+                        ..
+                    } = value
+                    {
+                        query_seeds.extend(crate::value::contract::selection_query(
+                            kind,
+                            *predicate_type,
+                            predicate
+                                .as_deref()
+                                .map(crate::value::contract::Value::Snapshot),
+                        )?);
+                    }
                 }
                 _ => {}
             }
         }
-        Ok(())
+        crate::value::contract::validate(self, query_seeds, &crate::control::GenericBindings::new())
     }
 
     fn snapshot_values(&self, values: &[ValueSnapshot]) -> Result<(), String> {

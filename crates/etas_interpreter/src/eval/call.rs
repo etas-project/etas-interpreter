@@ -394,7 +394,12 @@ impl<'a> EvalContext<'a> {
                 self.execute_lambda_call(expr, captured, call_args, span)
             }
             CallTarget::EnumVariant(symbol) => {
-                match self.eval_variant_constructor(symbol, call_args, span) {
+                match self.eval_variant_constructor(
+                    symbol,
+                    call_args,
+                    &crate::control::GenericBindings::new(),
+                    span,
+                ) {
                     Ok(value) => ControlSignal::Value(value),
                     Err(fault) => ControlSignal::Fault(Box::new(fault)),
                 }
@@ -477,6 +482,18 @@ impl<'a> EvalContext<'a> {
             .collect::<std::collections::HashMap<_, _>>();
         let rows = effect_row_bindings.into_iter().collect();
         match target {
+            CallTarget::EnumVariant(symbol) => match self.eval_variant_constructor(
+                symbol,
+                call_args,
+                &crate::control::GenericBindings {
+                    types: bindings,
+                    rows,
+                },
+                span,
+            ) {
+                Ok(value) => ControlSignal::Value(value),
+                Err(fault) => ControlSignal::Fault(Box::new(fault)),
+            },
             CallTarget::AgentItem(item) => self.execute_agent_call_with_generic_bindings(
                 item,
                 call_args,

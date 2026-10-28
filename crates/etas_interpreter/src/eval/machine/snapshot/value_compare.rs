@@ -137,6 +137,7 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         (V::String(a), V::String(b)) => a == b,
         (V::Bytes(a), V::Bytes(b)) => a == b,
         (V::Json(a), V::Json(b)) => a == b,
+        (V::StdConstant(a), V::StdConstant(b)) => a == b,
         (V::Prompt(a), V::Prompt(b)) => a == b,
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
@@ -367,6 +368,7 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
                 key_type: e,
                 value_type: g,
                 kind: i,
+                predicate_type: o,
                 predicate: k,
                 limit: m,
             },
@@ -376,11 +378,12 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
                 key_type: f,
                 value_type: h,
                 kind: j,
+                predicate_type: p,
                 predicate: l,
                 limit: n,
             },
         ) => {
-            if a != b || c != d || e != f || g != h || i != j || m != n {
+            if a != b || c != d || e != f || g != h || i != j || m != n || o != p {
                 return false;
             }
             match (k, l) {

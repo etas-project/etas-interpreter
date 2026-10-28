@@ -173,6 +173,7 @@ pub(super) fn compare_node<'c>(
                     key_type: ak,
                     value_type: av,
                     kind: ai,
+                    predicate_type: at,
                     predicate: a_pred,
                     limit: al,
                 },
@@ -182,11 +183,13 @@ pub(super) fn compare_node<'c>(
                     key_type: bk,
                     value_type: bv,
                     kind: bi,
+                    predicate_type: bt,
                     predicate: b_pred,
                     limit: bl,
                 },
             ) => {
-                if ar != br || ap != bp || ak != bk || av != bv || ai != bi || al != bl {
+                if ar != br || ap != bp || ak != bk || av != bv || ai != bi || al != bl || at != bt
+                {
                     return Comparison::Ready(false);
                 }
                 match (a_pred, b_pred) {
@@ -222,6 +225,7 @@ fn leaf_equal(a: &V, b: &V) -> bool {
         (V::CallableDefinition(a), V::CallableDefinition(b)) => a == b,
         (V::Prompt(a), V::Prompt(b)) => a == b,
         (V::Schema(a), V::Schema(b)) => a == b,
+        (V::StdConstant(a), V::StdConstant(b)) => a == b,
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
         (V::Range(a), V::Range(b)) => a == b,

@@ -27,9 +27,35 @@ impl Walk<'_> {
             .get(from)
             .ok_or(Failure::MissingType)?;
         let target = self.target.type_store.get(to).ok_or(Failure::MissingType)?;
+        if let InterpValue::StdConstant(value) = value {
+            if value.ty() != from {
+                return Err(Failure::WrongNominalIdentity { actual: value.ty() });
+            }
+            value
+                .validate(&self.source.types.known_std_types)
+                .map_err(Failure::InvalidField)?;
+            let value = crate::value::StdConstantValue::checked(
+                value.role(),
+                to,
+                &self.target.types.known_std_types,
+            )
+            .map_err(Failure::InvalidField)?;
+            self.values.push(InterpValue::StdConstant(value));
+            return Ok(());
+        }
         if matches!(&value, InterpValue::CommandResult { .. }) {
-            if self.source.types.known_std_types.command_result != Some(from)
-                || self.target.types.known_std_types.command_result != Some(to)
+            if self
+                .source
+                .types
+                .known_std_types
+                .runtime_type(etas_std::RuntimeTypeRole::CommandResult)
+                != Some(from)
+                || self
+                    .target
+                    .types
+                    .known_std_types
+                    .runtime_type(etas_std::RuntimeTypeRole::CommandResult)
+                    != Some(to)
             {
                 return Err(Failure::UnsupportedType);
             }
@@ -75,11 +101,12 @@ impl Walk<'_> {
                     Some(Type::Applied { constructor, .. }) => TypeId(constructor.0),
                     _ => ty,
                 };
-                program
-                    .types
-                    .known_std_types
-                    .opaque_values
-                    .contains(&constructor)
+                let known = &program.types.known_std_types;
+                !known
+                    .runtime_values
+                    .values()
+                    .any(|value_type| *value_type == ty)
+                    && known.opaque_values.contains(&constructor)
             };
             if !opaque(self.source, from) || !opaque(self.target, to) {
                 return Err(Failure::UnsupportedType);
@@ -345,6 +372,13 @@ impl Walk<'_> {
     }
 
     fn enum_value(&mut self, from: TypeId, to: TypeId, value: InterpValue) -> Result<(), Failure> {
+        let InterpValue::Nominal { ty, value } = value else {
+            return Err(wrong("Enum", &value));
+        };
+        if ty != from {
+            return Err(Failure::WrongNominalIdentity { actual: ty });
+        }
+        let value = value.into_value();
         let InterpValue::Variant { name, fields } = value else {
             return Err(wrong("Enum", &value));
         };
@@ -361,7 +395,7 @@ impl Walk<'_> {
             .zip(fields.into_values())
             .map(|((a, b), value)| (*a, *b, value))
             .collect();
-        self.children(from, to, Build::Variant(name), children);
+        self.children(from, to, Build::Enum { ty: to, name }, children);
         Ok(())
     }
 }

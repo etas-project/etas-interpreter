@@ -73,13 +73,22 @@ impl EvalContext<'_> {
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             _ => {}
         }
-        let InterpValue::Variant { name, fields } = value else {
-            return ControlSignal::missing_checked_fact(
-                "stream action did not return its checked StreamRead enum",
-                state.span,
-            );
+        let proof = match self.prepare_native_action(&state.call, &state.args, state.span) {
+            Ok(Some((proof, _))) => proof,
+            Ok(None) => {
+                return ControlSignal::missing_checked_fact(
+                    "stream reducer has no checked action output",
+                    state.span,
+                );
+            }
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        match (name.as_ref(), fields.as_ref()) {
+        let (name, fields) =
+            match crate::value::enum_value::payload(&value, proof.output, self.checked) {
+                Ok(payload) => payload,
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, state.span),
+            };
+        match (name, fields) {
             ("Eof", []) => ControlSignal::Value(InterpValue::Bytes(state.body)),
             ("Data", [InterpValue::Bytes(chunk)]) => {
                 let remaining = match remaining_capacity(&state) {
@@ -176,6 +185,7 @@ impl EvalContext<'_> {
         stream: InterpValue,
         max_bytes: usize,
         timeout_ms: Option<u64>,
+        result_type: etas_types::TypeId,
         span: Span,
     ) -> ControlSignal {
         let stream = match self.stream_ref_argument(&stream, span) {
@@ -194,7 +204,7 @@ impl EvalContext<'_> {
                 trace: self.host_trace(),
                 budget: self.host_budget(),
             }),
-            decode: HostBoundaryDecode::StreamRead,
+            decode: HostBoundaryDecode::StreamRead { result_type },
             span,
             continuation: Continuation::BlockValue,
         })

@@ -24,6 +24,7 @@ impl ValueSnapshot {
             InterpValue::String(value) => Self::String(value.clone()),
             InterpValue::Bytes(value) => Self::Bytes(value.clone()),
             InterpValue::Json(value) => Self::Json(value.clone()),
+            InterpValue::StdConstant(value) => Self::StdConstant(*value),
             InterpValue::Prompt(messages) => Self::Prompt(messages.clone()),
             InterpValue::Schema(ty) => Self::Schema(*ty),
             InterpValue::Provenance(value) => Self::Provenance(value.clone()),
@@ -131,6 +132,7 @@ impl ValueSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
             } => Self::MemorySelection {
@@ -139,6 +141,7 @@ impl ValueSnapshot {
                 key_type: *key_type,
                 value_type: *value_type,
                 kind: kind.clone(),
+                predicate_type: *predicate_type,
                 predicate: predicate
                     .as_deref()
                     .map(|value| context.value(value))
@@ -170,6 +173,7 @@ impl ValueSnapshot {
             Self::String(value) => InterpValue::String(value),
             Self::Bytes(value) => InterpValue::Bytes(value),
             Self::Json(value) => InterpValue::Json(value),
+            Self::StdConstant(value) => InterpValue::StdConstant(value),
             Self::Prompt(messages) => InterpValue::Prompt(messages),
             Self::Schema(ty) => InterpValue::Schema(ty),
             Self::CodeIdentity { ty, identity } => {
@@ -273,6 +277,7 @@ impl ValueSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
             } => InterpValue::MemorySelection {
@@ -281,6 +286,7 @@ impl ValueSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate: predicate
                     .map(|value| value.into_value().restore_with(context))
                     .transpose()?

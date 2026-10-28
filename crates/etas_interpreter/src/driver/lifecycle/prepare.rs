@@ -6,7 +6,6 @@ use crate::{
     host::{self, HostServices},
 };
 use etas_frontend::CheckedProject;
-use etas_hir::HirItemId;
 
 pub(crate) async fn run_checked_inner(
     project: &CheckedProject,
@@ -91,15 +90,16 @@ pub(crate) async fn run_checked_inner(
             checkpoints,
         };
     }
-    if let Some(expected) = entry_arity(project, entry.item)
-        && expected != args.len()
-    {
+    if let Err(message) = crate::value::contract::runtime::validate_arguments(
+        project,
+        plan,
+        entry.item,
+        &args,
+        &options.storage_limits,
+    ) {
         diagnostics.push(diagnostics::invalid_arguments(
             item_span(project, entry.item),
-            format!(
-                "entry expects {expected} argument(s) but received {}",
-                args.len()
-            ),
+            message,
         ));
     }
     diagnostics.extend(host::validate_host_readiness(
@@ -184,15 +184,5 @@ pub(super) fn outcome_profile_status(outcome: &RunOutcome) -> etas_utils::Profil
         RunOutcome::Completed(_) => etas_utils::ProfileSpanStatus::Ok,
         RunOutcome::Cancelled(_) => etas_utils::ProfileSpanStatus::Cancelled,
         RunOutcome::Failed(_) => etas_utils::ProfileSpanStatus::Error,
-    }
-}
-
-fn entry_arity(project: &CheckedProject, item: HirItemId) -> Option<usize> {
-    match project.types.item_signatures.get(&item)? {
-        etas_types::ItemSignature::Flow(signature) => Some(signature.params.len()),
-        etas_types::ItemSignature::Agent(signature) => {
-            signature.callable().map(|signature| signature.params.len())
-        }
-        _ => None,
     }
 }

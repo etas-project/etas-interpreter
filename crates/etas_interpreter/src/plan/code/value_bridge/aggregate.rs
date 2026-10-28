@@ -32,6 +32,14 @@ pub(super) fn build(
             name,
             fields: values.into(),
         },
+        Build::Enum { ty, name } => InterpValue::Nominal {
+            ty,
+            value: InterpValue::Variant {
+                name,
+                fields: values.into(),
+            }
+            .into(),
+        },
         Build::Record(names) => {
             if names.len() != values.len() {
                 return Err(RevisionValueFailure::InconsistentLayout);

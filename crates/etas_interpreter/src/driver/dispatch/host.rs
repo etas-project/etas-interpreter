@@ -161,7 +161,14 @@ pub(in crate::driver) async fn dispatch(
         {
             Ok(response) => response
                 .result
-                .map(|payload| host_boundary_value_from_stream_payload(boundary.decode, payload))
+                .map(|payload| {
+                    host_boundary_value_from_stream_payload(
+                        boundary.decode,
+                        payload,
+                        eval.checked,
+                        &eval.storage_limits,
+                    )
+                })
                 .map_err(HostBoundaryFailure::Stream),
             Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
@@ -413,19 +420,32 @@ pub(in crate::driver) fn host_boundary_value_from_tcp_stream(
 pub(in crate::driver) fn host_boundary_value_from_stream_payload(
     decode: HostBoundaryDecode,
     payload: StreamPayload,
+    checked: &etas_frontend::CheckedProject,
+    limits: &etas_host::StorageLimits,
 ) -> Result<InterpValue, String> {
     match (decode, payload) {
-        (HostBoundaryDecode::StreamRead, StreamPayload::Read(StreamRead::Data(bytes))) => {
-            Ok(InterpValue::Variant {
-                name: "Data".to_owned().into(),
-                fields: vec![InterpValue::Bytes(bytes.into())].into(),
-            })
-        }
-        (HostBoundaryDecode::StreamRead, StreamPayload::Read(StreamRead::Eof)) => {
-            Ok(InterpValue::Variant {
-                name: "Eof".to_owned().into(),
-                fields: Vec::new().into(),
-            })
+        (
+            HostBoundaryDecode::StreamRead { result_type },
+            StreamPayload::Read(StreamRead::Data(bytes)),
+        ) => crate::eval::host_to_checked_interp_value(
+            HostValue::Variant {
+                name: "Data".into(),
+                fields: vec![HostValue::Bytes(bytes)],
+            },
+            result_type,
+            checked,
+            limits,
+        ),
+        (HostBoundaryDecode::StreamRead { result_type }, StreamPayload::Read(StreamRead::Eof)) => {
+            crate::eval::host_to_checked_interp_value(
+                HostValue::Variant {
+                    name: "Eof".into(),
+                    fields: vec![],
+                },
+                result_type,
+                checked,
+                limits,
+            )
         }
         (HostBoundaryDecode::Unit, StreamPayload::Unit) => Ok(InterpValue::Unit),
         (decode, payload) => Err(format!(

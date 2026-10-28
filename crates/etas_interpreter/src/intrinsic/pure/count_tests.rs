@@ -21,7 +21,7 @@ fn count_rejects_runtime_shape_that_disagrees_with_checked_parameter() {
         params: vec![],
         representation: Some(array),
     }));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for parameter in [boolean, nominal] {
         for (id, result_type) in [(pure::LIST_LEN, size), (pure::LIST_IS_EMPTY, boolean)] {
             let call = CheckedPureIntrinsicCall {
@@ -48,7 +48,7 @@ fn global_string_count_borrows_unicode_text_without_payload_materialization() {
     let string = types.primitive(PrimitiveType::String);
     let boolean = types.primitive(PrimitiveType::Bool);
     let size = types.primitive(PrimitiveType::USize);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for count in [0, 1000, 2000, 4000] {
         let input = InterpValue::String("中😀e\u{301}".repeat(count).into());
         for (id, result_type, expected) in [
@@ -85,7 +85,7 @@ fn count_queries_borrow_all_supported_container_payloads() {
         key: string,
         value: string,
     });
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for count in [0, 1000, 2000, 4000] {
         let item = InterpValue::String("x".repeat(1024).into());
         let backing = ArrayValue::new(vec![item.clone(); count + 2]);
@@ -166,7 +166,7 @@ fn count_projection_preserves_checked_wrappers_and_result_identity() {
         params: vec![],
         representation: Some(size),
     }));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let input = InterpValue::Trust {
         wrapper: TrustWrapper::Trusted,
         value: SharedValue::new(InterpValue::Nominal {
@@ -229,7 +229,7 @@ fn count_query_rejects_incomplete_or_unsupported_checked_abi() {
         source_parameter: None,
         name: "std.Unresolved".into(),
     }));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::LIST_LEN),
         parameter_types: vec![array],

@@ -20,7 +20,8 @@ fn shared_sequence_abi_projection_does_not_stage_a_runtime_payload_vector() {
             },
         ];
         let types = types.map(|ty| interner.intern(ty));
-        let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+        let projector =
+            PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
         for (kind, ty) in types.into_iter().enumerate() {
             let values = || {
                 (0..count)
@@ -113,7 +114,8 @@ fn unique_sequence_abi_projection_moves_text_payloads_without_copying() {
         let mut interner = TypeInterner::new();
         let text = interner.primitive(PrimitiveType::String);
         let types = sequence_types(&mut interner, text);
-        let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+        let projector =
+            PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
         for (kind, ty) in types.into_iter().enumerate() {
             let texts = (0..count)
                 .map(|index| format!("{index:04}{}", "x".repeat(1024)))
@@ -155,7 +157,7 @@ fn failed_sequence_abi_projection_keeps_aliases_and_releases_partial_output() {
     let mut interner = TypeInterner::new();
     let text = interner.primitive(PrimitiveType::String);
     let types = sequence_types(&mut interner, text);
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     for (kind, ty) in types.into_iter().enumerate() {
         let input = sequence(
             kind,
@@ -188,7 +190,7 @@ fn slice_abi_projection_only_materializes_the_selected_window() {
     let mut interner = TypeInterner::new();
     let int = interner.primitive(PrimitiveType::I32);
     let ty = interner.intern(Type::Slice(int));
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     let mut values = vec![InterpValue::Bool(false); 4000];
     values[2000] = InterpValue::i32(4);
     values[2001] = InterpValue::i32(5);

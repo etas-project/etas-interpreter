@@ -262,6 +262,7 @@ fn deep_comparator_targets_and_selection_predicates_share_the_worklist() {
                     key_type: etas_types::TypeId(1),
                     value_type: etas_types::TypeId(2),
                     kind: crate::value::MemorySelectionKind::Select,
+                    predicate_type: Some(etas_types::TypeId(3)),
                     predicate: Some(Box::new(V::Callable(target))),
                     limit: None,
                 },

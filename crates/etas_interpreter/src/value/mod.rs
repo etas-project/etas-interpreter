@@ -1,6 +1,8 @@
 mod aggregate;
 mod bytes;
 mod code;
+pub(crate) mod contract;
+pub(crate) mod enum_value;
 pub(crate) use code::CheckedExecutionProgram;
 pub(crate) use code::CodeIdentitySnapshot;
 pub(crate) use code::CodeMetadataPayload;
@@ -39,7 +41,9 @@ pub use shared::{SharedFields, SharedValue};
 pub(crate) mod range;
 pub(crate) mod record;
 mod resource;
+mod std_constant;
 mod storage;
+pub use std_constant::StdConstantValue;
 mod support;
 mod text;
 pub use bytes::BytesValue;

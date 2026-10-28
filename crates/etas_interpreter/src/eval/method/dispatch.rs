@@ -343,6 +343,7 @@ impl<'a> EvalContext<'a> {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
             } => self.eval_memory_selection_method(
@@ -352,6 +353,7 @@ impl<'a> EvalContext<'a> {
                     key_type,
                     value_type,
                     kind,
+                    predicate_type,
                     predicate: predicate.map(|value| *value),
                     limit,
                     method,
@@ -430,7 +432,7 @@ impl<'a> EvalContext<'a> {
             }
             StaticMethodKind::Message => self.eval_message_type_method_values(method, args, span),
             StaticMethodKind::SessionConfig => {
-                self.eval_session_config_type_method_values(method, args, span)
+                self.eval_session_config_type_method_values(expr, method, args, span)
             }
             StaticMethodKind::Conversation => {
                 self.eval_conversation_type_method_values(expr, method, args, span)

@@ -24,7 +24,7 @@ fn result_wrapper_walk_restores_nominal_and_trust_order() {
         params: vec![],
         representation: Some(refined),
     }));
-    let projector = PureAbiProjector::build(&store).unwrap();
+    let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     let result = restore_wrappers(true, outer, &projector, |value, ty, _| {
         assert_eq!(ty, boolean);
         Ok(InterpValue::Bool(value))
@@ -59,7 +59,7 @@ fn result_refinement_walk_does_not_allocate_per_call() {
                 predicate: RefinementId(id),
             });
         }
-        let projector = PureAbiProjector::build(&store).unwrap();
+        let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
         let (result, cost) = measure(|| {
             restore_wrappers(true, root, &projector, |value, ty, shape| {
                 assert_eq!(ty, boolean);
@@ -93,7 +93,7 @@ fn result_wrapper_walk_rejects_cycles_before_invoking_leaf() {
             base: cyclic,
             predicate: RefinementId(1),
         });
-        let projector = PureAbiProjector::build(&store).unwrap();
+        let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
         assert_eq!(
             restore_wrappers((), root, &projector, |_, _, _| panic!("cyclic ABI leaf")),
             Err(AdapterError::UnsupportedValue(
@@ -116,7 +116,7 @@ fn result_wrapper_walk_preserves_missing_type_and_leaf_errors() {
         wrapper: TrustWrapper::Trusted,
         inner: boolean,
     });
-    let projector = PureAbiProjector::build(&store).unwrap();
+    let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     for ty in [root, missing] {
         assert_eq!(
             restore_wrappers((), ty, &projector, |_, _, _| panic!("missing ABI leaf")),

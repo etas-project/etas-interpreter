@@ -20,22 +20,22 @@ impl<'a> EvalContext<'a> {
                     "Message.with_session expects a Message value as its first argument",
                 );
             };
-            let Some(session_config) = session_config_from_value(session) else {
-                return abort_message_method(
-                    span,
-                    "Message.with_session expects a SessionConfig value as its second argument",
-                );
+            let session_config = match self.session_config_parts(session) {
+                Ok(config) => config,
+                Err(reason) => return ControlSignal::invalid_arguments(reason, span),
             };
             message.session = Some(session_config.id.clone());
-            let host_config = match super::boundary_session::session_config_to_host(&session_config)
-            {
+            let host_config = match super::boundary_session::session_config_to_host(
+                &session_config,
+                self.checked,
+            ) {
                 Ok(config) => config,
                 Err(message) => return ControlSignal::invalid_arguments(message, span),
             };
             self.events.push(
                 crate::orchestration::WorkflowEvent::MessageSessionAttached {
                     id: message.id.clone(),
-                    session: message.session.clone().unwrap_or_default(),
+                    session: session_config.id.clone(),
                     session_config: session_config.clone(),
                 },
             );
@@ -153,6 +153,7 @@ impl<'a> EvalContext<'a> {
 
     pub(in crate::eval) fn eval_session_config_type_method_values(
         &mut self,
+        expr: HirExprId,
         method: &str,
         args: &[InterpValue],
         span: Span,
@@ -166,10 +167,54 @@ impl<'a> EvalContext<'a> {
                 "SessionConfig.continue_or_new expects exactly one argument",
             );
         };
-        ControlSignal::Value(InterpValue::Variant {
-            name: "SessionConfig.continue_or_new".to_owned().into(),
-            fields: vec![key.clone()].into(),
-        })
+        let Some(key) = stable_interp_key(key) else {
+            return ControlSignal::invalid_arguments(
+                "session key must have a stable scalar identity",
+                span,
+            );
+        };
+        let make = || {
+            use etas_std::RuntimeTypeRole as Role;
+            let expected = self.materialized_expression_type(
+                expr,
+                &crate::control::GenericBindings::new(),
+                span,
+            )?;
+            let id = self.session_id_value(format!("continue_or_new:{key}"), span)?;
+            let context = self.checked_std_value(
+                Role::ContextPolicy,
+                InterpValue::Variant {
+                    name: "All".into(),
+                    fields: vec![].into(),
+                },
+                span,
+            )?;
+            let retention = self.checked_std_value(
+                Role::RetentionPolicy,
+                InterpValue::Variant {
+                    name: "Forever".into(),
+                    fields: vec![].into(),
+                },
+                span,
+            )?;
+            self.checked_std_result(
+                expected,
+                Role::SessionConfig,
+                InterpValue::Record(
+                    vec![
+                        ("id".into(), id),
+                        ("context".into(), context),
+                        ("retention".into(), retention),
+                    ]
+                    .into(),
+                ),
+                span,
+            )
+        };
+        match make() {
+            Ok(value) => ControlSignal::Value(value),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
     }
 
     pub(in crate::eval) fn eval_conversation_type_method_values(
@@ -188,15 +233,16 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
-        let Some(session_config) = session_config_from_value(session) else {
-            let message = format!("Conversation.{method} expects a SessionConfig value");
-            return ControlSignal::invalid_arguments(message, span);
+        let session_config = match self.session_config_parts(session) {
+            Ok(config) => config,
+            Err(reason) => return ControlSignal::invalid_arguments(reason, span),
         };
         let request_id = self.next_host_request_id();
-        let host_config = match super::boundary_session::session_config_to_host(&session_config) {
-            Ok(config) => config,
-            Err(message) => return ControlSignal::invalid_arguments(message, span),
-        };
+        let host_config =
+            match super::boundary_session::session_config_to_host(&session_config, self.checked) {
+                Ok(config) => config,
+                Err(message) => return ControlSignal::invalid_arguments(message, span),
+            };
         let payload_type = match conversation_payload_type(self.checked, expr) {
             Ok(Some(payload_type)) => payload_type,
             Ok(None) => {

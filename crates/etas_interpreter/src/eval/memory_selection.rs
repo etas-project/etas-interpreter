@@ -27,6 +27,7 @@ impl<'a> EvalContext<'a> {
             key_type,
             value_type,
             kind,
+            predicate_type,
             predicate,
             limit: existing_limit,
             args,
@@ -60,6 +61,7 @@ impl<'a> EvalContext<'a> {
                             key_type,
                             value_type,
                             kind: kind.clone(),
+                            predicate_type,
                             predicate: predicate.clone(),
                             limit: existing_limit,
                             args: args.clone(),
@@ -81,13 +83,23 @@ impl<'a> EvalContext<'a> {
         }
 
         let limit = match evaluated_args.as_slice() {
-            [InterpValue::Variant { name, fields }]
-                if matches!(
-                    name.as_str(),
-                    "Iterations" | "Tokens" | "ContextTokens" | "Attempts"
-                ) =>
-            {
-                let [InterpValue::Number(value)] = fields.as_slice() else {
+            [value] => {
+                let ty = match self.runtime_type(etas_std::RuntimeTypeRole::Limit, span) {
+                    Ok(ty) => ty,
+                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                };
+                let (name, fields) =
+                    match crate::value::enum_value::payload(value, ty, self.checked) {
+                        Ok(value) => value,
+                        Err(reason) => return abort_memory_selection(span, reason),
+                    };
+                if !matches!(name, "Iterations" | "Tokens" | "ContextTokens" | "Attempts") {
+                    return abort_memory_selection(
+                        span,
+                        "memory selection limit requires a count limit",
+                    );
+                }
+                let [InterpValue::Number(value)] = fields else {
                     return abort_memory_selection(
                         span,
                         "memory selection limit requires a count limit constructor with one integer field",
@@ -103,12 +115,6 @@ impl<'a> EvalContext<'a> {
                     }
                 }
             }
-            [_] => {
-                return abort_memory_selection(
-                    span,
-                    "memory selection limit requires a count limit such as Tokens(n)",
-                );
-            }
             _ => {
                 return abort_memory_selection(
                     span,
@@ -123,6 +129,7 @@ impl<'a> EvalContext<'a> {
             key_type,
             value_type,
             kind,
+            predicate_type,
             predicate: predicate.map(Box::new),
             limit: Some(limit),
         })
@@ -204,6 +211,7 @@ pub(super) struct MemorySelectionMethodEval<'a> {
     pub key_type: etas_types::TypeId,
     pub value_type: etas_types::TypeId,
     pub kind: crate::value::MemorySelectionKind,
+    pub predicate_type: Option<etas_types::TypeId>,
     pub predicate: Option<InterpValue>,
     pub limit: Option<u32>,
     pub method: &'a str,
@@ -217,6 +225,7 @@ pub(super) struct MemorySelectionLimitResume {
     pub key_type: etas_types::TypeId,
     pub value_type: etas_types::TypeId,
     pub kind: crate::value::MemorySelectionKind,
+    pub predicate_type: Option<etas_types::TypeId>,
     pub predicate: Option<InterpValue>,
     pub limit: Option<u32>,
     pub args: Vec<HirArg>,
@@ -233,6 +242,7 @@ impl MemorySelectionLimitResume {
             key_type: eval.key_type,
             value_type: eval.value_type,
             kind: eval.kind,
+            predicate_type: eval.predicate_type,
             predicate: eval.predicate,
             limit: eval.limit,
             args: eval.args.to_vec(),

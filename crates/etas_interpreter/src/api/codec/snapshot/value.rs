@@ -152,11 +152,12 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
             key_type,
             value_type,
             kind,
+            predicate_type,
             predicate,
             limit,
         } => {
             *slot = json!({"kind":"memory_selection", "region_stable_id":region_stable_id, "path":path,
-                "key_type":key_type.0,"value_type":value_type.0,"selection":value_codec::memory_selection_kind_json(kind),"predicate":null,"limit":limit});
+                "key_type":key_type.0,"value_type":value_type.0,"selection":value_codec::memory_selection_kind_json(kind),"predicate_type":predicate_type.map(|ty| ty.0),"predicate":null,"limit":limit});
             if let Some(value) = predicate {
                 pending.push((Node::Value(value), &mut slot["predicate"]));
             }
@@ -190,6 +191,9 @@ fn leaf(value: &ValueSnapshot) -> Value {
         }
         V::Unit => json!({"kind":"unit"}),
         V::Schema(ty) => json!({"kind":"type_schema","ty":ty.0}),
+        V::StdConstant(value) => {
+            json!({"kind":"std_constant", "role":value.role(), "ty":value.ty().0})
+        }
         V::CodeIdentity { ty, identity } => {
             json!({"kind":"compiler_identity","schema":1,"ty":ty.0,"value":identity})
         }

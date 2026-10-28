@@ -350,6 +350,7 @@ pub(crate) enum ValueSnapshot {
     Message(MessageSnapshot),
     Conversation(ConversationSnapshot),
     Provenance(ProvenanceValue),
+    StdConstant(crate::value::StdConstantValue),
     ModelResponse(ModelResponseValue),
     Command {
         argv: Vec<String>,
@@ -421,6 +422,7 @@ pub(crate) enum ValueSnapshot {
         key_type: TypeId,
         value_type: TypeId,
         kind: MemorySelectionKind,
+        predicate_type: Option<TypeId>,
         predicate: Option<SnapshotBox>,
         limit: Option<u32>,
     },
@@ -754,6 +756,7 @@ pub(crate) enum ContinuationSnapshot {
         key_type: TypeId,
         value_type: TypeId,
         kind: MemorySelectionKind,
+        predicate_type: Option<TypeId>,
         predicate: Option<ValueSnapshot>,
         limit: Option<u32>,
         args: Vec<HirArg>,

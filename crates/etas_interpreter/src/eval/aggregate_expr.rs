@@ -263,7 +263,13 @@ impl<'a> EvalContext<'a> {
             }
         }
         if let Some(symbol) = variant_symbol {
-            return match self.eval_named_variant(expr, symbol, values, record.span) {
+            return match self.eval_named_variant(
+                expr,
+                symbol,
+                values,
+                frame.generic_bindings(),
+                record.span,
+            ) {
                 Ok(value) => ControlSignal::Value(value),
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),
             };
@@ -273,10 +279,16 @@ impl<'a> EvalContext<'a> {
             Err(message) => return ControlSignal::missing_checked_fact(message, record.span),
         };
         ControlSignal::Value(match nominal_type {
-            Some(ty) => InterpValue::Nominal {
-                ty,
-                value: crate::value::SharedValue::new(value),
-            },
+            Some(ty) => {
+                let ty = match self.materialized_type(ty, frame.generic_bindings(), record.span) {
+                    Ok(ty) => ty,
+                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                };
+                InterpValue::Nominal {
+                    ty,
+                    value: crate::value::SharedValue::new(value),
+                }
+            }
             None => value,
         })
     }

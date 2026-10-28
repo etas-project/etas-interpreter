@@ -141,6 +141,7 @@ fn selection_predicate_frame_graph_restores_and_releases_without_recursion() {
                 key_type: etas_types::TypeId(0),
                 value_type: etas_types::TypeId(0),
                 kind: crate::value::MemorySelectionKind::Select,
+                predicate_type: Some(etas_types::TypeId(0)),
                 predicate: Some(Box::new(InterpValue::Callable(CallTarget::Lambda {
                     expr: HirExprId(7),
                     captured: Frame::from_snapshot(vec![(SymbolId(0), runtime)]).unwrap(),

@@ -49,7 +49,7 @@ fn owned_wrapper_input_projection_is_stack_safe_and_moves_the_unique_payload() {
     }
     for depth in [1000, 2000, 4000, 30_000] {
         let (store, ty, value, pointer) = wrapped_text(depth);
-        let projector = PureAbiProjector::build(&store).unwrap();
+        let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
         let (output, cost) = measure(|| into_builtin_for_type(value, ty, &projector).unwrap());
         let BuiltinValue::String(text) = output else {
             panic!("string ABI output")
@@ -101,7 +101,7 @@ fn owned_wrapper_input_rejects_deep_nominal_identity_without_copying_or_leaking_
                 value: SharedValue::new(value),
             };
         }
-        let projector = PureAbiProjector::build(&store).unwrap();
+        let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
         let (result, cost) = measure(|| into_builtin_for_type(value.clone(), ty, &projector));
         let error = result.unwrap_err();
         assert_eq!(error, AdapterError::NominalIdentity { expected, actual });
@@ -122,7 +122,7 @@ fn owned_wrapper_input_preserves_cycle_missing_type_and_trust_failures() {
         wrapper: TrustWrapper::Trusted,
         inner: missing,
     });
-    let projector = PureAbiProjector::build(&store).unwrap();
+    let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     assert_eq!(
         into_builtin_for_type(InterpValue::Unit, cycle, &projector),
         Err(AdapterError::UnsupportedValue(
@@ -158,7 +158,7 @@ fn shared_wrapper_input_copies_only_the_required_final_owned_text() {
     }
     for depth in [1000, 2000, 4000] {
         let (store, ty, value, pointer) = wrapped_text(depth);
-        let projector = PureAbiProjector::build(&store).unwrap();
+        let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
         let (output, cost) =
             measure(|| into_builtin_for_type(value.clone(), ty, &projector).unwrap());
         let BuiltinValue::String(text) = output else {

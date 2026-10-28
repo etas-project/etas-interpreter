@@ -1,5 +1,14 @@
 use super::super::*;
 
+fn output_type(checked: &etas_frontend::CheckedProject) -> etas_types::TypeId {
+    let etas_types::ItemSignature::Flow(signature) =
+        &checked.types.item_signatures[&checked.entry.unwrap()]
+    else {
+        panic!("flow signature");
+    };
+    signature.output
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn a_standard_payload_constructor_is_an_ordinary_callable_value() {
     let checked = checked_project(
@@ -29,9 +38,13 @@ flow main(input: bytes) -> StreamRead {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value(),
-        Some(&value::InterpValue::Variant {
-            name: "Data".to_owned().into(),
-            fields: vec![payload].into()
+        Some(&value::InterpValue::Nominal {
+            ty: output_type(&checked),
+            value: value::InterpValue::Variant {
+                name: "Data".to_owned().into(),
+                fields: vec![payload].into()
+            }
+            .into()
         })
     );
 }
@@ -77,9 +90,13 @@ flow main(input: bytes) -> StreamRead ![] {{
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert_eq!(
             result.value(),
-            Some(&value::InterpValue::Variant {
-                name: name.to_owned().into(),
-                fields: fields.into()
+            Some(&value::InterpValue::Nominal {
+                ty: output_type(&checked),
+                value: value::InterpValue::Variant {
+                    name: name.to_owned().into(),
+                    fields: fields.into()
+                }
+                .into()
             })
         );
         assert!(host.stream_requests().is_empty());

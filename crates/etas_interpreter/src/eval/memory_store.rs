@@ -17,10 +17,17 @@ impl<'a> EvalContext<'a> {
             key_type,
             value_type,
             result_type,
+            query_type,
             method,
             evaluated_args,
             span,
         } = args;
+        if matches!(method.as_str(), "select" | "query" | "related_to") && query_type.is_none() {
+            return ControlSignal::missing_checked_fact(
+                "memory query has no checked generic argument type",
+                span,
+            );
+        }
         let request_id = HostRequestId(self.next_host_request);
         self.next_host_request += 1;
         let request = match method.as_str() {
@@ -104,6 +111,7 @@ impl<'a> EvalContext<'a> {
                     key_type,
                     value_type,
                     kind: crate::value::MemorySelectionKind::Select,
+                    predicate_type: query_type,
                     predicate: Some(Box::new(predicate)),
                     limit: None,
                 });
@@ -121,6 +129,7 @@ impl<'a> EvalContext<'a> {
                     key_type,
                     value_type,
                     kind: crate::value::MemorySelectionKind::Query,
+                    predicate_type: query_type,
                     predicate: Some(Box::new(predicate)),
                     limit: None,
                 });
@@ -138,6 +147,7 @@ impl<'a> EvalContext<'a> {
                     key_type,
                     value_type,
                     kind: crate::value::MemorySelectionKind::RelatedTo,
+                    predicate_type: query_type,
                     predicate: Some(Box::new(predicate)),
                     limit: None,
                 });
@@ -149,6 +159,7 @@ impl<'a> EvalContext<'a> {
                     key_type,
                     value_type,
                     kind: crate::value::MemorySelectionKind::Scan,
+                    predicate_type: None,
                     predicate: None,
                     limit: None,
                 });
@@ -436,6 +447,7 @@ pub(super) struct MemoryStoreArgs {
     pub key_type: etas_types::TypeId,
     pub value_type: etas_types::TypeId,
     pub result_type: etas_types::TypeId,
+    pub query_type: Option<etas_types::TypeId>,
     pub method: String,
     pub evaluated_args: Vec<InterpValue>,
     pub span: Span,

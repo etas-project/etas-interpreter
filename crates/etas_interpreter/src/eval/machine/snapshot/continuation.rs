@@ -446,6 +446,7 @@ impl ContinuationSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
                 args,
@@ -459,6 +460,7 @@ impl ContinuationSnapshot {
                 key_type: *key_type,
                 value_type: *value_type,
                 kind: kind.clone(),
+                predicate_type: *predicate_type,
                 predicate: predicate
                     .as_ref()
                     .map(|value| context.value(value))
@@ -1102,6 +1104,7 @@ impl ContinuationSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
                 args,
@@ -1115,6 +1118,7 @@ impl ContinuationSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate: predicate
                     .map(|value| value.restore_with(context))
                     .transpose()?,

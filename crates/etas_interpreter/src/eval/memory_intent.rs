@@ -48,7 +48,7 @@ impl EvalContext<'_> {
                 Err(error) => ControlSignal::missing_checked_fact(error, span),
             };
         }
-        match self.prepare_memory_intent(kind, checked_call.result_type, &args) {
+        match self.prepare_memory_intent(kind, checked_call, &args) {
             Ok(value) => ControlSignal::Value(InterpValue::MemoryWriteIntent(Box::new(value))),
             Err(error) => self.storage_error_signal(error, span),
         }
@@ -57,7 +57,7 @@ impl EvalContext<'_> {
     fn prepare_memory_intent(
         &self,
         kind: MemoryIntentCallable,
-        result_type: etas_types::TypeId,
+        call: &CheckedStdIntrinsicCall,
         args: &[InterpValue],
     ) -> Result<MemoryWriteIntentValue, etas_host::HostError> {
         let Some((
@@ -80,13 +80,18 @@ impl EvalContext<'_> {
             path: path.clone(),
         };
         let limits = self.storage_limits.clone();
+        let condition_type = *call
+            .parameter_types
+            .last()
+            .ok_or_else(|| invalid("memory preparation has no checked condition parameter"))?;
         let intent = match (kind, args) {
             (MemoryIntentCallable::PreparePut, [key, value, condition]) => {
                 MemoryWriteIntent::prepare_put(
                     store,
                     super::host_value::interp_to_host_value(key).map_err(invalid)?,
                     super::host_value::interp_to_host_value(value).map_err(invalid)?,
-                    self.intent_write_condition(condition).map_err(invalid)?,
+                    self.intent_write_condition(condition, condition_type)
+                        .map_err(invalid)?,
                     &limits,
                 )
             }
@@ -94,14 +99,15 @@ impl EvalContext<'_> {
                 MemoryWriteIntent::prepare_delete(
                     store,
                     super::host_value::interp_to_host_value(key).map_err(invalid)?,
-                    self.intent_write_condition(condition).map_err(invalid)?,
+                    self.intent_write_condition(condition, condition_type)
+                        .map_err(invalid)?,
                     &limits,
                 )
             }
             _ => return Err(invalid("invalid memory preparation argument count")),
         }?;
         let value = MemoryWriteIntentValue::new(
-            result_type,
+            call.result_type,
             *key_type,
             *value_type,
             intent,
@@ -113,11 +119,13 @@ impl EvalContext<'_> {
         Ok(value)
     }
 
-    fn intent_write_condition(&self, value: &InterpValue) -> Result<WriteCondition, String> {
-        let InterpValue::Variant { name, fields } = value else {
-            return Err("invalid WriteCondition".into());
-        };
-        match (name.as_str(), fields.as_slice()) {
+    fn intent_write_condition(
+        &self,
+        value: &InterpValue,
+        ty: etas_types::TypeId,
+    ) -> Result<WriteCondition, String> {
+        let (name, fields) = crate::value::enum_value::payload(value, ty, self.checked)?;
+        match (name, fields) {
             ("Any", []) => Ok(WriteCondition::Any),
             ("Missing", []) => Ok(WriteCondition::Missing),
             ("Exists", []) => Ok(WriteCondition::Exists),

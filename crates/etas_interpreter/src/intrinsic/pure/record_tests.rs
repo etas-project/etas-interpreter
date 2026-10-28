@@ -20,7 +20,8 @@ fn checked_record_result_abi_moves_names_and_payloads_without_cloning_shape() {
             })
             .collect();
         let ty = interner.intern(Type::Record(RecordType { fields }));
-        let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+        let projector =
+            PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
         let fields: Vec<_> = (0..count)
             .map(|i| {
                 (
@@ -101,7 +102,7 @@ fn checked_record_result_abi_rejects_malformed_fields_and_types() {
             })
             .collect(),
     }));
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     for fields in [
         vec![("a", BuiltinValue::I32(1))],
         vec![("a", BuiltinValue::I32(1)), ("a", BuiltinValue::I32(2))],
@@ -156,7 +157,7 @@ fn checked_record_abi_keeps_shared_inputs_and_validates_nested_nominal_trust_fie
             },
         ],
     }));
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     let input = |nominal, wrapper| {
         RecordValue::new(vec![
             (
@@ -224,7 +225,7 @@ fn checked_record_abi_reorders_fields_and_rejects_duplicate_names() {
             },
         ],
     }));
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     let value = |names: [&str; 2]| {
         InterpValue::Record(RecordValue::new(vec![
             (names[0].into(), InterpValue::i32(2)),

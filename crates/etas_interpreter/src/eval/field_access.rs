@@ -321,7 +321,14 @@ impl<'a> EvalContext<'a> {
                 "role" => Ok(InterpValue::String(
                     message_role_name(message.role).to_owned().into(),
                 )),
-                "session" => Ok(option_string(message.session)),
+                "session" => message
+                    .session
+                    .map(|id| {
+                        self.session_id_value(id, span)
+                            .map(|value| InterpValue::OptionSome(value.into()))
+                    })
+                    .transpose()
+                    .map(|value| value.unwrap_or(InterpValue::OptionNone)),
                 "created_at" => Ok(InterpValue::String(message.created_at.into())),
                 "provenance" => Ok(message
                     .provenance
@@ -338,7 +345,7 @@ impl<'a> EvalContext<'a> {
                 )),
             },
             InterpValue::Conversation(conversation) => match field {
-                "session" => Ok(InterpValue::String(conversation.session.into())),
+                "session" => self.session_id_value(conversation.session, span),
                 "messages" => Ok(InterpValue::Array(ArrayValue::new(
                     conversation
                         .messages
@@ -388,22 +395,6 @@ impl<'a> EvalContext<'a> {
                     format!("conversation field `{field}` does not exist at runtime"),
                 )),
             },
-            InterpValue::Variant { name, fields }
-                if name == "SessionConfig.continue_or_new" && fields.len() == 1 =>
-            {
-                match field {
-                    "id" => Ok(InterpValue::String(
-                        format!("continue_or_new:{}", stable_session_config_key(&fields[0])).into(),
-                    )),
-                    _ => Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        format!(
-                            "session config field `{field}` is not materialized by continue_or_new"
-                        ),
-                    )),
-                }
-            }
             _ => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
@@ -501,15 +492,6 @@ fn option_string(value: Option<String>) -> InterpValue {
             )))
         })
         .unwrap_or(InterpValue::OptionNone)
-}
-
-fn stable_session_config_key(value: &InterpValue) -> String {
-    match value {
-        InterpValue::String(value) => value.to_string(),
-        InterpValue::Number(value) => value.display_value(),
-        InterpValue::Bool(value) => value.to_string(),
-        other => format!("{other:?}"),
-    }
 }
 
 fn message_role_name(role: crate::value::MessageRoleValue) -> &'static str {

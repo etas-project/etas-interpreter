@@ -7,8 +7,8 @@ use etas_types::{
 use crate::intrinsic::dispatch::CheckedPureIntrinsicCall;
 use crate::value::{InterpValue, ListValue, RangeBounds, RangeValue, RecordValue, SliceValue};
 
-use super::abi::input::into_builtin;
-use super::abi::output::from_builtin;
+use super::abi::input::into_builtin_for_type;
+use super::abi::output::from_builtin_for_type;
 use super::{AdapterError, PureAbiProjector, execute_pure_intrinsic};
 
 #[test]
@@ -22,7 +22,7 @@ fn checked_map_count_does_not_materialize_keys_or_values() {
         key: string,
         value: string,
     });
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     for count in [0, 1000, 2000, 4000] {
         let entries = MapValue::new(
             (0..count)
@@ -90,7 +90,7 @@ fn checked_abi_moves_unique_text_payloads_without_copying() {
         ok: string,
         err: string,
     });
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     for count in [1000, 2000, 4000] {
         let values: Vec<_> = (0..count)
             .map(|_| InterpValue::String("x".repeat(128).into()))
@@ -157,21 +157,26 @@ fn checked_abi_moves_unique_text_payloads_without_copying() {
 
 #[test]
 fn adapter_preserves_slice_values() {
+    let mut types = TypeInterner::new();
+    let int = types.primitive(PrimitiveType::I32);
+    let ty = types.intern(Type::Slice(int));
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let value = InterpValue::Slice(SliceValue::new(vec![
         InterpValue::i32(1),
         InterpValue::i32(2),
     ]));
 
     assert_eq!(
-        into_builtin(value).expect("slice should convert to builtin"),
+        into_builtin_for_type(value, ty, &projector).expect("slice should convert to builtin"),
         BuiltinValue::Slice(vec![BuiltinValue::I32(1), BuiltinValue::I32(2)])
     );
 
     assert_eq!(
-        from_builtin(BuiltinValue::Slice(vec![
-            BuiltinValue::I32(3),
-            BuiltinValue::I32(4),
-        ]))
+        from_builtin_for_type(
+            BuiltinValue::Slice(vec![BuiltinValue::I32(3), BuiltinValue::I32(4),]),
+            ty,
+            &projector
+        )
         .expect("slice should convert from builtin"),
         InterpValue::Slice(SliceValue::new(vec![
             InterpValue::i32(3),
@@ -201,7 +206,8 @@ fn result_and_option_constructors_preserve_nominal_payloads() {
     });
     let option_type = interner.intern(Type::Option(payload_type));
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
+    let projector = PureAbiProjector::build(&store, &Default::default())
+        .expect("checked ABI shapes should build");
     let payload = InterpValue::Nominal {
         ty: payload_type,
         value: crate::value::SharedValue::new(InterpValue::Record(RecordValue::new(vec![(
@@ -272,7 +278,8 @@ fn option_and_result_unwrap_use_distinct_checked_abis() {
         err: string_type,
     });
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
+    let projector = PureAbiProjector::build(&store, &Default::default())
+        .expect("checked ABI shapes should build");
 
     let option_call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(intrinsic::pure::OPTION_UNWRAP),
@@ -387,7 +394,8 @@ fn pure_builtin_arguments_project_nominal_representations_recursively() {
         err: error_type,
     });
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
+    let projector = PureAbiProjector::build(&store, &Default::default())
+        .expect("checked ABI shapes should build");
     let header = InterpValue::Nominal {
         ty: header_type,
         value: crate::value::SharedValue::new(InterpValue::Record(RecordValue::new(vec![
@@ -498,7 +506,8 @@ fn pure_builtin_result_restores_nested_nominal_identity() {
         err: error_type,
     });
     let store = interner.into_store();
-    let projector = PureAbiProjector::build(&store).expect("checked ABI shapes should build");
+    let projector = PureAbiProjector::build(&store, &Default::default())
+        .expect("checked ABI shapes should build");
 
     let decoded = execute_pure_intrinsic(
         &CheckedPureIntrinsicCall {
@@ -527,6 +536,10 @@ fn pure_builtin_result_restores_nested_nominal_identity() {
 
 #[test]
 fn adapter_preserves_range_bounds_and_endpoints() {
+    let mut types = TypeInterner::new();
+    let int = types.primitive(PrimitiveType::I32);
+    let ty = types.intern(Type::Range { index: int });
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let value = InterpValue::Range(RangeValue {
         start: Box::new(InterpValue::i32(1)),
         end: Box::new(InterpValue::i32(5)),
@@ -534,7 +547,7 @@ fn adapter_preserves_range_bounds_and_endpoints() {
     });
 
     assert_eq!(
-        into_builtin(value).expect("range should convert to builtin"),
+        into_builtin_for_type(value, ty, &projector).expect("range should convert to builtin"),
         BuiltinValue::Range {
             start: Box::new(BuiltinValue::I32(1)),
             end: Box::new(BuiltinValue::I32(5)),
@@ -543,11 +556,15 @@ fn adapter_preserves_range_bounds_and_endpoints() {
     );
 
     assert_eq!(
-        from_builtin(BuiltinValue::Range {
-            start: Box::new(BuiltinValue::I32(2)),
-            end: Box::new(BuiltinValue::I32(8)),
-            bounds: BuiltinRangeBounds::ClosedOpen,
-        })
+        from_builtin_for_type(
+            BuiltinValue::Range {
+                start: Box::new(BuiltinValue::I32(2)),
+                end: Box::new(BuiltinValue::I32(8)),
+                bounds: BuiltinRangeBounds::ClosedOpen,
+            },
+            ty,
+            &projector
+        )
         .expect("range should convert from builtin"),
         InterpValue::Range(RangeValue {
             start: Box::new(InterpValue::i32(2)),

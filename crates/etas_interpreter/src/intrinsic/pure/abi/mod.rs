@@ -1,3 +1,4 @@
+mod enum_layout;
 mod error;
 pub(in crate::intrinsic::pure) mod input;
 pub(in crate::intrinsic::pure) mod output;

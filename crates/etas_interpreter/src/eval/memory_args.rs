@@ -63,12 +63,27 @@ impl<'a> EvalContext<'a> {
             }
         }
 
+        let query_type = if matches!(method.as_str(), "select" | "query" | "related_to") {
+            let Some(arg) = args.first() else {
+                return ControlSignal::invalid_arguments("memory query requires an argument", span);
+            };
+            let expr = match arg {
+                HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => *expr,
+            };
+            match self.materialized_expression_type(expr, frame.generic_bindings(), span) {
+                Ok(ty) => Some(ty),
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            }
+        } else {
+            None
+        };
         self.finish_memory_store_method(MemoryStoreArgs {
             region_stable_id,
             path,
             key_type,
             value_type,
             result_type,
+            query_type,
             method,
             evaluated_args,
             span,

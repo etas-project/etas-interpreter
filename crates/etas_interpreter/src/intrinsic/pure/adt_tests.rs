@@ -22,7 +22,7 @@ fn checked_adt_wrap_tag_and_unwrap_share_nominal_payloads() {
             ok: nominal,
             err: nominal,
         });
-        let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+        let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
         let fields = crate::value::SharedFields::new(
             (0..count)
                 .map(|_| InterpValue::String("payload".repeat(128).into()))

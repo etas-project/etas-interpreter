@@ -111,7 +111,7 @@ impl<'a> EvalContext<'a> {
                 },
             ) => {
                 let request_id = self.next_host_request_id();
-                let host_config = match session_config_to_host(&config) {
+                let host_config = match session_config_to_host(&config, self.checked) {
                     Ok(config) => config,
                     Err(message) => {
                         return ControlSignal::invalid_arguments(message, session.span);
@@ -270,19 +270,22 @@ fn conversation_from_session_result(
 
 pub(crate) fn session_config_to_host(
     config: &crate::value::SessionConfigValue,
+    checked: &etas_frontend::CheckedProject,
 ) -> Result<etas_host::SessionConfig, String> {
-    let context = match config.context.as_deref() {
-        None => etas_host::ContextPolicy::All,
-        Some(value) => context_policy_from_value(value).ok_or_else(|| {
-            "SessionConfig.context is not a checked ContextPolicy value".to_owned()
-        })?,
-    };
-    let retention = match config.retention.as_deref() {
-        None => etas_host::RetentionPolicy::Forever,
-        Some(value) => retention_policy_from_value(value).ok_or_else(|| {
-            "SessionConfig.retention is not a checked RetentionPolicy value".to_owned()
-        })?,
-    };
+    let context = context_policy_from_value(
+        config
+            .context
+            .as_deref()
+            .ok_or("SessionConfig.context is missing")?,
+        checked,
+    )?;
+    let retention = retention_policy_from_value(
+        config
+            .retention
+            .as_deref()
+            .ok_or("SessionConfig.retention is missing")?,
+        checked,
+    )?;
     Ok(etas_host::SessionConfig {
         id: config.id.clone(),
         context,
@@ -438,43 +441,55 @@ fn host_record_optional_string_field(
     }
 }
 
-fn context_policy_from_value(value: &InterpValue) -> Option<etas_host::ContextPolicy> {
-    match value {
-        InterpValue::Variant { name, fields } if name == "All" && fields.is_empty() => {
-            Some(etas_host::ContextPolicy::All)
-        }
-        InterpValue::Variant { name, fields } if name == "LastTurns" && fields.len() == 1 => {
-            usize_from_value(&fields[0]).map(etas_host::ContextPolicy::LastTurns)
-        }
-        InterpValue::Variant { name, fields }
-            if name == "SummaryPlusRecent" && fields.len() == 1 =>
-        {
-            usize_from_value(&fields[0])
-                .map(|recent| etas_host::ContextPolicy::SummaryPlusRecent { recent })
-        }
-        _ => None,
+fn context_policy_from_value(
+    value: &InterpValue,
+    checked: &etas_frontend::CheckedProject,
+) -> Result<etas_host::ContextPolicy, String> {
+    let ty = checked
+        .types
+        .known_std_types
+        .runtime_type(etas_std::RuntimeTypeRole::ContextPolicy)
+        .ok_or("missing checked ContextPolicy identity")?;
+    let (name, fields) = crate::value::enum_value::payload(value, ty, checked)?;
+    match (name, fields) {
+        ("All", []) => Ok(etas_host::ContextPolicy::All),
+        ("LastTurns", [count]) => Ok(etas_host::ContextPolicy::LastTurns(count_from_value(
+            count,
+        )?)),
+        ("SummaryPlusRecent", [count]) => Ok(etas_host::ContextPolicy::SummaryPlusRecent {
+            recent: count_from_value(count)?,
+        }),
+        _ => Err("invalid checked ContextPolicy constructor".into()),
     }
 }
 
-fn retention_policy_from_value(value: &InterpValue) -> Option<etas_host::RetentionPolicy> {
-    match value {
-        InterpValue::Variant { name, fields } if name == "Forever" && fields.is_empty() => {
-            Some(etas_host::RetentionPolicy::Forever)
-        }
-        InterpValue::Variant { name, fields } if name == "Days" && fields.len() == 1 => {
-            u64_from_value(&fields[0]).map(etas_host::RetentionPolicy::Days)
-        }
-        _ => None,
+fn retention_policy_from_value(
+    value: &InterpValue,
+    checked: &etas_frontend::CheckedProject,
+) -> Result<etas_host::RetentionPolicy, String> {
+    let ty = checked
+        .types
+        .known_std_types
+        .runtime_type(etas_std::RuntimeTypeRole::RetentionPolicy)
+        .ok_or("missing checked RetentionPolicy identity")?;
+    let (name, fields) = crate::value::enum_value::payload(value, ty, checked)?;
+    match (name, fields) {
+        ("Forever", []) => Ok(etas_host::RetentionPolicy::Forever),
+        ("Days", [count]) => u64::try_from(count_from_value(count)?)
+            .map(etas_host::RetentionPolicy::Days)
+            .map_err(|_| "retention days exceed host range".into()),
+        _ => Err("invalid checked RetentionPolicy constructor".into()),
     }
 }
 
-fn usize_from_value(value: &InterpValue) -> Option<usize> {
-    u64_from_value(value).and_then(|value| usize::try_from(value).ok())
-}
-
-fn u64_from_value(value: &InterpValue) -> Option<u64> {
+fn count_from_value(value: &InterpValue) -> Result<usize, String> {
     match value {
-        InterpValue::Number(value) => value.as_u64(),
-        _ => None,
+        InterpValue::Number(value) if value.primitive() == etas_types::PrimitiveType::USize => {
+            value
+                .as_u64()
+                .and_then(|value| usize::try_from(value).ok())
+                .ok_or_else(|| "session policy count exceeds target usize".into())
+        }
+        _ => Err("session policy count must be checked usize".into()),
     }
 }

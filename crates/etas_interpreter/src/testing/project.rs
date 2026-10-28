@@ -9,6 +9,29 @@ pub(crate) fn checked_project(text: &str) -> CheckedProject {
     checked_project_sources(vec![(SourceId(0), "src/app/main.es", text)])
 }
 
+pub(super) fn std_value(
+    checked: &CheckedProject,
+    role: etas_std::RuntimeTypeRole,
+    payload: crate::value::InterpValue,
+) -> crate::value::InterpValue {
+    crate::value::InterpValue::Nominal {
+        ty: checked
+            .types
+            .known_std_types
+            .runtime_type(role)
+            .expect("checked std identity"),
+        value: payload.into(),
+    }
+}
+
+pub(super) fn session_id(checked: &CheckedProject, id: &str) -> crate::value::InterpValue {
+    std_value(
+        checked,
+        etas_std::RuntimeTypeRole::SessionId,
+        crate::value::InterpValue::String(id.into()),
+    )
+}
+
 pub(super) fn checked_project_sources(sources: Vec<(SourceId, &str, &str)>) -> CheckedProject {
     checked_project_sources_with_environment(sources, ProjectEnvironmentInput::default())
 }

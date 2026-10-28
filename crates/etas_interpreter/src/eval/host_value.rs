@@ -14,6 +14,11 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
         ),
         InterpValue::Unit => "unit".to_owned(),
         InterpValue::Schema(ty) => format!("schema:{}", ty.0),
+        InterpValue::StdConstant(value) => format!(
+            "std-constant:{}:{}",
+            value.ty().0,
+            value.role().value_name()
+        ),
         InterpValue::Bool(value) => format!("bool:{value}"),
         InterpValue::Number(value) => format!(
             "number:{}:{}",
@@ -505,11 +510,21 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                 value: crate::value::SharedValue::new(value),
             })
         }
-        Type::Enum(_) => super::host_enum::decode(value, expected, &[], store, substitutions),
+        Type::Enum(_) => {
+            super::host_enum::decode(value, expected, expected, &[], store, substitutions)
+        }
         Type::Applied { constructor, args }
             if matches!(store.get(TypeId(constructor.0)), Some(Type::Enum(_))) =>
         {
-            super::host_enum::decode(value, TypeId(constructor.0), args, store, substitutions)
+            let concrete = substitutions.concrete_type(expected, store)?;
+            super::host_enum::decode(
+                value,
+                concrete,
+                TypeId(constructor.0),
+                args,
+                store,
+                substitutions,
+            )
         }
         Type::Applied { constructor, args } => {
             let concrete_type = substitutions.concrete_type(expected, store)?;

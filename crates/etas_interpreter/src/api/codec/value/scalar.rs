@@ -14,6 +14,7 @@ pub(super) enum ScalarValue {
     Json(HostJsonSupportValue),
     Prompt(PromptValue),
     Schema(TypeId),
+    StdConstant(crate::value::StdConstantValue),
     Provenance(ProvenanceValue),
     ModelResponse(ModelResponseValue),
     Command {
@@ -66,6 +67,19 @@ pub(super) fn decode(
             required_obj(value, "value")?,
         )?)),
         "type_schema" => Ok(ScalarValue::Schema(TypeId(required_u32(value, "ty")?))),
+        "std_constant" => {
+            reject_unknown_fields(value, &["kind", "role", "ty"], "standard constant")?;
+            let role =
+                serde::Deserialize::deserialize(required_obj(value, "role")?).map_err(|error| {
+                    InterpreterCodecError::new(format!("invalid standard constant role: {error}"))
+                })?;
+            Ok(ScalarValue::StdConstant(
+                crate::value::StdConstantValue::from_parts(
+                    role,
+                    TypeId(required_u32(value, "ty")?),
+                ),
+            ))
+        }
         "prompt" => Ok(ScalarValue::Prompt(
             required_array(value, "messages")?
                 .iter()
@@ -188,6 +202,7 @@ impl From<ScalarValue> for InterpValue {
             ScalarValue::Json(value) => Self::Json(value),
             ScalarValue::Prompt(value) => Self::Prompt(value),
             ScalarValue::Schema(ty) => Self::Schema(ty),
+            ScalarValue::StdConstant(value) => Self::StdConstant(value),
             ScalarValue::Provenance(value) => Self::Provenance(value),
             ScalarValue::ModelResponse(value) => Self::ModelResponse(value),
             ScalarValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value),
@@ -254,6 +269,7 @@ impl From<ScalarValue> for crate::orchestration::ValueSnapshot {
             ScalarValue::Json(value) => Self::Json(value),
             ScalarValue::Prompt(value) => Self::Prompt(value),
             ScalarValue::Schema(ty) => Self::Schema(ty),
+            ScalarValue::StdConstant(value) => Self::StdConstant(value),
             ScalarValue::Provenance(value) => Self::Provenance(value),
             ScalarValue::ModelResponse(value) => Self::ModelResponse(value),
             ScalarValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value),

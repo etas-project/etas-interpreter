@@ -61,7 +61,20 @@ impl CodeMetadataValue {
         ty: TypeId,
         payload: CodeMetadataPayload,
     ) -> Result<Self, String> {
-        let expected = match &payload {
+        Self::validate_payload(known, ty, &payload)?;
+        Ok(Self(Arc::new(MetadataData { ty, payload })))
+    }
+
+    pub(crate) fn validate_role(&self, known: &KnownCodeTypes) -> Result<(), String> {
+        Self::validate_payload(known, self.ty(), self.payload())
+    }
+
+    fn validate_payload(
+        known: &KnownCodeTypes,
+        ty: TypeId,
+        payload: &CodeMetadataPayload,
+    ) -> Result<(), String> {
+        let expected = match payload {
             CodeMetadataPayload::Agent(identity) => {
                 if identity.kind() != etas_code::DefinitionKind::Agent {
                     return Err("AgentId requires a checked nominal agent identity".into());
@@ -113,7 +126,7 @@ impl CodeMetadataValue {
         if expected != Some(ty) {
             return Err("compiler metadata differs from its checked standard type role".into());
         }
-        Ok(Self(Arc::new(MetadataData { ty, payload })))
+        Ok(())
     }
     pub fn ty(&self) -> TypeId {
         self.0.ty

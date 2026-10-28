@@ -341,7 +341,7 @@ async fn sqlite_append_resume_reuses_original_receipt_and_does_not_append_again(
             EntryPoint {
                 item: checked.entry.unwrap(),
             },
-            vec![InterpValue::String("receipt-session".into())],
+            vec![session_id(&checked, "receipt-session")],
             &host,
             RunOptions::default(),
         )
@@ -453,7 +453,7 @@ async fn lost_acknowledgement(resolve: bool) {
             EntryPoint {
                 item: checked.entry.unwrap(),
             },
-            vec![InterpValue::String("unknown-session".into())],
+            vec![session_id(&checked, "unknown-session")],
             &host,
             RunOptions::default(),
         )

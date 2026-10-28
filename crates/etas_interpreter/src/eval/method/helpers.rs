@@ -1,50 +1,5 @@
 use super::*;
 
-pub(in crate::eval) fn session_config_from_value(
-    value: &InterpValue,
-) -> Option<crate::value::SessionConfigValue> {
-    match value {
-        InterpValue::Variant { name, fields }
-            if name == "SessionConfig.continue_or_new" && fields.len() == 1 =>
-        {
-            let key = stable_interp_key(&fields[0])?;
-            Some(crate::value::SessionConfigValue {
-                id: format!("continue_or_new:{key}"),
-                context: None,
-                retention: None,
-            })
-        }
-        InterpValue::Nominal { value, .. } => session_config_from_value(value),
-        InterpValue::Record(fields) => {
-            let snapshot = fields.borrow();
-            if snapshot
-                .iter()
-                .any(|(field, _)| !matches!(field.as_str(), "id" | "context" | "retention"))
-            {
-                return None;
-            }
-            let id = snapshot.iter().find_map(|(field, value)| {
-                (field == "id").then(|| match value {
-                    InterpValue::String(value) => Some(value.to_string()),
-                    _ => None,
-                })?
-            })?;
-            Some(crate::value::SessionConfigValue {
-                id,
-                context: snapshot
-                    .iter()
-                    .find(|(field, _)| field == "context")
-                    .map(|(_, value)| Box::new(value.clone())),
-                retention: snapshot
-                    .iter()
-                    .find(|(field, _)| field == "retention")
-                    .map(|(_, value)| Box::new(value.clone())),
-            })
-        }
-        _ => None,
-    }
-}
-
 pub(super) fn abort_message_method(span: Span, message: &'static str) -> ControlSignal {
     ControlSignal::invalid_arguments(message.to_owned(), span)
 }
