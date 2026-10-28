@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 mod crypto;
 mod iteration;
 mod scope;
+mod text_reassignment;
 
 struct PreparedExecution {
     checked: etas_frontend::CheckedProject,

@@ -5,6 +5,109 @@ use crate::api::codec::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn text_reassignment_keeps_old_values_across_host_error_handler_and_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+effect Append { action suffix() -> string; }
+type Row = { text: string }
+flow main(input: Array<i32>, expected: string) -> bool {
+    var text = "";
+    for _ in input limit Iterations(128) { text = text + "中😀"; }
+    let old = text;
+    var rows = [Row { text = text }];
+    let before = rows;
+    handle {
+        text = text + perform Append.suffix();
+    } with {
+        Append.suffix() => {
+            println("suffix");
+            checkpoint("before-commit");
+            if text != expected { abort("old binding lost during RHS evaluation"); }
+            text = "handler changed the slot after the left operand was read";
+            resume "!";
+        }
+    };
+    if text != expected + "!" { return false; }
+    let missing: Array<string> = [];
+    handle { text = text + missing[1]; } with {
+        Error<IndexError>.raise(_) => { finish (); }
+    };
+    rows[0].text = rows[0].text + "nested";
+    return text == expected + "!" && old == expected
+        && before[0].text == expected && rows[0].text == expected + "nested";
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![
+                InterpValue::Array(
+                    (0..64)
+                        .map(|_| InterpValue::i32(0))
+                        .collect::<Vec<_>>()
+                        .into(),
+                ),
+                InterpValue::String("中😀".repeat(64).into()),
+            ],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.stdout_text(), "suffix\n");
+    assert_eq!(result.checkpoints.len(), 1);
+    let saved = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&[], "main", saved).unwrap();
+    let bytes =
+        checkpoint_file_to_bytes(artifact.clone(), CheckpointFileLimits::default()).unwrap();
+    let decoded = checkpoint_file_from_bytes(&bytes, CheckpointFileLimits::default()).unwrap();
+    let restored = checkpoint_from_json(&decoded, &checked).unwrap();
+    let invocation = Interpreter.create_resume(&checked, &restored, &host, RunOptions::default());
+    invocation
+        .control()
+        .stop(etas_host::execution::CancellationReason::Requested)
+        .unwrap();
+    assert!(matches!(
+        invocation.execute().await.unwrap().outcome,
+        crate::api::RunOutcome::Cancelled(_)
+    ));
+    for checkpoint in [saved, &restored] {
+        let resumed_host = FakeHost::new(availability(&[
+            HostRequirementKind::Console,
+            HostRequirementKind::Checkpoint,
+        ]));
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, checkpoint, &resumed_host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+        assert_eq!(
+            resumed_host.stdout_text(),
+            "",
+            "do not repeat the completed host boundary"
+        );
+        assert_eq!(
+            checkpoint_artifact_json(&[], "main", checkpoint).unwrap(),
+            artifact
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn borrowed_join_preserves_suspended_argument_order_and_input_aliases() {
     let checked = checked_project(
         r#"
