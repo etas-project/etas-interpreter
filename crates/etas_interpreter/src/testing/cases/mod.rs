@@ -16,6 +16,7 @@ mod compiler_definitions;
 mod compiler_syntax;
 mod container_limits;
 mod conversation;
+mod entry_validation;
 mod generic_calls;
 mod handler;
 mod handler_completion;
