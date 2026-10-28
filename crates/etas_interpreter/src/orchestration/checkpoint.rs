@@ -359,8 +359,8 @@ pub(crate) enum ValueSnapshot {
     },
     CommandResult {
         exit_code: i32,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
+        stdout: crate::value::BytesValue,
+        stderr: crate::value::BytesValue,
     },
     Tuple(SnapshotChildren<ValueSnapshot>),
     Array(SnapshotChildren<ValueSnapshot>),

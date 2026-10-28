@@ -21,6 +21,49 @@ mod action;
 mod code;
 
 #[test]
+fn native_command_results_preserve_checked_identity_and_output_storage_across_revisions() {
+    let (prepared, scope, ty) = prepared("import std.host.command.CommandResult;", "CommandResult");
+    let stdout = crate::value::BytesValue::from(vec![0, 128, 255]);
+    let stderr = crate::value::BytesValue::from(vec![255; 1024 * 1024]);
+    let value = InterpValue::CommandResult {
+        exit_code: 9,
+        stdout: stdout.clone(),
+        stderr: stderr.clone(),
+    };
+    let result = roundtrip(&prepared, &scope, ty, value.clone());
+    assert_eq!(result, value);
+    let InterpValue::CommandResult {
+        stdout: out,
+        stderr: err,
+        ..
+    } = result
+    else {
+        panic!("native result")
+    };
+    assert_eq!(out.as_ptr(), stdout.as_ptr());
+    assert_eq!(err.as_ptr(), stderr.as_ptr());
+
+    let bridge = prepared.type_bridge();
+    let primitive = bridge
+        .original_program()
+        .type_store
+        .iter()
+        .find_map(|(ty, data)| {
+            matches!(
+                data,
+                etas_types::Type::Primitive(etas_types::PrimitiveType::I32)
+            )
+            .then_some(ty)
+        })
+        .unwrap();
+    assert!(
+        bridge
+            .value_to_candidate(bridge.original_program(), &scope, primitive, value)
+            .is_err()
+    );
+}
+
+#[test]
 fn generic_secret_handles_preserve_their_checked_key_identity_across_revisions() {
     let (prepared, scope, ty) = prepared(
         "import std.secret.SecretValue; type Key;",

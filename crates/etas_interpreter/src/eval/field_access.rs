@@ -171,6 +171,31 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
         match base {
+            InterpValue::CommandResult {
+                exit_code,
+                stdout,
+                stderr,
+            } => {
+                let projection = self.plan.records.native_field(site).ok_or_else(|| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        "command result field has no checked canonical runtime projection",
+                    )
+                })?;
+                if projection.name != field {
+                    return Err(ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        "native field name differs from its checked runtime projection",
+                    ));
+                }
+                Ok(match projection.role {
+                    etas_std::RuntimeFieldRole::CommandExitCode => InterpValue::i32(exit_code),
+                    etas_std::RuntimeFieldRole::CommandStdout => InterpValue::Bytes(stdout),
+                    etas_std::RuntimeFieldRole::CommandStderr => InterpValue::Bytes(stderr),
+                })
+            }
             InterpValue::AgentDefinition(definition) if field != "body" => {
                 let output = self.code_definition_field_type(
                     site,

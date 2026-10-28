@@ -640,8 +640,8 @@ flow main() -> CommandResult ![Command.run<DefaultCommandSandbox>]
         result.value().cloned(),
         Some(value::InterpValue::CommandResult {
             exit_code: 7,
-            stdout: b"done".to_vec(),
-            stderr: b"warn".to_vec(),
+            stdout: b"done".to_vec().into(),
+            stderr: b"warn".to_vec().into(),
         })
     );
     assert_eq!(host.command_call_count(), 1);
