@@ -43,6 +43,35 @@ fn variant(name: &str, fields: Vec<HostValue>) -> HostValue {
     }
 }
 
+fn payload_type(
+    checked: &etas_frontend::CheckedProject,
+    ty: etas_types::TypeId,
+    variant: &str,
+    field: usize,
+) -> etas_types::TypeId {
+    let (constructor, args) = match checked.type_store.get(ty).unwrap() {
+        etas_types::Type::Applied { constructor, args } => {
+            (etas_types::TypeId(constructor.0), args.as_slice())
+        }
+        etas_types::Type::Enum(_) => (ty, &[][..]),
+        other => panic!("expected checked enum, received {other:?}"),
+    };
+    let layout = &checked.types.enum_layouts[&constructor];
+    let bindings = layout
+        .type_params
+        .iter()
+        .cloned()
+        .zip(args.iter().copied())
+        .collect();
+    let field = layout
+        .variants
+        .iter()
+        .find(|item| item.name == variant)
+        .unwrap()
+        .fields[field];
+    etas_types::substitute_named_params_in_store(&checked.type_store, field, &bindings).unwrap()
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn real_memory_receipts_decode_through_checked_generic_enum_layouts() {
     check_memory_receipts(&InMemoryMemoryClient::new()).await;
@@ -100,7 +129,25 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
     let found = memory_write_result_value(client.write(query).await.unwrap().result.unwrap());
     let (checked, ty) =
         project("ReconcileResult<MemoryWriteReceipt<string>, MemoryWriteRejection>");
-    host_to_checked_interp_value(found, ty, &checked, &StorageLimits::default()).unwrap();
+    let decoded =
+        host_to_checked_interp_value(found.clone(), ty, &checked, &StorageLimits::default())
+            .unwrap();
+    assert_eq!(
+        super::super::host_value::interp_to_host_value(&decoded).unwrap(),
+        found
+    );
+    let InterpValue::Nominal { ty: owner, value } = decoded else {
+        panic!("reconcile owner");
+    };
+    assert_eq!(owner, ty);
+    let InterpValue::Variant { name, fields } = value.as_ref() else {
+        panic!("reconcile payload");
+    };
+    assert_eq!(name, "Found");
+    let InterpValue::Nominal { ty: outcome, .. } = &fields[0] else {
+        panic!("nested outcome owner");
+    };
+    assert_eq!(*outcome, payload_type(&checked, ty, "Found", 0));
     let deletion = MemoryWriteIntent::prepare_delete(
         store(),
         HostValue::String("key".into()),
@@ -118,7 +165,12 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
     );
     let (checked, ty) = project("WriteOutcome<MemoryWriteReceipt<string>, MemoryWriteRejection>");
     let deleted =
-        host_to_checked_interp_value(deletion, ty, &checked, &StorageLimits::default()).unwrap();
+        host_to_checked_interp_value(deletion.clone(), ty, &checked, &StorageLimits::default())
+            .unwrap();
+    assert_eq!(
+        super::super::host_value::interp_to_host_value(&deleted).unwrap(),
+        deletion
+    );
     let InterpValue::Nominal { ty: actual, value } = deleted else {
         panic!("outcome owner");
     };
@@ -126,9 +178,23 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
     let InterpValue::Variant { fields, .. } = value.as_ref() else {
         panic!("outcome");
     };
-    let InterpValue::Nominal { value, .. } = &fields[0] else {
+    let InterpValue::Nominal {
+        ty: receipt_type,
+        value,
+    } = &fields[0]
+    else {
         panic!("receipt");
     };
+    assert_eq!(*receipt_type, payload_type(&checked, ty, "Committed", 0));
+    let receipt = etas_types::record_fields_with_applied_params(&checked.type_store, *receipt_type)
+        .unwrap()
+        .unwrap();
+    let expected_change = receipt
+        .fields
+        .iter()
+        .find(|field| field.name == "change")
+        .unwrap()
+        .ty;
     let InterpValue::Record(fields) = &**value else {
         panic!("record");
     };
@@ -141,18 +207,26 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
     else {
         panic!("change owner");
     };
+    assert_eq!(*change_type, expected_change);
     assert!(
-        matches!(checked.type_store.get(*change_type), Some(etas_types::Type::Applied { constructor, .. }) if matches!(checked.type_store.get(etas_types::TypeId(constructor.0)), Some(etas_types::Type::Enum(declaration)) if declaration.name == "std.memory.MemoryChange"))
+        matches!(checked.type_store.get(expected_change), Some(etas_types::Type::Enum(declaration)) if declaration.name == "std.memory.MemoryWriteChange")
     );
     let InterpValue::Variant { name, fields } = value.as_ref() else {
         panic!("change");
     };
     assert_eq!(name, "Deleted");
-    let InterpValue::Nominal { ty, .. } = &fields[0] else {
+    let InterpValue::Nominal {
+        ty: tombstone_type, ..
+    } = &fields[0]
+    else {
         panic!("tombstone");
     };
+    assert_eq!(
+        *tombstone_type,
+        payload_type(&checked, expected_change, "Deleted", 0)
+    );
     assert!(
-        matches!(checked.type_store.get(*ty), Some(etas_types::Type::Nominal(nominal)) if nominal.name == "std.memory.MemoryTombstone")
+        matches!(checked.type_store.get(*tombstone_type), Some(etas_types::Type::Nominal(nominal)) if nominal.name == "std.memory.MemoryTombstone")
     );
 }
 

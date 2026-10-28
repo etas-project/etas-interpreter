@@ -52,6 +52,7 @@ mod session_history;
 mod session_publication;
 mod sets;
 mod shared_adt;
+mod source_reexports;
 mod std_callable_values;
 mod std_values;
 mod storage_outcomes;

@@ -1,6 +1,123 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn checked_entry_accepts_source_built_nonuniform_recursion_and_preserves_checkpoint_types() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+enum Growing<T> { Leaf(T), Next(Growing<List<T>>) }
+flow main(value: Option<Growing<i32>>) -> Option<Growing<i32>> {
+    let result: Growing<i32> = match value {
+        None => {
+            let items: List<i32> = [7;];
+            let inner: Growing<List<i32>> = Growing.Leaf(items);
+            Growing.Next(inner)
+        },
+        Some(existing) => existing,
+    };
+    checkpoint("nonuniform argument");
+    return Some(result);
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let built = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![InterpValue::OptionNone],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(built.diagnostics.is_empty(), "{:?}", built.diagnostics);
+    let value = built.value().unwrap().clone();
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![value.clone()],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&value));
+    let artifact = crate::api::codec::checkpoint_artifact_json(
+        &[],
+        "main",
+        result.checkpoints.first().unwrap(),
+    )
+    .unwrap();
+    let saved = crate::api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &saved, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+
+    let InterpValue::OptionSome(wrapped) = &value else {
+        panic!("constructed optional value");
+    };
+    let InterpValue::Nominal {
+        ty: outer,
+        value: inner,
+    } = wrapped.as_ref()
+    else {
+        panic!("outer enum identity");
+    };
+    let InterpValue::Variant { name, fields } = inner.as_ref() else {
+        panic!("outer variant");
+    };
+    assert_eq!(name, "Next");
+    let InterpValue::Nominal { value: payload, .. } = &fields[0] else {
+        panic!("inner enum identity");
+    };
+    let invalid = InterpValue::OptionSome(
+        InterpValue::Nominal {
+            ty: *outer,
+            value: InterpValue::Variant {
+                name: name.clone(),
+                fields: vec![InterpValue::Nominal {
+                    ty: *outer,
+                    value: payload.clone(),
+                }]
+                .into(),
+            }
+            .into(),
+        }
+        .into(),
+    );
+    let rejected = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![invalid],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(rejected.value().is_none());
+    assert!(
+        rejected.events.is_empty(),
+        "invalid identity must not execute HIR"
+    );
+    assert!(rejected.diagnostics.iter().any(|diagnostic| diagnostic.code
+        == DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn checked_entry_enum_results_preserve_the_constructor_owner_identity() {
     let checked = checked_project(
         "module app.main; enum First { Same(i32), } enum Second { Same(i32), } flow main() -> First { return First.Same(7); }",

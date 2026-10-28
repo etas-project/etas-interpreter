@@ -1,6 +1,73 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn chained_message_constructors_and_checked_casts_preserve_option_results_after_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.message.Message;
+import std.crypto.sha256;
+import std.runtime.checkpoint;
+flow main(raw: bytes) -> (bytes, bytes, bool, bool) {
+    let original = Message.new(raw).cast<bytes>();
+    let hashed = Message.new(sha256(raw)).cast<bytes>();
+    let rejected = Message.new("not an integer").cast<i32>();
+    checkpoint("cast-chain");
+    return (
+        match original { Some(message) => message.body, None => raw },
+        match hashed { Some(message) => message.body, None => raw },
+        match rejected { None => true, Some(_) => false },
+        match original { Some(_) => true, None => false },
+    );
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![InterpValue::Bytes(b"abc".to_vec().into())],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let expected = InterpValue::Tuple(
+        vec![
+            InterpValue::Bytes(b"abc".to_vec().into()),
+            InterpValue::Bytes(
+                vec![
+                    0xba, 0x78, 0x16, 0xbf, 0x8f, 0x01, 0xcf, 0xea, 0x41, 0x41, 0x40, 0xde, 0x5d,
+                    0xae, 0x22, 0x23, 0xb0, 0x03, 0x61, 0xa3, 0x96, 0x17, 0x7a, 0x9c, 0xb4, 0x10,
+                    0xff, 0x61, 0xf2, 0x00, 0x15, 0xad,
+                ]
+                .into(),
+            ),
+            InterpValue::Bool(true),
+            InterpValue::Bool(true),
+        ]
+        .into(),
+    );
+    assert_eq!(result.value(), Some(&expected));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let saved = api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &saved, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&expected));
+    assert!(host.stdout_text().is_empty());
+    assert_eq!(host.command_call_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn message_payload_aliases_preserve_value_semantics_across_checkpoint_resume() {
     let checked = checked_project(
         r#"
