@@ -355,6 +355,13 @@ impl Walk<'_> {
     }
 
     fn enum_value(&mut self, from: TypeId, to: TypeId, value: InterpValue) -> Result<(), Failure> {
+        let InterpValue::Nominal { ty, value } = value else {
+            return Err(wrong("Enum", &value));
+        };
+        if ty != from {
+            return Err(Failure::WrongNominalIdentity { actual: ty });
+        }
+        let value = value.into_value();
         let InterpValue::Variant { name, fields } = value else {
             return Err(wrong("Enum", &value));
         };
@@ -371,7 +378,7 @@ impl Walk<'_> {
             .zip(fields.into_values())
             .map(|((a, b), value)| (*a, *b, value))
             .collect();
-        self.children(from, to, Build::Variant(name), children);
+        self.children(from, to, Build::Enum { ty: to, name }, children);
         Ok(())
     }
 }

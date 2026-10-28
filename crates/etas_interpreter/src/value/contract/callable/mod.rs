@@ -11,7 +11,6 @@ use etas_types::{EffectRowRef, FlowType, PrimitiveType, Type, TypeId};
 pub(super) enum Expected {
     Value(TypeId),
     Comparison(TypeId),
-    Predicate(TypeId),
 }
 
 #[derive(Clone)]
@@ -47,7 +46,7 @@ pub(super) fn validate(
         _ => None,
     };
     let allowed = match expected {
-        Expected::Comparison(_) | Expected::Predicate(_) => Some(EffectRowRef {
+        Expected::Comparison(_) => Some(EffectRowRef {
             effects: Vec::new(),
             tail: None,
         }),
@@ -166,16 +165,6 @@ pub(super) fn validate(
                         && matches!(
                             checked.type_store.get(signature.output),
                             Some(Type::Primitive(PrimitiveType::I32))
-                        )
-                })
-        }
-        Expected::Predicate(input) => {
-            actual.component.is_none()
-                && actual.signature.as_ref().is_some_and(|signature| {
-                    signature.input == [input]
-                        && matches!(
-                            checked.type_store.get(signature.output),
-                            Some(Type::Primitive(PrimitiveType::Bool))
                         )
                 })
         }

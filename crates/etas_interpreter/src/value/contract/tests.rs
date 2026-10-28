@@ -79,6 +79,67 @@ fn ingress_contract_preserves_nominal_record_identity_and_field_shape() {
 }
 
 #[test]
+fn ingress_contract_preserves_memory_query_type_evidence() {
+    let checked =
+        checked("module app.main; flow main(value: MemorySelection<string>) -> unit { return; }");
+    let string = checked
+        .type_store
+        .iter()
+        .find_map(|(id, ty)| {
+            matches!(
+                ty,
+                etas_types::Type::Primitive(etas_types::PrimitiveType::String)
+            )
+            .then_some(id)
+        })
+        .unwrap();
+    let selection = |kind, predicate_type, predicate: Option<V>| V::MemorySelection {
+        region_stable_id: "project".into(),
+        path: vec!["papers".into()],
+        key_type: string,
+        value_type: string,
+        kind,
+        predicate_type,
+        predicate: predicate.map(Box::new),
+        limit: Some(2),
+    };
+    use crate::value::MemorySelectionKind as Kind;
+    for kind in [Kind::Select, Kind::Query, Kind::RelatedTo] {
+        validate_both(
+            &checked,
+            &selection(kind.clone(), Some(string), Some(V::String("paper".into()))),
+            true,
+        );
+        validate_both(
+            &checked,
+            &selection(kind.clone(), Some(string), Some(V::Bool(true))),
+            false,
+        );
+        validate_both(
+            &checked,
+            &selection(kind.clone(), None, Some(V::String("paper".into()))),
+            false,
+        );
+        validate_both(
+            &checked,
+            &selection(
+                kind.clone(),
+                Some(TypeId(u32::MAX)),
+                Some(V::String("paper".into())),
+            ),
+            false,
+        );
+        validate_both(&checked, &selection(kind, Some(string), None), false);
+    }
+    validate_both(&checked, &selection(Kind::Scan, None, None), true);
+    validate_both(
+        &checked,
+        &selection(Kind::Scan, Some(string), Some(V::String("paper".into()))),
+        false,
+    );
+}
+
+#[test]
 fn ingress_contract_checks_recursive_adts_without_recursive_type_expansion() {
     let checked = checked(
         "module app.main; enum Tree { Leaf(i32), Branch(Tree), } flow main(value: Tree) -> unit { return; }",

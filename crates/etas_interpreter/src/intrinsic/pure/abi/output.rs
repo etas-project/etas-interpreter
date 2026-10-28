@@ -112,7 +112,7 @@ fn from_builtin_representation(
                 .collect::<Result<Vec<_>, _>>()
                 .map(|values| InterpValue::Tuple(values.into()))
         }
-        AbiShape::Enum => from_builtin_enum(value, ty),
+        AbiShape::Enum(layout) => from_builtin_enum(value, ty, layout, projector),
         AbiShape::Nominal { .. } | AbiShape::Refined { .. } | AbiShape::Trust { .. } => {
             Err(AdapterError::UnsupportedValue(
                 "checked result representation contains an unprojected wrapper".into(),
@@ -229,121 +229,35 @@ fn from_builtin_primitive(
     }
 }
 
-fn from_builtin_enum(value: BuiltinValue, ty: TypeId) -> Result<InterpValue, AdapterError> {
+fn from_builtin_enum(
+    value: BuiltinValue,
+    ty: TypeId,
+    layout: &super::enum_layout::EnumAbiLayout,
+    projector: &PureAbiProjector,
+) -> Result<InterpValue, AdapterError> {
     let BuiltinValue::Variant { name, fields } = value else {
         return Err(builtin_type_mismatch(ty, &value));
     };
-    fields
+    let types = layout.payload(&name, fields.len())?;
+    let fields = fields
         .into_iter()
-        .map(from_builtin)
-        .collect::<Result<Vec<_>, _>>()
-        .map(|fields| InterpValue::Variant {
+        .zip(types)
+        .map(|(value, ty)| from_builtin_for_type(value, *ty, projector))
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(InterpValue::Nominal {
+        ty,
+        value: InterpValue::Variant {
             name: name.into(),
             fields: fields.into(),
-        })
+        }
+        .into(),
+    })
 }
 
 fn builtin_type_mismatch(expected: TypeId, actual: &BuiltinValue) -> AdapterError {
     AdapterError::TypeMismatch {
         expected,
         actual: format!("{:?}", actual.type_tag()),
-    }
-}
-
-pub(in crate::intrinsic::pure) fn from_builtin(
-    value: BuiltinValue,
-) -> Result<InterpValue, AdapterError> {
-    match value {
-        BuiltinValue::Unit => Ok(InterpValue::Unit),
-        BuiltinValue::Bool(value) => Ok(InterpValue::Bool(value)),
-        BuiltinValue::I8(value) => Ok(InterpValue::Number(NumericValue::I8(value))),
-        BuiltinValue::I16(value) => Ok(InterpValue::Number(NumericValue::I16(value))),
-        BuiltinValue::I32(value) => Ok(InterpValue::i32(value)),
-        BuiltinValue::I64(value) => Ok(InterpValue::i64(value)),
-        BuiltinValue::I128(value) => Ok(InterpValue::Number(NumericValue::I128(value))),
-        BuiltinValue::Isize(value) => Ok(InterpValue::Number(NumericValue::ISize(
-            i64::try_from(value).map_err(|_| {
-                AdapterError::UnsupportedValue(format!("isize value {value} exceeds Etas ABI"))
-            })?,
-        ))),
-        BuiltinValue::U8(value) => Ok(InterpValue::Number(NumericValue::U8(value))),
-        BuiltinValue::U16(value) => Ok(InterpValue::Number(NumericValue::U16(value))),
-        BuiltinValue::U32(value) => Ok(InterpValue::Number(NumericValue::U32(value))),
-        BuiltinValue::U64(value) => Ok(InterpValue::Number(NumericValue::U64(value))),
-        BuiltinValue::U128(value) => Ok(InterpValue::Number(NumericValue::U128(value))),
-        BuiltinValue::Usize(value) => Ok(InterpValue::Number(NumericValue::USize(
-            u64::try_from(value).map_err(|_| {
-                AdapterError::UnsupportedValue(format!("usize value {value} exceeds Etas ABI"))
-            })?,
-        ))),
-        BuiltinValue::F32(value) => Ok(InterpValue::Number(NumericValue::F32(value.to_bits()))),
-        BuiltinValue::F64(value) => Ok(InterpValue::Number(NumericValue::F64(value.to_bits()))),
-        BuiltinValue::Char(value) => Err(AdapterError::UnsupportedValue(format!(
-            "char builtin value `{value}` has no interpreter ABI representation"
-        ))),
-        BuiltinValue::String(value) => Ok(InterpValue::String(value.into())),
-        BuiltinValue::Bytes(value) => Ok(InterpValue::Bytes(value.into())),
-        BuiltinValue::Array(values) => values
-            .into_iter()
-            .map(from_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(ArrayValue::new)
-            .map(InterpValue::Array),
-        BuiltinValue::List(values) => values
-            .into_iter()
-            .map(from_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(ListValue::new)
-            .map(InterpValue::List),
-        BuiltinValue::Slice(values) => values
-            .into_iter()
-            .map(from_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(SliceValue::new)
-            .map(InterpValue::Slice),
-        BuiltinValue::Map(entries) => entries
-            .into_iter()
-            .map(|(key, value)| Ok((from_builtin(key)?, from_builtin(value)?)))
-            .collect::<Result<Vec<_>, _>>()
-            .map(MapValue::new)
-            .map(InterpValue::Map),
-        BuiltinValue::Set(values) => values
-            .into_iter()
-            .map(from_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(SetValue::new)
-            .map(InterpValue::Set),
-        BuiltinValue::Record(fields) => fields
-            .into_iter()
-            .map(|(field, value)| Ok((field, from_builtin(value)?)))
-            .collect::<Result<Vec<_>, _>>()
-            .map(RecordValue::new)
-            .map(InterpValue::Record),
-        BuiltinValue::Range { start, end, bounds } => Ok(InterpValue::Range(RangeValue {
-            start: Box::new(from_builtin(*start)?),
-            end: Box::new(from_builtin(*end)?),
-            bounds: from_builtin_range_bounds(bounds),
-        })),
-        BuiltinValue::OptionNone => Ok(InterpValue::OptionNone),
-        BuiltinValue::OptionSome(value) => from_builtin(*value)
-            .map(crate::value::SharedValue::new)
-            .map(InterpValue::OptionSome),
-        BuiltinValue::ResultOk(value) => from_builtin(*value).map(|value| InterpValue::Variant {
-            name: "Ok".to_owned().into(),
-            fields: vec![value].into(),
-        }),
-        BuiltinValue::ResultErr(value) => from_builtin(*value).map(|value| InterpValue::Variant {
-            name: "Err".to_owned().into(),
-            fields: vec![value].into(),
-        }),
-        BuiltinValue::Variant { name, fields } => fields
-            .into_iter()
-            .map(from_builtin)
-            .collect::<Result<Vec<_>, _>>()
-            .map(|fields| InterpValue::Variant {
-                name: name.into(),
-                fields: fields.into(),
-            }),
     }
 }
 

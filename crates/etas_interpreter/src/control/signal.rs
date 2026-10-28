@@ -372,7 +372,7 @@ pub enum HostBoundaryDecode {
     PathList,
     FilesystemStat,
     TcpStream,
-    StreamRead,
+    StreamRead { result_type: etas_types::TypeId },
     TlsStream,
     SecretValue { result_type: etas_types::TypeId },
     SecretBytes { result_type: etas_types::TypeId },

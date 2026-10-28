@@ -10,7 +10,7 @@ fn checked_crypto_queries_do_not_materialize_shared_byte_inputs() {
     let mut types = TypeInterner::new();
     let bytes = types.primitive(PrimitiveType::Bytes);
     let boolean = types.primitive(PrimitiveType::Bool);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let compare = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::CRYPTO_CONSTANT_TIME_EQ),
         parameter_types: vec![bytes; 2],
@@ -58,7 +58,7 @@ fn checked_crypto_validates_wrappers_and_restores_nominal_digest() {
         wrapper: TrustWrapper::Trusted,
         inner: left,
     });
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let wrap = |ty, wrapper, value| InterpValue::Trust {
         wrapper,
         value: crate::value::SharedValue::new(InterpValue::Nominal {
@@ -122,7 +122,7 @@ fn checked_crypto_validates_wrappers_and_restores_nominal_digest() {
 fn checked_sha256_unique_input_has_only_fixed_output_allocation() {
     let mut types = TypeInterner::new();
     let bytes = types.primitive(PrimitiveType::Bytes);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::CRYPTO_SHA256),
         parameter_types: vec![bytes],

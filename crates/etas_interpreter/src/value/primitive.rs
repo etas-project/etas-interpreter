@@ -94,6 +94,7 @@ pub enum InterpValue {
         key_type: etas_types::TypeId,
         value_type: etas_types::TypeId,
         kind: MemorySelectionKind,
+        predicate_type: Option<etas_types::TypeId>,
         predicate: Option<Box<InterpValue>>,
         limit: Option<u32>,
     },

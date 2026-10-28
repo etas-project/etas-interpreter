@@ -17,7 +17,7 @@ impl SnapshotValidator<'_> {
         }
         .ok_or("checkpoint entry has no checked callable signature")?;
         if signature.params.len() != values.len() {
-            return Err("checkpoint entry has different checked argument arity".into());
+            return Err("checkpoint arguments do not match checked entry arity".into());
         }
         contract::validate(
             self,
@@ -81,12 +81,6 @@ impl Context for SnapshotValidator<'_> {
             return Err("snapshot comparator is not a snapshot callable".into());
         };
         self.key_comparator_interface(target, key, &crate::control::GenericBindings::new())
-    }
-    fn predicate(&self, target: Target<'_>, input: TypeId) -> Result<(), String> {
-        let Target::Snapshot(target) = target else {
-            return Err("snapshot predicate is not a snapshot callable".into());
-        };
-        self.predicate_interface(target, input)
     }
     fn native(&self, value: Value<'_>, expected: TypeId) -> Result<(), String> {
         match value {

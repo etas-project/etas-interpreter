@@ -268,6 +268,7 @@ enum Build {
     Tuple,
     Record(Vec<String>),
     Variant(StringValue),
+    Enum { ty: TypeId, name: StringValue },
     Some,
     Message(crate::value::MessageValue),
     Range(RangeBounds),

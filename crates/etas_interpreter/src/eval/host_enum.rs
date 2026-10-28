@@ -11,6 +11,7 @@ mod tests;
 
 pub(super) fn decode(
     value: HostValue,
+    expected: TypeId,
     constructor: TypeId,
     args: &[TypeId],
     store: &TypeStore,
@@ -47,8 +48,12 @@ pub(super) fn decode(
                 .map_err(|error| format!("enum variant `{name}` field {index}: {error}"))
         })
         .collect::<Result<Vec<_>, _>>()?;
-    Ok(InterpValue::Variant {
-        name: name.into(),
-        fields: fields.into(),
+    Ok(InterpValue::Nominal {
+        ty: expected,
+        value: InterpValue::Variant {
+            name: name.into(),
+            fields: fields.into(),
+        }
+        .into(),
     })
 }

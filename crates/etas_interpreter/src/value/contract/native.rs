@@ -178,6 +178,8 @@ pub(super) fn validate<'a>(
             path,
             key_type,
             value_type,
+            kind,
+            predicate_type,
             predicate,
             ..
         }) => {
@@ -189,8 +191,12 @@ pub(super) fn validate<'a>(
                 region_stable_id,
                 path,
             )?;
-            if let Some(predicate) = predicate {
-                selection_predicate(context, Value::Runtime(predicate), *value_type)?;
+            if let Some(seed) = selection_query(
+                kind,
+                *predicate_type,
+                predicate.as_deref().map(Value::Runtime),
+            )? {
+                pending.push(Task::Visit(seed, false));
             }
             Ok(())
         }
@@ -199,6 +205,8 @@ pub(super) fn validate<'a>(
             path,
             key_type,
             value_type,
+            kind,
+            predicate_type,
             predicate,
             ..
         }) => {
@@ -210,8 +218,12 @@ pub(super) fn validate<'a>(
                 region_stable_id,
                 path,
             )?;
-            if let Some(predicate) = predicate {
-                selection_predicate(context, Value::Snapshot(predicate), *value_type)?;
+            if let Some(seed) = selection_query(
+                kind,
+                *predicate_type,
+                predicate.as_deref().map(Value::Snapshot),
+            )? {
+                pending.push(Task::Visit(seed, false));
             }
             Ok(())
         }
@@ -278,14 +290,17 @@ fn selection(
     memory_place(region, path)
 }
 
-fn selection_predicate(
-    context: &impl Context,
-    value: Value<'_>,
-    input: TypeId,
-) -> Result<(), String> {
-    match value {
-        Value::Runtime(R::Callable(target)) => context.predicate(Target::Runtime(target), input),
-        Value::Snapshot(S::Callable(target)) => context.predicate(Target::Snapshot(target), input),
-        _ => Err("memory predicate is not callable".into()),
+pub(crate) fn selection_query<'a>(
+    kind: &crate::value::MemorySelectionKind,
+    ty: Option<TypeId>,
+    value: Option<Value<'a>>,
+) -> Result<Option<Seed<'a>>, String> {
+    match (kind, ty, value) {
+        (crate::value::MemorySelectionKind::Scan, None, None) => Ok(None),
+        (crate::value::MemorySelectionKind::Scan, _, _) => {
+            Err("memory scan carries an unexpected query".into())
+        }
+        (_, Some(ty), Some(value)) => Ok(Some(Seed::new(value, ty))),
+        _ => Err("memory query is missing its checked argument type or value".into()),
     }
 }

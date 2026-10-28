@@ -151,7 +151,7 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                         fields,
                     })
             }
-            AbiShape::Enum => into_builtin_enum(value, ty),
+            AbiShape::Enum(layout) => into_builtin_enum(value, ty, layout, projector),
             AbiShape::Refined { base } => {
                 ty = *base;
                 continue;
@@ -269,12 +269,28 @@ fn numeric_into_builtin(value: NumericValue) -> Result<BuiltinValue, AdapterErro
     })
 }
 
-fn into_builtin_enum(value: InterpValue, ty: TypeId) -> Result<BuiltinValue, AdapterError> {
+fn into_builtin_enum(
+    value: InterpValue,
+    ty: TypeId,
+    layout: &super::enum_layout::EnumAbiLayout,
+    projector: &PureAbiProjector,
+) -> Result<BuiltinValue, AdapterError> {
+    let InterpValue::Nominal { ty: actual, value } = value else {
+        return Err(type_mismatch(ty, &value));
+    };
+    if actual != ty {
+        return Err(AdapterError::NominalIdentity {
+            expected: ty,
+            actual,
+        });
+    }
+    let value = value.into_value();
     let InterpValue::Variant { name, fields } = value else {
         return Err(type_mismatch(ty, &value));
     };
+    let types = layout.payload(&name, fields.len())?;
     fields
-        .try_map_indexed(|_, value| into_builtin(value))
+        .try_map_indexed(|index, value| into_builtin_for_type(value, types[index], projector))
         .map(|fields| BuiltinValue::Variant {
             name: name.into_string(),
             fields,
@@ -288,66 +304,6 @@ pub(in crate::intrinsic::pure) fn type_mismatch(
     AdapterError::TypeMismatch {
         expected,
         actual: actual.kind_name().to_owned(),
-    }
-}
-
-pub(in crate::intrinsic::pure) fn into_builtin(
-    value: InterpValue,
-) -> Result<BuiltinValue, AdapterError> {
-    match value {
-        InterpValue::Unit => Ok(BuiltinValue::Unit),
-        InterpValue::Bool(value) => Ok(BuiltinValue::Bool(value)),
-        InterpValue::Number(value) => numeric_into_builtin(value),
-        InterpValue::String(value) => Ok(BuiltinValue::String(value.into_string())),
-        InterpValue::Bytes(value) => Ok(BuiltinValue::Bytes(value.into_vec())),
-        InterpValue::Array(values) => values.try_map_values(into_builtin).map(BuiltinValue::Array),
-        InterpValue::List(values) => values.try_map_values(into_builtin).map(BuiltinValue::List),
-        InterpValue::Slice(values) => values.try_map_values(into_builtin).map(BuiltinValue::Slice),
-        InterpValue::Map(entries) => entries
-            .try_map_values(|(key, value)| Ok((into_builtin(key)?, into_builtin(value)?)))
-            .map(BuiltinValue::Map),
-        InterpValue::Set(values) => values.try_map_values(into_builtin).map(BuiltinValue::Set),
-        InterpValue::Record(fields) => fields
-            .try_map_values(|(field, value)| Ok((field, into_builtin(value)?)))
-            .map(BuiltinValue::Record),
-        InterpValue::Range(range) => Ok(BuiltinValue::Range {
-            start: Box::new(into_builtin(*range.start)?),
-            end: Box::new(into_builtin(*range.end)?),
-            bounds: into_builtin_range_bounds(range.bounds),
-        }),
-        InterpValue::OptionNone => Ok(BuiltinValue::OptionNone),
-        InterpValue::OptionSome(value) => into_builtin(value.into_value())
-            .map(Box::new)
-            .map(BuiltinValue::OptionSome),
-        InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => {
-            into_builtin(fields.into_single().ok_or(AdapterError::Arity {
-                expected: 1,
-                actual: 0,
-            })?)
-            .map(Box::new)
-            .map(BuiltinValue::ResultOk)
-        }
-        InterpValue::Variant { name, fields } if name == "Err" && fields.len() == 1 => {
-            into_builtin(fields.into_single().ok_or(AdapterError::Arity {
-                expected: 1,
-                actual: 0,
-            })?)
-            .map(Box::new)
-            .map(BuiltinValue::ResultErr)
-        }
-        InterpValue::Variant { name, fields } => fields
-            .try_map_indexed(|_, value| into_builtin(value))
-            .map(|fields| BuiltinValue::Variant {
-                name: name.into_string(),
-                fields,
-            }),
-        InterpValue::Nominal { .. } => Err(AdapterError::UnsupportedValue(
-            "nominal values require a checked ABI projection".to_owned(),
-        )),
-        other => Err(AdapterError::UnsupportedValue(format!(
-            "{} is not supported by the checked pure ABI",
-            other.kind_name()
-        ))),
     }
 }
 

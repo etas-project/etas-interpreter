@@ -327,6 +327,7 @@ fn decode_scalar_or_support(
             value_type: etas_types::TypeId(required_u32(value, "value_type")?),
             kind: value_codec::memory_selection_kind_from_json(required_str(value, "selection")?)
                 .map_err(InterpreterCodecError::new)?,
+            predicate_type: optional_u32(value, "predicate_type")?.map(etas_types::TypeId),
             predicate: match value.get("predicate") {
                 Some(Value::Null) | None => None,
                 Some(value) => Some(Box::new(value_from_json_with_limits(limits, value)?)),

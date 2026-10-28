@@ -943,6 +943,41 @@ flow main() -> MemorySelection<string> {
     assert_eq!(first_host.memory_call_count(), 0);
     assert_eq!(first.checkpoints.len(), 2);
 
+    let artifact =
+        crate::api::codec::checkpoint_artifact_json(&[], "main", &first.checkpoints[1]).unwrap();
+    crate::api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    fn tamper_query(value: &mut serde_json::Value, mode: u8) -> usize {
+        if value["kind"] == "memory_selection" {
+            match mode {
+                0 => value["predicate"] = serde_json::json!({"kind": "bool", "value": true}),
+                1 => {
+                    value.as_object_mut().unwrap().remove("predicate_type");
+                }
+                _ => value["predicate_type"] = serde_json::json!(u32::MAX),
+            }
+            return 1;
+        }
+        match value {
+            serde_json::Value::Object(fields) => fields
+                .values_mut()
+                .map(|value| tamper_query(value, mode))
+                .sum(),
+            serde_json::Value::Array(values) => values
+                .iter_mut()
+                .map(|value| tamper_query(value, mode))
+                .sum(),
+            _ => 0,
+        }
+    }
+    for mode in 0..3 {
+        let mut malformed = artifact.clone();
+        assert!(tamper_query(&mut malformed, mode) > 0);
+        assert!(
+            crate::api::codec::checkpoint_from_json(&malformed, &checked).is_err(),
+            "invalid query evidence restored: {mode}"
+        );
+    }
+
     let mut replay_checkpoint = first.checkpoints[0].clone();
     replay_checkpoint.completed_host_boundaries =
         first.checkpoints[1].completed_host_boundaries.clone();
@@ -962,21 +997,36 @@ flow main() -> MemorySelection<string> {
         .expect("execution lifecycle infrastructure");
 
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    let (region_stable_id, path, kind, predicate, limit) = match resumed.value().cloned() {
-        Some(value::InterpValue::MemorySelection {
-            region_stable_id,
-            path,
-            kind,
-            predicate,
-            limit,
-            ..
-        }) => (region_stable_id, path, kind, predicate, limit),
-        other => panic!("expected memory selection value, got {other:?}"),
-    };
+    let (region_stable_id, path, kind, predicate_type, predicate, limit) =
+        match resumed.value().cloned() {
+            Some(value::InterpValue::MemorySelection {
+                region_stable_id,
+                path,
+                kind,
+                predicate_type,
+                predicate,
+                limit,
+                ..
+            }) => (
+                region_stable_id,
+                path,
+                kind,
+                predicate_type,
+                predicate,
+                limit,
+            ),
+            other => panic!("expected memory selection value, got {other:?}"),
+        };
     assert_eq!(region_stable_id, "project_memory");
     assert_eq!(path, vec!["Papers".to_owned()]);
     assert_eq!(kind, value::MemorySelectionKind::Query);
     assert_eq!(limit, Some(2));
+    assert!(matches!(
+        predicate_type.and_then(|ty| checked.type_store.get(ty)),
+        Some(etas_types::Type::Primitive(
+            etas_types::PrimitiveType::String
+        ))
+    ));
     assert_eq!(
         predicate.as_deref(),
         Some(&value::InterpValue::String("paper".to_owned().into()))

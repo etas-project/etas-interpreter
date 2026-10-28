@@ -21,6 +21,7 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         symbol: SymbolId,
         values: Vec<(String, InterpValue)>,
+        bindings: &crate::control::GenericBindings,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
         let missing = || {
@@ -34,68 +35,195 @@ impl<'a> EvalContext<'a> {
         let fields = layout.reorder(symbol, values).map_err(|message| {
             ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
         })?;
-        self.eval_variant_constructor(symbol, fields, span)
+        let result = self.materialized_expression_type(expr, bindings, span)?;
+        self.construct_enum_value(symbol, result, fields, span)
     }
 
     pub(super) fn eval_variant_constructor(
         &self,
         symbol: SymbolId,
         fields: Vec<InterpValue>,
+        bindings: &crate::control::GenericBindings,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
-        if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
-            if fields.len() != constructor.arity {
-                return Err(ExecutionFault::new(
-                    AnalysisDiagnosticCode::InvalidArguments,
-                    span,
-                    format!(
-                        "enum constructor `{}` expects {} arguments, got {}",
-                        constructor.name,
-                        constructor.arity,
-                        fields.len()
-                    ),
-                ));
-            }
-            return Ok(InterpValue::Variant {
-                name: constructor.name.clone().into(),
-                fields: fields.into(),
-            });
-        }
-        let Some(symbol_data) = self.checked.symbols.get(symbol) else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "enum variant symbol is missing from checked symbol table",
-            ));
-        };
-        let Some((_, _, variant)) = self
-            .checked
-            .types
-            .enum_constructor(&self.checked.type_store, symbol_data)
+        let Some(etas_types::SymbolTypeFact::Flow { signature }) =
+            self.checked.types.symbol_types.get(&symbol)
         else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "enum variant constructor has no checked layout",
-            ));
+            return Err(
+                self.enum_fact_fault(span, "enum constructor has no checked callable signature")
+            );
         };
-        let expected_arity = variant.fields.len();
-        if fields.len() != expected_arity {
+        let result = self.materialized_type(signature.output, bindings, span)?;
+        self.construct_enum_value(symbol, result, fields, span)
+    }
+
+    fn construct_enum_value(
+        &self,
+        symbol: SymbolId,
+        result: etas_types::TypeId,
+        fields: Vec<InterpValue>,
+        span: Span,
+    ) -> Result<InterpValue, ExecutionFault> {
+        let (owner, name, arity) = self.enum_descriptor(symbol, span)?;
+        if self.enum_owner(result) != Some(owner) {
+            return Err(self.enum_fact_fault(
+                span,
+                "enum constructor result differs from its checked owner identity",
+            ));
+        }
+        if fields.len() != arity {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
                 format!(
-                    "variant constructor `{}` expects {} arguments, got {}",
-                    symbol_data.name,
-                    expected_arity,
+                    "enum constructor `{name}` expects {arity} arguments, got {}",
                     fields.len()
                 ),
             ));
         }
-        Ok(InterpValue::Variant {
-            name: symbol_data.name.clone().into(),
-            fields: fields.into(),
+        Ok(InterpValue::Nominal {
+            ty: result,
+            value: InterpValue::Variant {
+                name: name.into(),
+                fields: fields.into(),
+            }
+            .into(),
         })
+    }
+
+    fn enum_descriptor(
+        &self,
+        symbol: SymbolId,
+        span: Span,
+    ) -> Result<(etas_types::TypeId, String, usize), ExecutionFault> {
+        if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
+            let Some(etas_types::SymbolTypeFact::Flow { signature }) =
+                self.checked.types.symbol_types.get(&symbol)
+            else {
+                return Err(self
+                    .enum_fact_fault(span, "standard enum constructor has no checked signature"));
+            };
+            let owner = self.enum_owner(signature.output).ok_or_else(|| {
+                self.enum_fact_fault(span, "standard enum constructor has no checked owner")
+            })?;
+            return Ok((owner, constructor.name.clone(), constructor.arity));
+        }
+        let Some(symbol_data) = self.checked.symbols.get(symbol) else {
+            return Err(self.enum_fact_fault(
+                span,
+                "enum variant symbol is missing from checked symbol table",
+            ));
+        };
+        let Some((owner, _, variant)) = self
+            .checked
+            .types
+            .enum_constructor(&self.checked.type_store, symbol_data)
+        else {
+            return Err(
+                self.enum_fact_fault(span, "enum variant constructor has no checked layout")
+            );
+        };
+        Ok((owner, variant.name.clone(), variant.fields.len()))
+    }
+
+    fn enum_owner(&self, ty: etas_types::TypeId) -> Option<etas_types::TypeId> {
+        match self.checked.type_store.get(ty)? {
+            etas_types::Type::Enum(_) => Some(ty),
+            etas_types::Type::Applied { constructor, .. }
+                if matches!(
+                    self.checked
+                        .type_store
+                        .get(etas_types::TypeId(constructor.0)),
+                    Some(etas_types::Type::Enum(_))
+                ) =>
+            {
+                Some(etas_types::TypeId(constructor.0))
+            }
+            _ => None,
+        }
+    }
+
+    fn enum_fact_fault(&self, span: Span, message: impl Into<String>) -> ExecutionFault {
+        ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+    }
+
+    pub(super) fn eval_enum_reference(
+        &self,
+        expr: HirExprId,
+        symbol: SymbolId,
+        frame: &Frame,
+        span: Span,
+    ) -> Result<Option<InterpValue>, ExecutionFault> {
+        if !(self.plan.dispatch.enum_constructor(symbol).is_some()
+            || self
+                .checked
+                .symbols
+                .get(symbol)
+                .is_some_and(|symbol| symbol.kind == SymbolKind::EnumVariant))
+            || frame.get(symbol).is_some()
+        {
+            return Ok(None);
+        }
+        let (owner, _, _) = self.enum_descriptor(symbol, span)?;
+        let ty = *self
+            .checked
+            .types
+            .expr_types
+            .get(&expr)
+            .ok_or_else(|| self.enum_fact_fault(span, "enum reference has no checked type"))?;
+        let output = match self.checked.type_store.get(ty) {
+            Some(etas_types::Type::Function(signature)) => {
+                self.materialized_type(signature.output, frame.generic_bindings(), span)?
+            }
+            _ => {
+                return self
+                    .construct_enum_value(
+                        symbol,
+                        self.materialized_type(ty, frame.generic_bindings(), span)?,
+                        Vec::new(),
+                        span,
+                    )
+                    .map(Some);
+            }
+        };
+        if self.enum_owner(output) != Some(owner) {
+            return Err(self.enum_fact_fault(
+                span,
+                "enum callable reference has a different checked owner",
+            ));
+        }
+        let layout = self.checked.types.enum_layouts.get(&owner).ok_or_else(|| {
+            self.enum_fact_fault(
+                span,
+                "enum callable reference has no checked generic layout",
+            )
+        })?;
+        let args = match self.checked.type_store.get(output) {
+            Some(etas_types::Type::Applied { args, .. }) => args.as_slice(),
+            _ => &[],
+        };
+        if args.len() != layout.type_params.len() {
+            return Err(self.enum_fact_fault(
+                span,
+                "enum callable reference has an inconsistent generic arity",
+            ));
+        }
+        let target = CallTarget::EnumVariant(symbol);
+        let target = if args.is_empty() {
+            target
+        } else {
+            CallTarget::Specialized {
+                target: target.into(),
+                type_bindings: layout
+                    .type_params
+                    .iter()
+                    .cloned()
+                    .zip(args.iter().copied())
+                    .collect(),
+                effect_row_bindings: Vec::new(),
+            }
+        };
+        Ok(Some(InterpValue::Callable(target)))
     }
 
     pub(super) fn resume_variant_args(
@@ -146,7 +274,12 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }
-        match self.eval_variant_constructor(variant_symbol, evaluated_args, span) {
+        match self.eval_variant_constructor(
+            variant_symbol,
+            evaluated_args,
+            frame.generic_bindings(),
+            span,
+        ) {
             Ok(value) => ControlSignal::Value(value),
             Err(fault) => ControlSignal::Fault(Box::new(fault)),
         }

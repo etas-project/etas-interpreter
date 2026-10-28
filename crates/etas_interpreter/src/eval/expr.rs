@@ -20,6 +20,13 @@ impl<'a> EvalContext<'a> {
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),
             },
             HirExpr::Path(path) => {
+                if let ResolveResult::Resolved(symbol) = path.resolution {
+                    match self.eval_enum_reference(expr, symbol, frame, path.span) {
+                        Ok(Some(value)) => return ControlSignal::Value(value),
+                        Ok(None) => {}
+                        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                    }
+                }
                 let signal = match self.eval_std_callable_value(expr, frame, path.span) {
                     Ok(Some(value)) => ControlSignal::Value(value),
                     Ok(None) => self.eval_path_signal(path.resolution.clone(), path.span, frame),

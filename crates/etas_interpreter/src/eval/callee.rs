@@ -134,6 +134,9 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<CallTarget, crate::control::ExecutionFault> {
         let target = match target {
+            CallTarget::NominalConstructor(ty) => CallTarget::NominalConstructor(
+                self.materialized_type(ty, frame.generic_bindings(), span)?,
+            ),
             CallTarget::PureIntrinsic(call) => CallTarget::PureIntrinsic(
                 call.specialize(&self.checked.type_store, frame.generic_bindings())
                     .map_err(|message| {

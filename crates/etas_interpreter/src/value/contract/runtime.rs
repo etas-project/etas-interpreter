@@ -139,9 +139,6 @@ impl Context for RuntimeContext<'_> {
     fn comparator(&self, value: Target<'_>, key: TypeId) -> Result<(), String> {
         self.target(value, Expected::Comparison(key))
     }
-    fn predicate(&self, value: Target<'_>, input: TypeId) -> Result<(), String> {
-        self.target(value, Expected::Predicate(input))
-    }
     fn native(&self, value: Value<'_>, expected: TypeId) -> Result<(), String> {
         let known = &self.checked.types.known_std_types;
         let constructor = match self.checked.type_store.get(expected) {

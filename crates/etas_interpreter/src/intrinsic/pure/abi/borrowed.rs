@@ -56,7 +56,7 @@ pub(in crate::intrinsic::pure) fn check_payload_identity(
                 });
             }
             // Opaque nominal values may have no pure-kernel representation.
-            // A tag on a structural/enum type does not create nominal evidence.
+            // A tag on a structural type does not create nominal evidence.
             if !projector.has_nominal_identity(expected) {
                 return Err(type_mismatch(expected, value));
             }

@@ -11,7 +11,7 @@ fn checked_text_queries_borrow_shared_inputs_without_payload_materialization() {
     let string = types.primitive(PrimitiveType::String);
     let boolean = types.primitive(PrimitiveType::Bool);
     let size = types.primitive(PrimitiveType::USize);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for count in [1000, 2000, 4000] {
         let text = InterpValue::String(format!("start{}end", "中😀e\u{301}".repeat(count)).into());
         for (id, needle, result_type, expected) in [
@@ -85,7 +85,7 @@ fn borrowed_text_projection_validates_nominal_trust_and_result_identity() {
         wrapper: TrustWrapper::Trusted,
         inner: left,
     });
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::TEXT_CONTAINS),
         parameter_types: vec![trusted, string],
@@ -160,7 +160,7 @@ fn malformed_text_query_diagnostics_do_not_render_sensitive_payloads() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let size = types.primitive(PrimitiveType::USize);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::TEXT_LEN),
         parameter_types: vec![string],

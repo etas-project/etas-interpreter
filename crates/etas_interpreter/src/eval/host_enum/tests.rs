@@ -75,7 +75,11 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
         super::super::host_value::interp_to_host_value(&value).unwrap(),
         committed
     );
-    let InterpValue::Variant { name, fields } = value else {
+    let InterpValue::Nominal { ty: actual, value } = value else {
+        panic!("outcome owner");
+    };
+    assert_eq!(actual, ty);
+    let InterpValue::Variant { name, fields } = value.as_ref() else {
         panic!("outcome");
     };
     assert_eq!(name, "Committed");
@@ -96,7 +100,7 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
     let found = memory_write_result_value(client.write(query).await.unwrap().result.unwrap());
     let (checked, ty) =
         project("ReconcileResult<MemoryWriteReceipt<string>, MemoryWriteRejection>");
-    assert!(host_to_checked_interp_value(found, ty, &checked, &StorageLimits::default()).is_ok());
+    host_to_checked_interp_value(found, ty, &checked, &StorageLimits::default()).unwrap();
     let deletion = MemoryWriteIntent::prepare_delete(
         store(),
         HostValue::String("key".into()),
@@ -115,7 +119,11 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
     let (checked, ty) = project("WriteOutcome<MemoryWriteReceipt<string>, MemoryWriteRejection>");
     let deleted =
         host_to_checked_interp_value(deletion, ty, &checked, &StorageLimits::default()).unwrap();
-    let InterpValue::Variant { fields, .. } = deleted else {
+    let InterpValue::Nominal { ty: actual, value } = deleted else {
+        panic!("outcome owner");
+    };
+    assert_eq!(actual, ty);
+    let InterpValue::Variant { fields, .. } = value.as_ref() else {
         panic!("outcome");
     };
     let InterpValue::Nominal { value, .. } = &fields[0] else {
@@ -126,7 +134,17 @@ async fn check_memory_receipts(client: &impl MemoryClient<Error = HostError>) {
     };
     let fields = fields.borrow();
     let change = fields.iter().find(|(name, _)| name == "change").unwrap();
-    let InterpValue::Variant { name, fields } = &change.1 else {
+    let InterpValue::Nominal {
+        ty: change_type,
+        value,
+    } = &change.1
+    else {
+        panic!("change owner");
+    };
+    assert!(
+        matches!(checked.type_store.get(*change_type), Some(etas_types::Type::Applied { constructor, .. }) if matches!(checked.type_store.get(etas_types::TypeId(constructor.0)), Some(etas_types::Type::Enum(declaration)) if declaration.name == "std.memory.MemoryChange"))
+    );
+    let InterpValue::Variant { name, fields } = value.as_ref() else {
         panic!("change");
     };
     assert_eq!(name, "Deleted");
@@ -175,7 +193,7 @@ fn checked_enum_decode_uses_the_supplied_limits() {
         max_value_bytes: 1,
         ..limits.clone()
     };
-    assert!(host_to_checked_interp_value(value.clone(), ty, &checked, &exact).is_ok());
+    host_to_checked_interp_value(value.clone(), ty, &checked, &exact).unwrap();
     let shallow = StorageLimits {
         max_depth: 1,
         ..limits.clone()
@@ -199,10 +217,7 @@ fn checked_enum_decode_rejects_unknown_wrong_arity_wrong_fields_and_missing_layo
         "Found",
         vec![variant("Committed", vec![HostValue::String("ok".into())])],
     );
-    assert!(
-        host_to_checked_interp_value(valid.clone(), ty, &checked, &StorageLimits::default())
-            .is_ok()
-    );
+    host_to_checked_interp_value(valid.clone(), ty, &checked, &StorageLimits::default()).unwrap();
     for bad in [
         variant("Unknown", vec![]),
         variant("Found", vec![variant("Unknown", vec![])]),

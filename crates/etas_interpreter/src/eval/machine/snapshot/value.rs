@@ -131,6 +131,7 @@ impl ValueSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
             } => Self::MemorySelection {
@@ -139,6 +140,7 @@ impl ValueSnapshot {
                 key_type: *key_type,
                 value_type: *value_type,
                 kind: kind.clone(),
+                predicate_type: *predicate_type,
                 predicate: predicate
                     .as_deref()
                     .map(|value| context.value(value))
@@ -273,6 +275,7 @@ impl ValueSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
             } => InterpValue::MemorySelection {
@@ -281,6 +284,7 @@ impl ValueSnapshot {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate: predicate
                     .map(|value| value.into_value().restore_with(context))
                     .transpose()?

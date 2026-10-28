@@ -218,17 +218,26 @@ impl<'a> EvalContext<'a> {
                         ))
                     }
                 },
-                SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. } => {
-                    self.eval_variant_constructor(symbol, Vec::new(), span)
-                }
+                SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. } => self
+                    .eval_variant_constructor(
+                        symbol,
+                        Vec::new(),
+                        &crate::control::GenericBindings::new(),
+                        span,
+                    ),
                 SymbolDef::ImportAlias { path, .. } => {
                     if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
                         if constructor.arity == 0 {
-                            self.eval_variant_constructor(symbol, Vec::new(), span)
+                            self.eval_variant_constructor(
+                                symbol,
+                                Vec::new(),
+                                &crate::control::GenericBindings::new(),
+                                span,
+                            )
                         } else {
                             Ok(InterpValue::Callable(CallTarget::EnumVariant(symbol)))
                         }
-                    } else if let Some(value) = self.eval_std_value_alias(path) {
+                    } else if let Some(value) = self.eval_std_value_alias(symbol, path, span)? {
                         Ok(value)
                     } else if let Some(item) = self
                         .source_item_for_import_path(path)
@@ -269,19 +278,59 @@ impl<'a> EvalContext<'a> {
         value
     }
 
-    fn eval_std_value_alias(&self, path: &[String]) -> Option<InterpValue> {
-        if matches!(path, [std, option, none] if std == "std" && option == "option" && none == "None")
-        {
-            return Some(InterpValue::OptionNone);
-        }
-        let symbol = self.checked.std_registry.lookup_qualified(path)?;
-        let etas_std::StdDecl::Value(value) = &symbol.decl else {
-            return None;
+    fn eval_std_value_alias(
+        &self,
+        symbol: SymbolId,
+        path: &[String],
+        span: Span,
+    ) -> Result<Option<InterpValue>, ExecutionFault> {
+        let Some(declaration) = self.checked.std_registry.lookup_qualified(path) else {
+            return Ok(None);
         };
-        Some(InterpValue::Variant {
-            name: value.name.clone().into(),
-            fields: Vec::new().into(),
-        })
+        if declaration
+            .intrinsic
+            .as_ref()
+            .is_some_and(|descriptor| descriptor.id.0 == etas_std::intrinsic::pure::OPTION_NONE)
+        {
+            return Ok(Some(InterpValue::OptionNone));
+        }
+        let etas_std::StdDecl::Value(value) = &declaration.decl else {
+            return Ok(None);
+        };
+        let Some(etas_types::SymbolTypeFact::Value { ty }) =
+            self.checked.types.symbol_types.get(&symbol)
+        else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "standard value has no checked type identity",
+            ));
+        };
+        let mut layouts = crate::plan::code::CheckedValueTypes::default();
+        let variant = layouts
+            .variant(self.checked, *ty, &value.name)
+            .map_err(|error| {
+                ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    format!("standard value has no checked constructor layout: {error:?}"),
+                )
+            })?;
+        if !variant.fields.is_empty() {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "standard singleton value has a nonempty payload",
+            ));
+        }
+        Ok(Some(InterpValue::Nominal {
+            ty: *ty,
+            value: InterpValue::Variant {
+                name: value.name.clone().into(),
+                fields: Vec::new().into(),
+            }
+            .into(),
+        }))
     }
 
     fn eval_top_level_handler(
@@ -331,6 +380,10 @@ impl<'a> EvalContext<'a> {
                         "constant path initializer was not fully resolved",
                     ));
                 };
+                let frame = Frame::new(std::sync::Arc::default());
+                if let Some(value) = self.eval_enum_reference(expr, symbol, &frame, path.span)? {
+                    return Ok(value);
+                }
                 if self.std_intrinsic(symbol).is_none()
                     && !self
                         .checked
@@ -492,7 +545,13 @@ impl<'a> EvalContext<'a> {
             }
         }
         if let Some(symbol) = self.named_variant_symbol(record.path.as_ref()) {
-            return self.eval_named_variant(expr, symbol, fields, span);
+            return self.eval_named_variant(
+                expr,
+                symbol,
+                fields,
+                &crate::control::GenericBindings::new(),
+                span,
+            );
         }
         let representation = self
             .plan

@@ -201,11 +201,12 @@ impl IntrinsicDispatchTable {
             }
         }
 
-        let pure_abi = PureAbiProjector::build(&project.type_store).map_err(|error| {
-            vec![format!(
-                "checked pure intrinsic ABI projection failed: {error}"
-            )]
-        })?;
+        let pure_abi = PureAbiProjector::build(&project.type_store, &project.types.enum_layouts)
+            .map_err(|error| {
+                vec![format!(
+                    "checked pure intrinsic ABI projection failed: {error}"
+                )]
+            })?;
 
         Ok(Self {
             reflection_required: false,

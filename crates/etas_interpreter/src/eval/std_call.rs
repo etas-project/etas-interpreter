@@ -104,12 +104,9 @@ impl<'a> EvalContext<'a> {
             StdCallable::MemoryRegion => {
                 self.execute_memory_region_callable(checked_call.result_type, call_args, span)
             }
-            StdCallable::MemoryStore(callable) => self.execute_memory_store_callable(
-                callable,
-                checked_call.result_type,
-                call_args,
-                span,
-            ),
+            StdCallable::MemoryStore(callable) => {
+                self.execute_memory_store_callable(callable, checked_call, call_args, span)
+            }
             StdCallable::MemoryVersionConstructor => {
                 self.execute_memory_version_constructor(call_args, span)
             }
@@ -141,7 +138,7 @@ impl<'a> EvalContext<'a> {
             ),
             StdCallable::Tcp(callable) => self.execute_tcp_callable(callable, call_args, span),
             StdCallable::Stream(callable) => {
-                self.execute_stream_callable(callable, call_args, span)
+                self.execute_stream_callable(callable, checked_call, call_args, span)
             }
             StdCallable::Tls(callable) => self.execute_tls_callable(callable, call_args, span),
             StdCallable::Secret(callable) => {
@@ -259,7 +256,7 @@ impl<'a> EvalContext<'a> {
     fn execute_memory_store_callable(
         &mut self,
         callable: crate::intrinsic::dispatch::MemoryStoreCallable,
-        result_type: etas_types::TypeId,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -284,7 +281,8 @@ impl<'a> EvalContext<'a> {
             path,
             key_type,
             value_type,
-            result_type,
+            result_type: checked_call.result_type,
+            query_type: checked_call.parameter_types.get(1).copied(),
             method: memory_store_callable_name(callable).to_owned(),
             evaluated_args: args.collect(),
             span,
@@ -978,6 +976,7 @@ impl<'a> EvalContext<'a> {
     fn execute_stream_callable(
         &mut self,
         callable: StreamCallable,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -1003,7 +1002,9 @@ impl<'a> EvalContext<'a> {
                         max_bytes,
                         timeout_ms,
                     },
-                    HostBoundaryDecode::StreamRead,
+                    HostBoundaryDecode::StreamRead {
+                        result_type: checked_call.result_type,
+                    },
                 )
             }
             StreamCallable::ReadUntilLimit => {

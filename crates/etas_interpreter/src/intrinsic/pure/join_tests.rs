@@ -23,7 +23,7 @@ fn join_wrapped_elements_reuses_prepared_projection_without_per_element_allocati
         inner: nominal,
     });
     let array = types.intern(Type::Array(trusted));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::TEXT_JOIN),
         parameter_types: vec![array, string],
@@ -63,7 +63,7 @@ fn join_borrows_shared_input_and_allocates_only_the_rendered_output() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let array = types.intern(Type::Array(string));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::TEXT_JOIN),
         parameter_types: vec![array, string],
@@ -134,7 +134,7 @@ fn join_preserves_checked_wrapper_validation_and_unicode_results() {
         params: vec![],
         representation: Some(array),
     }));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::TEXT_JOIN),
         parameter_types: vec![container, trusted],

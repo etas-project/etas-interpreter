@@ -1,7 +1,4 @@
-use super::{
-    AdapterError, PureAbiProjector,
-    abi::input::{into_builtin, into_builtin_for_type},
-};
+use super::{AdapterError, PureAbiProjector, abi::input::into_builtin_for_type};
 use crate::{
     testing::allocation::measure,
     value::{InterpValue, SharedFields},
@@ -11,41 +8,51 @@ use etas_types::{
     EnumTypeRef, NominalTypeRef, PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner,
 };
 
-fn types(count: usize, primitive: PrimitiveType) -> ([TypeId; 3], PureAbiProjector) {
+fn types(count: usize, primitive: PrimitiveType) -> ([TypeId; 2], PureAbiProjector) {
     let mut types = TypeInterner::new();
     let value = types.primitive(primitive);
     let tuple = types.intern(Type::Tuple(vec![value; count]));
     let variant = types.intern(Type::Enum(EnumTypeRef {
         name: "Payload".into(),
     }));
+    let layouts = std::collections::HashMap::from([(
+        variant,
+        etas_types::EnumLayoutFact {
+            type_params: vec![],
+            variants: vec![etas_types::EnumVariantLayoutFact {
+                name: "Payload".into(),
+                fields: vec![value; count],
+                field_names: None,
+            }],
+        },
+    )]);
     (
-        [tuple, variant, variant],
-        PureAbiProjector::build(&types.into_store()).unwrap(),
+        [tuple, variant],
+        PureAbiProjector::build(&types.into_store(), &layouts).unwrap(),
     )
 }
 
-fn input(kind: usize, fields: Vec<InterpValue>) -> InterpValue {
+fn input(kind: usize, ty: TypeId, fields: Vec<InterpValue>) -> InterpValue {
     if kind == 0 {
         InterpValue::Tuple(fields.into())
     } else {
-        InterpValue::Variant {
-            name: "Payload".into(),
-            fields: fields.into(),
+        InterpValue::Nominal {
+            ty,
+            value: InterpValue::Variant {
+                name: "Payload".into(),
+                fields: fields.into(),
+            }
+            .into(),
         }
     }
 }
 
 fn project(
-    kind: usize,
     value: InterpValue,
     ty: TypeId,
     projector: &PureAbiProjector,
 ) -> Result<BuiltinValue, AdapterError> {
-    if kind == 2 {
-        into_builtin(value)
-    } else {
-        into_builtin_for_type(value, ty, projector)
-    }
+    into_builtin_for_type(value, ty, projector)
 }
 
 #[test]
@@ -56,10 +63,10 @@ fn shared_tuple_and_variant_abi_inputs_allocate_only_final_sized_output() {
         for (kind, ty) in types.into_iter().enumerate() {
             let original = input(
                 kind,
+                ty,
                 (0..count).map(|i| InterpValue::i32(i as i32)).collect(),
             );
-            let (output, cost) =
-                measure(|| project(kind, original.clone(), ty, &projector).unwrap());
+            let (output, cost) = measure(|| project(original.clone(), ty, &projector).unwrap());
             let BuiltinValue::Variant { name, fields } = output else {
                 panic!("variant ABI output")
             };
@@ -78,6 +85,13 @@ fn shared_tuple_and_variant_abi_inputs_allocate_only_final_sized_output() {
             }
             let retained = match &original {
                 InterpValue::Tuple(fields) | InterpValue::Variant { fields, .. } => fields,
+                InterpValue::Nominal { ty: actual, value } => {
+                    assert_eq!(*actual, ty);
+                    let InterpValue::Variant { fields, .. } = value.as_ref() else {
+                        panic!("enum payload");
+                    };
+                    fields
+                }
                 _ => panic!("original fields"),
             };
             assert_eq!(retained.len(), count);
@@ -101,12 +115,13 @@ fn unique_tuple_and_variant_abi_inputs_move_text_payloads() {
             let pointers: Vec<_> = texts.iter().map(|text| text.as_ptr()).collect();
             let original = input(
                 kind,
+                ty,
                 texts
                     .into_iter()
                     .map(|text| InterpValue::String(text.into()))
                     .collect(),
             );
-            let (output, cost) = measure(|| project(kind, original, ty, &projector).unwrap());
+            let (output, cost) = measure(|| project(original, ty, &projector).unwrap());
             assert_eq!(
                 cost.count,
                 usize::from(kind == 0),
@@ -145,7 +160,7 @@ fn tuple_abi_projection_preserves_checked_identity_and_releases_failed_output() 
         inner: text,
     });
     let tuple = types.intern(Type::Tuple(vec![nominal, trusted]));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let value = |nominal, wrapper| {
         InterpValue::Tuple(SharedFields::new(vec![
             InterpValue::Nominal {
@@ -209,6 +224,7 @@ fn enum_payload_projection_rejects_unchecked_nominal_and_releases_partial_output
     for (kind, ty) in types.into_iter().enumerate().skip(1) {
         let original = input(
             kind,
+            ty,
             vec![
                 InterpValue::String("prefix".repeat(1024).into()),
                 InterpValue::Nominal {
@@ -219,10 +235,10 @@ fn enum_payload_projection_rejects_unchecked_nominal_and_releases_partial_output
         );
         let retained = original.clone();
         let (_, cost) = measure(|| {
-            assert!(matches!(
-                project(kind, original.clone(), ty, &projector),
-                Err(AdapterError::UnsupportedValue(_))
-            ))
+            let error = project(original.clone(), ty, &projector).unwrap_err();
+            assert!(
+                matches!(error, AdapterError::TypeMismatch { actual, .. } if actual == "Nominal")
+            );
         });
         assert_eq!(
             cost.bytes, cost.released_bytes,
@@ -242,7 +258,7 @@ fn malformed_abi_diagnostics_never_render_secret_payloads() {
             wrapper: TrustWrapper::Secret,
             value: InterpValue::String(marker.into()).into(),
         };
-        let error = project(kind, input(kind, vec![secret]), ty, &projector).unwrap_err();
+        let error = project(input(kind, ty, vec![secret]), ty, &projector).unwrap_err();
         if format!("{error:?}").contains(marker) {
             leaks.push(if kind == 1 {
                 "enum input"
@@ -254,7 +270,7 @@ fn malformed_abi_diagnostics_never_render_secret_payloads() {
     let mut interner = TypeInterner::new();
     let boolean = interner.primitive(PrimitiveType::Bool);
     let tuple = interner.intern(Type::Tuple(vec![boolean]));
-    let projector = PureAbiProjector::build(&interner.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap();
     for (expected, value) in [
         (boolean, BuiltinValue::String(marker.into())),
         (

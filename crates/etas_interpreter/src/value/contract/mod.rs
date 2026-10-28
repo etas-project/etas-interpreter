@@ -7,6 +7,7 @@ mod view;
 
 use etas_frontend::CheckedProject;
 use etas_types::{PrimitiveType as P, Type, TypeId};
+pub(crate) use native::selection_query;
 use std::collections::{HashMap, HashSet};
 use view::{Identity, MapKind, Node, SequenceKind};
 pub(crate) use view::{Target, Value};
@@ -16,7 +17,6 @@ pub(crate) trait Context {
     fn limits(&self) -> &etas_host::StorageLimits;
     fn callable(&self, value: Target<'_>, expected: TypeId) -> Result<(), String>;
     fn comparator(&self, value: Target<'_>, key: TypeId) -> Result<(), String>;
-    fn predicate(&self, value: Target<'_>, input: TypeId) -> Result<(), String>;
     fn native(&self, value: Value<'_>, expected: TypeId) -> Result<(), String>;
 }
 

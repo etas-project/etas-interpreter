@@ -13,7 +13,7 @@ fn borrowed_projection_handles_deep_refinement_without_query_allocations() {
             predicate: RefinementId(depth),
         });
     }
-    let projector = PureAbiProjector::build(&store).unwrap();
+    let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     let value = InterpValue::String("中😀e\u{301}".into());
     let (text, cost) =
         crate::testing::allocation::measure(|| string_for_type(&value, ty, &projector).unwrap());
@@ -33,7 +33,7 @@ fn borrowed_projection_rejects_cycles_after_validating_entered_wrappers() {
         base: cyclic,
         predicate: RefinementId(0),
     });
-    let projector = PureAbiProjector::build(&store).unwrap();
+    let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     let value = InterpValue::Trust {
         wrapper: TrustWrapper::Trusted,
         value: SharedValue::new(InterpValue::String("end".into())),
@@ -57,7 +57,7 @@ fn borrowed_projection_rejects_cycles_after_validating_entered_wrappers() {
         base: TypeId(0),
         predicate: RefinementId(0),
     });
-    let projector = PureAbiProjector::build(&store).unwrap();
+    let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     assert_eq!(
         string_for_type(&InterpValue::String("end".into()), cyclic, &projector),
         Err(AdapterError::UnsupportedValue(
@@ -74,7 +74,7 @@ fn borrowed_projection_keeps_missing_type_errors() {
         base: missing,
         predicate: RefinementId(0),
     });
-    let projector = PureAbiProjector::build(&store).unwrap();
+    let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     let value = InterpValue::String("end".into());
     assert_eq!(
         string_for_type(&value, root, &projector),

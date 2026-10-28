@@ -505,11 +505,21 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                 value: crate::value::SharedValue::new(value),
             })
         }
-        Type::Enum(_) => super::host_enum::decode(value, expected, &[], store, substitutions),
+        Type::Enum(_) => {
+            super::host_enum::decode(value, expected, expected, &[], store, substitutions)
+        }
         Type::Applied { constructor, args }
             if matches!(store.get(TypeId(constructor.0)), Some(Type::Enum(_))) =>
         {
-            super::host_enum::decode(value, TypeId(constructor.0), args, store, substitutions)
+            let concrete = substitutions.concrete_type(expected, store)?;
+            super::host_enum::decode(
+                value,
+                concrete,
+                TypeId(constructor.0),
+                args,
+                store,
+                substitutions,
+            )
         }
         Type::Applied { constructor, args } => {
             let concrete_type = substitutions.concrete_type(expected, store)?;

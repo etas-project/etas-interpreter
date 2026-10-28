@@ -255,6 +255,7 @@ pub enum Continuation {
         key_type: etas_types::TypeId,
         value_type: etas_types::TypeId,
         kind: crate::value::MemorySelectionKind,
+        predicate_type: Option<etas_types::TypeId>,
         predicate: Option<InterpValue>,
         limit: Option<u32>,
         args: Vec<HirArg>,

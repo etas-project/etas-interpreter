@@ -331,6 +331,7 @@ fn continuation_leaf_from_snapshot(
                 value,
                 "selection_kind",
             )?)?,
+            predicate_type: optional_u32(value, "predicate_type")?.map(etas_types::TypeId),
             predicate: optional_value(limits, value, "predicate")?,
             limit: optional_u32(value, "limit")?,
             args: args_from_snapshot(required(value, "args")?)?,

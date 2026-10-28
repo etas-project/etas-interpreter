@@ -20,7 +20,7 @@ fn record_type(count: usize, primitive: PrimitiveType) -> (TypeId, TypeId, PureA
     (
         ty,
         inner,
-        PureAbiProjector::build(&interner.into_store()).unwrap(),
+        PureAbiProjector::build(&interner.into_store(), &Default::default()).unwrap(),
     )
 }
 

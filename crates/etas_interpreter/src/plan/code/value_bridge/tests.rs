@@ -279,14 +279,22 @@ fn applied_nominal_record_keeps_outer_and_inner_type_identity() {
 #[test]
 fn recursive_generic_enum_values_use_a_worklist_not_the_rust_stack() {
     let (prepared, scope, ty) = prepared("enum Chain<T> { End, Link(T, Chain<T>), }", "Chain<i32>");
-    let mut value = InterpValue::Variant {
-        name: "End".into(),
-        fields: Vec::new().into(),
+    let mut value = InterpValue::Nominal {
+        ty,
+        value: InterpValue::Variant {
+            name: "End".into(),
+            fields: Vec::new().into(),
+        }
+        .into(),
     };
     for n in 0..12_000 {
-        value = InterpValue::Variant {
-            name: "Link".into(),
-            fields: vec![InterpValue::i32(n), value].into(),
+        value = InterpValue::Nominal {
+            ty,
+            value: InterpValue::Variant {
+                name: "Link".into(),
+                fields: vec![InterpValue::i32(n), value].into(),
+            }
+            .into(),
         };
     }
     let translated = roundtrip(&prepared, &scope, ty, value.clone());
@@ -299,18 +307,26 @@ fn named_enum_fields_are_checked_against_the_variant_payload() {
         "enum Response { Success(string), Failure { code: i32, message: string }, }",
         "Response",
     );
-    let value = InterpValue::Variant {
-        name: "Failure".into(),
-        fields: vec![
-            InterpValue::i32(503),
-            InterpValue::String("unavailable".into()),
-        ]
+    let value = InterpValue::Nominal {
+        ty,
+        value: InterpValue::Variant {
+            name: "Failure".into(),
+            fields: vec![
+                InterpValue::i32(503),
+                InterpValue::String("unavailable".into()),
+            ]
+            .into(),
+        }
         .into(),
     };
     assert_eq!(roundtrip(&prepared, &scope, ty, value.clone()), value);
-    let invalid = InterpValue::Variant {
-        name: "Failure".into(),
-        fields: vec![InterpValue::String("503".into()), InterpValue::i32(1)].into(),
+    let invalid = InterpValue::Nominal {
+        ty,
+        value: InterpValue::Variant {
+            name: "Failure".into(),
+            fields: vec![InterpValue::String("503".into()), InterpValue::i32(1)].into(),
+        }
+        .into(),
     };
     assert!(matches!(
         prepared.type_bridge().value_to_candidate(
@@ -324,9 +340,13 @@ fn named_enum_fields_are_checked_against_the_variant_payload() {
             ..
         })
     ));
-    let unknown = InterpValue::Variant {
-        name: "Unknown".into(),
-        fields: Vec::new().into(),
+    let unknown = InterpValue::Nominal {
+        ty,
+        value: InterpValue::Variant {
+            name: "Unknown".into(),
+            fields: Vec::new().into(),
+        }
+        .into(),
     };
     assert!(matches!(
         prepared.type_bridge().value_to_candidate(
@@ -556,16 +576,28 @@ fn shared_enum_payload_cache_still_checks_each_constructor_identity() {
         "Array<Choice>",
     );
     let bridge = prepared.type_bridge();
+    let etas_types::Type::Array(element) = bridge.original_program().type_store.get(ty).unwrap()
+    else {
+        panic!("array type");
+    };
     let fields: crate::value::SharedFields = vec![InterpValue::i32(7)].into();
     let values = InterpValue::Array(
         vec![
-            InterpValue::Variant {
-                name: "Number".into(),
-                fields: fields.clone(),
+            InterpValue::Nominal {
+                ty: *element,
+                value: InterpValue::Variant {
+                    name: "Number".into(),
+                    fields: fields.clone(),
+                }
+                .into(),
             },
-            InterpValue::Variant {
-                name: "Text".into(),
-                fields,
+            InterpValue::Nominal {
+                ty: *element,
+                value: InterpValue::Variant {
+                    name: "Text".into(),
+                    fields,
+                }
+                .into(),
             },
         ]
         .into(),

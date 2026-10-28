@@ -343,6 +343,7 @@ impl<'a> EvalContext<'a> {
                 key_type,
                 value_type,
                 kind,
+                predicate_type,
                 predicate,
                 limit,
             } => self.eval_memory_selection_method(
@@ -352,6 +353,7 @@ impl<'a> EvalContext<'a> {
                     key_type,
                     value_type,
                     kind,
+                    predicate_type,
                     predicate: predicate.map(|value| *value),
                     limit,
                     method,

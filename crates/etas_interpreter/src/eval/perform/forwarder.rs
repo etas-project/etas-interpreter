@@ -59,7 +59,9 @@ impl EvalContext<'_> {
                 max_bytes,
                 timeout_ms,
                 span,
-            } => self.execute_stream_read_default(stream, max_bytes, timeout_ms, span),
+            } => {
+                self.execute_stream_read_default(stream, max_bytes, timeout_ms, proof.output, span)
+            }
         };
         self.continue_chain_signal(signal, perform.continuation)
     }

@@ -82,17 +82,9 @@ enum Task<'a> {
 enum ExpectedInterface {
     Value(TypeId),
     KeyComparison(TypeId),
-    Predicate(TypeId),
 }
 
 impl SnapshotValidator<'_> {
-    pub(super) fn predicate_interface(&self, target: &Target, input: TypeId) -> Result<(), String> {
-        self.reference_interface(
-            target,
-            ExpectedInterface::Predicate(input),
-            &Bindings::new(),
-        )
-    }
     pub(super) fn reference_target_type(
         &self,
         root: &Target,
@@ -127,7 +119,7 @@ impl SnapshotValidator<'_> {
     ) -> Result<(), String> {
         let key = match expected {
             ExpectedInterface::Value(expected) => root_key(root, expected, bindings),
-            ExpectedInterface::KeyComparison(_) | ExpectedInterface::Predicate(_) => None,
+            ExpectedInterface::KeyComparison(_) => None,
         };
         if key
             .as_ref()
@@ -143,15 +135,13 @@ impl SnapshotValidator<'_> {
                 Some(_) => None,
                 None => return Err("checkpoint callable slot type is missing".into()),
             },
-            ExpectedInterface::KeyComparison(_) | ExpectedInterface::Predicate(_) => None,
+            ExpectedInterface::KeyComparison(_) => None,
         };
         let allowed = match expected {
-            ExpectedInterface::KeyComparison(_) | ExpectedInterface::Predicate(_) => {
-                Some(etas_types::EffectRowRef {
-                    effects: Vec::new(),
-                    tail: None,
-                })
-            }
+            ExpectedInterface::KeyComparison(_) => Some(etas_types::EffectRowRef {
+                effects: Vec::new(),
+                tail: None,
+            }),
             ExpectedInterface::Value(_) => signature
                 .as_ref()
                 .and_then(|signature| signature.effects.clone()),
@@ -256,16 +246,6 @@ impl SnapshotValidator<'_> {
             .pop()
             .ok_or("checkpoint callable has no checked interface")?;
         let matches = match (expected, signature) {
-            (ExpectedInterface::Predicate(input), _) => {
-                interface.component.is_none()
-                    && interface.signature.as_ref().is_some_and(|signature| {
-                        signature.input == [input]
-                            && matches!(
-                                self.checked.type_store.get(signature.output),
-                                Some(Type::Primitive(etas_types::PrimitiveType::Bool))
-                            )
-                    })
-            }
             (ExpectedInterface::KeyComparison(priority), _) => {
                 let priority = bindings
                     .substitution(&self.checked.type_store)

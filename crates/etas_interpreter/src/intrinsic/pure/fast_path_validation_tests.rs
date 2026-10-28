@@ -23,7 +23,7 @@ fn adt_fast_paths_reject_wrong_nominal_and_trust_payload_identity() {
     let option = types.intern(Type::Option(a));
     let result = types.intern(Type::Result { ok: a, err: a });
     let trusted_option = types.intern(Type::Option(trusted));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let bad = || InterpValue::Nominal {
         ty: b,
         value: InterpValue::String("payload".into()).into(),
@@ -160,7 +160,7 @@ fn native_prompt_payloads_keep_their_backing_through_adt_fast_paths() {
     let prompt = types.intern(Type::Prompt);
     let option = types.intern(Type::Option(prompt));
     let boolean = types.primitive(PrimitiveType::Bool);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let original = crate::value::PromptValue::new(vec![crate::value::PromptMessage {
         role: crate::value::PromptRole::User,
         text: "large native payload".repeat(1024).into(),
@@ -213,7 +213,7 @@ fn identity_checks_walk_deep_trust_wrappers_without_payload_projection() {
     }
     let option = types.intern(Type::Option(expected));
     let boolean = types.primitive(PrimitiveType::Bool);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let call = CheckedPureIntrinsicCall {
         intrinsic: StdIntrinsicId(pure::OPTION_IS_SOME),
         parameter_types: vec![option],

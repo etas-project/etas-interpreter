@@ -43,7 +43,7 @@ fn text_and_owned_outputs_reject_cyclic_or_missing_checked_result_wrappers() {
         inner: TypeId(0),
     });
     let string = types.intern(Type::Primitive(PrimitiveType::String));
-    let projector = PureAbiProjector::build(&types).unwrap();
+    let projector = PureAbiProjector::build(&types, &Default::default()).unwrap();
     for result_type in [cycle, TypeId(999)] {
         let call = CheckedPureIntrinsicCall {
             intrinsic: StdIntrinsicId(pure::TEXT_TRIM),
@@ -75,7 +75,7 @@ fn unchanged_text_transforms_share_backing_without_payload_size_allocations() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let array = types.intern(Type::Array(string));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for id in [pure::TEXT_TRIM, pure::TEXT_SPLIT, pure::TEXT_LINES] {
         let mut first_cost = None;
         for count in [1000, 2000, 4000] {
@@ -125,7 +125,7 @@ fn unchanged_text_transforms_share_backing_without_payload_size_allocations() {
 fn partial_text_results_copy_only_the_result_and_do_not_retain_large_inputs() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let mut first_cost = None;
     for count in [1000, 2000, 4000] {
         let source = format!("{}x{}", " ".repeat(count), "\u{2003}".repeat(count));
@@ -161,7 +161,7 @@ fn partial_text_results_copy_only_the_result_and_do_not_retain_large_inputs() {
 fn case_transforms_allocate_output_without_copying_input() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for (id, input, expected) in [
         (pure::TEXT_UPPERCASE, "a", "A"),
         (pure::TEXT_LOWERCASE, "A", "a"),
@@ -191,7 +191,7 @@ fn split_and_lines_preserve_result_values_and_only_materialize_output_fragments(
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let array = types.intern(Type::Array(string));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for (id, source, separator) in [
         (pure::TEXT_LINES, "中\r\n😀\n\n", None),
         (pure::TEXT_LINES, "", None),
@@ -244,7 +244,7 @@ fn text_transforms_preserve_checked_nominal_and_trust_output_identity() {
     });
     let array = types.intern(Type::Array(output_ty));
     let bad_array = types.intern(Type::Array(boolean));
-    let projector = PureAbiProjector::build(&types.into_store()).unwrap();
+    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     let text = crate::value::StringValue::from("unchanged");
     let pointer = text.as_ptr();
     let wrap = |ty, wrapper, text| InterpValue::Trust {
