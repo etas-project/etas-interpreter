@@ -49,6 +49,51 @@ fn validate_both(checked: &etas_frontend::CheckedProject, value: &V, valid: bool
 }
 
 #[test]
+fn ingress_contract_requires_canonical_session_and_limit_values() {
+    for ty in ["SessionId", "ContextPolicy", "RetentionPolicy", "Limit"] {
+        let checked = checked(&format!(
+            "module app.main; flow main(value: {ty}) -> unit {{ return; }}"
+        ));
+        let expected = parameter(&checked);
+        let raw = match ty {
+            "SessionId" => V::String("session".into()),
+            _ => V::Variant {
+                name: match ty {
+                    "ContextPolicy" => "LastTurns",
+                    "RetentionPolicy" => "Days",
+                    _ => "Tokens",
+                }
+                .into(),
+                fields: vec![V::usize(8)].into(),
+            },
+        };
+        validate_both(&checked, &raw, false);
+        let owned = V::Nominal {
+            ty: expected,
+            value: raw.into(),
+        };
+        validate_both(&checked, &owned, true);
+        let mut wrong = owned.clone();
+        let V::Nominal { value, .. } = &mut wrong else {
+            unreachable!();
+        };
+        *value.make_mut() = match ty {
+            "SessionId" => V::Bool(true),
+            _ => V::Variant {
+                name: match ty {
+                    "ContextPolicy" => "LastTurns",
+                    "RetentionPolicy" => "Days",
+                    _ => "Tokens",
+                }
+                .into(),
+                fields: vec![V::i32(8)].into(),
+            },
+        };
+        validate_both(&checked, &wrong, false);
+    }
+}
+
+#[test]
 fn ingress_contract_preserves_nominal_record_identity_and_field_shape() {
     let checked = checked(
         "module app.main; type Row = { x: i32, y: bool }; flow main(value: Row) -> unit { return; }",

@@ -59,6 +59,7 @@ mod session_value;
 mod slice_access;
 mod spec_method;
 mod std_call;
+mod std_value;
 mod stmt;
 mod stmt_assign;
 mod stmt_bind;

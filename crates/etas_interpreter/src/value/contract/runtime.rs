@@ -33,6 +33,29 @@ pub(crate) fn validate_arguments(
             values.len()
         ));
     }
+    validate_values(checked, plan, values, &signature.params, limits)
+}
+
+pub(crate) fn validate_value(
+    checked: &CheckedProject,
+    plan: &InterpreterPlan,
+    value: &InterpValue,
+    ty: TypeId,
+    limits: &etas_host::StorageLimits,
+) -> Result<(), String> {
+    validate_values(checked, plan, std::slice::from_ref(value), &[ty], limits)
+}
+
+fn validate_values(
+    checked: &CheckedProject,
+    plan: &InterpreterPlan,
+    values: &[InterpValue],
+    types: &[TypeId],
+    limits: &etas_host::StorageLimits,
+) -> Result<(), String> {
+    if values.len() != types.len() {
+        return Err("runtime values do not match the checked type vector length".into());
+    }
     let context = RuntimeContext {
         checked,
         plan,
@@ -47,13 +70,10 @@ pub(crate) fn validate_arguments(
     };
     super::validate(
         &context,
-        values
-            .iter()
-            .zip(&signature.params)
-            .map(|(value, ty)| Seed {
-                value: Value::Runtime(value),
-                ty: *ty,
-            }),
+        values.iter().zip(types).map(|(value, ty)| Seed {
+            value: Value::Runtime(value),
+            ty: *ty,
+        }),
         &GenericBindings::new(),
     )?;
 

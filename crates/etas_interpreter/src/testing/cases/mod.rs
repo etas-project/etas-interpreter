@@ -46,6 +46,7 @@ mod records;
 mod retry_call;
 mod return_control;
 mod secret_values;
+mod session_abi;
 mod session_commit;
 mod session_history;
 mod session_publication;

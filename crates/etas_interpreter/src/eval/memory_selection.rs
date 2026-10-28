@@ -83,13 +83,23 @@ impl<'a> EvalContext<'a> {
         }
 
         let limit = match evaluated_args.as_slice() {
-            [InterpValue::Variant { name, fields }]
-                if matches!(
-                    name.as_str(),
-                    "Iterations" | "Tokens" | "ContextTokens" | "Attempts"
-                ) =>
-            {
-                let [InterpValue::Number(value)] = fields.as_slice() else {
+            [value] => {
+                let ty = match self.runtime_type(etas_std::RuntimeTypeRole::Limit, span) {
+                    Ok(ty) => ty,
+                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                };
+                let (name, fields) =
+                    match crate::value::enum_value::payload(value, ty, self.checked) {
+                        Ok(value) => value,
+                        Err(reason) => return abort_memory_selection(span, reason),
+                    };
+                if !matches!(name, "Iterations" | "Tokens" | "ContextTokens" | "Attempts") {
+                    return abort_memory_selection(
+                        span,
+                        "memory selection limit requires a count limit",
+                    );
+                }
+                let [InterpValue::Number(value)] = fields else {
                     return abort_memory_selection(
                         span,
                         "memory selection limit requires a count limit constructor with one integer field",
@@ -104,12 +114,6 @@ impl<'a> EvalContext<'a> {
                         );
                     }
                 }
-            }
-            [_] => {
-                return abort_memory_selection(
-                    span,
-                    "memory selection limit requires a count limit such as Tokens(n)",
-                );
             }
             _ => {
                 return abort_memory_selection(

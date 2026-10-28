@@ -113,13 +113,21 @@ impl<'a> EvalContext<'a> {
             StdCallable::MoneyUsdConstructor => {
                 self.execute_money_usd_constructor(checked_call.result_type, call_args, span)
             }
-            StdCallable::CurrentSession => self.execute_current_session(call_args, span),
-            StdCallable::SessionPolicyConstructor(name) => {
-                self.execute_session_policy_constructor(name, call_args, span)
+            StdCallable::CurrentSession => {
+                self.execute_current_session(checked_call.result_type, call_args, span)
             }
-            StdCallable::RuntimeLimitConstructor(kind) => {
-                self.execute_runtime_limit_constructor(kind, call_args, span)
-            }
+            StdCallable::SessionPolicyConstructor(name) => self.execute_session_policy_constructor(
+                checked_call.result_type,
+                name,
+                call_args,
+                span,
+            ),
+            StdCallable::RuntimeLimitConstructor(kind) => self.execute_runtime_limit_constructor(
+                checked_call.result_type,
+                kind,
+                call_args,
+                span,
+            ),
             StdCallable::TrustWrapper(wrapper) => {
                 self.execute_trust_wrapper_constructor(wrapper, call_args, span)
             }
@@ -327,43 +335,24 @@ impl<'a> EvalContext<'a> {
 
     fn execute_runtime_limit_constructor(
         &mut self,
+        result_type: etas_types::TypeId,
         kind: StdLimitKind,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        let value = match call_args.as_slice() {
-            [InterpValue::Number(value)] => *value,
-            [_] => {
-                let message = format!(
-                    "{} expects one integer argument",
-                    runtime_limit_constructor_name(kind)
-                );
-                return ControlSignal::invalid_arguments(message, span);
-            }
-            args => {
-                let message = format!(
-                    "{} expects exactly one integer argument, got {}",
-                    runtime_limit_constructor_name(kind),
-                    args.len()
-                );
-                return ControlSignal::invalid_arguments(message, span);
-            }
-        };
-        if value.as_u128().is_none() && value.as_i128().is_none_or(|value| value < 0) {
-            let message = format!(
-                "{} expects a non-negative integer argument",
-                runtime_limit_constructor_name(kind)
-            );
-            return ControlSignal::invalid_arguments(message, span);
-        }
-        ControlSignal::Value(InterpValue::Variant {
+        let value = InterpValue::Variant {
             name: runtime_limit_constructor_name(kind).to_owned().into(),
-            fields: vec![InterpValue::Number(value)].into(),
-        })
+            fields: call_args.into(),
+        };
+        match self.checked_std_result(result_type, etas_std::RuntimeTypeRole::Limit, value, span) {
+            Ok(value) => ControlSignal::Value(value),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
     }
 
     fn execute_session_policy_constructor(
         &mut self,
+        result_type: etas_types::TypeId,
         name: &'static str,
         call_args: Vec<InterpValue>,
         span: Span,
@@ -374,14 +363,29 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         }
-        ControlSignal::Value(InterpValue::Variant {
+        let role = match name {
+            "LastTurns" | "SummaryPlusRecent" => etas_std::RuntimeTypeRole::ContextPolicy,
+            "Days" => etas_std::RuntimeTypeRole::RetentionPolicy,
+            _ => {
+                return ControlSignal::missing_checked_fact(
+                    "unknown checked session policy constructor",
+                    span,
+                );
+            }
+        };
+        let value = InterpValue::Variant {
             name: name.to_owned().into(),
             fields: call_args.into(),
-        })
+        };
+        match self.checked_std_result(result_type, role, value, span) {
+            Ok(value) => ControlSignal::Value(value),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
     }
 
     fn execute_current_session(
         &mut self,
+        result_type: etas_types::TypeId,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -395,7 +399,15 @@ impl<'a> EvalContext<'a> {
             let message = "current_session requires an active runtime session".to_owned();
             return ControlSignal::runtime_fault(message, span);
         };
-        ControlSignal::Value(InterpValue::String(session.into()))
+        match self.checked_std_result(
+            result_type,
+            etas_std::RuntimeTypeRole::SessionId,
+            InterpValue::String(session.into()),
+            span,
+        ) {
+            Ok(value) => ControlSignal::Value(value),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
     }
 
     fn execute_memory_version_constructor(

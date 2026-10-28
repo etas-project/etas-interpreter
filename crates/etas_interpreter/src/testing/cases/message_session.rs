@@ -324,9 +324,7 @@ flow main(input: string) -> (string, MessageId, Option<SessionId>, Role, Time, O
     );
     assert_eq!(
         values[2],
-        value::InterpValue::OptionSome(crate::value::SharedValue::new(value::InterpValue::String(
-            "session-42".to_owned().into()
-        )))
+        value::InterpValue::OptionSome(session_id(&checked, "session-42").into())
     );
     assert_eq!(
         values[3],
@@ -358,10 +356,14 @@ flow main(limit: Limit) -> (ContextPolicy, ContextPolicy, RetentionPolicy) {
 }
 "#,
     );
-    let limit = value::InterpValue::Variant {
-        name: "ContextTokens".to_owned().into(),
-        fields: vec![value::InterpValue::i32(24_000)].into(),
-    };
+    let limit = std_value(
+        &checked,
+        etas_std::RuntimeTypeRole::Limit,
+        value::InterpValue::Variant {
+            name: "ContextTokens".to_owned().into(),
+            fields: vec![value::InterpValue::usize(24_000)].into(),
+        },
+    );
 
     let result = Interpreter
         .run_checked(
@@ -381,18 +383,30 @@ flow main(limit: Limit) -> (ContextPolicy, ContextPolicy, RetentionPolicy) {
         result.value().cloned(),
         Some(value::InterpValue::Tuple(
             vec![
-                value::InterpValue::Variant {
-                    name: "LastTurns".to_owned().into(),
-                    fields: vec![value::InterpValue::usize(8)].into(),
-                },
-                value::InterpValue::Variant {
-                    name: "SummaryPlusRecent".to_owned().into(),
-                    fields: vec![value::InterpValue::usize(4)].into(),
-                },
-                value::InterpValue::Variant {
-                    name: "Days".to_owned().into(),
-                    fields: vec![value::InterpValue::usize(90)].into(),
-                },
+                std_value(
+                    &checked,
+                    etas_std::RuntimeTypeRole::ContextPolicy,
+                    value::InterpValue::Variant {
+                        name: "LastTurns".to_owned().into(),
+                        fields: vec![value::InterpValue::usize(8)].into(),
+                    }
+                ),
+                std_value(
+                    &checked,
+                    etas_std::RuntimeTypeRole::ContextPolicy,
+                    value::InterpValue::Variant {
+                        name: "SummaryPlusRecent".to_owned().into(),
+                        fields: vec![value::InterpValue::usize(4)].into(),
+                    }
+                ),
+                std_value(
+                    &checked,
+                    etas_std::RuntimeTypeRole::RetentionPolicy,
+                    value::InterpValue::Variant {
+                        name: "Days".to_owned().into(),
+                        fields: vec![value::InterpValue::usize(90)].into(),
+                    }
+                ),
             ]
             .into()
         ))
@@ -427,10 +441,41 @@ flow main(ticket: string) -> SessionConfig {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::Variant {
-            name: "SessionConfig.continue_or_new".to_owned().into(),
-            fields: vec![value::InterpValue::String("ticket-42".to_owned().into())].into(),
-        })
+        Some(std_value(
+            &checked,
+            etas_std::RuntimeTypeRole::SessionConfig,
+            value::InterpValue::Record(
+                vec![
+                    (
+                        "id".into(),
+                        session_id(&checked, "continue_or_new:ticket-42")
+                    ),
+                    (
+                        "context".into(),
+                        std_value(
+                            &checked,
+                            etas_std::RuntimeTypeRole::ContextPolicy,
+                            value::InterpValue::Variant {
+                                name: "All".into(),
+                                fields: vec![].into()
+                            }
+                        )
+                    ),
+                    (
+                        "retention".into(),
+                        std_value(
+                            &checked,
+                            etas_std::RuntimeTypeRole::RetentionPolicy,
+                            value::InterpValue::Variant {
+                                name: "Forever".into(),
+                                fields: vec![].into()
+                            }
+                        )
+                    ),
+                ]
+                .into()
+            )
+        ))
     );
 }
 
@@ -463,14 +508,12 @@ flow main(ticket: string) -> SessionId {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String(
-            "continue_or_new:ticket-42".to_owned().into()
-        ))
+        Some(session_id(&checked, "continue_or_new:ticket-42"))
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_checked_aborts_unmaterialized_session_config_policy_field() {
+async fn run_checked_materializes_default_session_config_policy_field() {
     let checked = checked_project(
         r#"
 module app.main;
@@ -495,18 +538,17 @@ flow main(ticket: string) -> ContextPolicy {
         .await
         .expect("execution lifecycle infrastructure");
 
-    assert_eq!(result.value().cloned(), None);
-    assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
-        result.diagnostics[0].code,
-        DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)
-    );
-    assert!(
-        result.diagnostics[0]
-            .message
-            .contains("session config field `context` is not materialized"),
-        "{:?}",
-        result.diagnostics
+        result.value(),
+        Some(&std_value(
+            &checked,
+            etas_std::RuntimeTypeRole::ContextPolicy,
+            value::InterpValue::Variant {
+                name: "All".into(),
+                fields: vec![].into()
+            }
+        ))
     );
 }
 
@@ -542,7 +584,7 @@ flow main() -> SessionId ![Memory.read<SessionId>] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(
         result.value().cloned(),
-        Some(value::InterpValue::String("session-42".to_owned().into()))
+        Some(session_id(&checked, "session-42"))
     );
 }
 
@@ -651,8 +693,8 @@ flow main(ticket: string, input: string) -> Message<string> {
             } if id == "msg-0"
                 && session == "continue_or_new:ticket-42"
                 && session_config.id == "continue_or_new:ticket-42"
-                && session_config.context.is_none()
-                && session_config.retention.is_none()
+                && session_config.context.as_deref() == Some(&std_value(&checked, etas_std::RuntimeTypeRole::ContextPolicy, InterpValue::Variant {name: "All".into(), fields: vec![].into()}))
+                && session_config.retention.as_deref() == Some(&std_value(&checked, etas_std::RuntimeTypeRole::RetentionPolicy, InterpValue::Variant {name: "Forever".into(), fields: vec![].into()}))
         )
     }));
 }
@@ -769,12 +811,16 @@ flow main(ticket: SessionId, input: string, limit: Limit) -> Message<string> {
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("session-record-42".to_owned().into()),
+                session_id(&checked, "session-record-42"),
                 value::InterpValue::String("hello".to_owned().into()),
-                value::InterpValue::Variant {
-                    name: "ContextTokens".to_owned().into(),
-                    fields: vec![value::InterpValue::i32(24_000)].into(),
-                },
+                std_value(
+                    &checked,
+                    etas_std::RuntimeTypeRole::Limit,
+                    value::InterpValue::Variant {
+                        name: "ContextTokens".to_owned().into(),
+                        fields: vec![value::InterpValue::usize(24_000)].into(),
+                    },
+                ),
             ],
             &host,
             RunOptions::default(),
@@ -894,11 +940,15 @@ flow main(ticket: SessionId, limit: Limit) -> usize ![Memory.read<SessionId>, Me
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("ticket-retention".to_owned().into()),
-                value::InterpValue::Variant {
-                    name: "ContextTokens".to_owned().into(),
-                    fields: vec![value::InterpValue::i32(100)].into(),
-                },
+                session_id(&checked, "ticket-retention"),
+                std_value(
+                    &checked,
+                    etas_std::RuntimeTypeRole::Limit,
+                    value::InterpValue::Variant {
+                        name: "ContextTokens".to_owned().into(),
+                        fields: vec![value::InterpValue::usize(100)].into(),
+                    },
+                ),
             ],
             &host,
             RunOptions::default(),
@@ -951,11 +1001,15 @@ flow main(ticket: SessionId, limit: Limit) -> usize ![Memory.read<SessionId>, Me
                 item: checked.entry.expect("entry item"),
             },
             vec![
-                value::InterpValue::String("paged-history".to_owned().into()),
-                value::InterpValue::Variant {
-                    name: "ContextTokens".to_owned().into(),
-                    fields: vec![value::InterpValue::i32(1000)].into(),
-                },
+                session_id(&checked, "paged-history"),
+                std_value(
+                    &checked,
+                    etas_std::RuntimeTypeRole::Limit,
+                    value::InterpValue::Variant {
+                        name: "ContextTokens".to_owned().into(),
+                        fields: vec![value::InterpValue::usize(1000)].into(),
+                    },
+                ),
             ],
             &host,
             RunOptions::default(),

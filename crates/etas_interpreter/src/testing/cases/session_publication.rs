@@ -74,7 +74,7 @@ flow main(ticket: SessionId, text: string) -> bool {
                         item: checked.entry.unwrap(),
                     },
                     vec![
-                        InterpValue::String("selected-context".into()),
+                        session_id(&checked, "selected-context"),
                         InterpValue::String(text.into()),
                     ],
                     &host,

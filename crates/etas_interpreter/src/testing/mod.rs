@@ -7,7 +7,10 @@ pub(crate) mod project;
 mod subprocess;
 pub(crate) use self::host::FakeHost;
 use self::host::availability;
-use self::project::{checked_project, checked_project_sources, checked_project_with_environment};
+use self::project::{
+    checked_project, checked_project_sources, checked_project_with_environment, session_id,
+    std_value,
+};
 use crate::eval::resolve_std_type;
 use crate::host::HostServiceAvailability;
 use crate::orchestration::{CompletedHostBoundary, WorkflowEvent};

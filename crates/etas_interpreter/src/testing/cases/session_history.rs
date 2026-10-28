@@ -211,7 +211,7 @@ flow main(ticket: SessionId) -> SessionHistoryPage {
             EntryPoint {
                 item: checked.entry.unwrap(),
             },
-            vec![InterpValue::String("continue_or_new:pages".into())],
+            vec![session_id(&checked, "continue_or_new:pages")],
             &host,
             RunOptions::default(),
         )
