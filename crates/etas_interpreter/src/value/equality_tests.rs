@@ -83,3 +83,30 @@ fn deep_snapshot_set_membership_equality_is_stack_safe() {
     assert!(a.member_eq(&b));
     assert!(!a.member_eq(&different));
 }
+
+#[test]
+fn deep_native_callable_frame_equality_is_stack_safe() {
+    if std::env::var("ETAS_EQUALITY_SUBPROCESS").as_deref() != Ok("callable") {
+        return subprocess(
+            "value::equality_tests::deep_native_callable_frame_equality_is_stack_safe",
+            "callable",
+        );
+    }
+    let chain = |depth, leaf| {
+        (0..depth).fold(V::Bool(leaf), |value, _| {
+            let captured =
+                crate::control::Frame::from_snapshot(vec![(etas_hir::SymbolId(1), value)]).unwrap();
+            V::Callable(crate::control::CallTarget::Lambda {
+                expr: etas_hir::HirExprId(7),
+                captured,
+            })
+        })
+    };
+    for depth in [1000, 2000, 4000, 30_000] {
+        let a = chain(depth, true);
+        let b = chain(depth, true);
+        let different = chain(depth, false);
+        assert!(a == b, "equal independent frames at depth {depth}");
+        assert!(a != different, "different leaf at depth {depth}");
+    }
+}

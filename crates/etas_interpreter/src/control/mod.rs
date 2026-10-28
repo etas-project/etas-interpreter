@@ -23,6 +23,7 @@ pub use fault::ExecutionFault;
 pub use frame::Frame;
 pub(crate) use frame::FrameLocals;
 pub(crate) use frame::FrameValues;
+pub(crate) use frame::{FrameComparison, FrameComparisonStep};
 pub(crate) use generics::{CheckedCallBindings, GenericBindings};
 pub use signal::{
     CallPurity, CommandDecode, ConsoleDecode, ContinuationInput, ControlSignal, HostBoundaryDecode,

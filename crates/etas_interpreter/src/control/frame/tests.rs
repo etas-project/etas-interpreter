@@ -85,3 +85,71 @@ fn scope_cache_does_not_change_frame_equality() {
     left.scope_symbols();
     assert_eq!(left, right);
 }
+
+#[test]
+fn equality_preserves_slot_layout_holes_sparse_storage_and_generic_bindings() {
+    let dense = Frame::new(Arc::new(SlotLayoutTable::default()));
+    let sparse = Frame::from_snapshot(Vec::new()).unwrap();
+    assert!(dense != sparse);
+
+    let a = frame(false, 2);
+    let mut b = frame(false, 2);
+    b.insert(SymbolId(2), InterpValue::Unit);
+    assert!(a != b);
+    let mut different_layout = Frame::new(Arc::new(SlotLayoutTable::from_symbols(vec![
+        SymbolId(0),
+        SymbolId(1),
+        SymbolId(2),
+        SymbolId(9),
+    ])));
+    different_layout.insert(SymbolId(0), InterpValue::i32(0));
+    different_layout.insert(SymbolId(1), InterpValue::i32(1));
+    assert!(a != different_layout);
+
+    let layout = Arc::new(SlotLayoutTable::default());
+    let a = Frame::with_type_bindings(
+        layout.clone(),
+        HashMap::from([("T".into(), etas_types::TypeId(1))]),
+    );
+    let b = Frame::with_type_bindings(layout, HashMap::from([("T".into(), etas_types::TypeId(2))]));
+    assert!(a != b);
+
+    let mut a = frame(false, 0);
+    let mut b = frame(false, 0);
+    a.install_scope_layout(&SlotLayoutTable::from_symbols(vec![SymbolId(10)]));
+    b.install_scope_layout(&SlotLayoutTable::from_symbols(vec![SymbolId(11)]));
+    a.insert(SymbolId(10), InterpValue::Bool(true));
+    b.insert(SymbolId(11), InterpValue::Bool(true));
+    assert!(a != b);
+}
+
+#[test]
+fn equality_rejects_a_mutably_borrowed_capture_without_panicking() {
+    for restored in [false, true] {
+        let a = frame(restored, 2);
+        let mut alias = a.clone();
+        alias
+            .with_local_mut(SymbolId(0), |_| assert!(a != a.clone()))
+            .unwrap();
+        assert!(a == alias);
+    }
+}
+
+#[test]
+fn equality_memo_does_not_merge_shared_slots_with_different_generic_environments() {
+    let base = frame(false, 1);
+    let other = frame(false, 1);
+    let with_binding = |mut frame: Frame, ty| {
+        frame.type_bindings = HashMap::from([("T".into(), etas_types::TypeId(ty))])
+            .into_iter()
+            .collect::<crate::control::GenericBindings>()
+            .shared();
+        InterpValue::Callable(crate::control::CallTarget::Lambda {
+            expr: etas_hir::HirExprId(1),
+            captured: frame,
+        })
+    };
+    let a = InterpValue::Tuple(vec![with_binding(base.clone(), 1), with_binding(base, 2)].into());
+    let b = InterpValue::Tuple(vec![with_binding(other.clone(), 1), with_binding(other, 3)].into());
+    assert!(a != b);
+}
