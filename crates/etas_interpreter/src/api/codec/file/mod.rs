@@ -1,9 +1,8 @@
-use std::ops::Deref;
-
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
 
 use super::InterpreterCodecError;
+use super::{CheckpointDocument, document::release_json};
 
 mod bounded;
 mod decode;
@@ -43,138 +42,12 @@ impl CheckpointFileLimits {
     }
 }
 
-/// An owned logical artifact whose recursive JSON storage is released iteratively.
-/// Borrow it for checked decoding; it never aliases a live evaluator frame.
-pub struct CheckpointDocument(Value);
-
-impl std::fmt::Debug for CheckpointDocument {
-    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("CheckpointDocument")
-            .field("schema", &self.0.get("schema").and_then(Value::as_str))
-            .field("flow", &self.0.get("flow").and_then(Value::as_str))
-            .finish_non_exhaustive()
-    }
-}
-
-impl PartialEq for CheckpointDocument {
-    fn eq(&self, other: &Self) -> bool {
-        let mut pending = vec![(&self.0, &other.0)];
-        while let Some((left, right)) = pending.pop() {
-            match (left, right) {
-                (Value::Array(a), Value::Array(b)) => {
-                    if a.len() != b.len() {
-                        return false;
-                    }
-                    pending.extend(a.iter().zip(b));
-                }
-                (Value::Object(a), Value::Object(b)) => {
-                    if a.len() != b.len() {
-                        return false;
-                    }
-                    for ((ak, av), (bk, bv)) in a.iter().zip(b) {
-                        if ak != bk {
-                            return false;
-                        }
-                        pending.push((av, bv));
-                    }
-                }
-                (a, b) if a == b => (),
-                _ => return false,
-            }
-        }
-        true
-    }
-}
-
-impl CheckpointDocument {
-    pub(in crate::api::codec) fn from_value(value: Value) -> Self {
-        Self(value)
-    }
-
-    pub(in crate::api::codec) fn value_mut(&mut self) -> &mut Value {
-        &mut self.0
-    }
-
-    pub(in crate::api::codec) fn into_value(mut self) -> Value {
-        std::mem::take(&mut self.0)
-    }
-}
-
-impl Deref for CheckpointDocument {
-    type Target = Value;
-    fn deref(&self) -> &Value {
-        &self.0
-    }
-}
-
-impl std::ops::DerefMut for CheckpointDocument {
-    fn deref_mut(&mut self) -> &mut Value {
-        &mut self.0
-    }
-}
-
-impl From<Value> for CheckpointDocument {
-    fn from(value: Value) -> Self {
-        Self(value)
-    }
-}
-
-impl Clone for CheckpointDocument {
-    fn clone(&self) -> Self {
-        let mut output = Self(Value::Null);
-        let mut pending = vec![(&self.0, &mut output.0)];
-        while let Some((input, slot)) = pending.pop() {
-            match input {
-                Value::Array(values) => {
-                    *slot = Value::Array((0..values.len()).map(|_| Value::Null).collect());
-                    if let Value::Array(slots) = slot {
-                        pending.extend(values.iter().zip(slots));
-                    }
-                }
-                Value::Object(fields) => {
-                    *slot = Value::Object(
-                        fields
-                            .keys()
-                            .map(|key| (key.clone(), Value::Null))
-                            .collect(),
-                    );
-                    if let Value::Object(slots) = slot {
-                        pending.extend(fields.values().zip(slots.values_mut()));
-                    }
-                }
-                input => *slot = input.clone(),
-            }
-        }
-        output
-    }
-}
-
-impl Drop for CheckpointDocument {
-    fn drop(&mut self) {
-        release_json(std::mem::take(&mut self.0));
-    }
-}
-
 struct JsonSlots(Vec<Value>);
 
 impl Drop for JsonSlots {
     fn drop(&mut self) {
         for value in std::mem::take(&mut self.0) {
             release_json(value);
-        }
-    }
-}
-
-fn release_json(root: Value) {
-    if !matches!(root, Value::Array(_) | Value::Object(_)) {
-        return;
-    }
-    let mut pending = vec![root];
-    while let Some(value) = pending.pop() {
-        match value {
-            Value::Array(children) => pending.extend(children),
-            Value::Object(fields) => pending.extend(fields.into_values()),
-            _ => {}
         }
     }
 }

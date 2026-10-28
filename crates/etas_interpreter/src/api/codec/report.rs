@@ -5,7 +5,7 @@ pub fn run_report_json(
     sources: &[PathBuf],
     flow: &str,
     result: &RunResult,
-) -> Result<Value, InterpreterCodecError> {
+) -> Result<JsonDocument, InterpreterCodecError> {
     let report = &result.termination;
     let mut report = CheckpointDocument::from_value(json!({
         "schema": "etas.cli.interpreter-report.v1",
@@ -56,7 +56,7 @@ pub fn run_report_json(
             .expect("report checkpoint array was initialized above")
             .push(checkpoint);
     }
-    Ok(report.into_value())
+    Ok(report)
 }
 
 fn failure_json(failure: &crate::api::RunFailure) -> Value {
@@ -76,3 +76,6 @@ fn failure_json(failure: &crate::api::RunFailure) -> Value {
         }
     }
 }
+
+#[cfg(test)]
+mod tests;

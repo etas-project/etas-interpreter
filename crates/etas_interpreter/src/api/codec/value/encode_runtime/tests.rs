@@ -146,9 +146,7 @@ flow main() -> Link {
         .unwrap();
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let value = result.value().unwrap();
-    let report = CheckpointDocument::from_value(
-        codec::run_report_json("run", &[], "main", &result).unwrap(),
-    );
+    let report = codec::run_report_json("run", &[], "main", &result).unwrap();
     assert_eq!(&codec::value_from_json(&report["value"]).unwrap(), value);
     let bytes = codec::checkpoint_file_to_bytes(
         codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap(),

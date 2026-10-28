@@ -24,6 +24,7 @@ use crate::{
 };
 
 mod checkpoint;
+mod document;
 mod file;
 mod json;
 mod json_helpers;
@@ -41,9 +42,9 @@ pub use checkpoint::{
     sources_and_flow_from_checkpoint_json,
 };
 pub(crate) use checkpoint::{budget_from_json, budget_json};
-pub use file::{
-    CheckpointDocument, CheckpointFileLimits, checkpoint_file_from_bytes, checkpoint_file_to_bytes,
-};
+pub use document::JsonDocument as CheckpointDocument;
+pub use document::{JsonDocument, write_json};
+pub use file::{CheckpointFileLimits, checkpoint_file_from_bytes, checkpoint_file_to_bytes};
 use json_helpers::*;
 pub use report::run_report_json;
 #[cfg(test)]
