@@ -524,12 +524,23 @@ impl<'a> EvalContext<'a> {
                     span,
                 ),
             },
-            CallTarget::PureIntrinsic(call) => self.execute_call_target_frame(
-                CallTarget::PureIntrinsic(call),
-                call_args,
-                span,
-                site,
-            ),
+            CallTarget::PureIntrinsic(call) => {
+                match call.specialize(
+                    &self.checked.type_store,
+                    &crate::control::GenericBindings {
+                        types: bindings,
+                        rows,
+                    },
+                ) {
+                    Ok(call) => self.execute_call_target_frame(
+                        CallTarget::PureIntrinsic(call),
+                        call_args,
+                        span,
+                        site,
+                    ),
+                    Err(message) => ControlSignal::missing_checked_fact(message, span),
+                }
+            }
             CallTarget::StdIntrinsic(call) => {
                 match self.plan.dispatch.resolve_std_callable(call.identity) {
                     Ok(kind) => self.execute_std_callable_with_type_bindings(

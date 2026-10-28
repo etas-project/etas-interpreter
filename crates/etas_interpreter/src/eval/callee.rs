@@ -123,6 +123,16 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<CallTarget, crate::control::ExecutionFault> {
         let target = match target {
+            CallTarget::PureIntrinsic(call) => CallTarget::PureIntrinsic(
+                call.specialize(&self.checked.type_store, frame.generic_bindings())
+                    .map_err(|message| {
+                        crate::control::ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            message,
+                        )
+                    })?,
+            ),
             CallTarget::StdIntrinsic(call) => CallTarget::StdIntrinsic(
                 call.specialize(&self.checked.type_store, frame.type_bindings())
                     .map_err(|message| {

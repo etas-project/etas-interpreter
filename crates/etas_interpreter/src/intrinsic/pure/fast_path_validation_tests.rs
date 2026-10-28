@@ -229,3 +229,88 @@ fn identity_checks_walk_deep_trust_wrappers_without_payload_projection() {
         "identity checking copied or projected the payload: {cost:?}"
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn generic_adt_descriptors_apply_the_owner_bindings_before_dispatch() {
+    let checked = crate::testing::project::checked_project(
+        r#"
+module app.main;
+import std.option.unwrap as option_unwrap;
+import std.result.unwrap as result_unwrap;
+type UserId = string;
+flow wrap<T>(value: T) -> Option<T> { return Some(value); }
+flow forward<U>(value: U) -> Option<U> { return wrap<U>(value); }
+flow wrap_result<T>(value: T) -> Result<T, string> { return Ok<T, string>(value); }
+flow unwrap_option<T>(value: Option<T>) -> T { return option_unwrap(value); }
+flow unwrap_result<T>(value: Result<T, string>) -> T { return result_unwrap(value); }
+flow main() -> bool {
+    let id = UserId("generic payload");
+    return unwrap_option(forward(id)) == id && unwrap_result(wrap_result(id)) == id;
+}
+"#,
+    );
+    let host = crate::testing::FakeHost::new(crate::host::HostServiceAvailability::default());
+    let result = crate::Interpreter
+        .run_checked(
+            &checked,
+            crate::api::EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            crate::api::RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn materialized_adt_call_descriptors_survive_argument_checkpoint_resume() {
+    let checked = crate::testing::project::checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+type UserId = string;
+flow pause<T>(value: T) -> T { checkpoint("pending-generic-adt"); return value; }
+flow wrap<T>(value: T) -> Option<T> { return Some(pause<T>(value)); }
+flow main() -> bool {
+    let id = UserId("suspended generic payload");
+    return match wrap(id) { Some(value) => value == id, None => false, };
+}
+"#,
+    );
+    let host = crate::testing::FakeHost::new(crate::host::HostServiceAvailability::with_host(
+        etas_effects::HostRequirementKind::Checkpoint,
+    ));
+    let result = crate::Interpreter
+        .run_checked(
+            &checked,
+            crate::api::EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            crate::api::RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        crate::api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let checkpoint = crate::api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed = crate::Interpreter
+        .resume_checkpoint(
+            &checked,
+            &checkpoint,
+            &host,
+            crate::api::RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+}

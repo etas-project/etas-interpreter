@@ -61,7 +61,7 @@ impl SnapshotValidator<'_> {
             let mut specialization = bindings.clone();
             specialization.extend(expected.types);
             specialization.rows.extend(expected.rows);
-            if self.pending_direct_intrinsic(call, target, site)? {
+            if self.pending_direct_intrinsic(call, target, site, &specialization)? {
                 return Ok(());
             }
             let ty = *self
