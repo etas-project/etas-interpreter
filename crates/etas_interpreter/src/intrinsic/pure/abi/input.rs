@@ -5,150 +5,182 @@ use crate::value::{InterpValue, NumericValue, RangeBounds, RecordValue};
 
 use super::{AbiShape, AdapterError, PureAbiProjector, SequenceKind};
 
+#[cfg(test)]
+mod tests;
+
 pub(in crate::intrinsic::pure) fn into_builtin_for_type(
-    value: InterpValue,
-    ty: TypeId,
+    mut value: InterpValue,
+    mut ty: TypeId,
     projector: &PureAbiProjector,
 ) -> Result<BuiltinValue, AdapterError> {
-    let shape = projector.shape(ty).ok_or(AdapterError::MissingType(ty))?;
-    match shape {
-        AbiShape::Nominal { representation } => {
-            let InterpValue::Nominal {
-                ty: runtime_ty,
-                value,
-            } = value
-            else {
-                return Err(type_mismatch(ty, &value));
+    let mut remaining_steps = None;
+    loop {
+        let shape = projector.shape(ty).ok_or(AdapterError::MissingType(ty))?;
+        if matches!(
+            shape,
+            AbiShape::Nominal { .. } | AbiShape::Refined { .. } | AbiShape::Trust { .. }
+        ) {
+            let remaining = match remaining_steps {
+                Some(remaining) => remaining,
+                None => projector.wrapper_steps(ty).ok_or_else(|| {
+                    AdapterError::UnsupportedValue(
+                        "checked input ABI is missing its prepared wrapper walk".into(),
+                    )
+                })?,
             };
-            if runtime_ty != ty {
-                return Err(AdapterError::NominalIdentity {
-                    expected: ty,
-                    actual: runtime_ty,
-                });
-            }
-            into_builtin_for_type(value.into_value(), *representation, projector)
-        }
-        AbiShape::Primitive(primitive) => into_builtin_primitive(value, ty, *primitive),
-        AbiShape::Array(inner) => {
-            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Array)
-        }
-        AbiShape::List(inner) => {
-            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::List)
-        }
-        AbiShape::Slice(inner) => {
-            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Slice)
-        }
-        AbiShape::Set(inner) => {
-            sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Set)
-        }
-        AbiShape::Map {
-            key,
-            value: value_ty,
-        } => {
-            let InterpValue::Map(entries) = value else {
-                return Err(type_mismatch(ty, &value));
-            };
-            entries
-                .try_map_values(|(entry_key, entry_value)| {
-                    Ok((
-                        into_builtin_for_type(entry_key, *key, projector)?,
-                        into_builtin_for_type(entry_value, *value_ty, projector)?,
-                    ))
-                })
-                .map(BuiltinValue::Map)
-        }
-        AbiShape::Range(index) => {
-            let InterpValue::Range(range) = value else {
-                return Err(type_mismatch(ty, &value));
-            };
-            Ok(BuiltinValue::Range {
-                start: Box::new(into_builtin_for_type(*range.start, *index, projector)?),
-                end: Box::new(into_builtin_for_type(*range.end, *index, projector)?),
-                bounds: into_builtin_range_bounds(range.bounds),
-            })
-        }
-        AbiShape::Option(inner) => match value {
-            InterpValue::OptionNone => Ok(BuiltinValue::OptionNone),
-            InterpValue::OptionSome(value) => {
-                into_builtin_for_type(value.into_value(), *inner, projector)
-                    .map(Box::new)
-                    .map(BuiltinValue::OptionSome)
-            }
-            other => Err(type_mismatch(ty, &other)),
-        },
-        AbiShape::Result { ok, err } => match value {
-            InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => {
-                into_builtin_for_type(
-                    fields.into_single().ok_or(AdapterError::Arity {
-                        expected: 1,
-                        actual: 0,
-                    })?,
-                    *ok,
-                    projector,
-                )
-                .map(Box::new)
-                .map(BuiltinValue::ResultOk)
-            }
-            InterpValue::Variant { name, fields } if name == "Err" && fields.len() == 1 => {
-                into_builtin_for_type(
-                    fields.into_single().ok_or(AdapterError::Arity {
-                        expected: 1,
-                        actual: 0,
-                    })?,
-                    *err,
-                    projector,
-                )
-                .map(Box::new)
-                .map(BuiltinValue::ResultErr)
-            }
-            other => Err(type_mismatch(ty, &other)),
-        },
-        AbiShape::Record(expected_fields) => {
-            let InterpValue::Record(fields) = value else {
-                return Err(type_mismatch(ty, &value));
-            };
-            checked_record_into_builtin(fields, ty, expected_fields, projector)
-        }
-        AbiShape::Tuple(types) => {
-            let InterpValue::Tuple(values) = value else {
-                return Err(type_mismatch(ty, &value));
-            };
-            if values.len() != types.len() {
-                return Err(type_mismatch(ty, &InterpValue::Tuple(values)));
-            }
-            values
-                .try_map_indexed(|index, value| {
-                    into_builtin_for_type(value, types[index], projector)
-                })
-                .map(|fields| BuiltinValue::Variant {
-                    name: "Tuple".to_owned(),
-                    fields,
-                })
-        }
-        AbiShape::Enum => into_builtin_enum(value, ty),
-        AbiShape::Refined { base } => into_builtin_for_type(value, *base, projector),
-        AbiShape::Trust { wrapper, inner } => {
-            let InterpValue::Trust {
-                wrapper: runtime_wrapper,
-                value,
-            } = value
-            else {
-                return Err(type_mismatch(ty, &value));
-            };
-            if runtime_wrapper != *wrapper {
-                return Err(type_mismatch(
-                    ty,
-                    &InterpValue::Trust {
-                        wrapper: runtime_wrapper,
-                        value,
-                    },
+            if remaining == 0 {
+                return Err(AdapterError::UnsupportedValue(
+                    "cyclic checked input ABI".into(),
                 ));
             }
-            into_builtin_for_type(value.into_value(), *inner, projector)
+            remaining_steps = Some(remaining - 1);
         }
-        AbiShape::Unsupported(description) => Err(AdapterError::UnsupportedValue(format!(
-            "checked pure intrinsic ABI does not support type {ty:?}: {description}"
-        ))),
+        return match shape {
+            AbiShape::Nominal { representation } => {
+                let InterpValue::Nominal {
+                    ty: runtime_ty,
+                    value: inner,
+                } = value
+                else {
+                    return Err(type_mismatch(ty, &value));
+                };
+                if runtime_ty != ty {
+                    return Err(AdapterError::NominalIdentity {
+                        expected: ty,
+                        actual: runtime_ty,
+                    });
+                }
+                value = inner.into_value();
+                ty = *representation;
+                continue;
+            }
+            AbiShape::Primitive(primitive) => into_builtin_primitive(value, ty, *primitive),
+            AbiShape::Array(inner) => {
+                sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Array)
+            }
+            AbiShape::List(inner) => {
+                sequence_into_builtin(value, ty, *inner, projector, SequenceKind::List)
+            }
+            AbiShape::Slice(inner) => {
+                sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Slice)
+            }
+            AbiShape::Set(inner) => {
+                sequence_into_builtin(value, ty, *inner, projector, SequenceKind::Set)
+            }
+            AbiShape::Map {
+                key,
+                value: value_ty,
+            } => {
+                let InterpValue::Map(entries) = value else {
+                    return Err(type_mismatch(ty, &value));
+                };
+                entries
+                    .try_map_values(|(entry_key, entry_value)| {
+                        Ok((
+                            into_builtin_for_type(entry_key, *key, projector)?,
+                            into_builtin_for_type(entry_value, *value_ty, projector)?,
+                        ))
+                    })
+                    .map(BuiltinValue::Map)
+            }
+            AbiShape::Range(index) => {
+                let InterpValue::Range(range) = value else {
+                    return Err(type_mismatch(ty, &value));
+                };
+                Ok(BuiltinValue::Range {
+                    start: Box::new(into_builtin_for_type(*range.start, *index, projector)?),
+                    end: Box::new(into_builtin_for_type(*range.end, *index, projector)?),
+                    bounds: into_builtin_range_bounds(range.bounds),
+                })
+            }
+            AbiShape::Option(inner) => match value {
+                InterpValue::OptionNone => Ok(BuiltinValue::OptionNone),
+                InterpValue::OptionSome(value) => {
+                    into_builtin_for_type(value.into_value(), *inner, projector)
+                        .map(Box::new)
+                        .map(BuiltinValue::OptionSome)
+                }
+                other => Err(type_mismatch(ty, &other)),
+            },
+            AbiShape::Result { ok, err } => match value {
+                InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => {
+                    into_builtin_for_type(
+                        fields.into_single().ok_or(AdapterError::Arity {
+                            expected: 1,
+                            actual: 0,
+                        })?,
+                        *ok,
+                        projector,
+                    )
+                    .map(Box::new)
+                    .map(BuiltinValue::ResultOk)
+                }
+                InterpValue::Variant { name, fields } if name == "Err" && fields.len() == 1 => {
+                    into_builtin_for_type(
+                        fields.into_single().ok_or(AdapterError::Arity {
+                            expected: 1,
+                            actual: 0,
+                        })?,
+                        *err,
+                        projector,
+                    )
+                    .map(Box::new)
+                    .map(BuiltinValue::ResultErr)
+                }
+                other => Err(type_mismatch(ty, &other)),
+            },
+            AbiShape::Record(expected_fields) => {
+                let InterpValue::Record(fields) = value else {
+                    return Err(type_mismatch(ty, &value));
+                };
+                checked_record_into_builtin(fields, ty, expected_fields, projector)
+            }
+            AbiShape::Tuple(types) => {
+                let InterpValue::Tuple(values) = value else {
+                    return Err(type_mismatch(ty, &value));
+                };
+                if values.len() != types.len() {
+                    return Err(type_mismatch(ty, &InterpValue::Tuple(values)));
+                }
+                values
+                    .try_map_indexed(|index, value| {
+                        into_builtin_for_type(value, types[index], projector)
+                    })
+                    .map(|fields| BuiltinValue::Variant {
+                        name: "Tuple".to_owned(),
+                        fields,
+                    })
+            }
+            AbiShape::Enum => into_builtin_enum(value, ty),
+            AbiShape::Refined { base } => {
+                ty = *base;
+                continue;
+            }
+            AbiShape::Trust { wrapper, inner } => {
+                let InterpValue::Trust {
+                    wrapper: runtime_wrapper,
+                    value: inner_value,
+                } = value
+                else {
+                    return Err(type_mismatch(ty, &value));
+                };
+                if runtime_wrapper != *wrapper {
+                    return Err(type_mismatch(
+                        ty,
+                        &InterpValue::Trust {
+                            wrapper: runtime_wrapper,
+                            value: inner_value,
+                        },
+                    ));
+                }
+                value = inner_value.into_value();
+                ty = *inner;
+                continue;
+            }
+            AbiShape::Unsupported(description) => Err(AdapterError::UnsupportedValue(format!(
+                "checked pure intrinsic ABI does not support type {ty:?}: {description}"
+            ))),
+        };
     }
 }
 

@@ -4,6 +4,7 @@ pub(crate) mod allocation;
 mod execution_performance;
 mod host;
 pub(crate) mod project;
+mod subprocess;
 pub(crate) use self::host::FakeHost;
 use self::host::availability;
 use self::project::{checked_project, checked_project_sources, checked_project_with_environment};
@@ -32,6 +33,7 @@ use etas_host::{
     TokenBudget, ToolRef, ToolSchema, TraceContext, TraceId,
 };
 use etas_types::{NamedTypeRef, NominalTypeRef, Type};
+pub(crate) use subprocess::in_subprocess;
 
 pub(crate) fn edit_checked_hir<R>(
     checked: &mut etas_frontend::CheckedProject,

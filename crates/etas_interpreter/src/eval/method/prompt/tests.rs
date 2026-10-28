@@ -156,3 +156,67 @@ fn prompt_data_streams_borrowed_payloads_and_rejects_nested_secrets() {
         }
     });
 }
+
+#[test]
+fn prompt_data_deep_wrappers_keep_json_and_secret_rejection_without_recursive_projection() {
+    if crate::testing::in_subprocess("ETAS_TEST_PROMPT_ABI_WRAPPERS") {
+        return;
+    }
+    with_prompt_eval(|eval, span| {
+        let marker = "SECRET_MARKER".repeat(1024);
+        let scalar = InterpValue::String(marker.clone().into());
+        let ((reference, _), flat_cost) = measure(|| {
+            eval.prompt_channel_content("data", scalar.clone(), span, true)
+                .unwrap()
+        });
+        for depth in [1000, 2000, 4000, 30_000] {
+            for secret in [false, true] {
+                let mut value = if secret {
+                    InterpValue::Trust {
+                        wrapper: etas_types::TrustWrapper::Secret,
+                        value: scalar.clone().into(),
+                    }
+                } else {
+                    scalar.clone()
+                };
+                for layer in 0..depth {
+                    value = if layer % 2 == 0 {
+                        InterpValue::Nominal {
+                            ty: etas_types::TypeId(layer),
+                            value: value.into(),
+                        }
+                    } else {
+                        InterpValue::Trust {
+                            wrapper: etas_types::TrustWrapper::Public,
+                            value: value.into(),
+                        }
+                    };
+                }
+                let (result, cost) =
+                    measure(|| eval.prompt_channel_content("data", value.clone(), span, true));
+                if secret {
+                    let error = result.unwrap_err();
+                    assert_eq!(error.code, AnalysisDiagnosticCode::InvalidArguments);
+                    assert!(error.message.contains("cannot encode secret values"));
+                    assert!(!error.message.contains("SECRET_MARKER"));
+                    assert!(cost.bytes < 4096, "depth={depth}: {cost:?}");
+                } else {
+                    let (text, trust) = result.unwrap();
+                    assert_eq!(text, reference);
+                    assert_eq!(trust, None);
+                    assert!(
+                        cost.count <= flat_cost.count + 16,
+                        "depth={depth}: {cost:?}"
+                    );
+                    assert!(
+                        cost.bytes <= flat_cost.bytes + 4096,
+                        "depth={depth}: {cost:?}"
+                    );
+                }
+                eprintln!(
+                    "Prompt.data wrapper depth={depth}, secret={secret}: {cost:?}; flat={flat_cost:?}"
+                );
+            }
+        }
+    });
+}
