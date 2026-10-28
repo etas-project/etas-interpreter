@@ -18,8 +18,6 @@ pub enum StaticMethodKind {
     Message,
     SessionConfig,
     Conversation,
-    Range,
-    AdvancedCollection(String),
 }
 
 #[derive(Clone, Debug)]

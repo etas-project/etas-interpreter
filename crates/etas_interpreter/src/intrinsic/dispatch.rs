@@ -139,6 +139,7 @@ pub enum CodeSyntaxCallable {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StdCallable {
+    Collection(etas_std::StdCollectionIntrinsic),
     ForwardAction,
     CodeSyntax(CodeSyntaxCallable),
     SessionHistoryPage,
@@ -166,6 +167,12 @@ pub enum StdCallable {
 }
 
 pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> Option<StdCallable> {
+    if let etas_std::LoweringHint::Collection(operation) = descriptor.lowering {
+        return (operation.is_supported()
+            && descriptor.id == operation.id()
+            && descriptor.dispatch == IntrinsicDispatch::Runtime)
+            .then_some(StdCallable::Collection(operation));
+    }
     if matches!(
         descriptor.lowering,
         etas_std::LoweringHint::ForwardAction { .. }

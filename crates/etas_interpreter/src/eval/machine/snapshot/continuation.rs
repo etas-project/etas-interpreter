@@ -1427,10 +1427,6 @@ fn capture_static_method_kind(value: &StaticMethodKind) -> StaticMethodKindSnaps
         StaticMethodKind::Message => StaticMethodKindSnapshot::Message,
         StaticMethodKind::SessionConfig => StaticMethodKindSnapshot::SessionConfig,
         StaticMethodKind::Conversation => StaticMethodKindSnapshot::Conversation,
-        StaticMethodKind::Range => StaticMethodKindSnapshot::Range,
-        StaticMethodKind::AdvancedCollection(value) => {
-            StaticMethodKindSnapshot::AdvancedCollection(value.clone())
-        }
     }
 }
 
@@ -1440,9 +1436,5 @@ fn restore_static_method_kind(value: StaticMethodKindSnapshot) -> StaticMethodKi
         StaticMethodKindSnapshot::Message => StaticMethodKind::Message,
         StaticMethodKindSnapshot::SessionConfig => StaticMethodKind::SessionConfig,
         StaticMethodKindSnapshot::Conversation => StaticMethodKind::Conversation,
-        StaticMethodKindSnapshot::Range => StaticMethodKind::Range,
-        StaticMethodKindSnapshot::AdvancedCollection(value) => {
-            StaticMethodKind::AdvancedCollection(value)
-        }
     }
 }

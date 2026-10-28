@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use etas_frontend::CheckedProject;
 use etas_hir::{HirExpr, HirExprId};
@@ -13,21 +13,19 @@ pub(super) fn lower(
     project: &CheckedProject,
     handlers: &StdIntrinsicHandlerRegistry,
     imported: &mut HashMap<StdIntrinsicId, IntrinsicDispatch>,
-) -> Result<HashMap<HirExprId, CheckedStdIntrinsicCall>, String> {
+) -> Result<
+    (
+        HashMap<HirExprId, CheckedStdIntrinsicCall>,
+        HashSet<HirExprId>,
+    ),
+    String,
+> {
     let mut calls = HashMap::new();
+    let mut type_members = HashSet::new();
     for (expr, fact) in &project.types.std_method_calls {
         if project.types.agent_method_calls.contains_key(expr) {
             return Err("method call has conflicting agent and standard intrinsic targets".into());
         }
-        let Some(HirExpr::MethodCall {
-            receiver,
-            method,
-            args,
-            ..
-        }) = project.hir.exprs.get(*expr)
-        else {
-            return Err("checked std method does not refer to a method-call expression".into());
-        };
         let symbol = project
             .std_registry
             .lookup_qualified(&fact.qualified_path)
@@ -43,9 +41,58 @@ pub(super) fn lower(
             .intrinsic
             .as_ref()
             .ok_or("checked std method has no intrinsic descriptor")?;
+        let collection = match descriptor.lowering {
+            etas_std::LoweringHint::Collection(operation) => Some(operation),
+            _ => None,
+        };
+        let type_member = source.kind == etas_std::FlowSourceMethodKind::TypeMember;
+        let (receiver, method, args) = match project.hir.exprs.get(*expr) {
+            Some(HirExpr::MethodCall {
+                receiver,
+                method,
+                args,
+                ..
+            }) => {
+                if type_member {
+                    let Some(HirExpr::Path(path)) = project.hir.exprs.get(*receiver) else {
+                        return Err("checked type member has no resolved type subject".into());
+                    };
+                    let etas_hir::ResolveResult::Resolved(subject) = path.resolution else {
+                        return Err("checked type member has no resolved type identity".into());
+                    };
+                    validate_collection_subject(project, collection, subject)?;
+                }
+                ((!type_member).then_some(*receiver), method, args)
+            }
+            Some(HirExpr::Call { callee, args, .. }) if type_member => {
+                let Some(HirExpr::Path(path)) = project.hir.exprs.get(*callee) else {
+                    return Err("checked type member call has no resolved type path".into());
+                };
+                let etas_hir::ResolveResult::PartiallyResolved(partial) = &path.resolution else {
+                    return Err("checked type member call has no resolved type prefix".into());
+                };
+                let [method] = partial.remaining.as_slice() else {
+                    return Err("checked type member call has an invalid member path".into());
+                };
+                validate_collection_subject(
+                    project,
+                    collection,
+                    partial
+                        .resolved_prefix
+                        .ok_or("checked type member has no resolved subject")?,
+                )?;
+                (None, method, args)
+            }
+            _ => {
+                return Err(
+                    "checked std method does not refer to its checked call expression".into(),
+                );
+            }
+        };
         if descriptor.id.0 != fact.intrinsic
             || source.name != *method
-            || source.operation != FlowSourceMethodOperation::CheckedIntrinsic
+            || (source.operation != FlowSourceMethodOperation::CheckedIntrinsic
+                && !(type_member && collection.is_some()))
         {
             return Err("checked std method identity differs from its registry descriptor".into());
         }
@@ -54,7 +101,7 @@ pub(super) fn lower(
         else {
             return Err("checked std method has no materialized callable ABI".into());
         };
-        if signature.input.len() != args.len() + 1 {
+        if signature.input.len() != args.len() + usize::from(receiver.is_some()) {
             return Err(
                 "checked std method ABI does not include its receiver and arguments".into(),
             );
@@ -65,29 +112,30 @@ pub(super) fn lower(
         {
             return Err("checked std method intrinsic has conflicting dispatch categories".into());
         }
-        let (parameter_types, result_type) = if descriptor.dispatch == IntrinsicDispatch::PureKernel
-        {
-            let parameter_types = std::iter::once(*receiver)
-                .chain(args.iter().map(|arg| match arg {
-                    etas_hir::HirArg::Positional(expr)
-                    | etas_hir::HirArg::Named { value: expr, .. } => *expr,
-                }))
-                .map(|arg| {
-                    project.types.expr_types.get(&arg).copied().ok_or_else(|| {
-                        "checked pure method argument is missing its value type".to_owned()
+        let (parameter_types, result_type) =
+            if descriptor.dispatch == IntrinsicDispatch::PureKernel || collection.is_some() {
+                let parameter_types = receiver
+                    .into_iter()
+                    .chain(args.iter().map(|arg| match arg {
+                        etas_hir::HirArg::Positional(expr)
+                        | etas_hir::HirArg::Named { value: expr, .. } => *expr,
+                    }))
+                    .map(|arg| {
+                        project.types.expr_types.get(&arg).copied().ok_or_else(|| {
+                            "checked pure method argument is missing its value type".to_owned()
+                        })
                     })
-                })
-                .collect::<Result<Vec<_>, _>>()?;
-            let result_type = project
-                .types
-                .expr_types
-                .get(expr)
-                .copied()
-                .ok_or("checked pure method is missing its result value type")?;
-            (parameter_types, result_type)
-        } else {
-            (signature.input.clone(), signature.output)
-        };
+                    .collect::<Result<Vec<_>, _>>()?;
+                let result_type = project
+                    .types
+                    .expr_types
+                    .get(expr)
+                    .copied()
+                    .ok_or("checked pure method is missing its result value type")?;
+                (parameter_types, result_type)
+            } else {
+                (signature.input.clone(), signature.output)
+            };
         calls.insert(
             *expr,
             CheckedStdIntrinsicCall {
@@ -101,8 +149,34 @@ pub(super) fn lower(
                 result_type,
             },
         );
+        if type_member {
+            type_members.insert(*expr);
+        }
     }
-    Ok(calls)
+    Ok((calls, type_members))
+}
+
+fn validate_collection_subject(
+    project: &CheckedProject,
+    collection: Option<etas_std::StdCollectionIntrinsic>,
+    subject: etas_hir::SymbolId,
+) -> Result<(), String> {
+    let operation =
+        collection.ok_or("type-member dispatch requires a checked collection descriptor")?;
+    let Some(etas_hir::SymbolDef::ImportAlias { path, .. }) =
+        project.symbols.get(subject).map(|symbol| &symbol.def)
+    else {
+        return Err("collection type member subject is not a checked std type".into());
+    };
+    let actual = project.std_registry.lookup_qualified(path);
+    let expected =
+        project
+            .std_registry
+            .lookup_qualified(&["std", "collections", operation.kind.name()]);
+    if actual.is_none() || actual.map(|s| s.id) != expected.map(|s| s.id) {
+        return Err("collection type member subject differs from its checked descriptor".into());
+    }
+    Ok(())
 }
 
 #[cfg(test)]

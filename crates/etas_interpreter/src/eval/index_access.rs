@@ -201,6 +201,15 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
+        self.raise_typed_index_error(error_type, message, span)
+    }
+
+    pub(super) fn raise_typed_index_error(
+        &mut self,
+        error_type: etas_types::TypeId,
+        message: impl Into<String>,
+        span: Span,
+    ) -> ControlSignal {
         ControlSignal::pending_perform(PendingPerform {
             checked_action: None,
             default_boundary: None,

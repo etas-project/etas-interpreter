@@ -14,6 +14,19 @@ impl<'a> EvalContext<'a> {
             args,
             span,
         } = dispatch;
+        if let Some(checked) = self.plan.dispatch.std_type_member(expr).cloned() {
+            return self.resume_call_args(
+                crate::eval::call::CallArgsState {
+                    call: expr,
+                    target: CallTarget::StdIntrinsic(checked),
+                    args: args.into(),
+                    start_arg_index: 0,
+                    evaluated_args: Vec::new(),
+                    span,
+                },
+                frame,
+            );
+        }
         if self.expr_is_std_prompt_type(receiver) {
             return self.resume_static_method_args(
                 StaticMethodArgsState {
@@ -64,36 +77,6 @@ impl<'a> EvalContext<'a> {
                 StaticMethodArgsState {
                     expr,
                     kind: StaticMethodKind::Conversation,
-                    method: method.to_owned(),
-                    type_args: type_args.to_vec(),
-                    args: args.to_vec(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
-            );
-        }
-        if self.expr_is_std_range_type(receiver) {
-            return self.resume_static_method_args(
-                StaticMethodArgsState {
-                    expr,
-                    kind: StaticMethodKind::Range,
-                    method: method.to_owned(),
-                    type_args: type_args.to_vec(),
-                    args: args.to_vec(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
-            );
-        }
-        if let Some(collection) = self.std_advanced_collection_type(receiver) {
-            return self.resume_static_method_args(
-                StaticMethodArgsState {
-                    expr,
-                    kind: StaticMethodKind::AdvancedCollection(collection.to_owned()),
                     method: method.to_owned(),
                     type_args: type_args.to_vec(),
                     args: args.to_vec(),
@@ -427,7 +410,7 @@ impl<'a> EvalContext<'a> {
                 other => return other,
             }
         }
-        self.eval_static_method_values(call_expr, kind, &method, &type_args, &evaluated_args, span)
+        self.eval_static_method_values(call_expr, kind, &method, &evaluated_args, span)
     }
 
     pub(in crate::eval) fn eval_static_method_values(
@@ -435,7 +418,6 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         kind: StaticMethodKind,
         method: &str,
-        type_args: &[etas_hir::HirTypeId],
         args: &[InterpValue],
         span: Span,
     ) -> ControlSignal {
@@ -453,9 +435,6 @@ impl<'a> EvalContext<'a> {
             StaticMethodKind::Conversation => {
                 self.eval_conversation_type_method_values(expr, method, args, span)
             }
-            StaticMethodKind::Range => self.eval_range_type_method_values(method, args, span),
-            StaticMethodKind::AdvancedCollection(collection) => self
-                .eval_advanced_collection_type_method(&collection, method, type_args, args, span),
         }
     }
 
@@ -476,10 +455,6 @@ impl<'a> EvalContext<'a> {
         )
     }
 
-    pub(in crate::eval) fn expr_is_std_range_type(&self, expr: HirExprId) -> bool {
-        self.expr_is_std_type(expr, &["std", "collections", "Range"])
-    }
-
     pub(in crate::eval) fn expr_is_std_message_type(&self, expr: HirExprId) -> bool {
         self.expr_is_std_type(expr, &["std", "agent", "message", "Message"])
     }
@@ -490,28 +465,6 @@ impl<'a> EvalContext<'a> {
 
     pub(in crate::eval) fn expr_is_std_conversation_type(&self, expr: HirExprId) -> bool {
         self.expr_is_std_type(expr, &["std", "agent", "session", "Conversation"])
-    }
-
-    pub(in crate::eval) fn std_advanced_collection_type(
-        &self,
-        expr: HirExprId,
-    ) -> Option<&'static str> {
-        for (name, path) in [
-            ("Deque", &["std", "collections", "Deque"][..]),
-            ("Queue", &["std", "collections", "Queue"][..]),
-            ("Stack", &["std", "collections", "Stack"][..]),
-            (
-                "PriorityQueue",
-                &["std", "collections", "PriorityQueue"][..],
-            ),
-            ("OrderedMap", &["std", "collections", "OrderedMap"][..]),
-            ("OrderedSet", &["std", "collections", "OrderedSet"][..]),
-        ] {
-            if self.expr_is_std_type(expr, path) {
-                return Some(name);
-            }
-        }
-        None
     }
 
     pub(in crate::eval) fn expr_is_std_type(&self, expr: HirExprId, expected: &[&str]) -> bool {

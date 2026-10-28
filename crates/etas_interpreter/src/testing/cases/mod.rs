@@ -10,6 +10,7 @@ mod cancellation;
 mod checkpoint;
 mod checkpoint_model_policy;
 mod closures;
+mod collection_conformance;
 mod compiler_definitions;
 mod compiler_syntax;
 mod conversation;
