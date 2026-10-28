@@ -208,9 +208,7 @@ flow main(data: JsonValue) -> JsonValue {
         payload: Box::new(input.clone()),
         provenance: None,
     });
-    let report = CheckpointDocument::from_value(
-        codec::run_report_json("run", &[], "main", &result).unwrap(),
-    );
+    let report = codec::run_report_json("run", &[], "main", &result).unwrap();
     assert_eq!(codec::value_from_json(&report["value"]).unwrap(), input);
     assert_eq!(
         codec::value_from_json(&report["events"].as_array().unwrap().last().unwrap()["payload"])
