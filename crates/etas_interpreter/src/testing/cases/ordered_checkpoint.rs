@@ -142,12 +142,13 @@ async fn ordered_checkpoint_rejects_invalid_or_missing_comparison_abi_and_effect
             let item = flow(&checked, name);
             let comparator = crate::api::codec::value_json(&InterpValue::Callable(
                 crate::control::CallTarget::FlowItem(item),
-            ));
+            ))
+            .unwrap();
             let mut wire =
                 checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0])
                     .unwrap();
             assert!(edit(&mut wire, kind, &mut |value| {
-                value["comparator"] = comparator.clone();
+                value["comparator"] = std::mem::take(&mut *comparator.clone());
             }));
             let error = checkpoint_from_json(&wire, &checked).unwrap_err();
             assert!(error.message().contains(reason), "{name}: {error}");
@@ -198,11 +199,12 @@ async fn ordered_checkpoint_validation_consumes_run_fuel() {
     let (checked, result, host) = fixture().await;
     let comparator = crate::api::codec::value_json(&InterpValue::Callable(
         crate::control::CallTarget::FlowItem(flow(&checked, "forever")),
-    ));
+    ))
+    .unwrap();
     let mut wire =
         checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
     assert!(edit(&mut wire, "ordered_map", &mut |value| {
-        value["comparator"] = comparator.clone();
+        value["comparator"] = std::mem::take(&mut *comparator.clone());
     }));
     let checkpoint = checkpoint_from_json(&wire, &checked).unwrap();
     let mut options = RunOptions::default();
@@ -231,11 +233,12 @@ async fn ordered_checkpoint_validation_yields_to_cancellation() {
     let (checked, result, host) = fixture().await;
     let comparator = crate::api::codec::value_json(&InterpValue::Callable(
         crate::control::CallTarget::FlowItem(flow(&checked, "forever")),
-    ));
+    ))
+    .unwrap();
     let mut wire =
         checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
     assert!(edit(&mut wire, "ordered_map", &mut |value| {
-        value["comparator"] = comparator.clone();
+        value["comparator"] = std::mem::take(&mut *comparator.clone());
     }));
     let checkpoint = checkpoint_from_json(&wire, &checked).unwrap();
     let run = Interpreter.create_resume(&checked, &checkpoint, &host, RunOptions::default());
@@ -264,12 +267,13 @@ async fn ordered_checkpoint_rejects_keys_that_the_comparison_equates() {
     let (checked, result, host) = fixture().await;
     let comparator = crate::api::codec::value_json(&InterpValue::Callable(
         crate::control::CallTarget::FlowItem(flow(&checked, "equivalent")),
-    ));
+    ))
+    .unwrap();
     for kind in ["ordered_map", "ordered_set"] {
         let mut wire =
             checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
         assert!(edit(&mut wire, kind, &mut |value| {
-            value["comparator"] = comparator.clone();
+            value["comparator"] = std::mem::take(&mut *comparator.clone());
         }));
         let checkpoint = checkpoint_from_json(&wire, &checked).unwrap();
         let resumed = Interpreter

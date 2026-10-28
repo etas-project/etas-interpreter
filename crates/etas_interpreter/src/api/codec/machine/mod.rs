@@ -17,7 +17,7 @@ pub(super) use intrinsic::intrinsic_dispatch_name;
 pub(in crate::api::codec) use program::call_site_from_json;
 pub(in crate::api::codec) use program::{program_return_from_json, program_return_json};
 
-pub(crate) use call_target::{call_target_from_artifact_snapshot, call_target_snapshot};
+pub(crate) use call_target::call_target_from_artifact_snapshot;
 pub(in crate::api::codec) use call_target::{
     call_target_snapshot_from_json, intrinsic_substitutions_snapshot,
 };

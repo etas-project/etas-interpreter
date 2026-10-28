@@ -63,7 +63,7 @@ fn captured_value_json_preserves_the_runtime_wire_contract() {
     for value in cases {
         let snapshot = ValueSnapshot::capture(&value).unwrap();
         let json = encode(Node::Value(&snapshot));
-        assert_eq!(json, codec::value_json(&value));
+        assert_eq!(json, codec::value_json(&value).unwrap());
         assert_eq!(codec::value_from_json(&json).unwrap(), value);
     }
 }
@@ -100,10 +100,18 @@ fn captured_frame_encoding_removes_runtime_graph_materialization() {
                 .collect();
             let mut frame = Frame::from_snapshot(values).unwrap();
             frame.set_snapshot_id(captured.id).unwrap();
-            codec::machine::call_target_snapshot(&CallTarget::Lambda {
-                expr: HirExprId(3),
-                captured: frame,
-            })
+            let locals = frame
+                .sorted_locals()
+                .iter()
+                .map(|(symbol, value)| {
+                    let mut row = json!({"symbol":symbol.0, "value":null});
+                    row["value"] = codec::value_json(value).unwrap().into_value();
+                    row
+                })
+                .collect::<Vec<_>>();
+            // Bounded former frame -> runtime JSON -> parent serialization path.
+            let captured = json!({"id":frame.snapshot_id(),"locals":locals,"effect_row_bindings":frame.generic_bindings().sorted_rows(),"type_bindings":[]});
+            json!({"kind":"lambda","expr":3,"captured":captured})
         });
         assert_eq!(actual, expected);
         assert!(

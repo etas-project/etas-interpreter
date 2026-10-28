@@ -56,3 +56,42 @@ fn report_ownership_and_output_are_stack_safe_for_deep_values() {
     assert!(text.contains("etas.cli.interpreter-report.v1"));
     assert!(text.ends_with('}'));
 }
+
+#[test]
+fn late_event_error_releases_already_encoded_deep_report_without_swallowing_error() {
+    use crate::control::{CallTarget, Frame};
+    use etas_hir::{HirExprId, SymbolId};
+
+    let mut frame = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::Unit)]).unwrap();
+    let invalid = InterpValue::Callable(CallTarget::Lambda {
+        expr: HirExprId(7),
+        captured: frame.clone(),
+    });
+    assert!(frame.set(SymbolId(0), invalid.clone()));
+    let mut deep = InterpValue::Bool(true);
+    for _ in 0..30_000 {
+        deep = InterpValue::OptionSome(deep.into());
+    }
+    let event = |id: &str, payload| WorkflowEvent::MessageCreated {
+        id: id.into(),
+        from: None,
+        to: None,
+        session: None,
+        role: "user".into(),
+        created_at: "step-1".into(),
+        payload: Box::new(payload),
+        provenance: None,
+    };
+    let mut result = completed(deep.clone());
+    result.events = vec![event("valid", deep), event("invalid", invalid)];
+    let (_, cost) = crate::testing::allocation::measure(|| {
+        let error = run_report_json("run", &[], "main", &result).unwrap_err();
+        assert!(error.message().contains("cyclic captured-frame"), "{error}");
+    });
+    assert_eq!(
+        cost.bytes, cost.released_bytes,
+        "report leaked on error: {cost:?}"
+    );
+    // Release the intentionally malformed native cycle after testing its rejection.
+    assert!(frame.set(SymbolId(0), InterpValue::Unit));
+}

@@ -154,7 +154,14 @@ impl CaptureContext {
         let mut discovery = super::frame_dependencies::Discovery::default();
         let mut result = Vec::new();
         frame.try_visit_locals(|value| {
-            discovery.frames(value, &self.values, &mut result);
+            result.extend(
+                discovery
+                    .frames(crate::value::graph::Node::Value(value), true, |key| {
+                        self.values.contains_key(key)
+                    })
+                    .into_iter()
+                    .map(|frame| (frame, false)),
+            );
             Ok::<_, String>(())
         })?;
         Ok(result)

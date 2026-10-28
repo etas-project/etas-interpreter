@@ -352,7 +352,11 @@ flow main() -> i32 {
         let mut edits = 0;
         corrupt_captures(&mut bad, &mut |locals| {
             if inject {
-                locals.push(serde_json::json!({"symbol": unrelated.0, "value": crate::api::codec::value_json(&InterpValue::i32(100))}));
+                let mut row = serde_json::json!({"symbol": unrelated.0, "value": null});
+                row["value"] = std::mem::take(
+                    &mut *crate::api::codec::value_json(&InterpValue::i32(100)).unwrap(),
+                );
+                locals.push(row);
             } else {
                 locals.clear();
             }

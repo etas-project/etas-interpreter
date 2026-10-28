@@ -42,7 +42,7 @@ fn check_all(value: &ConversationValue, limits: &StorageLimits, valid: bool) {
         valid,
         "snapshot"
     );
-    let encoded = crate::api::codec::value_json(&InterpValue::Conversation(value.clone()));
+    let encoded = crate::api::codec::value_json(&InterpValue::Conversation(value.clone())).unwrap();
     assert_eq!(
         validate_json(&encoded, limits).is_ok(),
         valid,
@@ -140,7 +140,7 @@ fn json_preflight_rejects_size_before_decoding_payloads() {
     edit_message(&mut value, |message| {
         message.payload = InterpValue::String("x".repeat(65536).into()).into();
     });
-    let mut encoded = crate::api::codec::value_json(&InterpValue::Conversation(value));
+    let mut encoded = crate::api::codec::value_json(&InterpValue::Conversation(value)).unwrap();
     // A later invalid runtime value must never be reached before the size rejection.
     let mut bad = encoded["messages"][0].clone();
     bad["payload"] = serde_json::json!({"kind":"number", "type":"invalid"});

@@ -255,7 +255,8 @@ mod tests {
             },
         )
         .unwrap();
-        let json = crate::api::codec::value_json(&crate::value::InterpValue::CodeMetadata(value));
+        let json =
+            crate::api::codec::value_json(&crate::value::InterpValue::CodeMetadata(value)).unwrap();
         assert_eq!(json["kind"], "compiler_metadata");
         assert_eq!(json["schema"], 1);
         assert_eq!(json["value"]["EffectRow"]["root"], 0);
@@ -303,7 +304,8 @@ mod tests {
             },
         )
         .unwrap();
-        let json = crate::api::codec::value_json(&crate::value::InterpValue::CodeMetadata(value));
+        let json =
+            crate::api::codec::value_json(&crate::value::InterpValue::CodeMetadata(value)).unwrap();
         let exported = &json["value"]["EffectRow"];
         assert!(!json.to_string().contains("private_catalog_field"));
         assert_eq!(exported["graph"]["rows"].as_array().unwrap().len(), 1);

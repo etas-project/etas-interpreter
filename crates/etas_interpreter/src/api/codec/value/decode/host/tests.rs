@@ -16,7 +16,7 @@ fn model(payload: H) -> crate::value::InterpValue {
 }
 
 fn encode(payload: &H) -> CheckpointDocument {
-    CheckpointDocument::from_value(codec::value_json(&model(payload.clone())))
+    codec::value_json(&model(payload.clone())).unwrap()
 }
 
 fn decode(wire: &serde_json::Value) -> Result<H, codec::InterpreterCodecError> {

@@ -35,7 +35,7 @@ fn chain(depth: usize) -> Json {
 fn runtime_json_encoding_avoids_repeated_descendant_copies() {
     for depth in [16, 32, 64] {
         let value = InterpValue::Json(chain(depth));
-        let (wire, cost) = measure(|| CheckpointDocument::from_value(codec::value_json(&value)));
+        let (wire, cost) = measure(|| codec::value_json(&value).unwrap());
         assert!(cost.count <= depth * 12 + 32, "descendant copies: {cost:?}");
         assert!(
             cost.bytes <= depth * 1536 + 4096,
@@ -68,7 +68,7 @@ fn runtime_json_encoding_is_stack_safe() {
     }
     for depth in [1000, 4000, 30_000] {
         let value = InterpValue::Json(chain(depth));
-        let (wire, cost) = measure(|| CheckpointDocument::from_value(codec::value_json(&value)));
+        let (wire, cost) = measure(|| codec::value_json(&value).unwrap());
         assert_eq!(codec::value_from_json(&wire).unwrap(), value);
         assert!(cost.count <= depth * 12 + 32, "descendant copies: {cost:?}");
         assert!(
@@ -113,7 +113,7 @@ fn all_json_encoding_boundaries_preserve_wire_bits_labels_and_order() {
         ("z".into(), HostJson::Null),
     ]);
     let expected = legacy_wrapped(&shared);
-    let runtime = codec::value_json(&InterpValue::Json(shared.clone()));
+    let runtime = codec::value_json(&InterpValue::Json(shared.clone())).unwrap();
     let support = codec::value::encode_host::encode(&HostSupportValue::Json(shared.clone()));
     let external = codec::host_value_json(&HostValue::Json(host));
     assert_eq!(runtime, expected);

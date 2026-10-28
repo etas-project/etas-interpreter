@@ -21,7 +21,25 @@ impl std::fmt::Debug for JsonDocument {
 
 impl PartialEq for JsonDocument {
     fn eq(&self, other: &Self) -> bool {
-        let mut pending = vec![(&self.0, &other.0)];
+        self.eq_value(&other.0)
+    }
+}
+
+impl PartialEq<Value> for JsonDocument {
+    fn eq(&self, other: &Value) -> bool {
+        self.eq_value(other)
+    }
+}
+
+impl PartialEq<JsonDocument> for Value {
+    fn eq(&self, other: &JsonDocument) -> bool {
+        other.eq_value(self)
+    }
+}
+
+impl JsonDocument {
+    fn eq_value(&self, other: &Value) -> bool {
+        let mut pending = vec![(&self.0, other)];
         while let Some((left, right)) = pending.pop() {
             match (left, right) {
                 (Value::Array(a), Value::Array(b)) => {

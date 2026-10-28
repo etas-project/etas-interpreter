@@ -1,18 +1,5 @@
 use super::*;
 
-pub(in crate::api::codec::machine) fn frame_snapshot(frame: &Frame) -> Value {
-    json!({
-        "id": frame.snapshot_id(),
-        "locals": frame.sorted_locals().iter().map(|(symbol, value)| {
-            json!({ "symbol": symbol.0, "value": value_json(value) })
-        }).collect::<Vec<_>>(),
-        "effect_row_bindings": frame.generic_bindings().sorted_rows(),
-        "type_bindings": frame.sorted_type_bindings().iter().map(|(name, ty)| {
-            json!({ "name": name, "type": ty.0 })
-        }).collect::<Vec<_>>()
-    })
-}
-
 pub(super) fn local_place_segments_from_snapshot(
     limits: &etas_host::StorageLimits,
     value: &Value,

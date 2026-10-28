@@ -4,6 +4,8 @@ pub(super) mod encode_host;
 pub(super) mod encode_model;
 mod encode_runtime;
 #[cfg(test)]
+mod projection_tests;
+#[cfg(test)]
 #[path = "value/encode_runtime/tests.rs"]
 mod runtime_encoding_tests;
 mod scalar;
@@ -83,7 +85,7 @@ fn primitive_type_from_abi_name(name: &str) -> Option<etas_types::PrimitiveType>
     })
 }
 
-pub fn value_json(value: &InterpValue) -> Value {
+pub fn value_json(value: &InterpValue) -> Result<JsonDocument, InterpreterCodecError> {
     encode_runtime::encode(value)
 }
 
@@ -214,12 +216,19 @@ pub(super) fn provenance_from_json(
     })
 }
 
-pub(super) fn session_config_json(session: &crate::value::SessionConfigValue) -> Value {
-    json!({
-        "id": session.id,
-        "context": session.context.as_deref().map(value_json),
-        "retention": session.retention.as_deref().map(value_json),
-    })
+pub(super) fn session_config_json(
+    session: &crate::value::SessionConfigValue,
+) -> Result<JsonDocument, InterpreterCodecError> {
+    let mut output = JsonDocument::from(json!({"id":session.id,"context":null,"retention":null}));
+    for (key, value) in [
+        ("context", &session.context),
+        ("retention", &session.retention),
+    ] {
+        if let Some(value) = value {
+            output[key] = value_json(value)?.into_value();
+        }
+    }
+    Ok(output)
 }
 
 pub(super) fn model_message_from_json(

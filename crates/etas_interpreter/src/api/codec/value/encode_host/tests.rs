@@ -236,7 +236,7 @@ fn model_container_encoding_keeps_deep_json_payload_stack_safe() {
             }],
             usage: None,
         });
-        let (wire, cost) = measure(|| CheckpointDocument::from_value(codec::value_json(&value)));
+        let (wire, cost) = measure(|| codec::value_json(&value).unwrap());
         assert!(
             cost.bytes <= depth * 4096 + 100_000,
             "model payload copies: {cost:?}"

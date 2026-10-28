@@ -43,12 +43,20 @@ pub fn run_report_json(
             })).collect::<Vec<_>>(),
         },
         "value": null,
-        "events": null,
+        "events": [],
         "checkpoints": [],
         "diagnostics": result.diagnostics.iter().map(diagnostic_summary_json).collect::<Vec<_>>(),
     }));
-    report.value_mut()["value"] = result.value().map_or(Value::Null, value_json);
-    report.value_mut()["events"] = Value::Array(result.events.iter().map(event_json).collect());
+    if let Some(value) = result.value() {
+        report.value_mut()["value"] = value_json(value)?.into_value();
+    }
+    for event in &result.events {
+        let event = event_json(event)?;
+        report["events"]
+            .as_array_mut()
+            .ok_or_else(|| InterpreterCodecError::new("report event array is missing"))?
+            .push(event.into_value());
+    }
     for checkpoint in &result.checkpoints {
         let checkpoint = checkpoint_json(checkpoint)?;
         report.value_mut()["checkpoints"]

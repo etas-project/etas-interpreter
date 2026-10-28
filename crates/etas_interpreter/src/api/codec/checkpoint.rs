@@ -214,8 +214,8 @@ pub fn sources_and_flow_from_checkpoint_json(
     Ok((sources, flow))
 }
 
-pub fn event_json(event: &WorkflowEvent) -> Value {
-    match event {
+pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCodecError> {
+    let event = match event {
         WorkflowEvent::StepStarted(id) => json!({ "kind": "step_started", "id": id.0 }),
         WorkflowEvent::StepCompleted(id) => json!({ "kind": "step_completed", "id": id.0 }),
         WorkflowEvent::HostTrace(event) => host_trace_event_json(event),
@@ -233,7 +233,7 @@ pub fn event_json(event: &WorkflowEvent) -> Value {
             payload,
             provenance,
         } => {
-            let mut event = json!({
+            let mut event = JsonDocument::from(json!({
             "kind": "message_created",
             "id": id,
             "from": from,
@@ -243,20 +243,21 @@ pub fn event_json(event: &WorkflowEvent) -> Value {
             "created_at": created_at,
             "payload": null,
             "provenance": provenance.as_ref().map(provenance_json),
-            });
-            event["payload"] = value_json(payload);
-            event
+            }));
+            event["payload"] = value_json(payload)?.into_value();
+            return Ok(event);
         }
         WorkflowEvent::MessageSessionAttached {
             id,
             session,
             session_config,
-        } => json!({
-            "kind": "message_session_attached",
-            "id": id,
-            "session": session,
-            "session_config": session_config_json(session_config),
-        }),
+        } => {
+            let mut event = JsonDocument::from(
+                json!({"kind":"message_session_attached","id":id,"session":session,"session_config":null}),
+            );
+            event["session_config"] = session_config_json(session_config)?.into_value();
+            return Ok(event);
+        }
         WorkflowEvent::MessageHandoff {
             id,
             from,
@@ -333,11 +334,12 @@ pub fn event_json(event: &WorkflowEvent) -> Value {
             "attempts": attempts,
             "reason": reason,
         }),
-    }
+    };
+    Ok(JsonDocument::from(event))
 }
 
 fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
-    match event {
+    let mut output = JsonDocument::from(match event {
         etas_host::TraceEvent::HostRequestStarted {
             id,
             kind,
@@ -351,11 +353,7 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
             "request_kind": host_request_kind_name(*kind),
             "qualified_action": metadata.qualified_action,
             "subject_kind": metadata.subject_kind,
-            "payload": metadata.fields.iter().map(|field| json!({
-                "name": field.name,
-                "sensitivity": host_trace_field_sensitivity_name(field.sensitivity),
-                "value": field.value.as_ref().map(host_value_json),
-            })).collect::<Vec<_>>(),
+            "payload": null,
             "payload_digest": metadata.payload_digest,
             "started_at_unix_micros": started_at_unix_micros,
             "trace": {
@@ -407,11 +405,7 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
             "id": id.0,
             "qualified_action": metadata.qualified_action,
             "subject_kind": metadata.subject_kind,
-            "payload": metadata.fields.iter().map(|field| json!({
-                "name": field.name,
-                "sensitivity": host_trace_field_sensitivity_name(field.sensitivity),
-                "value": field.value.as_ref().map(host_value_json),
-            })).collect::<Vec<_>>(),
+            "payload": null,
             "payload_digest": metadata.payload_digest,
             "trace": {
                 "trace_id": trace.trace_id.to_hex(),
@@ -419,7 +413,20 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
                 "parent_span": trace.parent_span.map(|span| span.0),
             },
         }),
+    });
+    let fields = match event {
+        etas_host::TraceEvent::HostRequestStarted { metadata, .. }
+        | etas_host::TraceEvent::ApprovalRequested { metadata, .. } => Some(&metadata.fields),
+        etas_host::TraceEvent::HostRequestFinished { .. } => None,
+    };
+    if let Some(fields) = fields {
+        output["payload"] = Value::Array(fields.iter().map(|field| {
+            let mut value = json!({"name":field.name,"sensitivity":host_trace_field_sensitivity_name(field.sensitivity),"value":null});
+            if let Some(payload) = &field.value { value["value"] = host_value_json(payload); }
+            value
+        }).collect());
     }
+    output.into_value()
 }
 
 fn host_trace_field_sensitivity_name(
@@ -506,15 +513,19 @@ pub(super) fn checkpoint_json(
         "resource_versions": checkpoint.resource_versions.versions.iter().map(|version| {
             json!({ "resource": version.resource, "version": version.version })
         }).collect::<Vec<_>>(),
-        "completed_host_boundaries": checkpoint.completed_host_boundaries.completed.iter().map(|boundary| {
-            json!({
-                "occurrence": boundary_occurrence_json(&boundary.occurrence),
-                "kind": boundary.kind,
-                "key": boundary.key,
-                "result": completed_host_boundary_result_json(&boundary.result),
-            })
-        }).collect::<Vec<_>>(),
+        "completed_host_boundaries": [],
     }));
+    for boundary in &checkpoint.completed_host_boundaries.completed {
+        let mut row = JsonDocument::from(json!({
+            "occurrence": boundary_occurrence_json(&boundary.occurrence),
+            "kind":boundary.kind,"key":boundary.key,"result":null,
+        }));
+        row["result"] = completed_host_boundary_result_json(&boundary.result)?.into_value();
+        artifact["completed_host_boundaries"]
+            .as_array_mut()
+            .ok_or_else(|| InterpreterCodecError::new("checkpoint boundary array is missing"))?
+            .push(row.into_value());
+    }
     let mut budget = snapshot::EncodingBudget::default();
     artifact.value_mut()["args"] = Value::Array(
         checkpoint
@@ -591,15 +602,16 @@ fn execution_progress_from_json(
     })
 }
 
-fn completed_host_boundary_result_json(result: &CompletedHostBoundaryResult) -> Value {
-    match result {
-        CompletedHostBoundaryResult::Runtime(value) => {
-            json!({ "kind": "runtime", "value": value_json(value) })
-        }
-        CompletedHostBoundaryResult::Host(value) => {
-            json!({ "kind": "host", "value": host_value_json(value) })
-        }
-    }
+fn completed_host_boundary_result_json(
+    result: &CompletedHostBoundaryResult,
+) -> Result<JsonDocument, InterpreterCodecError> {
+    let (kind, value) = match result {
+        CompletedHostBoundaryResult::Runtime(value) => ("runtime", value_json(value)?.into_value()),
+        CompletedHostBoundaryResult::Host(value) => ("host", host_value_json(value)),
+    };
+    let mut output = JsonDocument::from(json!({"kind":kind,"value":null}));
+    output["value"] = value;
+    Ok(output)
 }
 
 fn completed_host_boundary_result_from_json(

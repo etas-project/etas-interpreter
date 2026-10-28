@@ -32,7 +32,10 @@ fn effect_row_bindings_roundtrip_in_callable_wrappers_and_captured_frames() {
     let decoded = codec::machine::call_target_snapshot_from_json(&limits, &wire).unwrap();
     assert_eq!(decoded, target);
     let runtime = codec::machine::call_target_from_artifact_snapshot(&limits, &wire).unwrap();
-    assert_eq!(codec::machine::call_target_snapshot(&runtime), wire);
+    assert_eq!(
+        codec::value_json(&crate::value::InterpValue::Callable(runtime.clone())).unwrap()["target"],
+        wire
+    );
     let CallTarget::Specialized {
         target: child,
         effect_row_bindings,
@@ -88,7 +91,10 @@ fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() 
     let decoded = codec::machine::call_target_snapshot_from_json(&limits, &encoded).unwrap();
     assert!(decoded == retained);
     let runtime = codec::machine::call_target_from_artifact_snapshot(&limits, &encoded).unwrap();
-    assert_eq!(codec::machine::call_target_snapshot(&runtime), expected);
+    assert_eq!(
+        codec::value_json(&crate::value::InterpValue::Callable(runtime.clone())).unwrap()["target"],
+        expected
+    );
     for changed in [
         json!({"kind":"limited", "target":null, "limits":[]}),
         json!({"kind":"composed", "targets":[{"kind":"flow", "item":7}, {"kind":"unknown"}]}),

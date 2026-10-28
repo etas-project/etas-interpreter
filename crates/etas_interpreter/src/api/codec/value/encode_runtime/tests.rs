@@ -1,8 +1,4 @@
-use crate::{
-    api::codec::{self, CheckpointDocument},
-    testing::allocation::measure,
-    value::InterpValue as V,
-};
+use crate::{api::codec, testing::allocation::measure, value::InterpValue as V};
 use serde_json::json;
 
 #[test]
@@ -20,7 +16,7 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
         ("stack", V::Stack(children.clone().into())),
     ];
     for (kind, value) in sequences {
-        let wire = codec::value_json(&value);
+        let wire = codec::value_json(&value).unwrap();
         assert_eq!(wire, json!({"kind":kind,"values":wire_children}));
         assert_eq!(codec::value_from_json(&wire).unwrap(), value);
     }
@@ -28,7 +24,7 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
         crate::value::OrderedSetValue::try_from_values(vec![V::Bool(false), V::Bool(true)])
             .unwrap(),
     );
-    let wire = codec::value_json(&ordered);
+    let wire = codec::value_json(&ordered).unwrap();
     assert_eq!(
         wire,
         json!({"kind":"ordered_set", "comparator":null, "values":[{"kind":"bool","value":false},{"kind":"bool","value":true}]})
@@ -50,7 +46,7 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
             V::PriorityQueue(entries.into()),
         ),
     ] {
-        let wire = codec::value_json(&value);
+        let wire = codec::value_json(&value).unwrap();
         let mut expected = json!({"kind":kind,"entries":[{key:{"kind":"string","value":"key"},"value":{"kind":"option_some","value":{"kind":"bool","value":true}}}]});
         if matches!(kind, "priority_queue" | "ordered_map") {
             expected["comparator"] = serde_json::Value::Null;
@@ -70,7 +66,7 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
         .into(),
     };
     assert_eq!(
-        codec::value_json(&value),
+        codec::value_json(&value).unwrap(),
         json!({"kind":"nominal","ty":17,"value":{"kind":"variant","name":"Named","fields":[{"kind":"record","fields":[{"name":"z","value":{"kind":"bool","value":true}},{"name":"a","value":{"kind":"option_none"}}]}]}})
     );
 }
@@ -92,7 +88,10 @@ fn conversation_encodes_borrowed_message_contract_without_changing_the_wire() {
         }),
     };
     let expected = json!({"kind":"message","id":"m1","from":"a","to":"b","role":"user","session":"s","created_at":"step-1","payload":{"kind":"array","values":[{"kind":"bool","value":true}]},"provenance":{"trace_id":"trace","source":"source"}});
-    assert_eq!(codec::value_json(&V::Message(message.clone())), expected);
+    assert_eq!(
+        codec::value_json(&V::Message(message.clone())).unwrap(),
+        expected
+    );
     let value = V::Conversation(ConversationValue {
         selected_context: None,
         history_fence: None,
@@ -100,7 +99,7 @@ fn conversation_encodes_borrowed_message_contract_without_changing_the_wire() {
         messages: vec![message].into(),
         cursor: Some("next".into()),
     });
-    let wire = codec::value_json(&value);
+    let wire = codec::value_json(&value).unwrap();
     assert_eq!(
         wire,
         json!({"kind":"conversation","selected_context":null,"history_fence":null,"session":"s","messages":[expected],"cursor":"next"})
@@ -182,7 +181,7 @@ fn chain(depth: usize) -> V {
 fn runtime_aggregate_encoding_does_not_reencode_descendants() {
     for depth in [16, 32, 64] {
         let value = chain(depth);
-        let (wire, cost) = measure(|| CheckpointDocument::from_value(codec::value_json(&value)));
+        let (wire, cost) = measure(|| codec::value_json(&value).unwrap());
         eprintln!("runtime aggregate depth={depth}: {cost:?}");
         assert!(cost.count <= depth * 50 + 64, "{cost:?}");
         assert!(cost.bytes <= depth * 6000 + 8192, "{cost:?}");
@@ -209,6 +208,6 @@ fn runtime_aggregate_encoding_is_stack_safe() {
         return;
     }
     let value = chain(30_000);
-    let wire = CheckpointDocument::from_value(codec::value_json(&value));
+    let wire = codec::value_json(&value).unwrap();
     assert_eq!(codec::value_from_json(&wire).unwrap(), value);
 }

@@ -1,5 +1,5 @@
 use std::{
-    cell::RefCell,
+    cell::{Ref, RefCell},
     collections::{HashMap, HashSet},
     rc::Rc,
     sync::Arc,
@@ -16,6 +16,31 @@ pub struct Frame {
     slots: Rc<RefCell<SlotStorage>>,
     restored: Option<Rc<RefCell<RestoredStorage>>>,
     type_bindings: Arc<super::GenericBindings>,
+}
+
+pub(crate) struct FrameLocals<'a> {
+    frame: &'a Frame,
+    slots: Ref<'a, SlotStorage>,
+    restored: Option<Ref<'a, RestoredStorage>>,
+}
+
+impl FrameLocals<'_> {
+    pub(crate) fn sorted(&self) -> Vec<(SymbolId, &InterpValue)> {
+        let mut locals = self
+            .frame
+            .slot_symbols(&self.slots)
+            .filter_map(|(symbol, index)| {
+                self.slots.values[index]
+                    .as_ref()
+                    .map(|value| (symbol, value))
+            })
+            .collect::<Vec<_>>();
+        if let Some(restored) = &self.restored {
+            locals.extend(restored.iter().map(|(symbol, value)| (*symbol, value)));
+        }
+        locals.sort_unstable_by_key(|(symbol, _)| symbol.0);
+        locals
+    }
 }
 
 #[derive(Debug)]
@@ -96,6 +121,19 @@ impl PartialEq for Frame {
 impl Eq for Frame {}
 
 impl Frame {
+    pub(crate) fn borrow_locals(&self) -> Result<FrameLocals<'_>, String> {
+        let conflict = || "runtime frame is mutably borrowed during JSON projection".to_owned();
+        Ok(FrameLocals {
+            frame: self,
+            slots: self.slots.try_borrow().map_err(|_| conflict())?,
+            restored: self
+                .restored
+                .as_ref()
+                .map(|locals| locals.try_borrow().map_err(|_| conflict()))
+                .transpose()?,
+        })
+    }
+
     pub fn new(layout: Arc<SlotLayoutTable>) -> Self {
         Self::with_shared_type_bindings(layout, super::GenericBindings::new().shared())
     }

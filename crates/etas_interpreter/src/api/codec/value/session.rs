@@ -279,7 +279,10 @@ mod tests {
     #[test]
     fn conversation_codec_preserves_cursor_and_nominal_message_payload() {
         let expected = conversation();
-        assert_eq!(value_from_json(&value_json(&expected)).unwrap(), expected);
+        assert_eq!(
+            value_from_json(&value_json(&expected).unwrap()).unwrap(),
+            expected
+        );
         let empty = InterpValue::Conversation(ConversationValue {
             selected_context: None,
             session: "empty".into(),
@@ -287,12 +290,15 @@ mod tests {
             messages: Vec::new().into(),
             cursor: None,
         });
-        assert_eq!(value_from_json(&value_json(&empty)).unwrap(), empty);
+        assert_eq!(
+            value_from_json(&value_json(&empty).unwrap()).unwrap(),
+            empty
+        );
     }
 
     #[test]
     fn conversation_codec_rejects_missing_or_malformed_fields() {
-        let original = value_json(&conversation());
+        let original = value_json(&conversation()).unwrap();
         for key in [
             "session",
             "messages",
