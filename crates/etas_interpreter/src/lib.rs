@@ -44,6 +44,16 @@ impl Interpreter {
         RunInvocation::resume(project, checkpoint, host, options)
     }
 
+    pub fn create_source_resume<'a>(
+        &self,
+        project: &'a CheckedProject,
+        checkpoint: &'a api::codec::SourceCheckpoint,
+        host: &'a dyn HostServices,
+        options: RunOptions,
+    ) -> RunInvocation<'a> {
+        RunInvocation::resume_source(project, checkpoint, host, options)
+    }
+
     pub fn run_checked<'a>(
         &self,
         project: &'a CheckedProject,

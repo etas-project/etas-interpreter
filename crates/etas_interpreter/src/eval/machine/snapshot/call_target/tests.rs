@@ -17,6 +17,7 @@ fn tree(mut node: CallTarget, depth: usize, mode: usize) -> RuntimeTree {
                 limits: vec![],
             },
             1 => CallTarget::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: node.into(),
                 type_bindings: vec![],
             },
@@ -72,6 +73,7 @@ fn deep_call_target_capture_is_stack_safe_and_allocates_only_snapshot_and_fronti
                     (
                         1,
                         CallTargetSnapshot::Specialized {
+                            effect_row_bindings: _,
                             target,
                             type_bindings,
                         },
@@ -149,7 +151,7 @@ fn mixed_call_target_capture_preserves_metadata_and_detaches_live_frame() {
     use etas_hir::{HirExprId, SymbolId};
     use etas_types::TypeId;
     let symbol = SymbolId(2);
-    let mut frame = Frame::from_snapshot_with_type_bindings(
+    let mut frame = Frame::from_snapshot_with_generic_bindings(
         vec![(symbol, InterpValue::i32(7))],
         [("T".into(), TypeId(3))].into_iter().collect(),
     )
@@ -162,6 +164,7 @@ fn mixed_call_target_capture_preserves_metadata_and_detaches_live_frame() {
     for i in 0..depth {
         node = if i % 2 == 0 {
             CallTarget::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: node.into(),
                 type_bindings: vec![(format!("T{i}"), TypeId(i as u32))],
             }
@@ -185,6 +188,7 @@ fn mixed_call_target_capture_preserves_metadata_and_detaches_live_frame() {
             (
                 0,
                 CallTargetSnapshot::Specialized {
+                    effect_row_bindings: _,
                     target,
                     type_bindings,
                 },
@@ -305,6 +309,7 @@ fn machine_capture_reaches_deep_call_targets_without_cloning_runtime_frames() {
         let mut runtime = tree(CallTarget::FlowItem(checked.entry.unwrap()), depth, 2);
         let mut machine = EvalMachine::new();
         machine.push_frame(EvalFrame::from_continuation(Continuation::CallArgs {
+            call: etas_hir::HirExprId(0),
             target: runtime.0.take().unwrap(),
             args: vec![].into(),
             next_arg_index: 0,
@@ -315,7 +320,7 @@ fn machine_capture_reaches_deep_call_targets_without_cloning_runtime_frames() {
         let result = machine.snapshot();
         assert_eq!(machine.frames().len(), 1);
         let Continuation::CallArgs { target, .. } =
-            machine.pop_frame().unwrap().into_continuation()
+            machine.pop_frame().unwrap().into_continuation().unwrap()
         else {
             panic!("call args frame")
         };

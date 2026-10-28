@@ -1,4 +1,8 @@
 use super::*;
+use crate::control::ExecutionFault;
+
+mod forwarder;
+mod native;
 
 #[cfg(test)]
 #[path = "perform/tests.rs"]
@@ -67,15 +71,69 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         }
-        let error_type = self.error_raise_type_arg(expr, &action, &type_args);
-        ControlSignal::pending_perform(PendingPerform {
+        let error_type = match self.error_raise_type_arg(expr, &action, &type_args, frame) {
+            Ok(ty) => ty,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        let mut pending = PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            inference: None,
             expr: Some(expr),
             error_type,
             action,
             args: evaluated_args,
             span,
             continuation: Continuation::BlockValue,
-        })
+        };
+        if error_type.is_none() {
+            match self.action_invocation(&pending, expr, frame) {
+                Ok(proof) => pending.checked_action = Some(proof),
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+            }
+        }
+        ControlSignal::pending_perform(pending)
+    }
+
+    fn action_invocation(
+        &self,
+        pending: &PendingPerform,
+        expr: HirExprId,
+        frame: &Frame,
+    ) -> Result<crate::control::CheckedActionInvocation, String> {
+        let mut bindings = frame.type_bindings().clone();
+        if let Some(fact) = self.checked.types.generic_instantiations.get(&expr) {
+            for (name, ty) in &fact.type_bindings {
+                let ty = etas_types::substitute_named_params_in_store(
+                    &self.checked.type_store,
+                    *ty,
+                    frame.type_bindings(),
+                )
+                .map_err(|error| error.to_string())?;
+                bindings.insert(name.clone(), ty);
+            }
+        }
+        self.action_invocation_with_bindings(pending, &bindings)
+    }
+
+    pub(in crate::eval) fn action_invocation_with_bindings(
+        &self,
+        pending: &PendingPerform,
+        bindings: &std::collections::HashMap<String, etas_types::TypeId>,
+    ) -> Result<crate::control::CheckedActionInvocation, String> {
+        let expr = pending
+            .expr
+            .ok_or("perform has no checked expression origin")?;
+        let proof = crate::control::CheckedActionInvocation::source(
+            self.checked_execution_program(),
+            expr,
+            bindings,
+        )?;
+        if proof.parameters.len() != pending.args.len() {
+            return Err("perform payload arity differs from its checked signature".into());
+        }
+        Ok(proof)
     }
 
     fn error_raise_type_arg(
@@ -83,7 +141,8 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         action: &ResolvedActionRef,
         type_args: &[etas_hir::HirTypeId],
-    ) -> Option<etas_types::TypeId> {
+        frame: &Frame,
+    ) -> Result<Option<etas_types::TypeId>, ExecutionFault> {
         if action.action != "raise"
             || action
                 .effect
@@ -92,25 +151,42 @@ impl<'a> EvalContext<'a> {
                 .last()
                 .is_none_or(|segment| segment.name != "Error")
         {
-            return None;
+            return Ok(None);
         }
-        if let [error_type] = type_args {
-            return self.checked.types.type_refs.get(error_type).copied();
-        }
-        self.checked
-            .effects
-            .performed_actions
-            .get(&expr)
-            .and_then(|fact| {
-                fact.summary
-                    .escaping_effects
-                    .effects
-                    .iter()
-                    .find_map(|effect| match effect {
-                        etas_effects::Effect::Error(error) => Some(*error),
-                        _ => None,
-                    })
-            })
+        let error_type = if let [error_type] = type_args {
+            self.checked.types.type_refs.get(error_type).copied()
+        } else {
+            self.checked
+                .effects
+                .performed_actions
+                .get(&expr)
+                .and_then(|fact| {
+                    fact.summary
+                        .escaping_effects
+                        .effects
+                        .iter()
+                        .find_map(|effect| match effect {
+                            etas_effects::Effect::Error(error) => Some(*error),
+                            _ => None,
+                        })
+                })
+        };
+        let missing = |message| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                action.span,
+                message,
+            )
+        };
+        let ty = error_type
+            .ok_or_else(|| missing("Error.raise has no checked error type".to_owned()))?;
+        let ty = etas_types::substitute_named_params_in_store(
+            &self.checked.type_store,
+            ty,
+            frame.type_bindings(),
+        )
+        .map_err(|error| missing(format!("Error.raise type cannot be instantiated: {error}")))?;
+        Ok(Some(ty))
     }
 
     fn performed_action_fact_matches(

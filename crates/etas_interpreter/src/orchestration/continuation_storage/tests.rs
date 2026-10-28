@@ -7,6 +7,7 @@ fn checkpoint_continuation_clone_and_release_do_not_recurse_through_owned_edges(
         let mut snapshot = ContinuationSnapshot::Return;
         for _ in 0..depth {
             snapshot = ContinuationSnapshot::CallBoundary {
+                span: crate::testing::synthetic_span(),
                 outer: snapshot.into(),
             };
         }
@@ -19,7 +20,7 @@ fn checkpoint_continuation_clone_and_release_do_not_recurse_through_owned_edges(
         assert_eq!(drop_cost.count, 0);
         let mut cursor = &retained;
         for _ in 0..depth {
-            let ContinuationSnapshot::CallBoundary { outer } = cursor else {
+            let ContinuationSnapshot::CallBoundary { outer, .. } = cursor else {
                 panic!("call boundary")
             };
             cursor = outer;
@@ -59,7 +60,10 @@ fn mixed_continuation_edges_release_every_node_after_last_snapshot_owner() {
         for i in 0..depth {
             weak.push(Rc::downgrade(node.0.as_ref().unwrap()));
             node = match i % 6 {
-                0 => ContinuationSnapshot::CallBoundary { outer: node },
+                0 => ContinuationSnapshot::CallBoundary {
+                    span: crate::testing::synthetic_span(),
+                    outer: node,
+                },
                 1 => ContinuationSnapshot::HandlerDispatch { outer: node },
                 2 => ContinuationSnapshot::RestoreModelPolicy {
                     previous: policy(),
@@ -75,6 +79,7 @@ fn mixed_continuation_edges_release_every_node_after_last_snapshot_owner() {
                     handlers: vec![],
                     span: etas_core::Span::empty(etas_core::SourceId(7), etas_core::TextSize::ZERO),
                     frame: LocalsSnapshot {
+                        effect_row_bindings: Vec::new(),
                         id: i as u64 + 1,
                         locals: Rc::new(vec![]),
                         type_bindings: vec![],
@@ -104,13 +109,14 @@ fn editing_cloned_continuation_paths_does_not_change_retained_snapshot() {
     let mut original = ContinuationSnapshot::Return;
     for _ in 0..1000 {
         original = ContinuationSnapshot::CallBoundary {
+            span: crate::testing::synthetic_span(),
             outer: original.into(),
         };
     }
     let mut changed = original.clone();
     let mut cursor = &mut changed;
     for _ in 0..1000 {
-        let ContinuationSnapshot::CallBoundary { outer } = cursor else {
+        let ContinuationSnapshot::CallBoundary { outer, .. } = cursor else {
             panic!("call boundary")
         };
         cursor = outer.as_mut();
@@ -119,7 +125,7 @@ fn editing_cloned_continuation_paths_does_not_change_retained_snapshot() {
     for (snapshot, finish) in [(&original, false), (&changed, true)] {
         let mut cursor = snapshot;
         for _ in 0..1000 {
-            let ContinuationSnapshot::CallBoundary { outer } = cursor else {
+            let ContinuationSnapshot::CallBoundary { outer, .. } = cursor else {
                 panic!("call boundary")
             };
             cursor = outer.as_ref();
@@ -134,7 +140,11 @@ fn consuming_unique_or_shared_continuation_edges_does_not_copy_descendants() {
     for shared in [false, true] {
         let mut node = ContinuationSnapshotLink::new(ContinuationSnapshot::Return);
         for _ in 0..30_000 {
-            node = ContinuationSnapshot::CallBoundary { outer: node }.into();
+            node = ContinuationSnapshot::CallBoundary {
+                span: crate::testing::synthetic_span(),
+                outer: node,
+            }
+            .into();
         }
         let retained = shared.then(|| node.clone());
         let (value, cost) = measure(|| node.into_value());

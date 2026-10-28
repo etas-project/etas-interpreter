@@ -10,6 +10,14 @@ impl SnapshotValidator<'_> {
         if frame.id == 0 {
             return Err(format!("{context} has a zero frame identity"));
         }
+        let owner = std::sync::Arc::as_ptr(self.checked) as usize;
+        if let Some(previous) = self.frame_owners.borrow_mut().insert(frame.id, owner)
+            && previous != owner
+        {
+            return Err(format!(
+                "{context} local frame is shared across different checked programs"
+            ));
+        }
         {
             let mut definitions = self.frame_definitions.borrow_mut();
             if let Some(state) = definitions.get(&frame.id) {
@@ -47,6 +55,17 @@ impl SnapshotValidator<'_> {
             }
             self.type_id(*ty, &format!("{context} frame type binding"))?;
         }
+        let bindings = frame.generic_bindings();
+        if frame
+            .effect_row_bindings
+            .iter()
+            .any(|(name, _)| type_params.contains(name))
+        {
+            return Err(format!(
+                "{context} frame binds one generic parameter as both a type and an effect row"
+            ));
+        }
+        self.effect_row_bindings(&frame.effect_row_bindings, context)?;
         for (symbol, value) in frame.locals.iter() {
             self.symbol(*symbol, &format!("{context} frame local"))?;
             if self.slots.resolve(*symbol).is_none() {
@@ -55,7 +74,41 @@ impl SnapshotValidator<'_> {
                     symbol.0
                 ));
             }
-            self.snapshot_value(value)?;
+            self.snapshot_value_in(value, super::call_target::ReferenceScope::CheckedSlot)?;
+            self.validate_local_references(*symbol, value, &bindings)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn effect_row_bindings(
+        &self,
+        rows: &[(String, etas_types::EffectRowRef)],
+        context: &str,
+    ) -> Result<(), String> {
+        let mut names = std::collections::HashSet::new();
+        for (name, row) in rows {
+            if name.is_empty() || !names.insert(name) {
+                return Err(format!(
+                    "{context} contains an invalid or duplicate effect-row binding"
+                ));
+            }
+            if row.tail.is_some() {
+                return Err(format!(
+                    "{context} contains an unresolved effect-row binding"
+                ));
+            }
+            for effect in &row.effects {
+                for argument in &effect.args {
+                    if let etas_types::EffectArgRef::Type(ty) = argument {
+                        self.type_id(*ty, context)?;
+                    }
+                }
+            }
+            etas_effects::validate::resolve_checked_type_row(
+                &self.checked.type_store,
+                &self.checked.effect_registry,
+                row,
+            )?;
         }
         Ok(())
     }

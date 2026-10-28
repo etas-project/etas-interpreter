@@ -18,8 +18,10 @@ fn retry_lookup_does_not_copy_unrelated_payloads_or_each_scanned_frame() {
         .unwrap();
     let options = RunOptions::default();
     let span = crate::diagnostics::item_span(&checked, checked.entry.unwrap());
-    let mut eval = EvalContext::new(EvalContextInput {
+    let (program, mut run_state) = EvalContextInput {
         storage_limits: Default::default(),
+        code_definitions: None,
+        syntax_limits: Default::default(),
         event_observer: None,
         execution: etas_host::execution::ExecutionScope::new_owned(),
         checked: &checked,
@@ -31,7 +33,9 @@ fn retry_lookup_does_not_copy_unrelated_payloads_or_each_scanned_frame() {
         current_session: None,
         entry_item: checked.entry.unwrap(),
         entry_args: &[],
-    });
+    }
+    .into_parts();
+    let mut eval = EvalContext::new(program, &mut run_state);
     for count in [1000, 2000, 4000] {
         for wide_payload in [true, false] {
             let mut machine = EvalMachine::new();
@@ -124,6 +128,7 @@ fn retry_lookup_preserves_chain_order_and_boundary_opacity() {
         (
             chain(
                 Continuation::CallBoundary {
+                    span: crate::testing::synthetic_span(),
                     outer: retry(1).into(),
                 },
                 retry(2),

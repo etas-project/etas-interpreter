@@ -5,7 +5,12 @@ use crate::orchestration::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 use etas_types::TypeId;
 
 enum PendingParent<'a> {
-    Specialized(&'a [(String, TypeId)], Option<*const CallTarget>),
+    Scoped(Box<crate::orchestration::ScopedCallableMetadata>),
+    Specialized(
+        &'a [(String, TypeId)],
+        &'a [(String, etas_types::EffectRowRef)],
+        Option<*const CallTarget>,
+    ),
     Limited(&'a [RuntimeLimit], Option<*const CallTarget>),
     Composed {
         remaining: &'a [CallTarget],
@@ -28,18 +33,30 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
     let mut pending = Vec::new();
     loop {
         let mut value = match current {
+            CallTarget::Scoped(call) => {
+                let metadata = call.checkpoint_metadata(&mut context.revisions)?;
+                pending.push(PendingParent::Scoped(Box::new(metadata)));
+                current = call.target_ref();
+                continue;
+            }
             CallTarget::Specialized {
                 target,
                 type_bindings,
+                effect_row_bindings,
             } => {
                 let identity = target.shared_identity();
                 if let Some(saved) = identity.and_then(|key| context.call_nodes.get(&key)) {
                     CallTargetSnapshot::Specialized {
                         target: saved.clone(),
                         type_bindings: type_bindings.clone(),
+                        effect_row_bindings: effect_row_bindings.clone(),
                     }
                 } else {
-                    pending.push(PendingParent::Specialized(type_bindings, identity));
+                    pending.push(PendingParent::Specialized(
+                        type_bindings,
+                        effect_row_bindings,
+                        identity,
+                    ));
                     current = target;
                     continue;
                 }
@@ -79,7 +96,13 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
         };
         loop {
             match pending.pop() {
-                Some(PendingParent::Specialized(bindings, identity)) => {
+                Some(PendingParent::Scoped(metadata)) => {
+                    value = CallTargetSnapshot::Scoped {
+                        metadata,
+                        target: value.into(),
+                    };
+                }
+                Some(PendingParent::Specialized(bindings, rows, identity)) => {
                     let target: CallTargetSnapshotLink = value.into();
                     if let Some(key) = identity {
                         context.call_nodes.insert(key, target.clone());
@@ -87,6 +110,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
                     value = CallTargetSnapshot::Specialized {
                         target,
                         type_bindings: bindings.to_vec(),
+                        effect_row_bindings: rows.to_vec(),
                     };
                 }
                 Some(PendingParent::Limited(limits, identity)) => {

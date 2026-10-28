@@ -1,30 +1,70 @@
 use super::*;
 
 impl<'a> EvalContext<'a> {
+    pub(crate) fn seed_resume_counters(&mut self, trace: &TraceSnapshot) -> Result<(), String> {
+        let step = u32::try_from(trace.events_recorded)
+            .map_err(|_| "checkpoint trace step counter exceeds the runtime ABI")?;
+        self.next_step = self.next_step.max(step);
+        self.next_host_request = self.next_host_request.max(trace.next_host_request);
+        self.next_message = self.next_message.max(trace.next_message);
+        Ok(())
+    }
+
     pub(crate) fn execute_from_checkpoint_signal(
         &mut self,
         checkpoint: &InterpreterCheckpoint,
     ) -> ControlSignal {
+        self.model_policy =
+            crate::eval::machine::snapshot::restore_model_policy(checkpoint.model_policy.clone());
         self.handler_stack = checkpoint.handlers.handlers.clone();
         self.retry_stack = checkpoint.retry_state.attempts.clone();
-        self.completed_host_boundaries = checkpoint.completed_host_boundaries.completed.clone();
+        let mut boundaries = std::collections::BTreeMap::new();
+        for boundary in &checkpoint.completed_host_boundaries.completed {
+            if boundaries
+                .insert(boundary.occurrence.clone(), boundary.clone())
+                .is_some()
+            {
+                return ControlSignal::missing_checked_fact(
+                    "checkpoint has duplicate completed boundary occurrences",
+                    item_span(self.checked, self.entry_item),
+                );
+            }
+        }
+        self.completed_host_boundaries = boundaries;
         self.resource_versions = checkpoint.resource_versions.versions.clone();
         self.next_checkpoint = checkpoint.id.0 + 1;
         self.next_retry = self
             .retry_stack
             .iter()
+            .chain(
+                checkpoint
+                    .machine
+                    .suspended_programs
+                    .iter()
+                    .flat_map(|node| &node.retries.attempts),
+            )
             .map(|attempt| attempt.id.0 + 1)
             .max()
             .unwrap_or(0);
         self.next_handler_scope = self
             .handler_stack
             .iter()
+            .chain(
+                checkpoint
+                    .machine
+                    .suspended_programs
+                    .iter()
+                    .flat_map(|node| &node.handlers.handlers),
+            )
             .map(|handler| handler.id.0 + 1)
             .max()
             .unwrap_or(0);
-        self.next_step = checkpoint.trace.events_recorded as u32;
-        self.next_host_request = checkpoint.trace.next_host_request;
-        self.next_message = checkpoint.trace.next_message;
+        if let Err(message) = self.seed_resume_counters(&checkpoint.trace) {
+            return ControlSignal::missing_checked_fact(
+                message,
+                item_span(self.checked, self.entry_item),
+            );
+        }
         self.storage_identity = Ok(checkpoint.storage.identity.clone());
         self.storage_writes = checkpoint.storage.writes.clone();
         self.storage_operations = checkpoint.storage.operations.clone();
@@ -34,20 +74,27 @@ impl<'a> EvalContext<'a> {
     pub(super) fn record_checkpoint(
         &mut self,
         label: Option<String>,
-        machine: crate::orchestration::MachineSnapshot,
+        mut captured: crate::eval::machine::snapshot::CapturedMachineSnapshot,
     ) -> Result<(), crate::control::ExecutionFault> {
+        let root = captured.root.take().unwrap_or_else(|| {
+            crate::eval::machine::snapshot::CheckpointRoot {
+                program: self.checked_execution_program(),
+                args: self.entry_args.to_vec(),
+            }
+        });
+        let checked = &root.program.checked;
+        let plan = &root.program.plan;
+        let entry = plan.entry.item;
         let id = CheckpointId(self.next_checkpoint);
-        let compilation = crate::orchestration::CheckpointCompilationIdentity::for_project(
-            self.checked,
-            self.entry_item,
-        )
-        .map_err(|message| {
-            crate::control::ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                item_span(self.checked, self.entry_item),
-                format!("checkpoint compilation identity is unavailable: {message}"),
-            )
-        })?;
+        let compilation =
+            crate::orchestration::CheckpointCompilationIdentity::for_project(checked, entry)
+                .map_err(|message| {
+                    crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        item_span(self.checked, self.entry_item),
+                        format!("checkpoint compilation identity is unavailable: {message}"),
+                    )
+                })?;
         let budget =
             crate::orchestration::CheckpointBudgetSnapshot::capture(&self.host_context.budget)
                 .map_err(|error| {
@@ -64,9 +111,32 @@ impl<'a> EvalContext<'a> {
                 error.to_string(),
             )
         })?;
-        self.next_checkpoint += 1;
-        self.events.push(WorkflowEvent::CheckpointCreated(id));
-        self.checkpoints.push(InterpreterCheckpoint {
+        if let Some(revision) = root.program.revision.as_ref() {
+            captured
+                .revisions
+                .insert(revision.revision().key(), revision.clone());
+        }
+        let revisions = if let Some(revision) = captured.revisions.values().next() {
+            let mut set = crate::api::code::PreparedRevisionSet::new(
+                revision.type_bridge().original_program().clone(),
+            );
+            for revision in captured.revisions.values() {
+                set.insert(revision.clone()).map_err(|message| {
+                    crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        item_span(self.checked, self.entry_item),
+                        message,
+                    )
+                })?;
+            }
+            Some(set)
+        } else {
+            None
+        };
+        let checkpoint = InterpreterCheckpoint {
+            retained_code: Some(std::sync::Arc::new(
+                crate::api::code::CheckpointCodePins::new(captured.revisions),
+            )),
             storage: crate::orchestration::StorageSnapshot {
                 identity: storage_identity,
                 writes: self.storage_writes.clone(),
@@ -75,9 +145,13 @@ impl<'a> EvalContext<'a> {
             id,
             label,
             compilation,
-            entry_item: self.entry_item,
-            args: self.entry_args.to_vec(),
-            machine,
+            code_revision: root.program.revision.as_ref().map(|revision| {
+                crate::orchestration::CheckpointCodeRevision::for_revision(revision)
+            }),
+            entry_item: entry,
+            args: root.args,
+            machine: captured.machine,
+            model_policy: crate::eval::machine::snapshot::capture_model_policy(&self.model_policy),
             handlers: HandlerSnapshot {
                 handlers: self.handler_stack.clone(),
             },
@@ -85,7 +159,7 @@ impl<'a> EvalContext<'a> {
                 attempts: self.retry_stack.clone(),
             },
             trace: TraceSnapshot {
-                events_recorded: self.events.len(),
+                events_recorded: self.events.len() + 1,
                 next_message: self.next_message,
                 next_host_request: self.next_host_request,
             },
@@ -102,9 +176,28 @@ impl<'a> EvalContext<'a> {
                 versions: self.resource_versions.clone(),
             },
             completed_host_boundaries: HostBoundaryLedger {
-                completed: self.completed_host_boundaries.clone(),
+                completed: self.completed_host_boundaries.values().cloned().collect(),
             },
-        });
+        };
+        crate::eval::machine::snapshot::SnapshotValidator::new(
+            checked,
+            &plan.slots,
+            &plan.dispatch,
+            &plan.closures,
+            &self.storage_limits,
+        )
+        .with_revisions(revisions.as_ref())
+        .validate_checkpoint(&checkpoint)
+        .map_err(|message| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                item_span(self.checked, self.entry_item),
+                format!("checkpoint cannot preserve checked execution state: {message}"),
+            )
+        })?;
+        self.next_checkpoint += 1;
+        self.events.push(WorkflowEvent::CheckpointCreated(id));
+        self.checkpoints.push(checkpoint);
         Ok(())
     }
 

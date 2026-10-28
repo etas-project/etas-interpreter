@@ -10,6 +10,21 @@ pub(crate) fn validate_host_readiness(
     availability: HostServiceAvailability,
     span: Span,
 ) -> Vec<Diagnostic> {
+    let availability = (plan.host_requirements.service_check
+        == crate::plan::readiness::HostServiceCheck::Preflight)
+        .then_some(availability);
+    validate_support(plan, availability, span)
+}
+
+pub(crate) fn validate_execution_support(plan: &InterpreterPlan, span: Span) -> Vec<Diagnostic> {
+    validate_support(plan, None, span)
+}
+
+fn validate_support(
+    plan: &InterpreterPlan,
+    availability: Option<HostServiceAvailability>,
+    span: Span,
+) -> Vec<Diagnostic> {
     let mut diagnostics = Vec::new();
     let Some(entry_support) = &plan.host_requirements.entry else {
         diagnostics.push(diagnostics::missing_checked_fact(
@@ -23,7 +38,7 @@ pub(crate) fn validate_host_readiness(
         InterpreterSupport::LocalOnly => {}
         InterpreterSupport::RequiresHost(requirements) => {
             for kind in &requirements.kinds {
-                if !availability.supports(*kind) {
+                if availability.is_some_and(|availability| !availability.supports(*kind)) {
                     diagnostics.push(diagnostics::missing_host_handler(
                         span,
                         format!("missing Phase 1 host service for {:?}", kind),
@@ -33,7 +48,7 @@ pub(crate) fn validate_host_readiness(
         }
         InterpreterSupport::RequiresInterpreterOrchestration(requirements) => {
             for kind in &requirements.host.kinds {
-                if !availability.supports(*kind) {
+                if availability.is_some_and(|availability| !availability.supports(*kind)) {
                     diagnostics.push(diagnostics::missing_host_handler(
                         span,
                         format!("missing Phase 1 host service for {:?}", kind),

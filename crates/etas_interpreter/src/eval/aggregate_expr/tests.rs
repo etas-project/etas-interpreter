@@ -38,8 +38,10 @@ fn literal_suspension_does_not_copy_checked_descriptors() {
                 })
                 .unwrap();
             let options = RunOptions::default();
-            let mut eval = EvalContext::new(EvalContextInput {
+            let (program, mut run_state) = EvalContextInput {
                 storage_limits: Default::default(),
+                code_definitions: None,
+                syntax_limits: Default::default(),
                 event_observer: None,
                 execution: etas_host::execution::ExecutionScope::new_owned(),
                 checked: &checked,
@@ -51,7 +53,9 @@ fn literal_suspension_does_not_copy_checked_descriptors() {
                 current_session: None,
                 entry_item: checked.entry.unwrap(),
                 entry_args: &[],
-            });
+            }
+            .into_parts();
+            let mut eval = EvalContext::new(program, &mut run_state);
             let mut frame = Frame::new(plan.slots.clone());
             let (signal, cost) = measure(|| eval.eval_expr_frame(expr, &mut frame));
             assert!(is_pending_host_boundary_signal(&signal));

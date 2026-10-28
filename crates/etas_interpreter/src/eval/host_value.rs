@@ -13,6 +13,7 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
             blake3::hash(value.encoded().as_bytes()).to_hex()
         ),
         InterpValue::Unit => "unit".to_owned(),
+        InterpValue::Schema(ty) => format!("schema:{}", ty.0),
         InterpValue::Bool(value) => format!("bool:{value}"),
         InterpValue::Number(value) => format!(
             "number:{}:{}",
@@ -241,6 +242,16 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
             handlers,
         } => format!("handler:{}:{}", fact_expr.0, handlers.len()),
         InterpValue::HostHandle(handle) => format!("host_handle:{}", handle.boundary_key()),
+        InterpValue::SyntaxBlock(value) => format!("syntax:{value:?}"),
+        InterpValue::CodeMetadata(value) => format!("compiler_metadata:{:?}", value.payload()),
+        InterpValue::AgentDefinition(value) => format!(
+            "agent_definition:{}:{}",
+            value.definition().identity().fingerprint(),
+            value.definition().revision().key().fingerprint()
+        ),
+        InterpValue::CallableDefinition(value) => {
+            format!("callable_definition:{}", value.id().fingerprint())
+        }
         InterpValue::ResourceHandle { stable_id, .. } => format!("resource:{stable_id}"),
         InterpValue::MemoryStore {
             region_stable_id,
@@ -282,6 +293,10 @@ pub(super) fn interp_to_host_json_string(
 fn interp_value_kind(value: &InterpValue) -> &'static str {
     match value {
         InterpValue::WorkspacePath(_) => "workspace path",
+        InterpValue::SyntaxBlock(_) => "structured syntax",
+        InterpValue::CodeMetadata(_) => "compiler descriptor metadata",
+        InterpValue::AgentDefinition(_) => "agent definition",
+        InterpValue::CallableDefinition(_) => "callable definition",
         InterpValue::Slice(_) => "slice",
         InterpValue::Set(_) => "set",
         InterpValue::OrderedSet(_) => "ordered set",
@@ -961,7 +976,10 @@ mod tests {
     fn typed_host_codec_scopes_nested_generic_arguments_and_preserves_applied_identity() {
         let mut types = etas_types::TypeInterner::new();
         let boolean = types.primitive(PrimitiveType::Bool);
-        let param = types.intern(Type::Named(etas_types::NamedTypeRef { name: "T".into() }));
+        let param = types.intern(Type::Named(etas_types::NamedTypeRef {
+            source_parameter: None,
+            name: "T".into(),
+        }));
         let inner = types.intern(Type::Nominal(NominalTypeRef {
             name: "app.Inner".into(),
             params: vec!["T".into()],

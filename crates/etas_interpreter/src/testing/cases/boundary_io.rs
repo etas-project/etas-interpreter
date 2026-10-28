@@ -488,7 +488,7 @@ flow main() -> unit ![Console, Error<IOError>]
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_checked_rejects_std_io_without_checked_action_mediation_fact() {
-    let mut checked = checked_project(
+    let original = checked_project(
         r#"
 module app.main;
 import std.effects.Console;
@@ -500,36 +500,44 @@ flow main() -> unit ![Console, Error<IOError>]
 }
 "#,
     );
-    let entry = checked.entry.expect("entry item");
-    let summary = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
-        .item_effects
-        .get_mut(&entry)
-        .expect("entry effect summary");
-    summary.requested_actions = EffectRow::default();
-    summary.default_actions = EffectRow::default();
+    for remove_requested in [true, false] {
+        let mut checked = original.clone();
+        let entry = checked.entry.expect("entry item");
+        let summary = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
+            .item_effects
+            .get_mut(&entry)
+            .expect("entry effect summary");
+        if remove_requested {
+            summary.requested_actions = EffectRow::default();
+        }
+        summary.default_actions = EffectRow::default();
 
-    let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
-    let result = Interpreter
-        .run_checked(
-            &checked,
-            EntryPoint { item: entry },
-            Vec::new(),
-            &host,
-            RunOptions::default(),
-        )
-        .await
-        .expect("execution lifecycle infrastructure");
+        let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint { item: entry },
+                Vec::new(),
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .expect("execution lifecycle infrastructure");
 
-    assert!(result.diagnostics.iter().any(|diagnostic| {
-        diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
-            && diagnostic
-                .message
-                .contains("checked default action facts for Console")
-    }));
-    assert!(
-        host.console_call_count() == 0,
-        "std.io must not reach the host without checked action mediation facts"
-    );
+        let expected = if remove_requested {
+            "checked requested action facts for Console"
+        } else {
+            "default action is absent from the current checked mediation plan"
+        };
+        assert!(result.diagnostics.iter().any(|diagnostic| {
+            diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::MissingCheckedFact)
+                && diagnostic.message.contains(expected)
+        }));
+        assert!(
+            host.console_call_count() == 0,
+            "std.io must not reach the host without checked action mediation facts"
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -892,6 +900,7 @@ flow main() -> Result<string, IOError> ![Console]
         &mut std::sync::Arc::make_mut(&mut checked).type_store,
     )
     .intern(Type::Named(NamedTypeRef {
+        source_parameter: None,
         name: "ConvertedIOError".to_owned(),
     }));
     let capture = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
@@ -1107,15 +1116,23 @@ flow main() -> unit {
 "#,
     );
     let entry = checked.entry.expect("entry item");
-    let support =
-        &mut std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
-            .interpreter_support;
-    support.entry = Some(InterpreterSupport::RequiresInterpreterOrchestration(
+    let effects = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects);
+    let support = InterpreterSupport::RequiresInterpreterOrchestration(
         etas_effects::InterpreterOrchestrationRequirementSet::feature(
             etas_effects::InterpreterFeatureKind::Resume,
         ),
-    ));
-    support.items.insert(entry, support.entry.clone().unwrap());
+    );
+    effects.interpreter_support.entry = Some(support.clone());
+    effects
+        .interpreter_support
+        .items
+        .insert(entry, support.clone());
+    effects.item_effects.get_mut(&entry).unwrap().support = support.clone();
+    effects
+        .unit_effects
+        .get_mut(&etas_effects::EffectUnit::Item(entry))
+        .unwrap()
+        .support = support;
 
     let result = Interpreter
         .run_checked(

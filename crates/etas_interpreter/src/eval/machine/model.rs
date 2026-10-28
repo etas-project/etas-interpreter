@@ -26,8 +26,9 @@ impl EvalMachine {
     ) -> Transition {
         let outer_continuation =
             std::mem::replace(&mut pending.continuation, Continuation::BlockValue);
+        self.push_continuation_frames(outer_continuation);
         if let Some(value) = ctx.replayed_model_result(&pending) {
-            return Ok(ctx.apply_continuation(outer_continuation, value));
+            return Ok(ControlSignal::Value(value));
         }
         let frame = ModelLoopFrame {
             boundary_key: ctx.model_boundary_key(&pending),
@@ -38,7 +39,7 @@ impl EvalMachine {
             remaining_tool_calls: Vec::new(),
             completed_tool_result: false,
             current_host_tool: None,
-            outer_continuation,
+            outer_continuation: Continuation::BlockValue,
         };
         self.yield_model(frame)
     }
@@ -99,7 +100,9 @@ impl EvalMachine {
             "tool",
             progress.boundary_key,
             tool_value.clone(),
-        );
+            frame.pending.span,
+        )
+        .map_err(MachinePoll::Fault)?;
         append_tool_result(&mut frame, progress.call.id, tool_value);
         self.advance_tool_calls(ctx, frame)
     }
@@ -147,7 +150,14 @@ impl EvalMachine {
             model_request: frame.model_loop.pending.request.id,
             call_id: frame.tool_call_id.clone(),
         };
-        ctx.record_completed_host_boundary(occurrence, "tool", frame.boundary_key, value);
+        ctx.record_completed_host_boundary(
+            occurrence,
+            "tool",
+            frame.boundary_key,
+            value,
+            frame.model_loop.pending.span,
+        )
+        .map_err(MachinePoll::Fault)?;
         let mut model_loop = *frame.model_loop;
         append_tool_result(&mut model_loop, frame.tool_call_id, host_value);
         self.advance_tool_calls(ctx, model_loop)
@@ -198,7 +208,9 @@ impl EvalMachine {
                         "model",
                         frame.boundary_key,
                         value.clone(),
-                    );
+                        frame.pending.span,
+                    )
+                    .map_err(MachinePoll::Fault)?;
                     return Ok(ctx.apply_continuation(frame.outer_continuation, value));
                 }
                 Err(error) if error.retryable_typed_output => {

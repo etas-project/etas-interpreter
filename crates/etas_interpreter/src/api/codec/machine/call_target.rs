@@ -5,6 +5,7 @@ use super::{
 use crate::control::CallTarget;
 use serde_json::{Value, json};
 mod decode;
+pub(super) mod revision;
 mod target;
 #[cfg(test)]
 mod tests;
@@ -15,6 +16,10 @@ pub(crate) fn call_target_snapshot(target: &CallTarget) -> Value {
     match target {
         CallTarget::FlowItem(item) => json!({ "kind": "flow", "item": item.0 }),
         CallTarget::AgentItem(item) => json!({ "kind": "agent", "item": item.0 }),
+        CallTarget::AgentRevision(value) => {
+            json!({ "kind": "compiled_agent_display", "identity": value.prepared().identity(), "revision": value.prepared().revision().key().fingerprint().to_string(), "persistent": false })
+        }
+        CallTarget::Scoped(_) => json!({ "kind": "scoped_callable_display", "persistent": false }),
         CallTarget::ToolItem(item) => json!({ "kind": "tool", "item": item.0 }),
         CallTarget::SpecImplMethod(symbol) => {
             json!({ "kind": "spec_impl_method", "symbol": symbol.0 })
@@ -38,6 +43,8 @@ pub(crate) fn call_target_snapshot(target: &CallTarget) -> Value {
         }),
         CallTarget::StdIntrinsic(call) => json!({
             "kind": "std_intrinsic",
+            "origin": call.origin.0,
+            "substitutions": intrinsic_substitutions_snapshot(&call.substitutions),
             "intrinsic": call.identity.intrinsic.0,
             "dispatch": intrinsic_dispatch_name(call.identity.dispatch),
             "parameter_types": call.parameter_types.iter().map(|ty| ty.0).collect::<Vec<_>>(),
@@ -46,8 +53,10 @@ pub(crate) fn call_target_snapshot(target: &CallTarget) -> Value {
         CallTarget::Specialized {
             target,
             type_bindings,
+            effect_row_bindings,
         } => json!({
             "kind": "specialized",
+            "effect_row_bindings": effect_row_bindings,
             "target": call_target_snapshot(target),
             "type_bindings": type_bindings.iter().map(|(name, ty)| {
                 json!({ "name": name, "type": ty.0 })
@@ -63,4 +72,18 @@ pub(crate) fn call_target_snapshot(target: &CallTarget) -> Value {
             "targets": targets.iter().map(call_target_snapshot).collect::<Vec<_>>(),
         }),
     }
+}
+
+pub(in crate::api::codec) fn intrinsic_substitutions_snapshot(
+    steps: &[Vec<(String, etas_types::TypeId)>],
+) -> Value {
+    json!(
+        steps
+            .iter()
+            .map(|step| step
+                .iter()
+                .map(|(name, ty)| json!({"name": name, "type": ty.0}))
+                .collect::<Vec<_>>())
+            .collect::<Vec<_>>()
+    )
 }

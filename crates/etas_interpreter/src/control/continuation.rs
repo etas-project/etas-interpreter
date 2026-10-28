@@ -1,8 +1,8 @@
 use etas_core::Span;
 mod storage;
 use etas_hir::{
-    HirArg, HirBlockId, HirElseBranch, HirExprId, HirItemId, HirMatchArm, HirPatId, HirStage,
-    ResolvedActionRef, SymbolId,
+    HirArg, HirBlockId, HirElseBranch, HirExprId, HirMatchArm, HirPatId, ResolvedActionRef,
+    SymbolId,
 };
 pub use storage::ContinuationLink;
 
@@ -24,6 +24,8 @@ pub enum StaticMethodKind {
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    StreamReadReduction(Box<super::StreamReadReduction>),
+    ProgramResume(crate::eval::machine::ProgramContinuation),
     ContinueBlock {
         block: HirBlockId,
         next_stmt_index: usize,
@@ -130,6 +132,7 @@ pub enum Continuation {
         expr: HirExprId,
         base: InterpValue,
         span: Span,
+        frame: Frame,
     },
     SliceBase {
         eval: crate::eval::SliceExprEval,
@@ -144,6 +147,7 @@ pub enum Continuation {
         eval: crate::eval::SliceExprEval,
         base: InterpValue,
         start: InterpValue,
+        frame: Frame,
     },
     MethodReceiver {
         expr: HirExprId,
@@ -193,19 +197,20 @@ pub enum Continuation {
         frame: Frame,
     },
     CalleeEval {
+        call: HirExprId,
         args: std::sync::Arc<[HirArg]>,
         span: Span,
         frame: Frame,
     },
     PipelineStageTarget {
-        stages: Vec<HirStage>,
+        expr: HirExprId,
         next_stage_index: usize,
         targets: Vec<CallTarget>,
-        current_limits: Vec<crate::eval::limit::RuntimeLimit>,
         span: Span,
         frame: Frame,
     },
     CallArgs {
+        call: HirExprId,
         target: CallTarget,
         args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
@@ -292,16 +297,20 @@ pub enum Continuation {
         frame: Frame,
     },
     PipelineInput {
-        stages: Vec<HirStage>,
+        expr: HirExprId,
         span: Span,
         frame: Frame,
     },
     PipelineTarget {
+        expr: HirExprId,
         input: InterpValue,
         span: Span,
+        frame: Frame,
     },
     ComposedCall {
-        remaining: Vec<CallTarget>,
+        remaining: super::CallTargetChildren,
+        next_index: usize,
+        site: Option<super::CallSite>,
         span: Span,
     },
     RestoreModelPolicy {
@@ -309,6 +318,7 @@ pub enum Continuation {
         inner: ContinuationLink,
     },
     CallBoundary {
+        span: Span,
         outer: ContinuationLink,
     },
     ForLoop {
@@ -365,10 +375,10 @@ pub enum Continuation {
         span: Span,
         frame: Frame,
     },
-    AgentPromptBody {
-        item: HirItemId,
+    AgentInference {
+        expr: HirExprId,
         span: Span,
-        model_policy: Option<Box<crate::api::ModelExecutionPolicy>>,
+        model_policy: Box<crate::api::ModelExecutionPolicy>,
     },
     ScopedModelPolicy {
         policy: Box<crate::api::ModelExecutionPolicy>,
@@ -419,7 +429,7 @@ impl Continuation {
                 Self::RestoreModelPolicy { inner, .. } | Self::ScopedModelPolicy { inner, .. } => {
                     pending.push(inner)
                 }
-                Self::CallBoundary { outer } | Self::HandlerDispatch { outer } => {
+                Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer } => {
                     pending.push(outer);
                 }
                 Self::Chain { inner, outer } => {

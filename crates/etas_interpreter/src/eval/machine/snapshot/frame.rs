@@ -6,8 +6,24 @@ use crate::orchestration::{
 
 #[derive(Default)]
 pub(crate) struct RestoreContext {
+    pub(in crate::eval::machine) locked_model: Option<etas_host::ModelName>,
+    pub(in crate::eval::machine) suspensions: Option<SuspensionRestoreTable>,
+    pub(super) revision_program: Option<etas_frontend::CheckedProgram>,
+    pub(super) revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
     frames: std::collections::HashMap<u64, (LocalsSnapshot, Frame)>,
     active: std::collections::HashSet<u64>,
+    pub(super) caches: ProgramRestoreCaches,
+    parked_caches: std::collections::HashMap<usize, ProgramRestoreCaches>,
+}
+
+pub(in crate::eval::machine) type SuspensionRestoreTable = std::rc::Rc<
+    std::cell::RefCell<
+        std::collections::HashMap<u32, crate::eval::machine::suspension::ProgramContinuation>,
+    >,
+>;
+
+#[derive(Default)]
+pub(super) struct ProgramRestoreCaches {
     // Consuming restore retains the source owner with each cached node so its
     // address cannot be recycled while this restore operation is still active.
     // Only completed nodes are cached; no cache survives into another restore.
@@ -26,7 +42,71 @@ pub(crate) struct RestoreContext {
 }
 
 impl RestoreContext {
-    fn frame(&mut self, snapshot: LocalsSnapshot) -> Result<Frame, String> {
+    pub(super) fn suspension(
+        &self,
+        id: u32,
+    ) -> Result<crate::eval::machine::suspension::ProgramContinuation, String> {
+        self.suspensions
+            .as_ref()
+            .ok_or("suspended continuation has no checked restore graph")?
+            .try_borrow()
+            .map_err(|_| "suspended restore graph is already borrowed")?
+            .get(&id)
+            .cloned()
+            .ok_or_else(|| "suspended continuation dependency has not been restored".into())
+    }
+    pub(super) fn program_key(&self) -> usize {
+        self.revision_program
+            .as_ref()
+            .map_or(0, |program| std::sync::Arc::as_ptr(program) as usize)
+    }
+    pub(super) fn select_program(&mut self, program: etas_frontend::CheckedProgram) {
+        let old = self.program_key();
+        let next = std::sync::Arc::as_ptr(&program) as usize;
+        if old != next {
+            let restored = self.parked_caches.remove(&next).unwrap_or_default();
+            let parked = std::mem::replace(&mut self.caches, restored);
+            if !parked.continuations.is_empty()
+                || !parked.call_nodes.is_empty()
+                || !parked.call_tables.is_empty()
+            {
+                self.parked_caches.insert(old, parked);
+            }
+        }
+        self.revision_program = Some(program);
+    }
+    pub(in crate::eval::machine) fn restore_call_target(
+        &mut self,
+        target: CallTargetSnapshot,
+    ) -> Result<crate::control::CallTarget, String> {
+        super::call_target::restore_call_target(target, self)
+    }
+    pub(crate) fn for_program(
+        program: etas_frontend::CheckedProgram,
+        revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
+    ) -> Self {
+        Self {
+            revision_program: Some(program),
+            revisions,
+            ..Default::default()
+        }
+    }
+
+    pub(super) fn agent_reference(
+        &self,
+        reference: &crate::orchestration::CheckpointAgentReference,
+    ) -> Result<crate::value::AgentRevisionValue, String> {
+        let program = self
+            .revision_program
+            .as_ref()
+            .ok_or("checkpoint agent reference has no checked caller program")?;
+        self.revisions
+            .as_ref()
+            .ok_or("checkpoint agent reference requires freshly prepared revisions")?
+            .restore(reference, program)
+    }
+
+    pub(super) fn frame(&mut self, snapshot: LocalsSnapshot) -> Result<Frame, String> {
         if snapshot.id == 0 {
             return Err("snapshot frame identity must be nonzero".into());
         }
@@ -45,9 +125,12 @@ impl RestoreContext {
             .cloned()
             .map(|(symbol, value)| Ok((symbol, value.restore_with(self)?)))
             .collect::<Result<Vec<_>, String>>()?;
-        let frame = Frame::from_snapshot_with_type_bindings(
+        let frame = Frame::from_snapshot_with_generic_bindings(
             locals,
-            snapshot.type_bindings.iter().cloned().collect(),
+            crate::control::GenericBindings {
+                types: snapshot.type_bindings.iter().cloned().collect(),
+                rows: snapshot.effect_row_bindings.iter().cloned().collect(),
+            },
         )?;
         self.active.remove(&snapshot.id);
         self.frames.insert(snapshot.id, (snapshot, frame.clone()));

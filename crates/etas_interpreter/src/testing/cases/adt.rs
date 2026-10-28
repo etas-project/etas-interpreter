@@ -410,7 +410,7 @@ fn record_field_snapshot(
         match c {
             C::RecordField { .. } => Some(c),
             C::Chain { inner, outer } => find(inner).or_else(|| find(outer)),
-            C::CallBoundary { outer } | C::HandlerDispatch { outer } => find(outer),
+            C::CallBoundary { outer, .. } | C::HandlerDispatch { outer } => find(outer),
             C::HandleBoundary { inner, .. }
             | C::ScopedModelPolicy { inner, .. }
             | C::RestoreModelPolicy { inner, .. } => find(inner),
@@ -475,7 +475,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 enum Plan { Task(string), Retry(Plan, u32) }
 @model(model = "local-qwen")
-agent Planner(input: string) -> Plan ![] { return Prompt.new().user(Public(input)); }
+agent Planner(input: string) -> Plan ![] { return perform infer(Prompt.new().user(Public(input))); }
 flow main() -> Plan { return Planner.run("plan"); }
 "#,
     );

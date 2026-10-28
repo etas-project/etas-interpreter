@@ -136,9 +136,30 @@ impl<'a> EvalContext<'a> {
         field: &str,
         span: Span,
     ) -> ControlSignal {
-        match self.try_eval_field_value(site, base, field, span) {
+        match base {
+            InterpValue::SyntaxBlock(syntax) => {
+                return self.eval_syntax_text_projection(site, syntax, field, span);
+            }
+            InterpValue::Nominal { value, .. } => {
+                return self.eval_field_value_signal(site, value.into_value(), field, span);
+            }
+            _ => {}
+        }
+        let code_projection = matches!(
+            &base,
+            InterpValue::AgentDefinition(_) | InterpValue::CallableDefinition(_)
+        );
+        if code_projection && let Some(signal) = self.code_operation_boundary(span) {
+            return signal;
+        }
+        let result = match self.try_eval_field_value(site, base, field, span) {
             Ok(value) => ControlSignal::Value(value),
             Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        };
+        if code_projection {
+            self.code_operation_boundary(span).unwrap_or(result)
+        } else {
+            result
         }
     }
 
@@ -150,6 +171,77 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
         match base {
+            InterpValue::AgentDefinition(definition) if field != "body" => {
+                let output = self.code_definition_field_type(
+                    site,
+                    definition.ty(),
+                    definition.program(),
+                    field,
+                    span,
+                )?;
+                code::agent_field(
+                    &self.checked.type_store,
+                    &self.checked.types.known_std_types.code,
+                    output,
+                    &definition,
+                    field,
+                )
+                .map_err(|reason| {
+                    ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason)
+                })
+            }
+            InterpValue::AgentDefinition(definition) => self.code_definition_body_projection(
+                site,
+                DefinitionBodyProjection {
+                    ty: definition.ty(),
+                    program: definition.program(),
+                    syntax: definition.backend().syntax_operations(),
+                    body: definition.body().map_err(|error| {
+                        ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            error.to_string(),
+                        )
+                    })?,
+                },
+                field,
+                span,
+            ),
+            InterpValue::CallableDefinition(definition) if field != "body" => {
+                let output = self.code_definition_field_type(
+                    site,
+                    definition.ty(),
+                    definition.program(),
+                    field,
+                    span,
+                )?;
+                code::callable_field(
+                    &self.checked.type_store,
+                    &self.checked.types.known_std_types.code,
+                    output,
+                    &definition,
+                    field,
+                )
+                .map_err(|reason| {
+                    ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason)
+                })
+            }
+            InterpValue::CallableDefinition(definition) => self.code_definition_body_projection(
+                site,
+                DefinitionBodyProjection {
+                    ty: definition.ty(),
+                    program: definition.program(),
+                    syntax: definition.syntax_operations(),
+                    body: definition.body().cloned(),
+                },
+                field,
+                span,
+            ),
+            InterpValue::SyntaxBlock(_) => Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "syntax text requires a controlled runtime projection, not constant evaluation",
+            )),
             InterpValue::Nominal { value, .. } => {
                 self.try_eval_field_value(site, value.into_value(), field, span)
             }
@@ -294,6 +386,86 @@ impl<'a> EvalContext<'a> {
             )),
         }
     }
+
+    fn code_definition_body_projection(
+        &self,
+        site: FieldAccessSite<'_>,
+        definition: DefinitionBodyProjection<'_>,
+        field: &str,
+        span: Span,
+    ) -> Result<InterpValue, ExecutionFault> {
+        if field != "body" {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "unsupported checked definition field projection",
+            ));
+        }
+        let output =
+            self.code_definition_field_type(site, definition.ty, definition.program, field, span)?;
+        let incomplete = || {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "definition body projection has no checked SyntaxBlock result",
+            )
+        };
+        let Some(etas_types::Type::Option(inner)) = self.checked.type_store.get(output) else {
+            return Err(incomplete());
+        };
+        if self.checked.types.known_std_types.code.syntax_block != Some(*inner) {
+            return Err(incomplete());
+        }
+        match definition.body {
+            Some(body) => Ok(InterpValue::OptionSome(
+                InterpValue::SyntaxBlock(crate::value::SyntaxBlockValue::new(
+                    *inner,
+                    body,
+                    definition.syntax.clone(),
+                ))
+                .into(),
+            )),
+            None => Ok(InterpValue::OptionNone),
+        }
+    }
+
+    fn code_definition_field_type(
+        &self,
+        site: FieldAccessSite<'_>,
+        receiver_ty: etas_types::TypeId,
+        program: &etas_frontend::CheckedProgram,
+        field: &str,
+        span: Span,
+    ) -> Result<etas_types::TypeId, ExecutionFault> {
+        let incomplete = || {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "definition projection differs from its checked registry field and program",
+            )
+        };
+        if !std::sync::Arc::ptr_eq(program, self.checked)
+            || self
+                .checked
+                .types
+                .known_std_types
+                .projected_field_templates(&self.checked.type_store, receiver_ty)
+                .is_none_or(|fields| !fields.iter().any(|candidate| candidate.name == field))
+        {
+            return Err(incomplete());
+        }
+        self.plan
+            .records
+            .field_type(self.checked, site)
+            .ok_or_else(incomplete)
+    }
+}
+
+struct DefinitionBodyProjection<'a> {
+    ty: etas_types::TypeId,
+    program: &'a etas_frontend::CheckedProgram,
+    syntax: &'a std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
+    body: Option<etas_code::syntax::SyntaxBlockRef>,
 }
 
 fn option_string(value: Option<String>) -> InterpValue {

@@ -43,12 +43,50 @@ impl<'a> EvalContext<'a> {
         span: Span,
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
-        let checked_call = match checked_call.specialize(&self.checked.type_store, type_bindings) {
+        let specialized = match checked_call.specialize(&self.checked.type_store, type_bindings) {
             Ok(call) => call,
             Err(message) => return ControlSignal::missing_checked_fact(message, span),
         };
-        let checked_call = &checked_call;
+        if let Some(reducer) = std_value!(self.plan.dispatch.default_action(&specialized).map_err(
+            |message| ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                message
+            )
+        ))
+        .and_then(|adapter| adapter.reducer.clone())
+        {
+            return self.start_action_reducer(reducer, specialized, call_args, span);
+        }
+        let mediation = std_value!(self.prepare_native_action(&specialized, &call_args, span));
+        if let Some((proof, args)) = mediation {
+            let boundary = crate::control::DefaultActionBoundary::Native {
+                kind,
+                call: specialized,
+                args: call_args,
+                type_bindings: type_bindings.clone(),
+                span,
+            };
+            return self.mediate_native_action(proof, args, boundary, span);
+        }
+        self.execute_std_default(kind, &specialized, call_args, span, type_bindings)
+    }
+
+    pub(in crate::eval) fn execute_std_default(
+        &mut self,
+        kind: StdCallable,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        span: Span,
+        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
+    ) -> ControlSignal {
         match kind {
+            StdCallable::ForwardAction => {
+                self.execute_action_forwarder(checked_call, call_args, span)
+            }
+            StdCallable::CodeSyntax(kind) => {
+                self.execute_code_syntax(kind, checked_call, call_args, span)
+            }
             StdCallable::SessionContext(kind) => {
                 self.execute_session_context(kind, checked_call, &call_args, span)
             }
@@ -75,9 +113,6 @@ impl<'a> EvalContext<'a> {
             StdCallable::MoneyUsdConstructor => {
                 self.execute_money_usd_constructor(checked_call.result_type, call_args, span)
             }
-            StdCallable::StreamErrorHostConstructor => {
-                self.execute_stream_error_host_constructor(call_args, span)
-            }
             StdCallable::CurrentSession => self.execute_current_session(call_args, span),
             StdCallable::SessionPolicyConstructor(name) => {
                 self.execute_session_policy_constructor(name, call_args, span)
@@ -89,7 +124,7 @@ impl<'a> EvalContext<'a> {
                 self.execute_trust_wrapper_constructor(wrapper, call_args, span)
             }
             StdCallable::Console(callable) => {
-                self.execute_console_callable(callable, call_args, span)
+                self.execute_console_callable(callable, checked_call, call_args, span)
             }
             StdCallable::Command(callable) => {
                 self.execute_command_callable(callable, call_args, span)
@@ -107,7 +142,7 @@ impl<'a> EvalContext<'a> {
             }
             StdCallable::Tls(callable) => self.execute_tls_callable(callable, call_args, span),
             StdCallable::Secret(callable) => {
-                self.execute_secret_callable(callable, checked_call.result_type, call_args, span)
+                self.execute_secret_callable(callable, checked_call, call_args, span)
             }
             StdCallable::Json(callable) => self.execute_json_callable(callable, call_args, span),
             StdCallable::Browser(callable) => {
@@ -132,6 +167,10 @@ impl<'a> EvalContext<'a> {
         }
         let path = etas_hir::unresolved_path_from_segments(&["Approval"], span);
         ControlSignal::pending_perform(PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            inference: None,
             expr: None,
             action: ResolvedActionRef {
                 effect: HirEffectRef {
@@ -340,35 +379,6 @@ impl<'a> EvalContext<'a> {
         })
     }
 
-    fn execute_stream_error_host_constructor(
-        &mut self,
-        call_args: Vec<InterpValue>,
-        span: Span,
-    ) -> ControlSignal {
-        let [message]: [InterpValue; 1] = match call_args.try_into() {
-            Ok(args) => args,
-            Err(args) => {
-                return ControlSignal::invalid_arguments(
-                    format!(
-                        "StreamError.Host expects exactly one argument, got {}",
-                        args.len()
-                    ),
-                    span,
-                );
-            }
-        };
-        if !matches!(message, InterpValue::String(_)) {
-            return ControlSignal::invalid_arguments(
-                "StreamError.Host expects a string message".to_owned(),
-                span,
-            );
-        }
-        ControlSignal::Value(InterpValue::Variant {
-            name: "Host".to_owned().into(),
-            fields: vec![message].into(),
-        })
-    }
-
     fn execute_current_session(
         &mut self,
         call_args: Vec<InterpValue>,
@@ -444,30 +454,6 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> ControlSignal {
         match callable {
-            JsonCallable::InvalidJson => {
-                let [message]: [InterpValue; 1] = match call_args.try_into() {
-                    Ok(args) => args,
-                    Err(args) => {
-                        return self.invalid_arguments_abort(
-                            span,
-                            format!(
-                                "JsonError.InvalidJson expects exactly one string argument, got {}",
-                                args.len()
-                            ),
-                        );
-                    }
-                };
-                if !matches!(message, InterpValue::String(_)) {
-                    return self.invalid_arguments_abort(
-                        span,
-                        "JsonError.InvalidJson expects a string message",
-                    );
-                }
-                ControlSignal::Value(InterpValue::Variant {
-                    name: "InvalidJson".to_owned().into(),
-                    fields: vec![message].into(),
-                })
-            }
             JsonCallable::Parse => {
                 let [text]: [InterpValue; 1] = match call_args.try_into() {
                     Ok(args) => args,
@@ -534,6 +520,7 @@ impl<'a> EvalContext<'a> {
     fn execute_console_callable(
         &mut self,
         callable: ConsoleCallable,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -611,15 +598,25 @@ impl<'a> EvalContext<'a> {
             tag: CONSOLE_TAG,
             action,
         };
-        if !self.plan.action_mediation.requires_action(&action)
-            || !self.plan.action_mediation.has_default_action(&action)
-        {
+        if !self.plan.action_mediation.requires_action(&action) {
             return ControlSignal::missing_checked_fact(
-                "std.io console execution requires checked default action facts for Console",
+                "std.io console execution requires checked requested action facts for Console",
                 span,
             );
         }
-        ControlSignal::pending_console(PendingConsole {
+        let payload = match &operation {
+            ConsoleOperation::ReadAllStdin | ConsoleOperation::ReadLineStdin => Vec::new(),
+            ConsoleOperation::WriteStdout { text, newline }
+            | ConsoleOperation::WriteStderr { text, newline } => {
+                let text = if *newline {
+                    format!("{text}\n")
+                } else {
+                    text.clone()
+                };
+                vec![InterpValue::String(text.into())]
+            }
+        };
+        let boundary = PendingConsole {
             request: ConsoleRequest {
                 id: request_id,
                 operation,
@@ -630,7 +627,14 @@ impl<'a> EvalContext<'a> {
             decode,
             span,
             continuation: Continuation::BlockValue,
-        })
+        };
+        self.mediate_default_action(
+            checked_call,
+            action,
+            payload,
+            crate::control::DefaultActionBoundary::Console(Box::new(boundary)),
+            span,
+        )
     }
 
     fn execute_command_callable(
@@ -854,7 +858,6 @@ impl<'a> EvalContext<'a> {
                 };
                 self.workspace_path(path, span).map(|path| {
                     (
-                        "Fs.read",
                         FilesystemOperation::Read { path },
                         HostBoundaryDecode::Bytes,
                     )
@@ -871,7 +874,6 @@ impl<'a> EvalContext<'a> {
                 let contents =
                     std_value!(self.bytes_argument(body, "std.fs.write_bytes body", span,));
                 Ok((
-                    "Fs.write",
                     FilesystemOperation::Write {
                         path,
                         contents,
@@ -886,7 +888,6 @@ impl<'a> EvalContext<'a> {
                 };
                 self.workspace_path(path, span).map(|path| {
                     (
-                        "Fs.list",
                         FilesystemOperation::ReadDir { path },
                         HostBoundaryDecode::PathList,
                     )
@@ -898,7 +899,6 @@ impl<'a> EvalContext<'a> {
                 };
                 self.workspace_path(path, span).map(|path| {
                     (
-                        "Fs.stat",
                         FilesystemOperation::Stat { path },
                         HostBoundaryDecode::FilesystemStat,
                     )
@@ -915,14 +915,12 @@ impl<'a> EvalContext<'a> {
                 let contents =
                     std_value!(self.bytes_argument(body, "std.fs.atomic_replace body", span,));
                 Ok((
-                    "Fs.atomic_replace",
                     FilesystemOperation::AtomicReplace { path, contents },
                     HostBoundaryDecode::Unit,
                 ))
             }
         };
-        let (action_name, operation, decode) = std_value!(result);
-        let _action = std_value!(self.require_checked_default_action(action_name, span));
+        let (operation, decode) = std_value!(result);
         ControlSignal::pending_host(PendingHostBoundary {
             request: HostBoundaryRequest::Filesystem(FilesystemRequest {
                 id: self.next_host_request_id(),
@@ -956,8 +954,6 @@ impl<'a> EvalContext<'a> {
                         self.string_support_argument(host, &["host", "name"], "Host", span,)
                     );
                 let port = std_value!(self.port_argument(port, span));
-                let _action =
-                    std_value!(self.require_checked_default_action("Net.tcp_connect", span));
                 ControlSignal::pending_host(PendingHostBoundary {
                     request: HostBoundaryRequest::Tcp(TcpConnectRequest {
                         id: self.next_host_request_id(),
@@ -982,7 +978,7 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        let (action_name, operation, decode) = match callable {
+        let (operation, decode) = match callable {
             StreamCallable::Read => {
                 let (stream, max_bytes, timeout) = match call_args.as_slice() {
                     [stream, max_bytes] => (stream, max_bytes, None),
@@ -999,7 +995,6 @@ impl<'a> EvalContext<'a> {
                 let max_bytes =
                     std_value!(self.usize_argument(max_bytes, "stream read limit", span));
                 (
-                    "Stream.read",
                     StreamOperation::Read {
                         stream,
                         max_bytes,
@@ -1009,29 +1004,10 @@ impl<'a> EvalContext<'a> {
                 )
             }
             StreamCallable::ReadUntilLimit => {
-                let (stream, limit, timeout) = match call_args.as_slice() {
-                    [stream, limit] => (stream, limit, None),
-                    [stream, limit, timeout] => (stream, limit, Some(timeout)),
-                    _ => {
-                        return self.invalid_arguments_abort(
-                            span,
-                            "std.stream.read_until_limit expects ByteStream, ByteLimit, and optional Timeout",
-                        );
-                    }
-                };
-                let timeout_ms = std_value!(self.optional_timeout_ms(timeout, span));
-                let stream = std_value!(self.stream_ref_argument(stream, span));
-                let limit_bytes =
-                    std_value!(self.usize_argument(limit, "stream read-until-limit budget", span,));
-                (
-                    "Stream.read",
-                    StreamOperation::ReadUntilLimit {
-                        stream,
-                        limit_bytes,
-                        timeout_ms,
-                    },
-                    HostBoundaryDecode::StreamBytes,
-                )
+                return ControlSignal::missing_checked_fact(
+                    "read_until_limit requires its checked action reducer",
+                    span,
+                );
             }
             StreamCallable::WriteAll => {
                 let [stream, body] = call_args.as_slice() else {
@@ -1043,7 +1019,6 @@ impl<'a> EvalContext<'a> {
                 let stream = std_value!(self.stream_ref_argument(stream, span));
                 let body = std_value!(self.bytes_argument(body, "std.stream.write_all body", span));
                 (
-                    "Stream.write",
                     StreamOperation::WriteAll { stream, body },
                     HostBoundaryDecode::Unit,
                 )
@@ -1054,11 +1029,7 @@ impl<'a> EvalContext<'a> {
                         .invalid_arguments_abort(span, "std.stream.flush expects ByteStream");
                 };
                 let stream = std_value!(self.stream_ref_argument(stream, span));
-                (
-                    "Stream.flush",
-                    StreamOperation::Flush { stream },
-                    HostBoundaryDecode::Unit,
-                )
+                (StreamOperation::Flush { stream }, HostBoundaryDecode::Unit)
             }
             StreamCallable::Close => {
                 let [stream] = call_args.as_slice() else {
@@ -1066,14 +1037,9 @@ impl<'a> EvalContext<'a> {
                         .invalid_arguments_abort(span, "std.stream.close expects ByteStream");
                 };
                 let stream = std_value!(self.stream_ref_argument(stream, span));
-                (
-                    "Stream.close",
-                    StreamOperation::Close { stream },
-                    HostBoundaryDecode::Unit,
-                )
+                (StreamOperation::Close { stream }, HostBoundaryDecode::Unit)
             }
         };
-        let _action = std_value!(self.require_checked_default_action(action_name, span));
         ControlSignal::pending_host(PendingHostBoundary {
             request: HostBoundaryRequest::Stream(StreamRequest {
                 id: self.next_host_request_id(),
@@ -1109,8 +1075,6 @@ impl<'a> EvalContext<'a> {
                     "Host",
                     span,
                 ));
-                let _action =
-                    std_value!(self.require_checked_default_action("Tls.handshake", span));
                 ControlSignal::pending_host(PendingHostBoundary {
                     request: HostBoundaryRequest::Tls(TlsConnectRequest {
                         id: self.next_host_request_id(),
@@ -1133,10 +1097,11 @@ impl<'a> EvalContext<'a> {
     fn execute_secret_callable(
         &mut self,
         callable: SecretCallable,
-        result_type: etas_types::TypeId,
+        call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        let result_type = call.result_type;
         match callable {
             SecretCallable::Read => {
                 let [key] = call_args.as_slice() else {
@@ -1148,7 +1113,6 @@ impl<'a> EvalContext<'a> {
                     "SecretKey",
                     span,
                 ));
-                let _action = std_value!(self.require_checked_default_action("Secret.read", span));
                 ControlSignal::pending_host(PendingHostBoundary {
                     request: HostBoundaryRequest::Secret(SecretRequest {
                         id: self.next_host_request_id(),
@@ -1157,7 +1121,7 @@ impl<'a> EvalContext<'a> {
                         trace: self.host_trace(),
                         budget: self.host_budget(),
                     }),
-                    decode: HostBoundaryDecode::SecretValue,
+                    decode: HostBoundaryDecode::SecretValue { result_type },
                     span,
                     continuation: Continuation::BlockValue,
                 })
@@ -1175,6 +1139,12 @@ impl<'a> EvalContext<'a> {
                         "std.crypto.hmac_sha256 expects a sealed SecretValue host handle",
                     );
                 };
+                if call.parameter_types.first() != Some(&handle.nominal_type()) {
+                    return ControlSignal::missing_checked_fact(
+                        "secret handle does not match the checked SecretValue<K> parameter",
+                        span,
+                    );
+                }
                 let Some(key) = handle.secret_ref() else {
                     return self.invalid_arguments_abort(
                         span,
@@ -1206,7 +1176,7 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        let (action_name, operation, decode) = match callable {
+        let (operation, decode) = match callable {
             BrowserCallable::Attach | BrowserCallable::Create => {
                 let [profile] = call_args.as_slice() else {
                     return self.invalid_arguments_abort(
@@ -1228,11 +1198,7 @@ impl<'a> EvalContext<'a> {
                     | BrowserCallable::Screenshot
                     | BrowserCallable::Close => unreachable!(),
                 };
-                (
-                    "Browser.attach",
-                    operation,
-                    HostBoundaryDecode::BrowserPayload,
-                )
+                (operation, HostBoundaryDecode::BrowserPayload)
             }
             BrowserCallable::Send => {
                 let [session, message] = call_args.as_slice() else {
@@ -1244,7 +1210,6 @@ impl<'a> EvalContext<'a> {
                 let session = std_value!(self.browser_session_argument(session, span));
                 let message = std_value!(self.bytes_argument(message, "BrowserMessage", span));
                 (
-                    "Browser.send",
                     BrowserProtocolOperation::Send { session, message },
                     HostBoundaryDecode::Unit,
                 )
@@ -1258,7 +1223,6 @@ impl<'a> EvalContext<'a> {
                 };
                 let session = std_value!(self.browser_session_argument(session, span));
                 (
-                    "Browser.recv",
                     BrowserProtocolOperation::Recv {
                         session,
                         max_bytes: 1024 * 1024,
@@ -1275,7 +1239,6 @@ impl<'a> EvalContext<'a> {
                 };
                 let session = std_value!(self.browser_session_argument(session, span));
                 (
-                    "Browser.screenshot",
                     BrowserProtocolOperation::Screenshot {
                         session,
                         max_bytes: 1024 * 1024,
@@ -1292,13 +1255,11 @@ impl<'a> EvalContext<'a> {
                 };
                 let session = std_value!(self.browser_session_argument(session, span));
                 (
-                    "Browser.close",
                     BrowserProtocolOperation::Close { session },
                     HostBoundaryDecode::Unit,
                 )
             }
         };
-        let _action = std_value!(self.require_checked_default_action(action_name, span));
         ControlSignal::pending_host(PendingHostBoundary {
             request: HostBoundaryRequest::Browser(BrowserProtocolRequest {
                 id: self.next_host_request_id(),
@@ -1608,7 +1569,7 @@ impl<'a> EvalContext<'a> {
         Ok(port)
     }
 
-    fn usize_argument(
+    pub(super) fn usize_argument(
         &self,
         value: &InterpValue,
         expected: &str,
@@ -1646,7 +1607,7 @@ impl<'a> EvalContext<'a> {
         })
     }
 
-    fn optional_timeout_ms(
+    pub(super) fn optional_timeout_ms(
         &self,
         value: Option<&InterpValue>,
         span: Span,
@@ -1690,7 +1651,7 @@ impl<'a> EvalContext<'a> {
         })
     }
 
-    fn stream_ref_argument(
+    pub(super) fn stream_ref_argument(
         &self,
         value: &InterpValue,
         span: Span,

@@ -2,12 +2,18 @@ use super::{BTreeSet, CallTargetSnapshot, SnapshotValidator, TypeId};
 use crate::orchestration::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 use std::collections::HashMap;
 
+#[derive(Clone, Copy, PartialEq, Eq, Hash)]
+pub(super) enum ReferenceScope {
+    NoCheckedSlot,
+    CheckedSlot,
+}
+
 // Own immutable source edges so a completed check cannot be confused with a
 // later allocation at the same address. COW edits acquire a different identity.
 #[derive(Default)]
 pub(super) struct ValidatedCallTargets {
-    nodes: HashMap<*const CallTargetSnapshot, CallTargetSnapshotLink>,
-    tables: HashMap<*const Vec<CallTargetSnapshot>, CallTargetSnapshotChildren>,
+    nodes: HashMap<(*const CallTargetSnapshot, ReferenceScope), CallTargetSnapshotLink>,
+    tables: HashMap<(*const Vec<CallTargetSnapshot>, ReferenceScope), CallTargetSnapshotChildren>,
 }
 
 #[cfg(test)]
@@ -31,6 +37,15 @@ impl SnapshotValidator<'_> {
         root: &CallTargetSnapshot,
         context: &str,
     ) -> Result<(), String> {
+        self.call_target_in(root, context, ReferenceScope::NoCheckedSlot)
+    }
+
+    pub(super) fn call_target_in(
+        &self,
+        root: &CallTargetSnapshot,
+        context: &str,
+        scope: ReferenceScope,
+    ) -> Result<(), String> {
         let mut next = Some(root);
         let mut pending = Vec::new();
         loop {
@@ -41,7 +56,9 @@ impl SnapshotValidator<'_> {
                     CallTargetSnapshot::Specialized {
                         target,
                         type_bindings,
+                        effect_row_bindings,
                     } => {
+                        self.effect_row_bindings(effect_row_bindings, context)?;
                         // Bindings are checked after the target, before its next sibling.
                         if !type_bindings.is_empty() {
                             pending.push(Pending::Bindings(type_bindings));
@@ -51,7 +68,7 @@ impl SnapshotValidator<'_> {
                                 .validated_call_targets
                                 .borrow()
                                 .nodes
-                                .contains_key(&key)
+                                .contains_key(&(key, scope))
                             {
                                 pending.push(Pending::CompleteNode(key, target));
                                 next = Some(target);
@@ -66,7 +83,7 @@ impl SnapshotValidator<'_> {
                                 .validated_call_targets
                                 .borrow()
                                 .nodes
-                                .contains_key(&key)
+                                .contains_key(&(key, scope))
                             {
                                 pending.push(Pending::CompleteNode(key, target));
                                 next = Some(target);
@@ -81,7 +98,7 @@ impl SnapshotValidator<'_> {
                                 .validated_call_targets
                                 .borrow()
                                 .tables
-                                .contains_key(&key)
+                                .contains_key(&(key, scope))
                             {
                                 continue;
                             }
@@ -94,7 +111,7 @@ impl SnapshotValidator<'_> {
                             next = Some(first);
                         }
                     }
-                    leaf => self.call_target_leaf(leaf, context)?,
+                    leaf => self.call_target_leaf(leaf, context, scope)?,
                 }
                 continue;
             }
@@ -103,13 +120,13 @@ impl SnapshotValidator<'_> {
                     self.validated_call_targets
                         .borrow_mut()
                         .nodes
-                        .insert(key, target.clone());
+                        .insert((key, scope), target.clone());
                 }
                 Some(Pending::CompleteTable(key, targets)) => {
                     self.validated_call_targets
                         .borrow_mut()
                         .tables
-                        .insert(key, targets.clone());
+                        .insert((key, scope), targets.clone());
                 }
                 Some(Pending::Bindings(bindings)) => {
                     let mut names = BTreeSet::new();
@@ -135,8 +152,33 @@ impl SnapshotValidator<'_> {
         }
     }
 
-    fn call_target_leaf(&self, target: &CallTargetSnapshot, context: &str) -> Result<(), String> {
+    fn call_target_leaf(
+        &self,
+        target: &CallTargetSnapshot,
+        context: &str,
+        scope: ReferenceScope,
+    ) -> Result<(), String> {
         match target {
+            CallTargetSnapshot::Scoped { metadata, target } => {
+                if scope != ReferenceScope::CheckedSlot {
+                    return Err(
+                        "checkpoint scoped callable requires checked value-type evidence".into(),
+                    );
+                }
+                self.scoped_callable(metadata, target).map(|_| ())
+            }
+            CallTargetSnapshot::AgentRevision(reference) => {
+                if scope != ReferenceScope::CheckedSlot {
+                    return Err(
+                        "checkpoint agent reference requires checked value-type evidence".into(),
+                    );
+                }
+                reference.validate_resources(self.limits)?;
+                self.revisions
+                    .ok_or("checkpoint agent reference requires freshly prepared revisions")?
+                    .restore(reference, self.checked)
+                    .map(|_| ())
+            }
             CallTargetSnapshot::FlowItem(item)
             | CallTargetSnapshot::AgentItem(item)
             | CallTargetSnapshot::ToolItem(item) => self.item(*item, context),
@@ -145,7 +187,10 @@ impl SnapshotValidator<'_> {
                 self.symbol(*symbol, context)?;
                 if self.dispatch.enum_constructor(*symbol).is_some()
                     || self.checked.symbols.get(*symbol).is_some_and(|symbol| {
-                        matches!(symbol.def, etas_hir::SymbolDef::EnumVariant { .. })
+                        self.checked
+                            .types
+                            .enum_constructor(&self.checked.type_store, symbol)
+                            .is_some()
                     })
                 {
                     Ok(())
@@ -198,16 +243,50 @@ impl SnapshotValidator<'_> {
                 self.frame(captured, context)
             }
             CallTargetSnapshot::StdIntrinsic {
+                origin,
+                substitutions,
                 intrinsic,
                 dispatch,
                 parameter_types,
                 result_type,
             } => {
-                self.dispatch
-                    .resolve_std_callable(crate::intrinsic::dispatch::StdIntrinsicIdentity {
-                        intrinsic: *intrinsic,
-                        dispatch: *dispatch,
+                let nodes = substitutions
+                    .iter()
+                    .try_fold(substitutions.len(), |count, step| {
+                        count.checked_add(step.len())
                     })
+                    .ok_or_else(|| {
+                        format!("{context}: intrinsic substitutions exceed node budget")
+                    })?;
+                if nodes > self.limits.max_nodes {
+                    return Err(format!(
+                        "{context}: intrinsic substitutions exceed node budget"
+                    ));
+                }
+                let bytes = substitutions
+                    .iter()
+                    .flatten()
+                    .try_fold(0usize, |count, (name, _)| count.checked_add(name.len()))
+                    .ok_or_else(|| {
+                        format!("{context}: intrinsic substitutions exceed byte budget")
+                    })?;
+                if bytes > self.limits.max_value_bytes {
+                    return Err(format!(
+                        "{context}: intrinsic substitutions exceed byte budget"
+                    ));
+                }
+                self.dispatch
+                    .validate_std_call_template(
+                        *origin,
+                        crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                            intrinsic: *intrinsic,
+                            dispatch: *dispatch,
+                        },
+                        substitutions,
+                        parameter_types,
+                        *result_type,
+                        &self.checked.type_store,
+                    )
                     .map_err(|error| format!("{context}: {error}"))?;
                 for parameter_type in parameter_types {
                     self.type_id(*parameter_type, context)?;

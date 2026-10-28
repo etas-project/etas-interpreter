@@ -640,18 +640,16 @@ flow main() -> string ![Error<NetworkError>] {
     let requests = host.stream_requests();
     assert_eq!(requests.len(), 1, "{requests:#?}");
     match &requests[0].operation {
-        etas_host::StreamOperation::ReadUntilLimit {
-            stream,
-            limit_bytes,
-            ..
+        etas_host::StreamOperation::Read {
+            stream, max_bytes, ..
         } => {
             assert_eq!(
                 stream.handle(),
                 &etas_host::StreamHandleRef::issued("tcp-1", 0)
             );
-            assert_eq!(*limit_bytes, 4);
+            assert_eq!(*max_bytes, 5);
         }
-        other => panic!("expected ReadUntilLimit stream operation, got {other:?}"),
+        other => panic!("expected mediated Read stream operation, got {other:?}"),
     }
 }
 

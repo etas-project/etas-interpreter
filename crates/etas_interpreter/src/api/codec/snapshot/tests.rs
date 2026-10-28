@@ -70,6 +70,7 @@ fn captured_frame_encoding_removes_runtime_graph_materialization() {
     let mut previous = None;
     for count in [1000, 2000, 4000] {
         let captured = LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 77,
             locals: Rc::new(vec![(
                 SymbolId(1),

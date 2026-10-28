@@ -21,11 +21,38 @@ pub(crate) async fn drive_invocation(
         }
     } else {
         match input {
-            InvocationInput::Run { entry, args } => {
-                run_checked_inner(project, entry, args, host, options, owner.scope.clone()).await
+            InvocationInput::Run {
+                entry,
+                args,
+                prepared,
+            } => {
+                run_checked_inner(
+                    project,
+                    entry,
+                    args,
+                    prepared,
+                    host,
+                    options,
+                    owner.scope.clone(),
+                )
+                .await
             }
-            InvocationInput::Resume(checkpoint) => {
-                resume_checkpoint_inner(project, checkpoint, host, options, owner.scope.clone())
+            InvocationInput::Resume {
+                checkpoint,
+                prepared,
+            } => {
+                resume_checkpoint_inner(
+                    project,
+                    checkpoint,
+                    prepared,
+                    host,
+                    options,
+                    owner.scope.clone(),
+                )
+                .await
+            }
+            InvocationInput::ResumeSource(checkpoint) => {
+                super::resume_source_inner(project, checkpoint, host, options, owner.scope.clone())
                     .await
             }
         }

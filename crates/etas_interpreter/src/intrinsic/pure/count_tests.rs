@@ -226,6 +226,7 @@ fn count_query_rejects_incomplete_or_unsupported_checked_abi() {
     let size = types.primitive(PrimitiveType::USize);
     let array = types.intern(Type::Array(string));
     let unresolved = types.intern(Type::Named(etas_types::NamedTypeRef {
+        source_parameter: None,
         name: "std.Unresolved".into(),
     }));
     let projector = PureAbiProjector::build(&types.into_store()).unwrap();

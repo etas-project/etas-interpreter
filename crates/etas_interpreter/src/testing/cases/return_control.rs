@@ -1,6 +1,45 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn expression_body_trailing_handler_preserves_resume_and_finish_after_host_suspension() {
+    for (signal, expected) in [("resume 7;", 7), ("finish 9;", 9)] {
+        let checked = checked_project(&format!(
+            r#"
+module app.main;
+import std.effects.Console;
+import std.io.println;
+effect Probe {{ action request() -> i32; }}
+flow handled() -> i32 ![Console, Error<IOError>] = perform Probe.request();
+with {{
+    Probe.request() => {{ println("handler"); {signal} }}
+}}
+flow main() -> i32 ![Console, Error<IOError>] {{ return handled(); }}
+"#
+        ));
+        let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.expect("entry item"),
+                },
+                Vec::new(),
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .expect("execution lifecycle infrastructure");
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(
+            result.value().cloned(),
+            Some(value::InterpValue::i32(expected))
+        );
+        assert_eq!(host.stdout_text(), "handler\n");
+        assert_eq!(host.console_call_count(), 1);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn effectful_return_crosses_if_handle_and_console_suspension() {
     let checked = checked_project(
         r#"

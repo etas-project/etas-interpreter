@@ -400,8 +400,10 @@ fn already_produced_machine_fault_is_not_replaced_by_racing_stop() {
     let entry = checked.entry.unwrap();
     let scope = etas_host::execution::ExecutionScope::new_owned();
     let options = RunOptions::default();
-    let mut eval = eval::EvalContext::new(eval::EvalContextInput {
+    let (program, mut run_state) = eval::EvalContextInput {
         storage_limits: Default::default(),
+        code_definitions: None,
+        syntax_limits: Default::default(),
         event_observer: options.event_observer.clone(),
         execution: scope.clone(),
         checked: &checked,
@@ -413,7 +415,9 @@ fn already_produced_machine_fault_is_not_replaced_by_racing_stop() {
         current_session: None,
         entry_item: entry,
         entry_args: &[],
-    });
+    }
+    .into_parts();
+    let mut eval = eval::EvalContext::new(program, &mut run_state);
     let fault = control::ExecutionFault::new(
         AnalysisDiagnosticCode::UnhandledRuntimeError,
         diagnostics::item_span(&checked, entry),

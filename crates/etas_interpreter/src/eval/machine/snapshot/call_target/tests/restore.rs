@@ -8,6 +8,7 @@ fn snapshot_tree(mut node: CallTargetSnapshot, depth: usize, mode: usize) -> Cal
                 limits: vec![],
             },
             1 => CallTargetSnapshot::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: node.into(),
                 type_bindings: vec![],
             },
@@ -77,6 +78,7 @@ fn deep_call_target_restore_consumes_snapshot_edges_without_recursive_descent() 
                         (
                             1,
                             CallTarget::Specialized {
+                                effect_row_bindings: _,
                                 target,
                                 type_bindings,
                             },
@@ -116,6 +118,7 @@ fn lambda(id: u64, value: i32) -> CallTargetSnapshot {
     CallTargetSnapshot::Lambda {
         expr: HirExprId(4),
         captured: LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id,
             locals: std::rc::Rc::new(vec![(
                 SymbolId(2),
@@ -197,6 +200,7 @@ fn restored_call_target_metadata_and_shared_frames_keep_their_identity() {
     for i in 0..depth {
         saved = if i % 2 == 0 {
             CallTargetSnapshot::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: saved.into(),
                 type_bindings: vec![(format!("T{i}"), TypeId(i as u32))],
             }
@@ -222,10 +226,12 @@ fn restored_call_target_metadata_and_shared_frames_keep_their_identity() {
             (expected, actual) = match (expected, actual) {
                 (
                     CallTargetSnapshot::Specialized {
+                        effect_row_bindings: _,
                         target: a,
                         type_bindings: ab,
                     },
                     CallTargetSnapshot::Specialized {
+                        effect_row_bindings: _,
                         target: b,
                         type_bindings: bb,
                     },
@@ -358,7 +364,7 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
         },
     };
     let checked = crate::testing::project::checked_project(
-        "module app.main; flow main() -> unit { return; }",
+        "module app.main; flow main(value: i32) -> i32 { return value; } flow invoke() -> i32 { return main(1); }",
     );
     let plan = crate::Interpreter
         .plan(&checked, crate::api::PlanOptions)
@@ -366,7 +372,17 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
         .unwrap();
     let limits = etas_host::StorageLimits::default();
     let current = crate::api::HostExecutionContext::default();
-    let span = checked.hir.blocks.iter().next().unwrap().1.span;
+    let (call, args, span) = checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(id, expr)| match expr {
+            etas_hir::HirExpr::Call { args, span, .. } => {
+                Some((id, std::sync::Arc::from(args.as_slice()), *span))
+            }
+            _ => None,
+        })
+        .unwrap();
     for depth in [1000, 4000, 30_000] {
         for invalid in [false, true] {
             let mut target = CallTargetSnapshot::FlowItem(if invalid {
@@ -380,14 +396,18 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                 );
             }
             let saved = MachineSnapshot {
+                program_owners: Default::default(),
+                suspended_programs: Vec::new(),
                 frames: vec![MachineFrameSnapshot::Continuation {
                     continuation: ContinuationSnapshot::CallArgs {
+                        call,
                         target,
-                        args: vec![].into(),
-                        next_arg_index: 0,
+                        args: std::sync::Arc::clone(&args),
+                        next_arg_index: 1,
                         evaluated_args: vec![],
                         span,
                         frame: LocalsSnapshot {
+                            effect_row_bindings: Vec::new(),
                             id: 1,
                             locals: Default::default(),
                             type_bindings: vec![],
@@ -408,7 +428,7 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                 Ok(mut machine) => {
                     assert_eq!(machine.frames().len(), 1);
                     let Continuation::CallArgs { target, .. } =
-                        machine.pop_frame().unwrap().into_continuation()
+                        machine.pop_frame().unwrap().into_continuation().unwrap()
                     else {
                         panic!("call args frame")
                     };

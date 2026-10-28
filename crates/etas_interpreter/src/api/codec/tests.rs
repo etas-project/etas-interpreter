@@ -10,6 +10,24 @@ fn test_span(start: u32, end: u32) -> Span {
 }
 
 #[test]
+fn checkpoint_codec_rejects_v48_before_decoding_identity_metadata() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v48"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA),
+        "{error}"
+    );
+}
+
+#[test]
 fn checkpoint_codec_rejects_v31_without_checked_construction_expression() {
     let value = json!({"schema": "etas.cli.interpreter-checkpoint.v31"});
     let error = checkpoint_from_json(&value, &checked_project()).unwrap_err();
@@ -99,7 +117,7 @@ fn model_snapshot_does_not_reopen_saved_workspace_or_restore_authority() {
     );
     let decoded = checkpoint::model_request_from_json(&encoded).unwrap();
     let current = crate::api::HostExecutionContext::default();
-    let restored = decoded.restore(&current);
+    let restored = decoded.restore(&current, None).unwrap();
     assert_eq!(restored.authority, current.authority);
     assert!(restored.authority.sandbox.filesystem.read_roots.is_empty());
     let new_root = etas_host::WorkspaceRoot::new(fixture.path()).unwrap();
@@ -109,7 +127,8 @@ fn model_snapshot_does_not_reopen_saved_workspace_or_restore_authority() {
         etas_host::FilesystemPolicy::allow_workspace(new_root.clone());
     let restored = checkpoint::model_request_from_json(&encoded)
         .unwrap()
-        .restore(&reauthorized);
+        .restore(&reauthorized, None)
+        .unwrap();
     assert_eq!(
         restored.authority.sandbox.filesystem.read_roots,
         vec![new_root]
@@ -135,6 +154,9 @@ fn checked_project() -> etas_frontend::CheckedProject {
 fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> Value {
     let entry = checked.entry.expect("test entry");
     let checkpoint = InterpreterCheckpoint {
+        retained_code: None,
+        model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),
+        code_revision: None,
         storage: crate::orchestration::StorageSnapshot {
             identity: etas_host::StorageOperationKey::new(std::time::Duration::from_secs(3600))
                 .unwrap(),
@@ -322,7 +344,7 @@ effect Gate {
   action request(value: string) -> string;
 }
 
-flow main() -> unit {
+flow main(seed: i32) -> unit {
   let value = perform Gate.request("value") with {
     Gate.request(value) => resume value;
   };
@@ -330,7 +352,7 @@ flow main() -> unit {
 }
 "#,
     );
-    let (_, hir_arm) = checked
+    let (arm, hir_arm) = checked
         .hir
         .handler_arms
         .iter()
@@ -342,17 +364,19 @@ flow main() -> unit {
     };
     let scope_id = crate::orchestration::HandlerScopeId(0);
     let handler_arm = ActiveHandlerArmRecord {
-        effect_segments: vec!["Console".to_owned()],
-        action: "read_line".to_owned(),
+        arm,
+        effect_segments: vec!["Gate".to_owned()],
+        action: hir_arm.action.action.clone(),
         action_symbol,
-        type_args: vec![],
-        effect_type_args: vec![],
         patterns: hir_arm.patterns.clone(),
         body: hir_arm.body,
         scope: hir_arm.scope,
         span: hir_arm.span,
     };
     let checkpoint = InterpreterCheckpoint {
+        retained_code: None,
+        model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),
+        code_revision: None,
         storage: crate::orchestration::StorageSnapshot {
             identity: etas_host::StorageOperationKey::new(std::time::Duration::from_secs(3600))
                 .unwrap(),
@@ -369,6 +393,8 @@ flow main() -> unit {
         entry_item: checked.entry.expect("test entry item"),
         args: vec![InterpValue::i32(42)],
         machine: MachineSnapshot {
+            program_owners: Default::default(),
+            suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Handler {
                 continuation: ContinuationSnapshot::HandleBoundary {
                     scope_id,
@@ -376,6 +402,7 @@ flow main() -> unit {
                     handlers: vec![handler_arm.clone()],
                     span: test_span(1, 10),
                     frame: LocalsSnapshot {
+                        effect_row_bindings: Vec::new(),
                         id: 1,
                         locals: Default::default(),
                         type_bindings: Vec::new(),
@@ -386,17 +413,12 @@ flow main() -> unit {
         handlers: HandlerSnapshot {
             handlers: vec![ActiveHandlerRecord {
                 id: scope_id,
-                handled_actions: vec!["Console.read_line".to_owned()],
+                handled_actions: vec!["Gate.request".to_owned()],
                 handlers: vec![handler_arm],
                 span: test_span(1, 10),
             }],
         },
-        retry_state: RetrySnapshot {
-            attempts: vec![RetryAttemptRecord {
-                id: RetryAttemptId(41),
-                ordinal: 1,
-            }],
-        },
+        retry_state: RetrySnapshot::default(),
         trace: TraceSnapshot {
             events_recorded: 4,
             next_message: 2,
@@ -455,6 +477,22 @@ flow main() -> unit {
     );
     let restored =
         checkpoint_from_json(&artifact, &checked).expect("checkpoint codec should restore");
+    let mut wrong_arity = artifact.clone();
+    wrong_arity["checkpoint"]["args"] = json!([]);
+    assert!(
+        checkpoint_from_json(&wrong_arity, &checked)
+            .unwrap_err()
+            .message()
+            .contains("checked entry arity")
+    );
+    let mut orphaned_retry = artifact.clone();
+    orphaned_retry["checkpoint"]["retry_state"] = json!([{"id":41,"ordinal":1}]);
+    assert!(
+        checkpoint_from_json(&orphaned_retry, &checked)
+            .unwrap_err()
+            .to_string()
+            .contains("retry scope topology mismatch")
+    );
 
     assert_eq!(restored.handlers, checkpoint.handlers);
     assert_eq!(restored.host_state, checkpoint.host_state);
@@ -574,6 +612,7 @@ flow main() -> unit {
     let mut invalid_handler = artifact;
     invalid_handler["checkpoint"]["machine"]["frames"] = json!([{
         "kind": "handler",
+        "program_owner": 0,
         "continuation": { "kind": "block_value" },
     }]);
     let error = checkpoint_from_json(&invalid_handler, &checked)
@@ -596,7 +635,7 @@ fn checkpoint_codec_rejects_legacy_artifact_without_machine_stack() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
     );
 }
 
@@ -621,7 +660,7 @@ fn checkpoint_codec_rejects_v4_artifact_after_handler_scope_schema_change() {
         .expect_err("v4 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v4`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -638,7 +677,7 @@ fn checkpoint_codec_rejects_v5_artifact_after_lossless_host_ledger_schema_change
         .expect_err("v5 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v5`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -655,7 +694,7 @@ fn checkpoint_codec_rejects_v6_artifact_after_canonical_message_schema_change() 
         .expect_err("v6 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v6`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -672,7 +711,7 @@ fn checkpoint_codec_rejects_v7_artifact_without_checked_intrinsic_abi() {
         .expect_err("v7 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v7`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -689,7 +728,7 @@ fn checkpoint_codec_rejects_v8_artifact_with_executable_std_callable_payloads() 
         .expect_err("v8 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v8`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -706,7 +745,7 @@ fn checkpoint_codec_rejects_v9_artifact_without_run_owned_budget_state() {
         .expect_err("v9 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v9`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v9`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -723,7 +762,7 @@ fn checkpoint_codec_rejects_v10_artifact_without_execution_progress() {
         .expect_err("v10 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v10`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v10`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -740,7 +779,7 @@ fn checkpoint_codec_rejects_v11_artifact_without_trace_parent_identity() {
         .expect_err("v11 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v11`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v11`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -757,7 +796,7 @@ fn checkpoint_codec_rejects_v12_artifact_with_32_bit_trace_identity() {
         .expect_err("v12 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v12`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v12`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -774,7 +813,7 @@ fn checkpoint_codec_rejects_v13_artifact_with_persisted_invocation_authority() {
         .expect_err("v13 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v13`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v13`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -791,7 +830,7 @@ fn checkpoint_codec_rejects_v14_artifact_with_live_budget_ledger() {
         .expect_err("v14 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v14`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v14`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -808,7 +847,7 @@ fn checkpoint_codec_rejects_v15_artifact_without_runtime_generic_bindings() {
         .expect_err("v15 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v15`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v15`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -825,7 +864,7 @@ fn checkpoint_codec_rejects_v16_artifact_without_boundary_occurrences() {
         .expect_err("v16 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v16`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v16`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -842,7 +881,7 @@ fn checkpoint_codec_rejects_v17_artifact_without_region_indexed_command_cwd() {
         .expect_err("v17 checkpoint must be rejected by schema version");
     assert!(
         error.message().contains(
-            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v17`; expected `etas.cli.interpreter-checkpoint.v34`"
+            "unsupported checkpoint artifact schema `etas.cli.interpreter-checkpoint.v17`; expected `etas.cli.interpreter-checkpoint.v49`"
         ),
         "{}",
         error.message()
@@ -862,6 +901,8 @@ fn checkpoint_codec_rejects_unimported_and_unknown_std_intrinsics() {
             "kind": "callable",
             "target": {
                 "kind": "std_intrinsic",
+                "origin": 0,
+                "substitutions": [],
                 "intrinsic": intrinsic,
                 "dispatch": dispatch,
                 "parameter_types": [],
@@ -896,7 +937,7 @@ fn checkpoint_codec_rejects_v24_without_published_context_contract() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
     );
 }
 
@@ -913,7 +954,7 @@ fn checkpoint_codec_rejects_v33_with_copied_aggregate_descriptors() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
     );
 }
 
@@ -930,6 +971,251 @@ fn checkpoint_codec_rejects_v26_without_explicit_storage_operation_bindings() {
 }
 
 #[test]
+fn checkpoint_codec_rejects_v34_without_checked_inference_and_handler_identity() {
+    let checked = checked_project();
+    let artifact = json!({"schema":"etas.cli.interpreter-checkpoint.v34"});
+    let error = checkpoint_from_json(&artifact, &checked).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v35_without_intrinsic_call_origin() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v35"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v36_before_stream_enum_abi() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v36"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v37_before_stream_reducer_continuations() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v37"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v38_before_pinned_code_revision_identity() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v38"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v39_before_checked_agent_reference_restoration() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v39"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v40_before_program_frame_restoration() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v40"});
+    let checked = checked_project();
+    let error = checkpoint_from_json(&artifact, &checked).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v41_before_scoped_callable_restoration() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v41"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v42_before_suspended_program_restoration() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v42"});
+    let checked = crate::testing::project::checked_project(
+        "module app.main; flow main() -> unit { return; }",
+    );
+    let error = checkpoint_from_json(&artifact, &checked).unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v43_before_decoding_pending_calls_without_checked_sites() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v43"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema")
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v45_before_decoding_a_missing_active_model_policy() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v45"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA),
+        "{error}"
+    );
+}
+
+#[test]
+fn checkpoint_codec_requires_the_active_model_policy_in_v49() {
+    let checked = checked_project();
+    let mut artifact = minimal_checkpoint_artifact(&checked);
+    artifact["checkpoint"]
+        .as_object_mut()
+        .unwrap()
+        .remove("model_policy");
+    let error = checkpoint_from_json(&artifact, &checked).unwrap_err();
+    assert!(error.message().contains("model_policy"), "{error}");
+}
+
+#[test]
+fn checkpoint_codec_rejects_v46_before_decoding_compositions_without_invocation_evidence() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v46"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA),
+        "{error}"
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v47_before_decoding_missing_effect_row_bindings() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v47"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA),
+        "{error}"
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v44_before_decoding_operands_without_type_context() {
+    let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v44"});
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA),
+        "{error}"
+    );
+}
+
+#[test]
 fn checkpoint_codec_rejects_v23_before_decoding_history_without_fence() {
     let checked = checked_project();
     let artifact = json!({"schema": "etas.cli.interpreter-checkpoint.v23"});
@@ -942,7 +1228,7 @@ fn checkpoint_codec_rejects_v23_before_decoding_history_without_fence() {
     assert!(
         error
             .message()
-            .contains("expected `etas.cli.interpreter-checkpoint.v34`")
+            .contains("expected `etas.cli.interpreter-checkpoint.v49`")
     );
 }
 
@@ -965,6 +1251,8 @@ flow main() -> unit ![Console.stdout_write, Error<IOError>] {
         "kind": "callable",
         "target": {
             "kind": "std_intrinsic",
+            "origin": 0,
+            "substitutions": [],
             "intrinsic": etas_std::intrinsic::runtime::IO_PRINTLN,
             "dispatch": "host",
             "parameter_types": [],
@@ -995,6 +1283,8 @@ flow main() -> i32 {
         "kind": "callable",
         "target": {
             "kind": "std_intrinsic",
+            "origin": 0,
+            "substitutions": [],
             "intrinsic": etas_std::intrinsic::pure::OPTION_UNWRAP,
             "dispatch": "pure_kernel",
             "parameter_types": [],

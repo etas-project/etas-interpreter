@@ -142,7 +142,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn eval_global_symbol(
+    pub(super) fn eval_global_symbol(
         &mut self,
         symbol: SymbolId,
         span: Span,
@@ -173,6 +173,26 @@ impl<'a> EvalContext<'a> {
                 ));
             };
             match &symbol_data.def {
+                SymbolDef::Item { item }
+                    if self.checked.types.item_signatures.contains_key(item) =>
+                {
+                    match self.checked.hir.items.get(*item) {
+                        Some(HirItem::Agent(_)) => self
+                            .source_agent_call_target(*item, span)
+                            .map(InterpValue::Callable),
+                        Some(HirItem::Flow(_)) => self
+                            .source_flow_call_target(*item, span)
+                            .map(InterpValue::Callable),
+                        Some(HirItem::Tool(_)) => self
+                            .source_tool_call_target(*item, span)
+                            .map(InterpValue::Callable),
+                        _ => Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::InvalidArguments,
+                            span,
+                            "checked declaration is not a runtime callable value",
+                        )),
+                    }
+                }
                 SymbolDef::TopLevelLet {
                     initializer,
                     classification,
@@ -198,19 +218,38 @@ impl<'a> EvalContext<'a> {
                         ))
                     }
                 },
-                SymbolDef::EnumVariant { .. } => {
+                SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. } => {
                     self.eval_variant_constructor(symbol, Vec::new(), span)
                 }
                 SymbolDef::ImportAlias { path, .. } => {
-                    if let Some(value) = self.eval_std_value_alias(path) {
+                    if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
+                        if constructor.arity == 0 {
+                            self.eval_variant_constructor(symbol, Vec::new(), span)
+                        } else {
+                            Ok(InterpValue::Callable(CallTarget::EnumVariant(symbol)))
+                        }
+                    } else if let Some(value) = self.eval_std_value_alias(path) {
                         Ok(value)
                     } else if let Some(item) = self
                         .source_item_for_import_path(path)
                         .and_then(|ast_item| self.hir_item_for_ast_item(&ast_item))
-                        .and_then(|item| self.checked.hir.items.get(item))
-                        && let HirItem::TopLevelLet(item) = item
                     {
-                        self.eval_global_symbol_with_cycle_check(item.symbol, span, visiting)
+                        match self.checked.hir.items.get(item) {
+                            Some(HirItem::TopLevelLet(item)) => self
+                                .eval_global_symbol_with_cycle_check(item.symbol, span, visiting),
+                            Some(HirItem::Agent(agent)) => self
+                                .eval_global_symbol_with_cycle_check(agent.symbol, span, visiting),
+                            Some(HirItem::Flow(flow)) => self.eval_global_symbol_with_cycle_check(
+                                flow.symbol,
+                                span,
+                                visiting,
+                            ),
+                            _ => Err(ExecutionFault::new(
+                                AnalysisDiagnosticCode::InvalidArguments,
+                                span,
+                                "import alias does not name a runtime value",
+                            )),
+                        }
                     } else {
                         Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
@@ -283,6 +322,7 @@ impl<'a> EvalContext<'a> {
         };
         match &expr_data {
             HirExpr::Literal(literal) => self.eval_literal(expr, literal),
+            HirExpr::Lambda { .. } => self.capture_lambda_value(expr, span, None),
             HirExpr::Path(path) => {
                 let ResolveResult::Resolved(symbol) = path.resolution else {
                     return Err(ExecutionFault::new(
@@ -291,7 +331,28 @@ impl<'a> EvalContext<'a> {
                         "constant path initializer was not fully resolved",
                     ));
                 };
-                self.eval_global_symbol_with_cycle_check(symbol, path.span, visiting)
+                if self.std_intrinsic(symbol).is_none()
+                    && !self
+                        .checked
+                        .types
+                        .generic_instantiations
+                        .contains_key(&expr)
+                {
+                    return self.eval_global_symbol_with_cycle_check(symbol, path.span, visiting);
+                }
+                let frame = Frame::new(std::sync::Arc::default());
+                let value = match self.eval_std_callable_value(expr, &frame, path.span)? {
+                    Some(value) => value,
+                    None => {
+                        self.eval_global_symbol_with_cycle_check(symbol, path.span, visiting)?
+                    }
+                };
+                match value {
+                    InterpValue::Callable(target) => self
+                        .specialize_call_target_for_call(expr, target, &frame, path.span)
+                        .map(InterpValue::Callable),
+                    value => Ok(value),
+                }
             }
             HirExpr::Tuple { elems, .. } => Ok(InterpValue::Tuple(
                 elems

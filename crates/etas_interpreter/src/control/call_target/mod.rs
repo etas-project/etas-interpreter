@@ -12,6 +12,8 @@ pub use storage::{CallTargetChildren, CallTargetLink};
 pub enum CallTarget {
     FlowItem(HirItemId),
     AgentItem(HirItemId),
+    AgentRevision(crate::value::AgentRevisionValue),
+    Scoped(crate::value::ScopedCallableValue),
     ToolItem(HirItemId),
     SpecImplMethod(SymbolId),
     Lambda {
@@ -25,6 +27,7 @@ pub enum CallTarget {
     Specialized {
         target: CallTargetLink,
         type_bindings: Vec<(String, etas_types::TypeId)>,
+        effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     },
     Limited {
         target: CallTargetLink,

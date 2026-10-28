@@ -40,10 +40,6 @@ pub(crate) fn invalid_arguments(span: Span, message: impl Into<String>) -> Diagn
     analysis(AnalysisDiagnosticCode::InvalidArguments, span, message)
 }
 
-pub(crate) fn unhandled_runtime_error(span: Span, message: impl Into<String>) -> Diagnostic {
-    analysis(AnalysisDiagnosticCode::UnhandledRuntimeError, span, message)
-}
-
 pub(crate) fn unhandled_error_perform(
     project: &CheckedProject,
     perform: &PendingPerform,

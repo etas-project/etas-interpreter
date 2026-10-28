@@ -75,6 +75,8 @@ pub(crate) struct FakeHost {
     tcp_responses: Arc<Mutex<VecDeque<Result<TcpStreamRef, HostError>>>>,
     stream_requests: Arc<Mutex<Vec<StreamRequest>>>,
     stream_responses: Arc<Mutex<VecDeque<Result<StreamPayload, StreamFailure>>>>,
+    secret_requests: Arc<Mutex<Vec<SecretRequest>>>,
+    secret_responses: Arc<Mutex<VecDeque<Result<etas_host::SecretPayload, HostError>>>>,
     console_error: Arc<Mutex<Option<HostError>>>,
     stdin: Arc<Mutex<String>>,
     stdout: Arc<Mutex<String>>,
@@ -88,7 +90,9 @@ pub(crate) struct FakeHost {
 }
 
 impl FakeHost {
-    pub(crate) fn new(availability: HostServiceAvailability) -> Self {
+    pub(crate) fn new(mut availability: HostServiceAvailability) -> Self {
+        // Every fixture host installs a real in-memory SessionClient below.
+        availability.session = true;
         Self {
             storage: None,
             console_gate: None,
@@ -119,6 +123,8 @@ impl FakeHost {
             tcp_responses: Arc::new(Mutex::new(VecDeque::new())),
             stream_requests: Arc::new(Mutex::new(Vec::new())),
             stream_responses: Arc::new(Mutex::new(VecDeque::new())),
+            secret_requests: Arc::new(Mutex::new(Vec::new())),
+            secret_responses: Arc::new(Mutex::new(VecDeque::new())),
             console_error: Arc::new(Mutex::new(None)),
             stdin: Arc::new(Mutex::new(String::new())),
             stdout: Arc::new(Mutex::new(String::new())),
@@ -167,7 +173,7 @@ impl FakeHost {
         self.session_calls.load(Ordering::SeqCst)
     }
 
-    pub(super) fn console_call_count(&self) -> usize {
+    pub(crate) fn console_call_count(&self) -> usize {
         self.console_calls.load(Ordering::SeqCst)
     }
 
@@ -197,14 +203,14 @@ impl FakeHost {
             .clone()
     }
 
-    pub(super) fn policy_requests(&self) -> Vec<PolicyEvaluationRequest> {
+    pub(crate) fn policy_requests(&self) -> Vec<PolicyEvaluationRequest> {
         self.policy_requests
             .lock()
             .expect("policy requests lock")
             .clone()
     }
 
-    pub(super) fn deny_policy(&self, reason: &str) {
+    pub(crate) fn deny_policy(&self, reason: &str) {
         *self.policy_decision.lock().expect("policy decision lock") = PolicyDecision::Deny {
             reason: reason.to_owned(),
         };
@@ -356,6 +362,20 @@ impl FakeHost {
         self.tcp_requests.lock().expect("tcp requests lock").clone()
     }
 
+    pub(crate) fn secret_requests(&self) -> Vec<SecretRequest> {
+        self.secret_requests
+            .lock()
+            .expect("secret requests lock")
+            .clone()
+    }
+
+    pub(crate) fn seed_secret_payload(&self, payload: etas_host::SecretPayload) {
+        self.secret_responses
+            .lock()
+            .expect("secret responses lock")
+            .push_back(Ok(payload));
+    }
+
     pub(super) fn seed_tcp_connect_stream(&self, id: &str, host: &str, port: u16) {
         self.tcp_responses
             .lock()
@@ -383,12 +403,18 @@ impl FakeHost {
             .push_back(Err(failure));
     }
 
-    #[allow(dead_code)]
     pub(super) fn seed_stream_read_data(&self, bytes: &[u8]) {
         self.stream_responses
             .lock()
             .expect("stream responses lock")
             .push_back(Ok(StreamPayload::Read(StreamRead::Data(bytes.to_vec()))));
+    }
+
+    pub(super) fn seed_stream_eof(&self) {
+        self.stream_responses
+            .lock()
+            .expect("stream responses lock")
+            .push_back(Ok(StreamPayload::Read(StreamRead::Eof)));
     }
 
     pub(super) fn seed_command_output(&self, exit_code: i32, stdout: &[u8], stderr: &[u8]) {
@@ -409,7 +435,7 @@ impl FakeHost {
             Some(HostError::new(code, message));
     }
 
-    pub(super) fn stdout_text(&self) -> String {
+    pub(crate) fn stdout_text(&self) -> String {
         self.stdout.lock().expect("stdout lock").clone()
     }
 
@@ -454,6 +480,19 @@ impl FakeHost {
 impl HostServices for FakeHost {
     fn availability(&self) -> HostServiceAvailability {
         self.availability
+    }
+
+    fn compiler<'a>(
+        &'a self,
+        _operation: etas_host::execution::OperationContext,
+        _request: etas_host::compiler::CompilerRequest,
+    ) -> HostFuture<'a, Result<etas_host::compiler::CompilerResponse, HostError>> {
+        Box::pin(async {
+            Err(HostError::new(
+                etas_host::HostErrorCode::ProviderUnavailable,
+                "test compiler service is not configured",
+            ))
+        })
     }
 
     fn model<'a>(
@@ -1170,15 +1209,30 @@ impl HostServices for FakeHost {
 
     fn secret<'a>(
         &'a self,
-        _operation: etas_host::execution::OperationContext,
+        operation: etas_host::execution::OperationContext,
         request: SecretRequest,
     ) -> HostFuture<'a, Result<SecretResponse, HostError>> {
+        self.secret_requests
+            .lock()
+            .expect("secret requests lock")
+            .push(request.clone());
         Box::pin(async move {
-            Err(HostError::new(
-                HostErrorCode::ProviderUnavailable,
-                "test secret response is not configured",
-            )
-            .with_detail("request_id", request.id.0.to_string()))
+            operation.signal().check()?;
+            let result = self
+                .secret_responses
+                .lock()
+                .expect("secret responses lock")
+                .pop_front()
+                .ok_or_else(|| {
+                    HostError::new(
+                        HostErrorCode::ProviderUnavailable,
+                        "test secret response is not configured",
+                    )
+                })?;
+            Ok(SecretResponse {
+                id: request.id,
+                result,
+            })
         })
     }
 

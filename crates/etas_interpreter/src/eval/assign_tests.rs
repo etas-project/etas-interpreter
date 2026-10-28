@@ -24,8 +24,10 @@ fn member_assignment_rejects_missing_checked_projection_before_mutation() {
         })
         .unwrap();
     let options = RunOptions::default();
-    let mut eval = EvalContext::new(EvalContextInput {
+    let (program, mut run_state) = EvalContextInput {
         storage_limits: Default::default(),
+        code_definitions: None,
+        syntax_limits: Default::default(),
         event_observer: None,
         execution: etas_host::execution::ExecutionScope::new_owned(),
         checked: &checked,
@@ -37,7 +39,9 @@ fn member_assignment_rejects_missing_checked_projection_before_mutation() {
         current_session: None,
         entry_item: checked.entry.unwrap(),
         entry_args: &[],
-    });
+    }
+    .into_parts();
+    let mut eval = EvalContext::new(program, &mut run_state);
     let mut frame = Frame::new(plan.slots.clone());
     let original = InterpValue::Record(crate::value::RecordValue::new(vec![(
         "value".into(),
@@ -78,8 +82,10 @@ fn assignment_commit_reuses_unique_local_and_copies_only_live_aliases() {
         .id;
     let span = checked.symbols.get(symbol).unwrap().definition_span;
     let options = RunOptions::default();
-    let mut eval = EvalContext::new(EvalContextInput {
+    let (program, mut run_state) = EvalContextInput {
         storage_limits: Default::default(),
+        code_definitions: None,
+        syntax_limits: Default::default(),
         event_observer: None,
         execution: etas_host::execution::ExecutionScope::new_owned(),
         checked: &checked,
@@ -91,7 +97,9 @@ fn assignment_commit_reuses_unique_local_and_copies_only_live_aliases() {
         current_session: None,
         entry_item: checked.entry.unwrap(),
         entry_args: &[],
-    });
+    }
+    .into_parts();
+    let mut eval = EvalContext::new(program, &mut run_state);
     let scalar = checked
         .symbols
         .iter()
@@ -245,8 +253,10 @@ fn with_assignment_frame(test: impl FnOnce(&mut EvalContext<'_>, &mut Frame, Sym
         .id;
     let span = checked.symbols.get(symbol).unwrap().definition_span;
     let options = RunOptions::default();
-    let mut eval = EvalContext::new(EvalContextInput {
+    let (program, mut run_state) = EvalContextInput {
         storage_limits: Default::default(),
+        code_definitions: None,
+        syntax_limits: Default::default(),
         event_observer: None,
         execution: etas_host::execution::ExecutionScope::new_owned(),
         checked: &checked,
@@ -258,7 +268,9 @@ fn with_assignment_frame(test: impl FnOnce(&mut EvalContext<'_>, &mut Frame, Sym
         current_session: None,
         entry_item: checked.entry.unwrap(),
         entry_args: &[],
-    });
+    }
+    .into_parts();
+    let mut eval = EvalContext::new(program, &mut run_state);
     let mut frame = Frame::new(plan.slots.clone());
     test(&mut eval, &mut frame, symbol, span);
 }

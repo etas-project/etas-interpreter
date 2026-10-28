@@ -3,29 +3,30 @@ use super::*;
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_stage_compose_expr(
         &mut self,
-        stages: &[etas_hir::HirStage],
+        expr: HirExprId,
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        self.resume_pipeline_stage_compose(stages.to_vec(), 0, Vec::new(), span, frame)
+        self.resume_pipeline_stage_compose(expr, 0, Vec::new(), span, frame)
     }
 
     pub(super) fn resume_pipeline_stage_compose(
         &mut self,
-        stages: Vec<etas_hir::HirStage>,
+        expr: HirExprId,
         start_stage_index: usize,
         mut targets: Vec<CallTarget>,
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
+        let stages = match checked_pipeline_stages(self.checked, expr, span) {
+            Ok(stages) => stages,
+            Err(error) => return ControlSignal::missing_checked_fact(error, span),
+        };
         for (index, stage) in stages.iter().enumerate().skip(start_stage_index) {
-            let mut limits = Vec::new();
             for limit in &stage.limits {
-                let limit = match self.resolve_limit_expr(*limit) {
-                    Ok(limit) => limit,
-                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-                };
-                limits.push(limit);
+                if let Err(fault) = self.resolve_limit_expr(*limit) {
+                    return ControlSignal::Fault(Box::new(fault));
+                }
             }
             let static_target = match self.resolve_static_call_target(stage.expr, frame, stage.span)
             {
@@ -57,10 +58,9 @@ impl<'a> EvalContext<'a> {
                         return compose_signal_continuation(
                             signal,
                             Continuation::PipelineStageTarget {
-                                stages: stages.clone(),
+                                expr,
                                 next_stage_index: index + 1,
-                                targets: targets.clone(),
-                                current_limits: limits,
+                                targets,
                                 span,
                                 frame: frame.clone(),
                             },
@@ -75,8 +75,30 @@ impl<'a> EvalContext<'a> {
                     ControlSignal::Continue => return ControlSignal::Continue,
                 }
             };
-            targets.push(self.call_target_with_limits(target, limits));
+            targets.push(target);
         }
+        if targets.len() != stages.len() {
+            return ControlSignal::missing_checked_fact(
+                "pipeline has an inconsistent resolved target count",
+                span,
+            );
+        }
+        let targets = targets
+            .into_iter()
+            .zip(stages)
+            .map(|(target, stage)| {
+                let limits = stage
+                    .limits
+                    .iter()
+                    .map(|expr| self.resolve_limit_expr(*expr))
+                    .collect::<Result<Vec<_>, _>>()?;
+                Ok(self.call_target_with_limits(target, limits))
+            })
+            .collect::<Result<Vec<_>, crate::control::ExecutionFault>>();
+        let targets = match targets {
+            Ok(targets) => targets,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
         ControlSignal::Value(InterpValue::Callable(CallTarget::Composed(targets.into())))
     }
 
@@ -97,8 +119,8 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn eval_pipeline_expr(
         &mut self,
+        expr: HirExprId,
         input: HirExprId,
-        stages: &[etas_hir::HirStage],
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
@@ -108,7 +130,7 @@ impl<'a> EvalContext<'a> {
                 return compose_signal_continuation(
                     signal,
                     Continuation::PipelineInput {
-                        stages: stages.to_vec(),
+                        expr,
                         span,
                         frame: frame.clone(),
                     },
@@ -116,17 +138,17 @@ impl<'a> EvalContext<'a> {
             }
             other => return other,
         };
-        self.resume_pipeline_input(input, stages, span, frame)
+        self.resume_pipeline_input(expr, input, span, frame)
     }
 
     pub(super) fn resume_pipeline_input(
         &mut self,
+        expr: HirExprId,
         input: InterpValue,
-        stages: &[etas_hir::HirStage],
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let composed = match self.eval_stage_compose_expr(stages, span, frame) {
+        let composed = match self.eval_stage_compose_expr(expr, span, frame) {
             ControlSignal::Value(InterpValue::Callable(CallTarget::Composed(targets))) => targets,
             ControlSignal::Value(other) => {
                 return ControlSignal::invalid_arguments(
@@ -137,11 +159,46 @@ impl<'a> EvalContext<'a> {
             signal if is_pending_host_boundary_signal(&signal) => {
                 return compose_signal_continuation(
                     signal,
-                    Continuation::PipelineTarget { input, span },
+                    Continuation::PipelineTarget {
+                        expr,
+                        input,
+                        span,
+                        frame: frame.clone(),
+                    },
                 );
             }
             other => return other,
         };
-        self.execute_call_target(CallTarget::Composed(composed), vec![input], span)
+        self.execute_call_target_at(
+            CallTarget::Composed(composed),
+            vec![input],
+            span,
+            Some(crate::control::CallSite {
+                kind: crate::control::CallSiteKind::Pipeline { expr },
+                frame: frame.clone(),
+                composition: None,
+            }),
+        )
+    }
+}
+
+pub(crate) fn checked_pipeline_stages(
+    checked: &etas_frontend::CheckedProject,
+    expr: HirExprId,
+    span: Span,
+) -> Result<&[etas_hir::HirStage], String> {
+    match checked.hir.exprs.get(expr) {
+        Some(
+            HirExpr::StageCompose {
+                stages,
+                span: expected,
+            }
+            | HirExpr::Pipeline {
+                stages,
+                span: expected,
+                ..
+            },
+        ) if *expected == span => Ok(stages),
+        _ => Err("pipeline continuation has no matching checked owner".into()),
     }
 }

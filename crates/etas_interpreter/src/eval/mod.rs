@@ -18,6 +18,7 @@ mod branch;
 mod call;
 mod callee;
 mod checkpoint;
+mod code;
 mod const_expr;
 mod continuation;
 mod expr;
@@ -43,6 +44,9 @@ mod operator_expr;
 mod pattern;
 mod perform;
 mod pipeline;
+mod reflection;
+mod run_state;
+pub use run_state::EvalRunState;
 mod safe_point;
 mod session_context;
 mod session_history;
@@ -57,6 +61,7 @@ mod stmt_branch;
 mod stmt_retry;
 mod stmt_value;
 mod storage;
+mod stream;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
@@ -68,6 +73,7 @@ pub(crate) use crate::control::{
 };
 pub(crate) use assign_place::{LocalPlaceComponent, LocalPlaceSegment};
 use branch::IfStmtResume;
+use call::CallArgsState;
 pub(crate) use host_value::interp_to_host_value;
 use memory_args::MemoryArgsResume;
 use memory_selection::{MemorySelectionLimitResume, MemorySelectionMethodEval};
@@ -111,36 +117,32 @@ use etas_host::{
 };
 
 pub struct EvalContext<'a> {
-    pub storage_limits: etas_host::StorageLimits,
-    pub execution: etas_host::execution::ExecutionScope,
+    pub(crate) handler_floor: usize,
+    pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+    code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
+    syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
+    code_syntax: std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
+    runtime: &'a mut EvalRunState,
+    plan_owner: std::cell::OnceCell<std::sync::Arc<InterpreterPlan>>,
     pub checked: &'a CheckedProject,
     pub view: HirTreeView<'a>,
     pub plan: &'a InterpreterPlan,
     pub known_std_types: KnownStdTypes,
-    pub host_context: HostExecutionContext,
-    pub model_policy: ModelExecutionPolicy,
-    pub execution_limits: ExecutionLimits,
-    pub current_session: Option<String>,
     pub entry_item: HirItemId,
     pub entry_args: &'a [InterpValue],
-    pub diagnostics: Vec<Diagnostic>,
-    pub events: crate::api::lifecycle::EventLog,
-    pub checkpoints: Vec<InterpreterCheckpoint>,
-    next_step: u32,
-    next_checkpoint: u32,
-    next_retry: u32,
-    next_handler_scope: u32,
-    next_host_request: u32,
-    next_message: u32,
-    safe_points: safe_point::ExecutionSafePointScheduler,
-    host_trace_digest_key: Result<etas_host::HostTraceDigestKey, etas_host::HostError>,
-    retry_stack: Vec<RetryAttemptRecord>,
-    handler_stack: Vec<ActiveHandlerRecord>,
-    completed_host_boundaries: Vec<crate::orchestration::CompletedHostBoundary>,
-    resource_versions: Vec<ResourceVersionRecord>,
-    pub(crate) storage_identity: Result<etas_host::StorageOperationKey, etas_host::HostError>,
-    pub(crate) storage_writes: Vec<crate::orchestration::StorageWriteRecord>,
-    pub(crate) storage_operations: std::collections::BTreeMap<u32, etas_host::StorageOperationRef>,
+}
+
+impl std::ops::Deref for EvalContext<'_> {
+    type Target = EvalRunState;
+    fn deref(&self) -> &Self::Target {
+        self.runtime
+    }
+}
+
+impl std::ops::DerefMut for EvalContext<'_> {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        self.runtime
+    }
 }
 
 #[derive(Clone, Copy, Debug, Default)]
@@ -152,7 +154,6 @@ pub struct KnownStdTypes {
     pub memory_version: Option<etas_types::TypeId>,
     pub memory_cursor: Option<etas_types::TypeId>,
     pub network_error: Option<etas_types::TypeId>,
-    pub secret_value: Option<etas_types::TypeId>,
     pub stream_error: Option<etas_types::TypeId>,
     pub tcp_stream: Option<etas_types::TypeId>,
     pub tls_error: Option<etas_types::TypeId>,
@@ -160,6 +161,8 @@ pub struct KnownStdTypes {
 }
 
 pub struct EvalContextInput<'a> {
+    pub code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
+    pub syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     pub storage_limits: etas_host::StorageLimits,
     pub event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
     pub execution: etas_host::execution::ExecutionScope,
@@ -174,12 +177,108 @@ pub struct EvalContextInput<'a> {
     pub entry_args: &'a [InterpValue],
 }
 
+pub struct EvalProgramInput<'a> {
+    pub code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
+    pub syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
+    pub checked: &'a CheckedProject,
+    pub plan: &'a InterpreterPlan,
+    pub entry_item: HirItemId,
+    pub entry_args: &'a [InterpValue],
+}
+
+struct EvalRunStateInput {
+    storage_limits: etas_host::StorageLimits,
+    event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
+    execution: etas_host::execution::ExecutionScope,
+    host_context: HostExecutionContext,
+    model_policy: ModelExecutionPolicy,
+    execution_limits: ExecutionLimits,
+    consumed_steps: u64,
+    current_session: Option<String>,
+}
+
+impl<'a> EvalContextInput<'a> {
+    pub fn into_parts(self) -> (EvalProgramInput<'a>, EvalRunState) {
+        let Self {
+            code_definitions,
+            syntax_limits,
+            storage_limits,
+            event_observer,
+            execution,
+            checked,
+            plan,
+            host_context,
+            model_policy,
+            execution_limits,
+            consumed_steps,
+            current_session,
+            entry_item,
+            entry_args,
+        } = self;
+        (
+            EvalProgramInput {
+                code_definitions,
+                syntax_limits,
+                checked,
+                plan,
+                entry_item,
+                entry_args,
+            },
+            EvalRunState::from_input(EvalRunStateInput {
+                storage_limits,
+                event_observer,
+                execution,
+                host_context,
+                model_policy,
+                execution_limits,
+                consumed_steps,
+                current_session,
+            }),
+        )
+    }
+}
+
 impl<'a> EvalContext<'a> {
+    pub(crate) fn scoped_context<'b>(
+        &'b mut self,
+        program: &'b crate::value::CheckedExecutionProgram,
+        handler_floor: usize,
+    ) -> EvalContext<'b> {
+        let mut scoped = EvalContext::new(
+            EvalProgramInput {
+                code_definitions: program.definitions.clone(),
+                syntax_limits: self.syntax_limits,
+                checked: &program.checked,
+                plan: &program.plan,
+                entry_item: program.plan.entry.item,
+                entry_args: &[],
+            },
+            &mut *self.runtime,
+        );
+        scoped.handler_floor = handler_floor;
+        scoped.revision = program.revision.as_ref();
+        scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
+        scoped
+    }
+
+    pub(crate) fn checked_execution_program(&self) -> crate::value::CheckedExecutionProgram {
+        crate::value::CheckedExecutionProgram {
+            checked: self.checked.clone(),
+            plan: self
+                .plan_owner
+                .get_or_init(|| std::sync::Arc::new(self.plan.clone()))
+                .clone(),
+            definitions: self.code_definitions.clone(),
+            revision: self.revision.cloned(),
+        }
+    }
     pub(crate) fn scheduling_decision(&mut self, span: Span) -> safe_point::SafePointDecision {
         match self.execution.signal() {
-            Ok(signal) => self
-                .safe_points
-                .observe(&signal, &self.host_context.budget, span),
+            Ok(signal) => {
+                self.runtime
+                    .safe_points
+                    .observe(&signal, &self.runtime.host_context.budget, span)
+            }
             Err(error) => {
                 safe_point::SafePointDecision::Fault(crate::control::ExecutionFault::new(
                     AnalysisDiagnosticCode::MissingCheckedFact,
@@ -196,54 +295,38 @@ impl<'a> EvalContext<'a> {
             Err(error) => Some(ControlSignal::missing_checked_fact(error.to_string(), span)),
         }
     }
-    pub fn new(input: EvalContextInput<'a>) -> Self {
-        let EvalContextInput {
-            storage_limits,
-            event_observer,
-            execution,
+    pub fn new(input: EvalProgramInput<'a>, runtime: &'a mut EvalRunState) -> Self {
+        let EvalProgramInput {
+            code_definitions,
+            syntax_limits,
             checked,
             plan,
-            host_context,
-            model_policy,
-            execution_limits,
-            consumed_steps,
-            current_session,
             entry_item,
             entry_args,
         } = input;
         Self {
-            execution,
+            code_syntax: code_definitions.as_ref().map_or_else(
+                || {
+                    std::sync::Arc::new(
+                        etas_frontend::code::service::NativeCodeSyntaxOperations::new(
+                            syntax_limits,
+                        ),
+                    )
+                },
+                |definitions| definitions.definitions().syntax_operations().clone(),
+            ),
+            handler_floor: 0,
+            revision: None,
+            code_definitions,
+            syntax_limits,
+            runtime,
+            plan_owner: std::cell::OnceCell::new(),
             checked,
             view: HirTreeView::new(&checked.hir),
             plan,
-            known_std_types: KnownStdTypes::from_checked(checked),
-            host_context,
-            model_policy,
-            execution_limits,
-            current_session,
+            known_std_types: plan.known_std_types,
             entry_item,
             entry_args,
-            diagnostics: Vec::new(),
-            events: crate::api::lifecycle::EventLog::new(event_observer),
-            checkpoints: Vec::new(),
-            next_step: 0,
-            next_checkpoint: 0,
-            next_retry: 0,
-            next_handler_scope: 0,
-            next_host_request: 0,
-            next_message: 0,
-            safe_points: safe_point::ExecutionSafePointScheduler::new(consumed_steps),
-            host_trace_digest_key: etas_host::HostTraceDigestKey::generate(),
-            retry_stack: Vec::new(),
-            handler_stack: Vec::new(),
-            completed_host_boundaries: Vec::new(),
-            resource_versions: Vec::new(),
-            storage_identity: etas_host::StorageOperationKey::new(std::time::Duration::from_secs(
-                storage_limits.max_receipt_retention_seconds,
-            )),
-            storage_writes: Vec::new(),
-            storage_operations: Default::default(),
-            storage_limits,
         }
     }
 
@@ -251,8 +334,11 @@ impl<'a> EvalContext<'a> {
         &mut self,
         span: Span,
     ) -> Result<(), crate::control::ExecutionFault> {
-        self.safe_points
-            .consume(self.execution_limits, &self.host_context.budget, span)
+        self.runtime.safe_points.consume(
+            self.runtime.execution_limits,
+            &self.runtime.host_context.budget,
+            span,
+        )
     }
 
     pub(crate) fn host_authority(&self) -> AuthorityContext {
@@ -302,14 +388,12 @@ impl<'a> EvalContext<'a> {
     }
 
     pub(crate) fn next_host_request_id(&mut self) -> HostRequestId {
-        let id = HostRequestId(self.next_host_request);
-        self.next_host_request += 1;
-        id
+        self.runtime.next_request_id()
     }
 }
 
 impl KnownStdTypes {
-    fn from_checked(checked: &CheckedProject) -> Self {
+    pub(crate) fn from_checked(checked: &CheckedProject) -> Self {
         Self {
             browser_session: resolve_std_type(
                 checked,
@@ -321,7 +405,6 @@ impl KnownStdTypes {
             memory_version: resolve_std_type(checked, &["std", "memory", "MemoryVersion"]),
             memory_cursor: resolve_std_type(checked, &["std", "memory", "MemoryCursor"]),
             network_error: resolve_std_type(checked, &["std", "net", "tcp", "NetworkError"]),
-            secret_value: resolve_std_type(checked, &["std", "secret", "SecretValue"]),
             stream_error: resolve_std_type(checked, &["std", "stream", "StreamError"]),
             tcp_stream: resolve_std_type(checked, &["std", "net", "tcp", "TcpStream"]),
             tls_error: resolve_std_type(checked, &["std", "tls", "TlsError"]),

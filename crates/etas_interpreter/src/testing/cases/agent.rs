@@ -8,7 +8,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -32,7 +32,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -110,7 +110,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().system(Trusted("write concise output")).user(Public(input));
+  return perform infer(Prompt.new().system(Trusted("write concise output")).user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -213,7 +213,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main() -> string {
@@ -284,7 +284,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main() -> string {
@@ -353,7 +353,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main() -> string {
@@ -419,7 +419,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main() -> string {
@@ -496,7 +496,7 @@ import std.io.read_line;
 
 agent Writer() -> string ![Error<IOError>] {
   let line = read_line();
-  return Prompt.new().user(Public(line));
+  return perform infer(Prompt.new().user(Public(line)));
 }
 
 flow main() -> string ![Error<IOError>] {
@@ -564,7 +564,7 @@ import std.agent.prompt.Prompt;
 import std.io.read_line;
 
 agent Writer() -> string ![Error<IOError>] {
-  return Prompt.new().user(Public(read_line()));
+  return perform infer(Prompt.new().user(Public(read_line())));
 }
 
 flow main() -> string ![Error<IOError>] {
@@ -678,7 +678,7 @@ tool Search() -> string {
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -746,7 +746,7 @@ tool Search() -> string {
 @limits([Tokens(31)])
 @trace(VirtualStages([Logical, Search]))
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -831,7 +831,7 @@ import std.agent.prompt.Prompt;
 
 @model(model = "fixture-model")
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -892,7 +892,7 @@ import std.runtime.limits.Tokens;
 
 @limits([Tokens(17)])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -935,7 +935,7 @@ import std.agent.prompt.Prompt;
 import std.runtime.limits.Tokens;
 
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -970,6 +970,70 @@ flow main(input: string) -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn resumed_pipeline_target_selection_applies_the_checked_limit_to_the_model_request() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+import std.runtime.checkpoint;
+import std.runtime.limits.Tokens;
+agent Writer(input: string) -> string ![] {
+    return perform infer(Prompt.new().user(Public(input)));
+}
+flow choose() -> string -> string ![] {
+    checkpoint("select target");
+    return (input: string) => Writer(input);
+}
+flow main() -> string { return "hello" ~> choose() limit Tokens(23); }
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Agentic,
+        HostRequirementKind::Checkpoint,
+    ]));
+    host.seed_model_response_text("draft");
+    let first = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(first.checkpoints.len(), 1);
+    let artifact =
+        api::codec::checkpoint_artifact_json(&[], "main", &first.checkpoints[0]).unwrap();
+    let checkpoint = api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed_host = FakeHost::new(availability(&[
+        HostRequirementKind::Agentic,
+        HostRequirementKind::Checkpoint,
+    ]));
+    resumed_host.seed_model_response_text("resumed");
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &checkpoint, &resumed_host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(
+        resumed.value(),
+        Some(&InterpValue::String("resumed".into()))
+    );
+    assert!(resumed.checkpoints.is_empty());
+    let requests = resumed_host.model_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].options.max_output_tokens, Some(23));
+    assert_eq!(
+        requests[0].budget.limits().tokens,
+        Some(TokenBudget { max_tokens: 23 })
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_decodes_typed_agent_record_output_from_json() {
     let checked = checked_project(
         r#"
@@ -980,7 +1044,7 @@ type Draft = { title: string, score: i64 };
 
 @model(model = "local-qwen")
 agent Writer(input: string) -> Draft ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> Draft {
@@ -1066,7 +1130,7 @@ import std.agent.prompt.Prompt;
 type Draft = { title: string, score: i64 };
 
 agent Writer(input: string) -> Draft ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> Draft {
@@ -1138,7 +1202,7 @@ import std.agent.prompt.Prompt;
 type Draft = { title: string, score: i64 };
 
 agent Writer(input: string) -> Draft ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> Draft {
@@ -1227,7 +1291,7 @@ import std.agent.prompt.Prompt;
 
 @model(model = "local-qwen")
 agent Writer(input: string) -> i8 ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> i8 {
@@ -1284,7 +1348,7 @@ import std.agent.prompt.Prompt;
 
 @model(model = "local-qwen")
 agent Writer(input: string) -> Trusted<string> ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> Trusted<string> {

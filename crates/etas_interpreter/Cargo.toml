@@ -9,6 +9,7 @@ repository.workspace = true
 [dependencies]
 etas_builtin.workspace = true
 etas_core.workspace = true
+etas_code.workspace = true
 etas_host.workspace = true
 etas_std.workspace = true
 etas_utils.workspace = true

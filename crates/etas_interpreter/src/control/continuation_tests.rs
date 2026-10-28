@@ -23,7 +23,10 @@ fn worker(key: &str) -> bool {
 
 fn chain(depth: usize, mode: usize) -> Continuation {
     (0..depth).fold(Continuation::Return, |node, _| match mode {
-        0 => Continuation::CallBoundary { outer: node.into() },
+        0 => Continuation::CallBoundary {
+            span: crate::testing::synthetic_span(),
+            outer: node.into(),
+        },
         1 => Continuation::HandlerDispatch { outer: node.into() },
         _ => Continuation::Chain {
             inner: node.into(),
@@ -46,7 +49,7 @@ fn runtime_continuation_clone_shares_structure_without_recursive_copy() {
             let mut cursor = &alias;
             for _ in 0..depth {
                 cursor = match cursor {
-                    Continuation::CallBoundary { outer }
+                    Continuation::CallBoundary { outer, .. }
                     | Continuation::HandlerDispatch { outer } => outer,
                     Continuation::Chain { inner, outer } => {
                         assert!(matches!(**outer, Continuation::Finish));

@@ -1,13 +1,13 @@
 use etas_core::Span;
 use etas_hir::{
     HirArg, HirBlockId, HirElseBranch, HirExprId, HirItemId, HirMatchArm, HirPatId, HirRangeBounds,
-    HirStage, HirTypeId, ResolvedActionRef, ScopeId, SymbolId,
+    HirTypeId, ResolvedActionRef, ScopeId, SymbolId,
 };
 use etas_types::TypeId;
 
 use super::{
-    CallTargetSnapshotChildren, CallTargetSnapshotLink, ContinuationSnapshotLink, SnapshotBox,
-    SnapshotChildren,
+    CallTargetSnapshotChildren, CallTargetSnapshotLink, ContinuationSnapshotLink,
+    ScopedCallableMetadata, SnapshotBox, SnapshotChildren,
 };
 use crate::api::ExecutionLimits;
 use crate::value::{
@@ -26,12 +26,16 @@ pub struct HandlerScopeId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct InterpreterCheckpoint {
+    /// Session-local immutable code pins. The codec never serializes these owners.
+    pub(crate) retained_code: Option<std::sync::Arc<crate::api::code::CheckpointCodePins>>,
     pub id: CheckpointId,
     pub label: Option<String>,
     pub compilation: CheckpointCompilationIdentity,
+    pub code_revision: Option<CheckpointCodeRevision>,
     pub entry_item: HirItemId,
     pub args: Vec<InterpValue>,
     pub machine: MachineSnapshot,
+    pub(crate) model_policy: ModelExecutionPolicySnapshot,
     pub handlers: HandlerSnapshot,
     pub retry_state: RetrySnapshot,
     pub trace: TraceSnapshot,
@@ -106,15 +110,154 @@ pub struct CheckpointCompilationIdentity {
     pub entry_semantic_identity: String,
 }
 
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CheckpointAgentReference {
+    pub revision: CheckpointCodeRevision,
+    pub callable: etas_code::CallableId,
+    pub frozen_agent: Option<HirItemId>,
+}
+
+impl CheckpointAgentReference {
+    pub(crate) fn retained_bytes(&self) -> u64 {
+        etas_core::memory::MemoryFootprint::of(self).estimated_bytes()
+    }
+
+    pub(crate) fn validate_resources(
+        &self,
+        limits: &etas_host::StorageLimits,
+    ) -> Result<(), String> {
+        if self.retained_bytes() > limits.max_value_bytes as u64 {
+            return Err("checkpoint agent reference exceeds byte budget".into());
+        }
+        Ok(())
+    }
+}
+
+/// Pins the semantic revision in addition to the checked program's local IDs.
+/// This data is not a compiler lease and cannot prepare executable code.
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+#[serde(deny_unknown_fields)]
+pub struct CheckpointCodeRevision {
+    pub target: etas_code::DefinitionKey,
+    pub revision_key: etas_code::RevisionKey,
+    pub revision: etas_code::RevisionInputs,
+    pub snapshot_fingerprint: etas_code::CodeFingerprint,
+}
+
+impl CheckpointCodeRevision {
+    pub(crate) fn for_revision(revision: &crate::api::code::PreparedAgentRevision) -> Self {
+        Self {
+            target: revision.identity().clone(),
+            revision_key: revision.revision().key(),
+            revision: revision.revision().inputs().clone(),
+            snapshot_fingerprint: revision.snapshot_fingerprint(),
+        }
+    }
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if etas_code::RevisionKey::from_inputs(&self.revision) != self.revision_key {
+            return Err("checkpoint code revision key differs from its inputs".into());
+        }
+        if self.target.kind() != etas_code::DefinitionKind::Agent
+            || !self.revision.definition.as_method().is_some_and(|method| {
+                method.implementation().subject() == &self.target
+                    && method.name() == "run"
+                    && method.implementation().selected_spec().is_none()
+            })
+        {
+            return Err(
+                "checkpoint code revision does not identify an agent default method".into(),
+            );
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct MachineSnapshot {
     pub(crate) frames: Vec<MachineFrameSnapshot>,
+    pub(crate) program_owners: FrameProgramOwners,
+    pub(crate) suspended_programs: Vec<super::SuspendedProgramSnapshot>,
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) enum FrameProgramOwners {
+    #[default]
+    Root,
+    Scoped(Vec<usize>),
+}
+
+impl MachineSnapshot {
+    pub(crate) fn capture(frames: Vec<MachineFrameSnapshot>) -> Self {
+        if !frames
+            .iter()
+            .any(|frame| matches!(frame, MachineFrameSnapshot::ProgramReturn(_)))
+        {
+            return Self {
+                frames,
+                program_owners: FrameProgramOwners::Root,
+                suspended_programs: Vec::new(),
+            };
+        }
+        let mut owner = 0;
+        let program_owners = frames
+            .iter()
+            .map(|frame| {
+                let current = owner;
+                if matches!(frame, MachineFrameSnapshot::ProgramReturn(_)) {
+                    owner += 1;
+                }
+                current
+            })
+            .collect();
+        Self {
+            frames,
+            program_owners: FrameProgramOwners::Scoped(program_owners),
+            suspended_programs: Vec::new(),
+        }
+    }
+
+    pub(crate) fn program_owner(&self, index: usize) -> usize {
+        match &self.program_owners {
+            FrameProgramOwners::Root => 0,
+            FrameProgramOwners::Scoped(owners) => owners[index],
+        }
+    }
+
+    pub(crate) fn validate_program_owners(&self) -> Result<(), String> {
+        if let FrameProgramOwners::Scoped(owners) = &self.program_owners
+            && self.frames.len() != owners.len()
+        {
+            return Err("checkpoint frame program ownership table has a different length".into());
+        }
+        let mut owner = 0;
+        for (index, frame) in self.frames.iter().enumerate() {
+            if self.program_owner(index) != owner {
+                return Err(
+                    "checkpoint frame program owner does not match its active boundary".into(),
+                );
+            }
+            if matches!(frame, MachineFrameSnapshot::ProgramReturn(_)) {
+                owner += 1;
+            }
+        }
+        Ok(())
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) enum CallTargetSnapshot {
+    Scoped {
+        metadata: Box<ScopedCallableMetadata>,
+        target: CallTargetSnapshotLink,
+    },
     FlowItem(HirItemId),
     AgentItem(HirItemId),
+    AgentRevision(Box<CheckpointAgentReference>),
     ToolItem(HirItemId),
     SpecImplMethod(SymbolId),
     Lambda {
@@ -129,6 +272,8 @@ pub(crate) enum CallTargetSnapshot {
         result_type: etas_types::TypeId,
     },
     StdIntrinsic {
+        origin: HirExprId,
+        substitutions: Vec<Vec<(String, etas_types::TypeId)>>,
         intrinsic: etas_std::StdIntrinsicId,
         dispatch: etas_std::IntrinsicDispatch,
         parameter_types: Vec<etas_types::TypeId>,
@@ -137,6 +282,7 @@ pub(crate) enum CallTargetSnapshot {
     Specialized {
         target: CallTargetSnapshotLink,
         type_bindings: Vec<(String, etas_types::TypeId)>,
+        effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     },
     Limited {
         target: CallTargetSnapshotLink,
@@ -152,13 +298,24 @@ pub(crate) struct LocalsSnapshot {
     // copying an already captured definition during validation and restoration.
     pub(crate) locals: std::rc::Rc<Vec<(SymbolId, ValueSnapshot)>>,
     pub(crate) type_bindings: Vec<(String, etas_types::TypeId)>,
+    pub(crate) effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
 }
 
 impl PartialEq for LocalsSnapshot {
     fn eq(&self, other: &Self) -> bool {
         self.id == other.id
             && self.type_bindings == other.type_bindings
+            && self.effect_row_bindings == other.effect_row_bindings
             && (std::rc::Rc::ptr_eq(&self.locals, &other.locals) || self.locals == other.locals)
+    }
+}
+
+impl LocalsSnapshot {
+    pub(crate) fn generic_bindings(&self) -> crate::control::GenericBindings {
+        crate::control::GenericBindings {
+            types: self.type_bindings.iter().cloned().collect(),
+            rows: self.effect_row_bindings.iter().cloned().collect(),
+        }
     }
 }
 
@@ -181,6 +338,11 @@ pub(crate) enum ValueSnapshot {
         value: SnapshotBox,
     },
     Prompt(PromptValue),
+    Schema(TypeId),
+    CodeIdentity {
+        ty: TypeId,
+        identity: crate::value::CodeIdentitySnapshot,
+    },
     Message(MessageSnapshot),
     Conversation(ConversationSnapshot),
     Provenance(ProvenanceValue),
@@ -320,6 +482,19 @@ pub(crate) struct ModelExecutionPolicySnapshot {
     pub(crate) max_tool_rounds: usize,
 }
 
+impl ModelExecutionPolicySnapshot {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        if self
+            .options
+            .temperature
+            .is_some_and(|value| !value.is_finite())
+        {
+            return Err("checkpoint model temperature must be finite".into());
+        }
+        Ok(())
+    }
+}
+
 #[derive(Clone, Copy, Debug)]
 pub(crate) enum ModelResponseDecodeSnapshot {
     String,
@@ -328,6 +503,17 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
+    ProgramResume {
+        id: u32,
+    },
+    StreamReadReduction {
+        call: CallTargetSnapshot,
+        args: Vec<ValueSnapshot>,
+        limit: usize,
+        deadline_unix_ms: Option<u64>,
+        body: ValueSnapshot,
+        span: Span,
+    },
     ContinueBlock {
         block: HirBlockId,
         next_stmt_index: usize,
@@ -434,6 +620,7 @@ pub(crate) enum ContinuationSnapshot {
         expr: HirExprId,
         base: ValueSnapshot,
         span: Span,
+        frame: LocalsSnapshot,
     },
     SliceBase {
         eval: SliceExprEvalSnapshot,
@@ -448,6 +635,7 @@ pub(crate) enum ContinuationSnapshot {
         eval: SliceExprEvalSnapshot,
         base: ValueSnapshot,
         start: ValueSnapshot,
+        frame: LocalsSnapshot,
     },
     MethodReceiver {
         expr: HirExprId,
@@ -497,19 +685,20 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     CalleeEval {
+        call: HirExprId,
         args: std::sync::Arc<[HirArg]>,
         span: Span,
         frame: LocalsSnapshot,
     },
     PipelineStageTarget {
-        stages: Vec<HirStage>,
+        expr: HirExprId,
         next_stage_index: usize,
         targets: Vec<CallTargetSnapshot>,
-        current_limits: Vec<crate::eval::limit::RuntimeLimit>,
         span: Span,
         frame: LocalsSnapshot,
     },
     CallArgs {
+        call: HirExprId,
         target: CallTargetSnapshot,
         args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
@@ -596,16 +785,19 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     PipelineInput {
-        stages: Vec<HirStage>,
+        expr: HirExprId,
         span: Span,
         frame: LocalsSnapshot,
     },
     PipelineTarget {
+        expr: HirExprId,
         input: ValueSnapshot,
         span: Span,
+        frame: LocalsSnapshot,
     },
     ComposedCall {
         remaining: Vec<CallTargetSnapshot>,
+        site: Option<CallSiteSnapshot>,
         span: Span,
     },
     RestoreModelPolicy {
@@ -613,6 +805,7 @@ pub(crate) enum ContinuationSnapshot {
         inner: ContinuationSnapshotLink,
     },
     CallBoundary {
+        span: Span,
         outer: ContinuationSnapshotLink,
     },
     ForLoop {
@@ -669,10 +862,10 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
         frame: LocalsSnapshot,
     },
-    AgentPromptBody {
-        item: HirItemId,
+    AgentInference {
+        expr: HirExprId,
         span: Span,
-        model_policy: Option<Box<ModelExecutionPolicySnapshot>>,
+        model_policy: Box<ModelExecutionPolicySnapshot>,
     },
     ScopedModelPolicy {
         policy: Box<ModelExecutionPolicySnapshot>,
@@ -750,6 +943,7 @@ pub(crate) struct SourceToolReturnFrameSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum MachineFrameSnapshot {
+    ProgramReturn(Box<ProgramReturnSnapshot>),
     Block {
         continuation: ContinuationSnapshot,
     },
@@ -773,6 +967,52 @@ pub(crate) enum MachineFrameSnapshot {
     SourceToolReturn(SourceToolReturnFrameSnapshot),
 }
 
+impl MachineFrameSnapshot {
+    pub(crate) fn continuation_roots(&self) -> [Option<&ContinuationSnapshot>; 2] {
+        match self {
+            Self::ProgramReturn(frame) => [Some(&frame.outer), None],
+            Self::Block { continuation }
+            | Self::Expr { continuation }
+            | Self::Call { continuation, .. }
+            | Self::Continuation { continuation }
+            | Self::Handler { continuation }
+            | Self::Retry { continuation } => [Some(continuation), None],
+            Self::ModelLoop(frame) => [
+                Some(&frame.pending.continuation),
+                Some(&frame.outer_continuation),
+            ],
+            Self::SourceToolReturn(frame) => [
+                Some(&frame.model_loop.pending.continuation),
+                Some(&frame.model_loop.outer_continuation),
+            ],
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ProgramReturnSnapshot {
+    pub call: CallTargetSnapshot,
+    pub call_site: CallSiteSnapshot,
+    pub handler_floor: usize,
+    pub outer: ContinuationSnapshot,
+    pub parent_model_policy: ModelExecutionPolicySnapshot,
+    pub span: Span,
+    pub retry_depth: usize,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct CallSiteSnapshot {
+    pub kind: crate::control::CallSiteKind,
+    pub frame: LocalsSnapshot,
+    pub composition: Option<ComposedInvocationSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ComposedInvocationSnapshot {
+    pub root: CallTargetSnapshotLink,
+    pub path: Vec<usize>,
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub struct HandlerSnapshot {
     pub handlers: Vec<ActiveHandlerRecord>,
@@ -788,11 +1028,10 @@ pub struct ActiveHandlerRecord {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ActiveHandlerArmRecord {
+    pub arm: etas_hir::HirHandlerArmId,
     pub effect_segments: Vec<String>,
     pub action: String,
     pub action_symbol: Option<SymbolId>,
-    pub type_args: Vec<HirTypeId>,
-    pub effect_type_args: Vec<TypeId>,
     pub patterns: Vec<HirPatId>,
     pub body: HirBlockId,
     pub scope: ScopeId,

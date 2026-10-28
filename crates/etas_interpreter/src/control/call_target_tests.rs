@@ -11,6 +11,7 @@ fn tree(depth: usize, mode: usize) -> CallTarget {
                 limits: vec![],
             },
             1 => CallTarget::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: node.into(),
                 type_bindings: vec![],
             },
@@ -248,8 +249,11 @@ fn shared_runtime_call_target_dags_capture_and_restore_without_expanding_aliases
     let span = checked.hir.blocks.iter().next().unwrap().1.span;
     let validate = |target| {
         validator.validate_machine(&MachineSnapshot {
+            program_owners: Default::default(),
+            suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation {
                 continuation: ContinuationSnapshot::ComposedCall {
+                    site: None,
                     remaining: vec![target],
                     span,
                 },
@@ -287,6 +291,7 @@ fn shared_runtime_call_target_dags_capture_and_restore_without_expanding_aliases
         *leaf = CallTargetSnapshot::FlowItem(HirItemId(u32::MAX));
         assert!(validate(changed).unwrap_err().contains("missing HIR item"));
         let invalid_binding = CallTargetSnapshot::Specialized {
+            effect_row_bindings: Vec::new(),
             target: saved.clone().into(),
             type_bindings: vec![(String::new(), etas_types::TypeId(0))],
         };
@@ -340,6 +345,7 @@ fn runtime_call_target_clone_copies_root_metadata_but_not_descendant_metadata() 
         let mut value = CallTarget::FlowItem(HirItemId(1));
         for i in 0..depth {
             value = CallTarget::Specialized {
+                effect_row_bindings: Vec::new(),
                 target: CallTarget::Limited {
                     target: value.into(),
                     limits: vec![RuntimeLimit {

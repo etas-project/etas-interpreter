@@ -2,6 +2,65 @@ use super::*;
 use etas_hir::HirItemId;
 
 #[test]
+fn effect_row_metadata_is_bounded_before_checkpoint_json_allocation() {
+    let rows = vec![(
+        "E".into(),
+        etas_types::EffectRowRef {
+            effects: vec![etas_types::EffectRef {
+                name: "Probe.request".into(),
+                args: vec![etas_types::EffectArgRef::String("x".repeat(100_000))],
+            }],
+            tail: None,
+        },
+    )];
+    let target = CallTargetSnapshot::Specialized {
+        target: CallTargetSnapshot::FlowItem(HirItemId(7)).into(),
+        type_bindings: vec![],
+        effect_row_bindings: rows.clone(),
+    };
+    let frame = LocalsSnapshot {
+        id: 1,
+        locals: Rc::new(vec![]),
+        type_bindings: vec![],
+        effect_row_bindings: rows,
+    };
+    for node in [Node::CallTarget(&target), Node::Frame(&frame)] {
+        let (_, cost) = measure(|| {
+            let mut budget = EncodingBudget::with_limits(codec::CheckpointFileLimits {
+                max_bytes: 128,
+                ..Default::default()
+            });
+            let error = encode_with_budget(node, &mut budget).unwrap_err();
+            assert!(error.message().contains("byte budget"), "{error}");
+        });
+        assert!(cost.bytes < 4096, "copied rejected row payload: {cost:?}");
+        assert_eq!(cost.bytes, cost.released_bytes);
+    }
+    let target = CallTargetSnapshot::Specialized {
+        target: CallTargetSnapshot::FlowItem(HirItemId(7)).into(),
+        type_bindings: vec![],
+        effect_row_bindings: (0..1024)
+            .map(|i| {
+                (
+                    format!("E{i}"),
+                    etas_types::EffectRowRef {
+                        effects: vec![],
+                        tail: None,
+                    },
+                )
+            })
+            .collect(),
+    };
+    let (_, cost) = measure(|| {
+        let error = encode_with_budget(Node::CallTarget(&target), &mut EncodingBudget::new(32))
+            .unwrap_err();
+        assert!(error.message().contains("node budget"), "{error}");
+    });
+    assert!(cost.bytes < 4096, "allocated rejected row fanout: {cost:?}");
+    assert_eq!(cost.bytes, cost.released_bytes);
+}
+
+#[test]
 fn captured_continuation_sharing_does_not_bypass_wire_budget() {
     use crate::control::{Continuation, ContinuationLink};
     for depth in [5, 30] {

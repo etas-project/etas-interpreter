@@ -10,8 +10,14 @@ impl<'a> EvalContext<'a> {
         self.events.push(WorkflowEvent::StepStarted(start));
         let signal = match self.checked.hir.items.get(item) {
             Some(HirItem::Flow(flow)) => self.execute_flow(item, flow, self.entry_args),
+            Some(HirItem::Agent(agent)) => self.execute_agent_call(
+                item,
+                self.entry_args.to_vec(),
+                agent.span,
+                Default::default(),
+            ),
             _ => ControlSignal::invalid_arguments(
-                "interpreter entry point must be a flow item",
+                "interpreter entry point must be a checked flow or agent invocation",
                 item_span(self.checked, item),
             ),
         };
@@ -36,7 +42,25 @@ impl<'a> EvalContext<'a> {
         args: &[InterpValue],
         type_bindings: std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
-        let mut frame = match self.callable_frame(flow.scope, type_bindings, flow.span) {
+        self.execute_flow_with_generic_bindings(
+            item,
+            flow,
+            args,
+            crate::control::GenericBindings {
+                types: type_bindings,
+                rows: Default::default(),
+            },
+        )
+    }
+
+    pub(super) fn execute_flow_with_generic_bindings(
+        &mut self,
+        item: HirItemId,
+        flow: &HirFlowDecl,
+        args: &[InterpValue],
+        bindings: crate::control::GenericBindings,
+    ) -> ControlSignal {
+        let mut frame = match self.callable_frame_with_generics(flow.scope, bindings, flow.span) {
             Ok(frame) => frame,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
@@ -59,6 +83,22 @@ impl<'a> EvalContext<'a> {
         type_bindings: std::collections::HashMap<String, etas_types::TypeId>,
         span: Span,
     ) -> Result<Frame, ExecutionFault> {
+        self.callable_frame_with_generics(
+            scope,
+            crate::control::GenericBindings {
+                types: type_bindings,
+                rows: Default::default(),
+            },
+            span,
+        )
+    }
+
+    pub(super) fn callable_frame_with_generics(
+        &self,
+        scope: etas_hir::ScopeId,
+        bindings: crate::control::GenericBindings,
+        span: Span,
+    ) -> Result<Frame, ExecutionFault> {
         let layout = self.plan.frames.get(scope).ok_or_else(|| {
             ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -66,7 +106,7 @@ impl<'a> EvalContext<'a> {
                 format!("callable frame layout is missing for scope {scope:?}"),
             )
         })?;
-        Ok(Frame::with_type_bindings(layout.clone(), type_bindings))
+        Ok(Frame::with_generic_bindings(layout.clone(), bindings))
     }
 
     pub(crate) fn prepare_source_tool_call(
@@ -108,6 +148,16 @@ impl<'a> EvalContext<'a> {
         args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        self.execute_source_tool_call_with_generics(item, args, span, Default::default())
+    }
+
+    pub(super) fn execute_source_tool_call_with_generics(
+        &mut self,
+        item: HirItemId,
+        args: Vec<InterpValue>,
+        span: Span,
+        bindings: crate::control::GenericBindings,
+    ) -> ControlSignal {
         let Some(HirItem::Tool(tool)) = self.checked.hir.items.get(item) else {
             return ControlSignal::Fault(Box::new(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -133,7 +183,7 @@ impl<'a> EvalContext<'a> {
                 ),
             )));
         }
-        let mut frame = match self.callable_frame(tool.scope, Default::default(), span) {
+        let mut frame = match self.callable_frame_with_generics(tool.scope, bindings, span) {
             Ok(frame) => frame,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };

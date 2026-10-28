@@ -92,7 +92,10 @@ fn borrowed_model_json_matches_the_previous_typed_boundary() {
             },
         ],
     }));
-    let parameter = store.intern(Type::Named(NamedTypeRef { name: "T".into() }));
+    let parameter = store.intern(Type::Named(NamedTypeRef {
+        source_parameter: None,
+        name: "T".into(),
+    }));
     let generic = store.intern(Type::Nominal(NominalTypeRef {
         name: "Payload".into(),
         params: vec!["T".into()],

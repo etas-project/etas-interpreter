@@ -83,6 +83,7 @@ fn callable_restore_cache_crosses_captured_frames_without_merging_distinct_graph
         let lambda = CallTargetSnapshot::Lambda {
             expr: HirExprId(4),
             captured: LocalsSnapshot {
+                effect_row_bindings: Vec::new(),
                 id: 1,
                 locals: std::rc::Rc::new(vec![(
                     SymbolId(2),
@@ -131,6 +132,7 @@ fn callable_restore_cache_does_not_hide_conflicting_frames_and_releases_failed_g
         let lambda = |value| CallTargetSnapshot::Lambda {
             expr: HirExprId(4),
             captured: LocalsSnapshot {
+                effect_row_bindings: Vec::new(),
                 id: 1,
                 locals: std::rc::Rc::new(vec![(
                     SymbolId(2),
@@ -167,31 +169,45 @@ fn checked_machine_restore_shares_callables_between_continuations() {
         },
     };
     let checked = crate::testing::project::checked_project(
-        "module app.main; flow main() -> unit { return; }",
+        "module app.main; flow main(value: i32) -> i32 { return value; } flow invoke() -> i32 { return main(1); }",
     );
     let plan = crate::Interpreter
         .plan(&checked, crate::api::PlanOptions)
         .plan
         .unwrap();
-    let span = checked.hir.blocks.iter().next().unwrap().1.span;
+    let (call, args, span) = checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(id, expr)| match expr {
+            etas_hir::HirExpr::Call { args, span, .. } => {
+                Some((id, std::sync::Arc::from(args.as_slice()), *span))
+            }
+            _ => None,
+        })
+        .unwrap();
     for count in [1000, 2000, 4000] {
         let mut target = CallTargetSnapshot::FlowItem(checked.entry.unwrap());
         for _ in 0..64 {
             target = CallTargetSnapshot::Composed(vec![target].into());
         }
         let continuation = ContinuationSnapshot::CallArgs {
+            call,
             target,
-            args: vec![].into(),
-            next_arg_index: 0,
+            args: std::sync::Arc::clone(&args),
+            next_arg_index: 1,
             evaluated_args: vec![],
             span,
             frame: LocalsSnapshot {
+                effect_row_bindings: Vec::new(),
                 id: 1,
                 locals: Default::default(),
                 type_bindings: vec![],
             },
         };
         let mut saved = MachineSnapshot {
+            program_owners: Default::default(),
+            suspended_programs: Vec::new(),
             frames: (0..count)
                 .map(|_| MachineFrameSnapshot::Continuation {
                     continuation: continuation.clone(),
@@ -216,12 +232,12 @@ fn checked_machine_restore_shares_callables_between_continuations() {
             "reconstructed shared graph: {cost:?}"
         );
         let Continuation::CallArgs { target: first, .. } =
-            machine.pop_frame().unwrap().into_continuation()
+            machine.pop_frame().unwrap().into_continuation().unwrap()
         else {
             panic!("call args")
         };
         while let Some(frame) = machine.pop_frame() {
-            let Continuation::CallArgs { target, .. } = frame.into_continuation() else {
+            let Continuation::CallArgs { target, .. } = frame.into_continuation().unwrap() else {
                 panic!("call args")
             };
             assert!(same_backing(&first, &target));

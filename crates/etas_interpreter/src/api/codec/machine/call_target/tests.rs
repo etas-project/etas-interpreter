@@ -13,12 +13,67 @@ fn document(root: Value) -> CheckpointDocument {
     codec::checkpoint_file_from_bytes(&bytes, CheckpointFileLimits::default()).unwrap()
 }
 
+#[test]
+fn standard_intrinsic_decode_requires_and_preserves_its_checked_origin() {
+    let limits = etas_host::StorageLimits::default();
+    let target = json!({
+        "kind": "std_intrinsic", "origin": 42,
+        "substitutions": [],
+        "intrinsic": etas_std::intrinsic::runtime::STREAM_READ,
+        "dispatch": "host", "parameter_types": [3], "result_type": 4,
+    });
+    let runtime = call_target_from_artifact_snapshot(&limits, &target).unwrap();
+    assert_eq!(call_target_snapshot(&runtime), target);
+    let saved = call_target_snapshot_from_json(&limits, &target).unwrap();
+    assert!(matches!(
+        saved,
+        CallTargetSnapshot::StdIntrinsic {
+            origin: etas_hir::HirExprId(42),
+            ..
+        }
+    ));
+    let mut missing = target;
+    missing.as_object_mut().unwrap().remove("origin");
+    for error in [
+        call_target_from_artifact_snapshot(&limits, &missing).unwrap_err(),
+        call_target_snapshot_from_json(&limits, &missing).unwrap_err(),
+    ] {
+        assert!(error.contains("origin"), "{error}");
+    }
+}
+
+#[test]
+fn standard_intrinsic_substitution_decode_is_bounded_and_rejects_ambiguous_bindings() {
+    let limits = etas_host::StorageLimits::default();
+    let base = json!({ "kind": "std_intrinsic", "origin": 1, "intrinsic": etas_std::intrinsic::runtime::STREAM_READ, "dispatch": "host", "parameter_types": [3], "result_type": 4, "substitutions": [[{"name":"SourceStream", "type":5}], [{"name":"S", "type":5}]] });
+    let runtime = call_target_from_artifact_snapshot(&limits, &base).unwrap();
+    assert_eq!(call_target_snapshot(&runtime), base);
+    for substitutions in [
+        json!([[]]),
+        json!([[{"name":"S", "type":5}, {"name":"S", "type":6}]]),
+        json!([[{"name":"", "type":5}]]),
+    ] {
+        let mut invalid = base.clone();
+        invalid["substitutions"] = substitutions;
+        assert!(call_target_snapshot_from_json(&limits, &invalid).is_err());
+        assert!(call_target_from_artifact_snapshot(&limits, &invalid).is_err());
+    }
+    let tight = etas_host::StorageLimits {
+        max_nodes: 3,
+        ..limits
+    };
+    let error = call_target_snapshot_from_json(&tight, &base).unwrap_err();
+    assert!(error.contains("node budget"), "{error}");
+}
+
 fn wire(depth: usize, mode: usize) -> Value {
     let mut value = json!({"kind":"flow","item":1});
     for _ in 0..depth {
         let mut parent = match mode {
             0 => json!({"kind":"limited","limits":[],"target":null}),
-            1 => json!({"kind":"specialized","type_bindings":[],"target":null}),
+            1 => {
+                json!({"kind":"specialized","effect_row_bindings": [], "type_bindings":[],"target":null})
+            }
             2 => json!({"kind":"composed","targets":[null,{"kind":"flow","item":2}]}),
             _ => json!({"kind":"composed","targets":[{"kind":"flow","item":2},null]}),
         };
@@ -45,6 +100,7 @@ fn check_snapshot(mut target: &CallTargetSnapshot, depth: usize, mode: usize) {
             (
                 1,
                 CallTargetSnapshot::Specialized {
+                    effect_row_bindings: _,
                     target,
                     type_bindings,
                 },
@@ -80,6 +136,7 @@ fn check_runtime(mut target: &CallTarget, depth: usize, mode: usize) {
             (
                 1,
                 CallTarget::Specialized {
+                    effect_row_bindings: _,
                     target,
                     type_bindings,
                 },
@@ -157,11 +214,11 @@ fn call_target_decoder_preserves_child_then_metadata_error_order() {
     let limits = etas_host::StorageLimits::default();
     let cases = [
         (
-            json!({"kind":"specialized","target":{"kind":"bad-child"},"type_bindings":false}),
+            json!({"kind":"specialized","target":{"kind":"bad-child"},"effect_row_bindings": [], "type_bindings":false}),
             "unknown machine call target `bad-child`",
         ),
         (
-            json!({"kind":"specialized","target":{"kind":"flow","item":1},"type_bindings":[{"name":"T","type":-1}]}),
+            json!({"kind":"specialized","target":{"kind":"flow","item":1},"effect_row_bindings": [], "type_bindings":[{"name":"T","type":-1}]}),
             "`type`",
         ),
         (
@@ -195,7 +252,9 @@ fn call_target_decode_late_failures_release_partial_deep_runtime_and_snapshot_ta
     for mode in 0..4 {
         for case in 0..3 {
             let mut parent = match case {
-                0 => json!({"kind":"specialized","target":null,"type_bindings":false}),
+                0 => {
+                    json!({"kind":"specialized","target":null,"effect_row_bindings": [], "type_bindings":false})
+                }
                 1 => json!({"kind":"limited","target":null,"limits":false}),
                 _ => json!({"kind":"composed","targets":[null,{"kind":"late-invalid"}]}),
             };
@@ -319,8 +378,11 @@ fn decoded_deep_targets_still_require_checked_machine_identity() {
         let doc = document(tree);
         let target = call_target_snapshot_from_json(&limits, &doc["checkpoint"]).unwrap();
         let machine = MachineSnapshot {
+            program_owners: Default::default(),
+            suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation {
                 continuation: ContinuationSnapshot::ComposedCall {
+                    site: None,
                     remaining: vec![target],
                     span,
                 },

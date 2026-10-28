@@ -25,6 +25,7 @@ impl ValueSnapshot {
             InterpValue::Bytes(value) => Self::Bytes(value.clone()),
             InterpValue::Json(value) => Self::Json(value.clone()),
             InterpValue::Prompt(messages) => Self::Prompt(messages.clone()),
+            InterpValue::Schema(ty) => Self::Schema(*ty),
             InterpValue::Provenance(value) => Self::Provenance(value.clone()),
             InterpValue::ModelResponse(value) => Self::ModelResponse(value.clone()),
             InterpValue::Command {
@@ -89,6 +90,16 @@ impl ValueSnapshot {
                     "live {} host handles cannot be captured in a checkpoint",
                     handle.kind_name()
                 ));
+            }
+            InterpValue::SyntaxBlock(_) => {
+                return Err("structured syntax must be restored from source in its locked definition environment, not a live checkpoint handle".into());
+            }
+            InterpValue::CodeMetadata(value) => Self::CodeIdentity {
+                ty: value.ty(),
+                identity: crate::value::CodeIdentitySnapshot::capture(value)?,
+            },
+            InterpValue::AgentDefinition(_) | InterpValue::CallableDefinition(_) => {
+                return Err("code definitions must be restored from source in their locked definition environment, not a live checkpoint handle".into());
             }
             InterpValue::ResourceHandle {
                 name,
@@ -159,6 +170,16 @@ impl ValueSnapshot {
             Self::Bytes(value) => InterpValue::Bytes(value),
             Self::Json(value) => InterpValue::Json(value),
             Self::Prompt(messages) => InterpValue::Prompt(messages),
+            Self::Schema(ty) => InterpValue::Schema(ty),
+            Self::CodeIdentity { ty, identity } => {
+                let program = context
+                    .revision_program
+                    .as_ref()
+                    .ok_or("compiler identity restore requires its checked program")?;
+                InterpValue::CodeMetadata(
+                    identity.restore(&program.types.known_std_types.code, ty)?,
+                )
+            }
             Self::Provenance(value) => InterpValue::Provenance(value),
             Self::ModelResponse(value) => InterpValue::ModelResponse(value),
             Self::Command {

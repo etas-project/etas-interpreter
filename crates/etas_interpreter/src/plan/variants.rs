@@ -2,8 +2,8 @@ use std::collections::HashMap;
 
 use etas_frontend::CheckedProject;
 use etas_hir::{
-    HirExpr, HirExprId, HirFieldInit, HirItem, HirPat, HirPatId, HirRecordPatField, ResolveResult,
-    SymbolDef, SymbolId,
+    HirExpr, HirExprId, HirFieldInit, HirPat, HirPatId, HirRecordPatField, ResolveResult, SymbolId,
+    SymbolKind,
 };
 use etas_utils::{Pass, PassContext, PassManager, PassResult};
 
@@ -155,20 +155,16 @@ impl NamedVariantLayoutTable {
                 .symbols
                 .get(symbol)
                 .ok_or("record constructor has an invalid symbol")?;
-            let SymbolDef::EnumVariant {
-                enum_item,
-                variant_index,
-            } = symbol_data.def
-            else {
+            if symbol_data.kind != SymbolKind::EnumVariant {
                 continue;
-            };
-            let Some(HirItem::Enum(declaration)) = project.hir.items.get(enum_item) else {
-                return Err("variant constructor has no enum declaration".into());
-            };
-            let names = declaration
-                .variants
-                .get(variant_index as usize)
-                .and_then(|variant| variant.field_names.as_ref())
+            }
+            let (_, _, variant) = project
+                .types
+                .enum_constructor(&project.type_store, symbol_data)
+                .ok_or("variant constructor has no checked layout")?;
+            let names = variant
+                .field_names
+                .as_ref()
                 .ok_or("named variant has no checked field declaration")?;
             let source = record
                 .fields
@@ -198,20 +194,16 @@ impl NamedVariantLayoutTable {
                 .symbols
                 .get(symbol)
                 .ok_or("record pattern has an invalid symbol")?;
-            let SymbolDef::EnumVariant {
-                enum_item,
-                variant_index,
-            } = symbol_data.def
-            else {
+            if symbol_data.kind != SymbolKind::EnumVariant {
                 continue;
-            };
-            let Some(HirItem::Enum(declaration)) = project.hir.items.get(enum_item) else {
-                return Err("variant pattern has no enum declaration".into());
-            };
-            let names = declaration
-                .variants
-                .get(variant_index as usize)
-                .and_then(|variant| variant.field_names.as_ref())
+            }
+            let (_, _, variant) = project
+                .types
+                .enum_constructor(&project.type_store, symbol_data)
+                .ok_or("variant pattern has no checked layout")?;
+            let names = variant
+                .field_names
+                .as_ref()
                 .ok_or("named variant pattern has no checked field declaration")?;
             patterns.insert(
                 pat,

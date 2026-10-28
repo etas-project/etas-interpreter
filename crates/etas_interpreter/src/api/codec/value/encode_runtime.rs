@@ -29,6 +29,19 @@ fn write<'a>(node: Node<'a>, slot: &'a mut Value, mut child: impl FnMut(Node<'a>
         InterpValue::String(value) => *slot = json!({"kind":"string","value":value}),
         InterpValue::Bytes(value) => *slot = json!({"kind":"bytes","value":value}),
         InterpValue::Json(value) => *slot = super::super::json::wrapped(value),
+        InterpValue::Schema(ty) => *slot = json!({"kind":"type_schema","ty":ty.0}),
+        InterpValue::CodeMetadata(value) => {
+            *slot = json!({"kind":"compiler_metadata","schema":1,"value":value.payload()})
+        }
+        InterpValue::SyntaxBlock(_) => {
+            *slot = json!({"kind":"syntax_block","persistence":"source-required"})
+        }
+        InterpValue::AgentDefinition(_) => {
+            *slot = json!({"kind":"agent_definition","persistence":"source-required"});
+        }
+        InterpValue::CallableDefinition(_) => {
+            *slot = json!({"kind":"callable_definition","persistence":"source-required"});
+        }
         InterpValue::Nominal { ty, value } => {
             *slot = json!({"kind":"nominal","ty":ty.0,"value":null});
             child(Node::Value(value), &mut slot["value"]);

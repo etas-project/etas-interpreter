@@ -157,6 +157,10 @@ fn leaf(value: &ValueSnapshot) -> Value {
             json!({"kind":"memory_write_intent","ty":value.ty.0,"key_type":value.key_type.0,"value_type":value.value_type.0,"intent":value.encoded()})
         }
         V::Unit => json!({"kind":"unit"}),
+        V::Schema(ty) => json!({"kind":"type_schema","ty":ty.0}),
+        V::CodeIdentity { ty, identity } => {
+            json!({"kind":"compiler_identity","schema":1,"ty":ty.0,"value":identity})
+        }
         V::OptionNone => json!({"kind":"option_none"}),
         V::Bool(value) => json!({"kind":"bool","value":value}),
         V::Number(value) => numeric_value_json(*value),

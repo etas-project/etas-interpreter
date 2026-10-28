@@ -4,6 +4,15 @@ use super::*;
 #[path = "call/tests.rs"]
 mod tests;
 
+pub(super) struct CallArgsState {
+    pub call: HirExprId,
+    pub target: CallTarget,
+    pub args: std::sync::Arc<[HirArg]>,
+    pub start_arg_index: usize,
+    pub evaluated_args: Vec<InterpValue>,
+    pub span: Span,
+}
+
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_static_collection_constructor_call(
         &mut self,
@@ -76,7 +85,24 @@ impl<'a> EvalContext<'a> {
                 Ok(target) => target,
                 Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             };
-        let target = if let Some(target) = nominal_target.or(static_target) {
+        let member_receiver = match self.checked_agent_member_receiver(call, callee, span) {
+            Ok(receiver) => receiver,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        let selected_target = if let Some(receiver) = member_receiver {
+            let receiver =
+                match self.eval_path_signal(ResolveResult::Resolved(receiver), span, frame) {
+                    ControlSignal::Value(value) => value,
+                    other => return other,
+                };
+            match self.checked_agent_method_target(call, receiver, span) {
+                Ok(target) => Some(target),
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            }
+        } else {
+            None
+        };
+        let target = if let Some(target) = selected_target.or(nominal_target).or(static_target) {
             target
         } else {
             match self.eval_expr(callee, frame) {
@@ -100,6 +126,7 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::CalleeEval {
+                            call,
                             args: descriptors,
                             span,
                             frame: frame.clone(),
@@ -119,7 +146,17 @@ impl<'a> EvalContext<'a> {
             Ok(target) => target,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        self.resume_call_args(target, descriptors, 0, Vec::new(), span, frame)
+        self.resume_call_args(
+            CallArgsState {
+                call,
+                target,
+                args: descriptors,
+                start_arg_index: 0,
+                evaluated_args: Vec::new(),
+                span,
+            },
+            frame,
+        )
     }
 
     fn eval_checked_field_method_call(
@@ -191,13 +228,17 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn resume_call_args(
         &mut self,
-        target: CallTarget,
-        args: std::sync::Arc<[HirArg]>,
-        start_arg_index: usize,
-        mut evaluated_args: Vec<InterpValue>,
-        span: Span,
+        state: CallArgsState,
         frame: &mut Frame,
     ) -> ControlSignal {
+        let CallArgsState {
+            call,
+            target,
+            args,
+            start_arg_index,
+            mut evaluated_args,
+            span,
+        } = state;
         evaluated_args.reserve(args.len().saturating_sub(evaluated_args.len()));
         for (index, arg) in args.iter().enumerate().skip(start_arg_index) {
             let expr = match arg {
@@ -220,6 +261,7 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::CallArgs {
+                            call,
                             target,
                             args,
                             next_arg_index: index + 1,
@@ -238,10 +280,23 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }
-        self.execute_call_target(target, evaluated_args, span)
+        let site = matches!(
+            target,
+            CallTarget::AgentRevision(_)
+                | CallTarget::Scoped(_)
+                | CallTarget::Composed(_)
+                | CallTarget::Limited { .. }
+                | CallTarget::Specialized { .. }
+        )
+        .then(|| crate::control::CallSite {
+            kind: crate::control::CallSiteKind::Expr { expr: call },
+            frame: frame.clone(),
+            composition: None,
+        });
+        self.execute_call_target_at(target, evaluated_args, span, site)
     }
 
-    fn execute_flow_call(
+    pub(super) fn execute_flow_call(
         &mut self,
         item: HirItemId,
         call_args: Vec<InterpValue>,
@@ -327,7 +382,18 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        self.execute_call_target_at(target, call_args, span, None)
+    }
+
+    pub(super) fn execute_call_target_at(
+        &mut self,
+        target: CallTarget,
+        call_args: Vec<InterpValue>,
+        span: Span,
+        site: Option<crate::control::CallSite>,
+    ) -> ControlSignal {
         ControlSignal::pending_call(PendingCall {
+            site,
             target,
             args: call_args,
             span,
@@ -340,10 +406,16 @@ impl<'a> EvalContext<'a> {
         target: CallTarget,
         call_args: Vec<InterpValue>,
         span: Span,
+        site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
         match target {
+            target @ (CallTarget::AgentRevision(_) | CallTarget::Scoped(_)) => {
+                self.execute_call_target_at(target, call_args, span, site)
+            }
             CallTarget::FlowItem(item) => self.execute_flow_call(item, call_args, span),
-            CallTarget::AgentItem(item) => self.execute_agent_call(item, call_args, span),
+            CallTarget::AgentItem(item) => {
+                self.execute_agent_call(item, call_args, span, Default::default())
+            }
             CallTarget::ToolItem(item) => self.execute_source_tool_call(item, call_args, span),
             CallTarget::SpecImplMethod(symbol) => {
                 self.execute_spec_impl_method_call(symbol, call_args, span)
@@ -403,17 +475,20 @@ impl<'a> EvalContext<'a> {
             CallTarget::Specialized {
                 target,
                 type_bindings,
+                effect_row_bindings,
             } => self.execute_specialized_call_target(
                 target.into_value(),
                 type_bindings,
+                effect_row_bindings,
                 call_args,
                 span,
+                site,
             ),
             CallTarget::Limited { target, limits } => {
-                self.execute_limited_call_target(target.into_value(), limits, call_args, span)
+                self.execute_limited_call_target(target.into_value(), limits, call_args, span, site)
             }
             CallTarget::Composed(stages) => {
-                self.execute_composed_call(stages.into_values(), call_args, span)
+                self.execute_composed_call(stages, call_args, span, site)
             }
         }
     }
@@ -422,17 +497,51 @@ impl<'a> EvalContext<'a> {
         &mut self,
         target: CallTarget,
         type_bindings: Vec<(String, etas_types::TypeId)>,
+        effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
         call_args: Vec<InterpValue>,
         span: Span,
+        site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
         let bindings = type_bindings
             .into_iter()
             .collect::<std::collections::HashMap<_, _>>();
+        let rows = effect_row_bindings.into_iter().collect();
         match target {
+            CallTarget::AgentItem(item) => self.execute_agent_call_with_generic_bindings(
+                item,
+                call_args,
+                span,
+                crate::control::GenericBindings {
+                    types: bindings,
+                    rows,
+                },
+            ),
+            CallTarget::ToolItem(item) => self.execute_source_tool_call_with_generics(
+                item,
+                call_args,
+                span,
+                crate::control::GenericBindings {
+                    types: bindings,
+                    rows,
+                },
+            ),
+            CallTarget::AgentRevision(_) | CallTarget::Scoped(_) => {
+                ControlSignal::missing_checked_fact(
+                    "cross-program generic calls require an evaluation-machine boundary",
+                    span,
+                )
+            }
             CallTarget::FlowItem(item) => match self.checked.hir.items.get(item) {
                 Some(HirItem::Flow(flow)) => {
-                    let signal =
-                        self.execute_flow_with_type_bindings(item, flow, &call_args, bindings);
+                    let signal = self.execute_flow_with_generic_bindings(
+                        item,
+                        flow,
+                        &call_args,
+                        crate::control::GenericBindings {
+                            types: bindings,
+                            rows,
+                        },
+                    );
                     match signal {
                         ControlSignal::Value(value) | ControlSignal::Return(value) => {
                             ControlSignal::Value(value)
@@ -445,9 +554,12 @@ impl<'a> EvalContext<'a> {
                     span,
                 ),
             },
-            CallTarget::PureIntrinsic(call) => {
-                self.execute_call_target_frame(CallTarget::PureIntrinsic(call), call_args, span)
-            }
+            CallTarget::PureIntrinsic(call) => self.execute_call_target_frame(
+                CallTarget::PureIntrinsic(call),
+                call_args,
+                span,
+                site,
+            ),
             CallTarget::StdIntrinsic(call) => {
                 match self.plan.dispatch.resolve_std_callable(call.identity) {
                     Ok(kind) => self.execute_std_callable_with_type_bindings(
@@ -456,15 +568,16 @@ impl<'a> EvalContext<'a> {
                     Err(message) => ControlSignal::missing_checked_fact(message, span),
                 }
             }
-            other => self.execute_call_target_frame(other, call_args, span),
+            other => self.execute_call_target_frame(other, call_args, span, site),
         }
     }
 
     fn execute_composed_call(
         &mut self,
-        stages: Vec<CallTarget>,
+        stages: crate::control::CallTargetChildren,
         call_args: Vec<InterpValue>,
         span: Span,
+        mut site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
         let [first_arg]: [InterpValue; 1] = match call_args.try_into() {
             Ok(args) => args,
@@ -478,23 +591,65 @@ impl<'a> EvalContext<'a> {
                 );
             }
         };
-        self.resume_composed_call(first_arg, stages, span)
+        if let Some(site) = &mut site {
+            if let crate::control::CallSiteKind::Pipeline { expr } = site.kind {
+                site.kind = crate::control::CallSiteKind::PipelineStage { expr, index: 0 };
+            } else if let Some(composition) = &mut site.composition {
+                composition.path = composition.path.push(0);
+            } else {
+                site.composition = Some(crate::control::ComposedInvocation {
+                    root: CallTarget::Composed(stages.clone()).into(),
+                    path: crate::control::InvocationPath::default().push(0),
+                });
+            }
+        }
+        self.resume_composed_call(first_arg, stages, 0, span, site)
     }
 
     pub(super) fn resume_composed_call(
         &mut self,
         input: InterpValue,
-        mut stages: Vec<CallTarget>,
+        stages: crate::control::CallTargetChildren,
+        next_index: usize,
         span: Span,
+        site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
-        if stages.is_empty() {
+        if next_index == stages.len() {
             return ControlSignal::Value(input);
         }
-        let stage = stages.remove(0);
+        let Some(stage) = stages.get(next_index).cloned() else {
+            return ControlSignal::missing_checked_fact(
+                "composition cursor is out of bounds",
+                span,
+            );
+        };
+        let mut next_site = site.clone();
+        if let Some(site) = &mut next_site {
+            if let Some(composition) = &mut site.composition {
+                let Some(next) = composition.path.advance() else {
+                    return ControlSignal::missing_checked_fact(
+                        "composition stage index overflow",
+                        span,
+                    );
+                };
+                composition.path = next;
+            } else if let crate::control::CallSiteKind::PipelineStage { index, .. } = &mut site.kind
+            {
+                let Some(next) = index.checked_add(1) else {
+                    return ControlSignal::missing_checked_fact(
+                        "pipeline stage index overflow",
+                        span,
+                    );
+                };
+                *index = next;
+            }
+        }
         compose_signal_continuation(
-            self.execute_call_target(stage, vec![input], span),
+            self.execute_call_target_at(stage, vec![input], span, site),
             Continuation::ComposedCall {
                 remaining: stages,
+                next_index: next_index + 1,
+                site: next_site,
                 span,
             },
         )
@@ -536,6 +691,7 @@ impl<'a> EvalContext<'a> {
         limits: Vec<crate::eval::limit::RuntimeLimit>,
         call_args: Vec<InterpValue>,
         span: Span,
+        site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
         let mut policy = self.model_policy.clone();
         for limit in &limits {
@@ -544,7 +700,7 @@ impl<'a> EvalContext<'a> {
             }
         }
         let previous = std::mem::replace(&mut self.model_policy, policy.clone());
-        let signal = self.execute_call_target(target, call_args, span);
+        let signal = self.execute_call_target_at(target, call_args, span, site);
         self.model_policy = previous;
         self.scope_model_policy_signal(signal, policy)
     }

@@ -20,8 +20,10 @@ fn array_operator_and_extend_reuse_unique_left_without_copying_shared_right() {
         })
         .unwrap();
     let options = RunOptions::default();
-    let mut eval = EvalContext::new(EvalContextInput {
+    let (program, mut run_state) = EvalContextInput {
         storage_limits: Default::default(),
+        code_definitions: None,
+        syntax_limits: Default::default(),
         event_observer: None,
         execution: etas_host::execution::ExecutionScope::new_owned(),
         checked: &checked,
@@ -33,7 +35,9 @@ fn array_operator_and_extend_reuse_unique_left_without_copying_shared_right() {
         current_session: None,
         entry_item: checked.entry.unwrap(),
         entry_args: &[],
-    });
+    }
+    .into_parts();
+    let mut eval = EvalContext::new(program, &mut run_state);
     for method in [false, true] {
         for count in [1000, 2000, 4000] {
             let mut left = Vec::with_capacity(2 * count);

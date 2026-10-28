@@ -8,7 +8,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 import std.runtime.checkpoint;
 agent Writer(input: string) -> ModelResponse {
-    return Prompt.new().user(Public(input));
+    return perform infer(Prompt.new().user(Public(input)));
 }
 flow main() -> ModelResponse {
     let response = Writer.run("payload");

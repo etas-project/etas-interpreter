@@ -7,19 +7,32 @@ impl<'a> EvalContext<'a> {
         host: PendingHostBoundary,
         failure: StreamFailure,
     ) -> ControlSignal {
+        self.raise_stream_failure(failure, host.continuation, host.span)
+    }
+
+    pub(super) fn raise_stream_failure(
+        &mut self,
+        failure: StreamFailure,
+        continuation: Continuation,
+        span: Span,
+    ) -> ControlSignal {
         let Some(error_type) = self.known_std_types.stream_error else {
             return ControlSignal::missing_checked_fact(
                 "stream host failure requires checked std.stream StreamError type",
-                host.span,
+                span,
             );
         };
         let perform = PendingPerform {
+            checked_action: None,
+            default_boundary: None,
+            forwarded_call: None,
+            inference: None,
             expr: None,
-            action: stream_error_raise_action(host.span),
+            action: stream_error_raise_action(span),
             error_type: Some(error_type),
             args: vec![stream_error_value(failure)],
-            span: host.span,
-            continuation: host.continuation,
+            span,
+            continuation,
         };
         self.propagate_perform_signal(perform)
     }

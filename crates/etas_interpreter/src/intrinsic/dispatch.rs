@@ -17,6 +17,8 @@ pub struct StdIntrinsicIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckedStdIntrinsicCall {
     pub identity: StdIntrinsicIdentity,
+    pub origin: etas_hir::HirExprId,
+    pub substitutions: Vec<Vec<(String, TypeId)>>,
     pub parameter_types: Vec<TypeId>,
     pub result_type: TypeId,
 }
@@ -76,7 +78,6 @@ pub enum SecretCallable {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum JsonCallable {
-    InvalidJson,
     Parse,
     Stringify,
 }
@@ -128,8 +129,18 @@ pub enum SessionContextCallable {
     Reconcile,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum CodeSyntaxCallable {
+    WithBody,
+    ParseBody,
+    Format,
+    Diff,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StdCallable {
+    ForwardAction,
+    CodeSyntax(CodeSyntaxCallable),
     SessionHistoryPage,
     SessionContext(SessionContextCallable),
     Approval,
@@ -139,7 +150,6 @@ pub enum StdCallable {
     MemoryIntent(MemoryIntentCallable),
     MemoryVersionConstructor,
     MoneyUsdConstructor,
-    StreamErrorHostConstructor,
     CurrentSession,
     SessionPolicyConstructor(&'static str),
     RuntimeLimitConstructor(StdLimitKind),
@@ -156,8 +166,19 @@ pub enum StdCallable {
 }
 
 pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> Option<StdCallable> {
+    if matches!(
+        descriptor.lowering,
+        etas_std::LoweringHint::ForwardAction { .. }
+    ) {
+        return Some(StdCallable::ForwardAction);
+    }
     let callable = match descriptor.id.0 {
-        intrinsic::pure::JSON_INVALID_JSON => StdCallable::Json(JsonCallable::InvalidJson),
+        intrinsic::runtime::CODE_PARSE_BODY => {
+            StdCallable::CodeSyntax(CodeSyntaxCallable::ParseBody)
+        }
+        intrinsic::runtime::CODE_FORMAT => StdCallable::CodeSyntax(CodeSyntaxCallable::Format),
+        intrinsic::runtime::CODE_WITH_BODY => StdCallable::CodeSyntax(CodeSyntaxCallable::WithBody),
+        intrinsic::runtime::CODE_DIFF => StdCallable::CodeSyntax(CodeSyntaxCallable::Diff),
         intrinsic::pure::JSON_PARSE => StdCallable::Json(JsonCallable::Parse),
         intrinsic::pure::JSON_STRINGIFY => StdCallable::Json(JsonCallable::Stringify),
         intrinsic::pure::SESSION_LAST_TURNS => StdCallable::SessionPolicyConstructor("LastTurns"),
@@ -166,7 +187,6 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         }
         intrinsic::pure::SESSION_DAYS => StdCallable::SessionPolicyConstructor("Days"),
         intrinsic::pure::MEMORY_VERSION => StdCallable::MemoryVersionConstructor,
-        intrinsic::pure::STREAM_ERROR_HOST => StdCallable::StreamErrorHostConstructor,
         intrinsic::pure::TRUST_TRUSTED => StdCallable::TrustWrapper(TrustWrapper::Trusted),
         intrinsic::pure::TRUST_UNTRUSTED => StdCallable::TrustWrapper(TrustWrapper::Untrusted),
         intrinsic::pure::TRUST_SECRET => StdCallable::TrustWrapper(TrustWrapper::Secret),

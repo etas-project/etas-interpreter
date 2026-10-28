@@ -14,7 +14,7 @@ tool Search() -> string {
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -101,7 +101,7 @@ import dep.tools.Search;
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -211,7 +211,7 @@ import dep.tools.Search;
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -284,7 +284,7 @@ import std.agent.prompt.Prompt;
 import std.runtime.{checkpoint};
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -376,7 +376,7 @@ tool Search() -> string {
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -465,7 +465,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -560,7 +560,7 @@ tool Search() -> string {
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -654,7 +654,7 @@ tool Search() -> string {
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> Draft ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow descend(depth: i32, input: string) -> Draft {
@@ -824,7 +824,7 @@ tool Search() -> string ![Gate] {
 @model(model = "local-qwen")
 @tools([Search])
 agent Writer(input: string) -> string ![] {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -924,7 +924,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -1030,7 +1030,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -1097,7 +1097,7 @@ type AgentRequest = {
 };
 
 agent Writer(input: AgentRequest) -> string {
-  return Prompt.new().system(Trusted("write concise output")).data(input);
+  return perform infer(Prompt.new().system(Trusted("write concise output")).data(input));
 }
 
 flow main(topic: string) -> string {
@@ -1145,7 +1145,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -1204,7 +1204,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main(input: string) -> string {
@@ -1256,7 +1256,7 @@ module app.main;
 import std.agent.prompt.Prompt;
 
 agent Writer(input: string) -> ModelResponse {
-  return Prompt.new().system(Trusted("write concise output")).user(Public(input));
+  return perform infer(Prompt.new().system(Trusted("write concise output")).user(Public(input)));
 }
 
 flow main(input: string) -> ModelResponse {

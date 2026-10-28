@@ -2,6 +2,119 @@ use super::*;
 use etas_frontend::AstItemRef;
 
 impl<'a> EvalContext<'a> {
+    pub(super) fn eval_std_callable_value(
+        &mut self,
+        expr: HirExprId,
+        frame: &Frame,
+        span: Span,
+    ) -> Result<Option<InterpValue>, crate::control::ExecutionFault> {
+        let Some(HirExpr::Path(path)) = self.checked.hir.exprs.get(expr) else {
+            return Ok(None);
+        };
+        let ResolveResult::Resolved(symbol) = path.resolution else {
+            return Ok(None);
+        };
+        if frame.get(symbol).is_some()
+            || self.std_intrinsic(symbol).is_none()
+            || !matches!(
+                self.checked
+                    .types
+                    .expr_types
+                    .get(&expr)
+                    .and_then(|ty| self.checked.type_store.get(*ty)),
+                Some(etas_types::Type::Function(_))
+            )
+        {
+            return Ok(None);
+        }
+        let missing = |message| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                message,
+            )
+        };
+        self.checked
+            .checked_callable_owner(etas_frontend::CheckedCallableRoot::StdReference(expr))
+            .map_err(|error| missing(error.to_string()))?;
+        let target = self
+            .resolve_static_call_target(expr, frame, span)?
+            .ok_or_else(|| {
+                missing("checked standard callable reference has no native target".to_owned())
+            })?;
+        Ok(Some(InterpValue::Callable(target)))
+    }
+
+    pub(super) fn source_agent_call_target(
+        &self,
+        item: HirItemId,
+        span: Span,
+    ) -> Result<CallTarget, crate::control::ExecutionFault> {
+        if matches!(self.checked.types.item_signatures.get(&item), Some(etas_types::ItemSignature::Agent(agent)) if agent.default_entry.is_none())
+        {
+            return Ok(CallTarget::AgentItem(item));
+        }
+        match self.revision {
+            None => Ok(CallTarget::AgentItem(item)),
+            Some(revision) => crate::value::AgentRevisionValue::frozen_declaration(
+                revision.clone(),
+                self.checked,
+                item,
+            )
+            .map(CallTarget::AgentRevision)
+            .map_err(|reason| {
+                crate::control::ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    reason,
+                )
+            }),
+        }
+    }
+    pub(super) fn source_flow_call_target(
+        &self,
+        item: HirItemId,
+        span: Span,
+    ) -> Result<CallTarget, crate::control::ExecutionFault> {
+        if let Some(revision) = self.revision
+            && revision.targets.frozen_methods.contains_key(&item)
+        {
+            return crate::value::AgentRevisionValue::frozen_method(
+                revision.clone(),
+                self.checked,
+                item,
+            )
+            .map(CallTarget::AgentRevision)
+            .map_err(|reason| {
+                crate::control::ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    reason,
+                )
+            });
+        }
+        Ok(CallTarget::FlowItem(item))
+    }
+
+    pub(super) fn source_tool_call_target(
+        &self,
+        item: HirItemId,
+        span: Span,
+    ) -> Result<CallTarget, crate::control::ExecutionFault> {
+        if matches!(self.checked.hir.items.get(item), Some(HirItem::Tool(tool)) if matches!(tool.body, HirToolBody::Source(_)))
+            && matches!(
+                self.checked.types.item_signatures.get(&item),
+                Some(etas_types::ItemSignature::Tool(_))
+            )
+        {
+            return Ok(CallTarget::ToolItem(item));
+        }
+        Err(crate::control::ExecutionFault::new(
+            AnalysisDiagnosticCode::MissingCheckedFact,
+            span,
+            "tool value has no checked source callable body",
+        ))
+    }
     pub(super) fn specialize_call_target_for_call(
         &self,
         call: HirExprId,
@@ -22,33 +135,25 @@ impl<'a> EvalContext<'a> {
             ),
             other => other,
         };
-        let Some(fact) = self.checked.types.generic_instantiations.get(&call) else {
-            return Ok(target);
-        };
-        let mut bindings = Vec::with_capacity(fact.type_bindings.len());
-        for (name, ty) in &fact.type_bindings {
-            let resolved = etas_types::substitute_named_params_in_store(
-                &self.checked.type_store,
-                *ty,
-                frame.type_bindings(),
+        let bindings = crate::control::CheckedCallBindings::resolve(
+            self.checked,
+            call,
+            frame.generic_bindings(),
+        )
+        .map_err(|error| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                format!("checked call bindings cannot be materialized: {error}"),
             )
-            .map_err(|error| {
-                crate::control::ExecutionFault::new(
-                    AnalysisDiagnosticCode::MissingCheckedFact,
-                    span,
-                    format!(
-                        "checked generic call type binding `{name}` cannot be materialized at runtime: {error}"
-                    ),
-                )
-            })?;
-            bindings.push((name.clone(), resolved));
-        }
-        if bindings.is_empty() {
+        })?;
+        if bindings.types.is_empty() && bindings.rows.is_empty() {
             return Ok(target);
         }
         Ok(CallTarget::Specialized {
             target: target.into(),
-            type_bindings: bindings,
+            type_bindings: bindings.types,
+            effect_row_bindings: bindings.rows,
         })
     }
 
@@ -68,10 +173,19 @@ impl<'a> EvalContext<'a> {
         if frame.get(symbol).is_some() {
             return Ok(None);
         }
-        let Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) =
-            self.checked.types.symbol_types.get(&symbol)
-        else {
-            return Ok(None);
+        let (constructor, alias) = match self.checked.types.symbol_types.get(&symbol) {
+            Some(etas_types::SymbolTypeFact::NominalType { constructor, .. }) => {
+                (*constructor, false)
+            }
+            Some(etas_types::SymbolTypeFact::TypeAlias { target, .. }) => {
+                let base = match self.checked.type_store.get(*target) {
+                    Some(etas_types::Type::Applied { constructor, .. }) => *constructor,
+                    Some(etas_types::Type::Nominal(_)) => etas_types::TypeConstructorId(target.0),
+                    _ => return Ok(None),
+                };
+                (base, true)
+            }
+            _ => return Ok(None),
         };
         let Some(result_type) = self.checked.types.expr_types.get(&call).copied() else {
             return Err(crate::control::ExecutionFault::new(
@@ -85,10 +199,12 @@ impl<'a> EvalContext<'a> {
             Some(etas_types::Type::Applied {
                 constructor: applied,
                 ..
-            }) => applied == constructor,
+            }) => *applied == constructor,
             _ => false,
         };
-        if !matches_constructor {
+        if !matches_constructor
+            || (alias && self.checked.types.expr_types.get(&callee).copied() != Some(result_type))
+        {
             return Err(crate::control::ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
@@ -119,11 +235,18 @@ impl<'a> EvalContext<'a> {
             return Ok(None);
         };
         Ok(match &symbol_data.def {
-            SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Flow => {
-                Some(CallTarget::FlowItem(*item))
-            }
+            SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Flow => Some(
+                if matches!(self.checked.hir.items.get(*item), Some(HirItem::Agent(_))) {
+                    self.source_agent_call_target(*item, span)?
+                } else {
+                    self.source_flow_call_target(*item, span)?
+                },
+            ),
             SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Agent => {
-                Some(CallTarget::AgentItem(*item))
+                Some(self.source_agent_call_target(*item, span)?)
+            }
+            SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Tool => {
+                Some(self.source_tool_call_target(*item, span)?)
             }
             SymbolDef::ImportAlias { path, .. } => {
                 if self.plan.dispatch.enum_constructor(symbol).is_some() {
@@ -141,8 +264,9 @@ impl<'a> EvalContext<'a> {
                 }
                 match self.source_item_id_for_import_path(path) {
                     Some(item) => match self.checked.hir.items.get(item) {
-                        Some(HirItem::Flow(_)) => Some(CallTarget::FlowItem(item)),
-                        Some(HirItem::Agent(_)) => Some(CallTarget::AgentItem(item)),
+                        Some(HirItem::Flow(_)) => Some(self.source_flow_call_target(item, span)?),
+                        Some(HirItem::Agent(_)) => Some(self.source_agent_call_target(item, span)?),
+                        Some(HirItem::Tool(_)) => Some(self.source_tool_call_target(item, span)?),
                         _ => None,
                     },
                     None => None,
@@ -174,11 +298,18 @@ impl<'a> EvalContext<'a> {
             return Ok(None);
         };
         Ok(match &symbol_data.def {
-            SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Flow => {
-                Some(CallTarget::FlowItem(*item))
-            }
+            SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Flow => Some(
+                if matches!(self.checked.hir.items.get(*item), Some(HirItem::Agent(_))) {
+                    self.source_agent_call_target(*item, span)?
+                } else {
+                    self.source_flow_call_target(*item, span)?
+                },
+            ),
             SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Agent => {
-                Some(CallTarget::AgentItem(*item))
+                Some(self.source_agent_call_target(*item, span)?)
+            }
+            SymbolDef::Item { item } if symbol_data.kind == SymbolKind::Tool => {
+                Some(self.source_tool_call_target(*item, span)?)
             }
             SymbolDef::ImportAlias { path, .. } => {
                 if self.plan.dispatch.enum_constructor(symbol).is_some() {
@@ -196,8 +327,9 @@ impl<'a> EvalContext<'a> {
                 }
                 match self.source_item_id_for_import_path(path) {
                     Some(item) => match self.checked.hir.items.get(item) {
-                        Some(HirItem::Flow(_)) => Some(CallTarget::FlowItem(item)),
-                        Some(HirItem::Agent(_)) => Some(CallTarget::AgentItem(item)),
+                        Some(HirItem::Flow(_)) => Some(self.source_flow_call_target(item, span)?),
+                        Some(HirItem::Agent(_)) => Some(self.source_agent_call_target(item, span)?),
+                        Some(HirItem::Tool(_)) => Some(self.source_tool_call_target(item, span)?),
                         _ => None,
                     },
                     None => None,
@@ -350,6 +482,8 @@ impl<'a> EvalContext<'a> {
             })?;
         Ok(crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
             identity,
+            origin: call,
+            substitutions: Vec::new(),
             parameter_types,
             result_type,
         })
@@ -391,6 +525,8 @@ impl<'a> EvalContext<'a> {
         };
         Ok(crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
             identity,
+            origin: callee,
+            substitutions: Vec::new(),
             parameter_types: flow.input.clone(),
             result_type: flow.output,
         })

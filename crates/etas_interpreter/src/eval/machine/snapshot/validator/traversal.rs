@@ -91,7 +91,7 @@ impl<'a> Iterator for ContinuationWalk<'a> {
                     self.next = Some(Task::Link(inner));
                 }
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
-                | ContinuationSnapshot::CallBoundary { outer: inner }
+                | ContinuationSnapshot::CallBoundary { outer: inner, .. }
                 | ContinuationSnapshot::HandlerDispatch { outer: inner }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => {
                     self.next = Some(Task::Link(inner))
@@ -100,6 +100,7 @@ impl<'a> Iterator for ContinuationWalk<'a> {
                     self.pending.push(Task::Link(outer));
                     self.next = Some(Task::Link(inner));
                 }
+                ContinuationSnapshot::RetryAttempt { .. } => self.scopes_seen += 1,
                 _ => {}
             }
         }
@@ -132,13 +133,18 @@ impl SnapshotValidator<'_> {
         Ok(())
     }
 
-    pub(super) fn continuation_scope_unwind_order(
+    pub(super) fn continuation_unwind_order(
         continuation: &ContinuationSnapshot,
         scopes: &mut Vec<HandlerScopeId>,
+        retries: &mut Vec<crate::orchestration::RetryAttemptRecord>,
     ) {
         for event in ContinuationWalk::new(continuation) {
-            if let Visit::LeaveHandler { scope_id, .. } = event {
-                scopes.push(scope_id);
+            match event {
+                Visit::LeaveHandler { scope_id, .. } => scopes.push(scope_id),
+                Visit::Node(ContinuationSnapshot::RetryAttempt { retry, .. }) => {
+                    retries.push(retry.clone())
+                }
+                _ => {}
             }
         }
     }

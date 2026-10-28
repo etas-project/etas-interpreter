@@ -12,6 +12,7 @@ pub(super) struct SpecMethodCall<'a> {
 }
 
 pub(super) struct SpecMethodDispatch<'a> {
+    pub expr: HirExprId,
     pub receiver_expr: HirExprId,
     pub receiver: InterpValue,
     pub spec_symbol: SymbolId,
@@ -45,6 +46,7 @@ impl<'a> EvalContext<'a> {
         match self.eval_expr(receiver_expr, frame) {
             ControlSignal::Value(receiver) => self.eval_spec_method_on_receiver_value(
                 SpecMethodDispatch {
+                    expr,
                     receiver_expr,
                     receiver,
                     spec_symbol,
@@ -95,6 +97,7 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         let SpecMethodDispatch {
+            expr,
             receiver_expr,
             receiver,
             spec_symbol,
@@ -113,7 +116,17 @@ impl<'a> EvalContext<'a> {
             Ok(target) => target,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        self.resume_call_args(target, args.into(), 0, vec![receiver], span, frame)
+        self.resume_call_args(
+            CallArgsState {
+                call: expr,
+                target,
+                args: args.into(),
+                start_arg_index: 0,
+                evaluated_args: vec![receiver],
+                span,
+            },
+            frame,
+        )
     }
 
     fn resolve_checked_spec_method_target(

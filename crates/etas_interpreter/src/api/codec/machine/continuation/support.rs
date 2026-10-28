@@ -6,6 +6,7 @@ pub(in crate::api::codec::machine) fn frame_snapshot(frame: &Frame) -> Value {
         "locals": frame.sorted_locals().iter().map(|(symbol, value)| {
             json!({ "symbol": symbol.0, "value": value_json(value) })
         }).collect::<Vec<_>>(),
+        "effect_row_bindings": frame.generic_bindings().sorted_rows(),
         "type_bindings": frame.sorted_type_bindings().iter().map(|(name, ty)| {
             json!({ "name": name, "type": ty.0 })
         }).collect::<Vec<_>>()
@@ -240,32 +241,6 @@ pub(super) fn args_from_snapshot(value: &Value) -> Result<Vec<HirArg>, String> {
                 span: span_from_snapshot(required(arg, "span")?)?,
             }),
             other => Err(format!("unknown machine argument `{other}`")),
-        })
-        .collect()
-}
-
-pub(super) fn stage_snapshot(stage: &HirStage) -> Value {
-    json!({
-        "expr": stage.expr.0,
-        "limits": stage.limits.iter().map(|expr| expr.0).collect::<Vec<_>>(),
-        "span": span_snapshot(stage.span),
-    })
-}
-
-pub(super) fn stages_from_snapshot(value: &Value) -> Result<Vec<HirStage>, String> {
-    value
-        .as_array()
-        .ok_or_else(|| "machine snapshot stages must be an array".to_owned())?
-        .iter()
-        .map(|stage| {
-            Ok(HirStage {
-                expr: HirExprId(required_u32(stage, "expr")?),
-                limits: required_u32_array(stage, "limits")?
-                    .into_iter()
-                    .map(HirExprId)
-                    .collect(),
-                span: span_from_snapshot(required(stage, "span")?)?,
-            })
         })
         .collect()
 }

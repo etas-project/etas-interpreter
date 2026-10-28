@@ -53,6 +53,11 @@ impl StructuralPartition for ValueSnapshot {
                 value.hash(state);
                 return None;
             }
+            Self::CodeIdentity { ty, identity } => {
+                ty.hash(state);
+                identity.hash(state);
+                return None;
+            }
             Self::Json(value) => {
                 crate::value::json::hash(value, state);
                 return None;

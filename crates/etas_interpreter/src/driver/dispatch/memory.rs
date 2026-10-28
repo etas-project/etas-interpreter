@@ -90,12 +90,15 @@ pub(in crate::driver) async fn dispatch(
                 eval.record_memory_result_versions(&memory.request, &result);
                 match eval.memory_result_value(&memory, result) {
                     Ok(value) => {
-                        eval.record_completed_host_boundary(
+                        if let Err(fault) = eval.record_completed_host_boundary(
                             crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                             "memory",
                             key,
                             value.clone(),
-                        );
+                            memory.span,
+                        ) {
+                            return Some(ControlSignal::Fault(Box::new(fault)));
+                        }
                         Some(eval.resume_memory_signal(memory, value))
                     }
                     Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),

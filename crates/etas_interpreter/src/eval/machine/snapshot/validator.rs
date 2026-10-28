@@ -1,7 +1,18 @@
 use std::collections::BTreeSet;
 
+mod access;
+mod call_site;
 mod call_target;
+mod callable_types;
+mod construction;
 mod frame;
+mod program;
+mod reference_presence;
+mod reference_type_presence;
+mod reference_types;
+mod scoped_callable;
+mod stream_reducer;
+mod suspension;
 mod traversal;
 
 #[cfg(test)]
@@ -14,7 +25,7 @@ mod traversal_tests;
 use etas_frontend::CheckedProject;
 use etas_hir::{
     HirArg, HirBlockId, HirEffectArg, HirElseBranch, HirExprId, HirFieldInit, HirItemId,
-    HirMatchArm, HirMatchArmBody, HirPatId, HirStage, HirTypeId, ResolveResult, ResolvedActionRef,
+    HirMatchArm, HirMatchArmBody, HirPatId, HirTypeId, ResolveResult, ResolvedActionRef,
     ResolvedPath, ScopeId, SymbolId,
 };
 use etas_types::TypeId;
@@ -29,8 +40,16 @@ use crate::orchestration::{
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
-    frame_definitions: std::cell::RefCell<std::collections::HashMap<u64, frame::FrameValidation>>,
+    revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
+    frame_definitions:
+        std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, frame::FrameValidation>>>,
+    frame_owners: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, usize>>>,
+    suspension_references: std::rc::Rc<std::cell::RefCell<Vec<(u32, CheckedProject)>>>,
     validated_call_targets: std::cell::RefCell<call_target::ValidatedCallTargets>,
+    reference_presence: std::cell::RefCell<reference_presence::ReferencePresence>,
+    callable_specs: std::cell::OnceCell<etas_types::SpecFacts>,
+    typed_callables: std::cell::RefCell<callable_types::TypedCallables>,
+    reference_type_presence: std::cell::RefCell<std::collections::HashMap<TypeId, bool>>,
     checked: &'a CheckedProject,
     slots: &'a SlotLayoutTable,
     dispatch: &'a IntrinsicDispatchTable,
@@ -47,8 +66,15 @@ impl<'a> SnapshotValidator<'a> {
         limits: &'a etas_host::StorageLimits,
     ) -> Self {
         Self {
+            revisions: None,
             frame_definitions: Default::default(),
+            frame_owners: Default::default(),
+            suspension_references: Default::default(),
             validated_call_targets: Default::default(),
+            reference_presence: Default::default(),
+            callable_specs: Default::default(),
+            typed_callables: Default::default(),
+            reference_type_presence: Default::default(),
             checked,
             slots,
             dispatch,
@@ -57,10 +83,31 @@ impl<'a> SnapshotValidator<'a> {
         }
     }
 
+    pub(crate) fn with_revisions(
+        mut self,
+        revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
+    ) -> Self {
+        self.revisions = revisions;
+        self
+    }
+
+    pub(crate) fn validate_arguments(
+        &self,
+        item: HirItemId,
+        values: &[ValueSnapshot],
+    ) -> Result<(), String> {
+        for value in values {
+            self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
+        }
+        self.validate_argument_references(item, values)?;
+        Ok(())
+    }
+
     pub(crate) fn validate_checkpoint(
         &self,
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<(), String> {
+        checkpoint.model_policy.validate()?;
         for (request, operation) in &checkpoint.storage.operations {
             operation.validate().map_err(|error| error.to_string())?;
             if *request >= checkpoint.trace.next_host_request {
@@ -117,19 +164,70 @@ impl<'a> SnapshotValidator<'a> {
             ));
         }
         self.item(checkpoint.entry_item, "checkpoint entry item")?;
-        for value in &checkpoint.args {
-            self.snapshot_value(&ValueSnapshot::capture(value)?)?;
+        if checkpoint.code_revision.is_some()
+            != self.checked.definition_sources.requires_revision_context()
+        {
+            return Err("checkpoint code revision presence differs from the checked program's revision source".into());
         }
-        let active_scopes = self.handlers(&checkpoint.handlers)?;
+        if let Some(revision) = &checkpoint.code_revision {
+            revision.validate()?;
+        }
+        let arguments = checkpoint
+            .args
+            .iter()
+            .map(ValueSnapshot::capture)
+            .collect::<Result<Vec<_>, _>>()?;
+        self.validate_arguments(checkpoint.entry_item, &arguments)?;
         let mut boundary_scopes = BTreeSet::new();
         self.validate_machine_with_handler_scopes(&checkpoint.machine, &mut boundary_scopes)?;
+        if checkpoint.machine.total_call_frames()?
+            > checkpoint
+                .execution_progress
+                .original_limits
+                .max_call_depth
+                .get()
+        {
+            return Err(
+                "checkpoint active and suspended calls exceed its original call-depth limit".into(),
+            );
+        }
+        let active_scopes = self.validate_program_handlers(checkpoint)?;
         let expected_boundaries = active_scopes.iter().rev().copied().collect::<Vec<_>>();
-        let boundary_unwind_order = self.handler_scope_unwind_order(&checkpoint.machine);
+        let mut boundary_unwind_order = Vec::new();
+        let mut retries = Vec::new();
+        Self::frame_unwind_order(
+            &checkpoint.machine.frames,
+            &mut boundary_unwind_order,
+            &mut retries,
+        );
         if boundary_unwind_order != expected_boundaries {
             return Err(format!(
                 "checkpoint handler scope topology mismatch: expected unwind order {:?}, found {:?}",
                 expected_boundaries, boundary_unwind_order
             ));
+        }
+        if retries
+            != checkpoint
+                .retry_state
+                .attempts
+                .iter()
+                .rev()
+                .cloned()
+                .collect::<Vec<_>>()
+        {
+            return Err("checkpoint retry scope topology mismatch".into());
+        }
+        let mut retry_ids = BTreeSet::new();
+        for retry in checkpoint.retry_state.attempts.iter().chain(
+            checkpoint
+                .machine
+                .suspended_programs
+                .iter()
+                .flat_map(|node| &node.retries.attempts),
+        ) {
+            if retry.id.0 == u32::MAX || !retry_ids.insert(retry.id.0) {
+                return Err("checkpoint retry scope identity is exhausted or duplicated".into());
+            }
         }
         let mut completed_occurrences = BTreeSet::new();
         for completed in &checkpoint.completed_host_boundaries.completed {
@@ -170,14 +268,35 @@ impl<'a> SnapshotValidator<'a> {
         self.validate_machine_with_handler_scopes(snapshot, &mut boundary_scopes)
     }
 
+    pub(crate) fn validate_callable_target(
+        &self,
+        target: &CallTargetSnapshot,
+    ) -> Result<(), String> {
+        self.call_target(target, "checkpoint native callable")
+    }
+
     fn validate_machine_with_handler_scopes(
         &self,
         snapshot: &MachineSnapshot,
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
-        for (index, frame) in snapshot.frames.iter().enumerate() {
+        self.suspension_references.borrow_mut().clear();
+        self.validate_program_frames(snapshot, boundary_scopes)?;
+        self.validate_suspensions(snapshot, boundary_scopes)
+    }
+
+    fn validate_local_frames(
+        &self,
+        frames: &[MachineFrameSnapshot],
+        boundary_scopes: &mut BTreeSet<HandlerScopeId>,
+    ) -> Result<(), String> {
+        for (index, frame) in frames.iter().enumerate() {
             let context = format!("machine frame {index}");
             match frame {
+                MachineFrameSnapshot::ProgramReturn(frame) => {
+                    self.invocation_site(&frame.call_site, frame.span, &context)?;
+                    self.continuation(&frame.outer, &context, boundary_scopes)?;
+                }
                 MachineFrameSnapshot::Block { continuation }
                 | MachineFrameSnapshot::Expr { continuation }
                 | MachineFrameSnapshot::Call { continuation, .. }
@@ -257,6 +376,9 @@ impl<'a> SnapshotValidator<'a> {
         let mut ordered_ids = Vec::with_capacity(snapshot.handlers.len());
         let mut previous = None;
         for (index, handler) in snapshot.handlers.iter().enumerate() {
+            if handler.id.0 == u32::MAX {
+                return Err("checkpoint handler scope identity space is exhausted".into());
+            }
             if !ids.insert(handler.id) {
                 return Err(format!(
                     "active handler scope {} is duplicated",
@@ -278,46 +400,56 @@ impl<'a> SnapshotValidator<'a> {
         Ok(ordered_ids)
     }
 
+    #[cfg(test)]
     fn handler_scope_unwind_order(&self, snapshot: &MachineSnapshot) -> Vec<HandlerScopeId> {
         let mut scopes = Vec::new();
-        for frame in snapshot.frames.iter().rev() {
-            match frame {
-                MachineFrameSnapshot::Block { continuation }
-                | MachineFrameSnapshot::Expr { continuation }
-                | MachineFrameSnapshot::Call { continuation, .. }
-                | MachineFrameSnapshot::Continuation { continuation }
-                | MachineFrameSnapshot::Handler { continuation }
-                | MachineFrameSnapshot::Retry { continuation } => {
-                    Self::continuation_scope_unwind_order(continuation, &mut scopes);
-                }
-                MachineFrameSnapshot::ModelLoop(frame) => {
-                    Self::continuation_scope_unwind_order(&frame.pending.continuation, &mut scopes);
-                    Self::continuation_scope_unwind_order(&frame.outer_continuation, &mut scopes);
-                }
-                MachineFrameSnapshot::SourceToolReturn(frame) => {
-                    Self::continuation_scope_unwind_order(
-                        &frame.model_loop.pending.continuation,
-                        &mut scopes,
-                    );
-                    Self::continuation_scope_unwind_order(
-                        &frame.model_loop.outer_continuation,
-                        &mut scopes,
-                    );
-                }
-            }
-        }
+        Self::frame_unwind_order(&snapshot.frames, &mut scopes, &mut Vec::new());
         scopes
     }
 
+    fn frame_unwind_order(
+        frames: &[MachineFrameSnapshot],
+        scopes: &mut Vec<HandlerScopeId>,
+        retries: &mut Vec<crate::orchestration::RetryAttemptRecord>,
+    ) {
+        for frame in frames.iter().rev() {
+            for root in frame.continuation_roots().into_iter().flatten() {
+                Self::continuation_unwind_order(root, scopes, retries);
+            }
+        }
+    }
+
     fn handler_arm(&self, arm: &ActiveHandlerArmRecord, context: &str) -> Result<(), String> {
+        let Some(expected) = self.checked.hir.handler_arms.get(arm.arm) else {
+            return Err(format!(
+                "{context} references a missing checked handler arm"
+            ));
+        };
+        let Some(fact) = self.checked.types.handler_actions.get(&arm.arm) else {
+            return Err(format!(
+                "{context} is missing checked handler selector facts"
+            ));
+        };
+        if arm.body != expected.body
+            || arm.scope != expected.scope
+            || arm.patterns != expected.patterns
+            || arm.action_symbol != Some(fact.action_symbol)
+            || arm.action != expected.action.action
+            || arm.span != expected.span
+            || arm.effect_segments
+                != expected
+                    .action
+                    .effect
+                    .path
+                    .segments
+                    .iter()
+                    .map(|segment| segment.name.clone())
+                    .collect::<Vec<_>>()
+        {
+            return Err(format!("{context} does not match its checked handler arm"));
+        }
         if let Some(symbol) = arm.action_symbol {
             self.symbol(symbol, &format!("{context} action symbol"))?;
-        }
-        for ty in &arm.type_args {
-            self.hir_type(*ty, &format!("{context} type argument"))?;
-        }
-        for ty in &arm.effect_type_args {
-            self.type_id(*ty, &format!("{context} checked type argument"))?;
         }
         for pat in &arm.patterns {
             self.pat(*pat, &format!("{context} pattern"))?;
@@ -333,6 +465,15 @@ impl<'a> SnapshotValidator<'a> {
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
         match continuation {
+            ContinuationSnapshot::ProgramResume { id } => {
+                self.suspension_references
+                    .borrow_mut()
+                    .push((*id, self.checked.clone()));
+                Ok(())
+            }
+            ContinuationSnapshot::StreamReadReduction { .. } => {
+                self.stream_read_reduction(continuation, context)
+            }
             ContinuationSnapshot::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -395,12 +536,20 @@ impl<'a> SnapshotValidator<'a> {
                 self.expr(*expr, context)?;
                 self.frame(frame, context)
             }
-            ContinuationSnapshot::CalleeEval { args, frame, .. } => {
-                self.args(args, context)?;
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::PipelineInput { stages, frame, .. } => {
-                self.stages(stages, context)?;
+            ContinuationSnapshot::CalleeEval {
+                call,
+                args,
+                span,
+                frame,
+            } => {
+                if !matches!(
+                    self.call_site(*call, args, *span, context)?,
+                    etas_hir::HirExpr::Call { .. }
+                ) {
+                    return Err(format!(
+                        "{context}: callee evaluation requires a checked call expression"
+                    ));
+                }
                 self.frame(frame, context)
             }
             ContinuationSnapshot::Unary { .. }
@@ -411,129 +560,22 @@ impl<'a> SnapshotValidator<'a> {
             | ContinuationSnapshot::BlockValue => Ok(()),
             ContinuationSnapshot::BinaryRight { left, .. }
             | ContinuationSnapshot::ListConsTail { head: left, .. }
-            | ContinuationSnapshot::RangeEnd { start: left, .. }
-            | ContinuationSnapshot::PipelineTarget { input: left, .. } => self.snapshot_value(left),
-            ContinuationSnapshot::AggregateElement {
-                expr,
-                next_index,
-                values,
-                frame,
-                ..
-            } => {
-                let elems = match self.checked.hir.exprs.get(*expr) {
-                    Some(
-                        etas_hir::HirExpr::Tuple { elems, .. }
-                        | etas_hir::HirExpr::Array { elems, .. }
-                        | etas_hir::HirExpr::List { elems, .. }
-                        | etas_hir::HirExpr::Set { elems, .. },
-                    ) => elems,
-                    _ => return Err(format!("{context}: missing checked aggregate construction")),
-                };
-                self.index_at_most(*next_index, elems.len(), context)?;
-                if next_index.checked_sub(1) != Some(values.len()) {
-                    return Err(format!(
-                        "{context}: inconsistent evaluated aggregate elements"
-                    ));
-                }
-                self.snapshot_values(values)?;
-                self.frame(frame, context)
+            | ContinuationSnapshot::RangeEnd { start: left, .. } => self.snapshot_value(left),
+            ContinuationSnapshot::AggregateElement { .. }
+            | ContinuationSnapshot::RecordField { .. }
+            | ContinuationSnapshot::MapKey { .. }
+            | ContinuationSnapshot::MapValue { .. } => {
+                self.construction_continuation(continuation, context)
             }
-            ContinuationSnapshot::RecordField {
-                expr,
-                nominal_type,
-                variant_symbol,
-                next_index,
-                values,
-                frame,
-            } => {
-                let fields =
-                    self.record_construction(*expr, *nominal_type, *variant_symbol, context)?;
-                if let Some(ty) = nominal_type {
-                    self.type_id(*ty, &format!("{context} nominal record type"))?;
-                }
-                if let Some(symbol) = variant_symbol {
-                    self.named_variant_fields(*symbol, *nominal_type, fields, context)?;
-                }
-                self.fields(fields, context)?;
-                self.index_at_most(*next_index, fields.len(), context)?;
-                let Some(pending) = next_index.checked_sub(1) else {
-                    return Err(format!(
-                        "{context}: record continuation has no pending field"
-                    ));
-                };
-                if !matches!(fields.get(pending), Some(HirFieldInit::Named { .. }))
-                    || values.len() != pending
-                    || values.iter().zip(fields).any(|((actual, _), field)| {
-                        let (HirFieldInit::Named { name, .. }
-                        | HirFieldInit::Shorthand { name, .. }) = field;
-                        actual != name
-                    })
-                {
-                    return Err(format!(
-                        "{context}: record continuation has inconsistent evaluated fields"
-                    ));
-                }
-                for (_, value) in values {
-                    self.snapshot_value(value)?;
-                }
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::MapKey {
-                expr,
-                index,
-                values,
-                frame,
-            }
-            | ContinuationSnapshot::MapValue {
-                expr,
-                index,
-                values,
-                frame,
-                ..
-            } => {
-                let Some(etas_hir::HirExpr::Map { entries, .. }) =
-                    self.checked.hir.exprs.get(*expr)
-                else {
-                    return Err(format!("{context}: missing checked map construction"));
-                };
-                self.index_below(*index, entries.len(), context)?;
-                if values.len() != *index {
-                    return Err(format!("{context}: inconsistent evaluated map entries"));
-                }
-                for (key, value) in values {
-                    self.snapshot_value(key)?;
-                    self.snapshot_value(value)?;
-                }
-                if let ContinuationSnapshot::MapValue { key, .. } = continuation {
-                    self.snapshot_value(key)?;
-                }
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::IndexBase {
-                expr, index, frame, ..
-            } => {
-                self.expr(*expr, context)?;
-                self.expr(*index, context)?;
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::IndexValue { expr, base, .. } => {
-                self.expr(*expr, context)?;
-                self.snapshot_value(base)
-            }
-            ContinuationSnapshot::SliceBase { eval, frame }
-            | ContinuationSnapshot::SliceStart { eval, frame, .. } => {
-                self.slice_eval(eval, context)?;
-                if let ContinuationSnapshot::SliceStart { base, .. } = continuation {
-                    self.snapshot_value(base)?;
-                }
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::SliceEnd {
-                eval, base, start, ..
-            } => {
-                self.slice_eval(eval, context)?;
-                self.snapshot_value(base)?;
-                self.snapshot_value(start)
+            ContinuationSnapshot::IndexBase { .. }
+            | ContinuationSnapshot::IndexValue { .. }
+            | ContinuationSnapshot::SliceBase { .. }
+            | ContinuationSnapshot::SliceStart { .. }
+            | ContinuationSnapshot::SliceEnd { .. }
+            | ContinuationSnapshot::PipelineInput { .. }
+            | ContinuationSnapshot::PipelineTarget { .. }
+            | ContinuationSnapshot::PipelineStageTarget { .. } => {
+                self.access_continuation(continuation, context)
             }
             ContinuationSnapshot::MethodReceiver {
                 expr,
@@ -597,33 +639,8 @@ impl<'a> SnapshotValidator<'a> {
                 self.args(args, context)?;
                 self.frame(frame, context)
             }
-            ContinuationSnapshot::PipelineStageTarget {
-                stages,
-                next_stage_index,
-                targets,
-                frame,
-                ..
-            } => {
-                self.stages(stages, context)?;
-                self.index_at_most(*next_stage_index, stages.len(), context)?;
-                for target in targets {
-                    self.call_target(target, context)?;
-                }
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::CallArgs {
-                target,
-                args,
-                next_arg_index,
-                evaluated_args,
-                frame,
-                ..
-            } => {
-                self.call_target(target, context)?;
-                self.args(args, context)?;
-                self.index_at_most(*next_arg_index, args.len(), context)?;
-                self.snapshot_values(evaluated_args)?;
-                self.frame(frame, context)
+            ContinuationSnapshot::CallArgs { .. } => {
+                self.pending_call_arguments(continuation, context)
             }
             ContinuationSnapshot::VariantArgs {
                 variant_symbol,
@@ -776,12 +793,11 @@ impl<'a> SnapshotValidator<'a> {
                 self.expr(*handler, context)?;
                 self.frame(frame, context)
             }
-            ContinuationSnapshot::ComposedCall { remaining, .. } => {
-                for target in remaining {
-                    self.call_target(target, context)?;
-                }
-                Ok(())
-            }
+            ContinuationSnapshot::ComposedCall {
+                remaining,
+                site,
+                span,
+            } => self.composed_continuation(remaining, site.as_ref(), *span, context),
             ContinuationSnapshot::RestoreModelPolicy { .. }
             | ContinuationSnapshot::CallBoundary { .. }
             | ContinuationSnapshot::HandlerDispatch { .. }
@@ -854,12 +870,32 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 Ok(())
             }
-            ContinuationSnapshot::AgentPromptBody { item, .. } => self.item(*item, context),
+            ContinuationSnapshot::AgentInference { expr, .. } => {
+                self.expr(*expr, context)?;
+                if !matches!(
+                    self.checked.hir.exprs.get(*expr),
+                    Some(etas_hir::HirExpr::Infer { .. })
+                ) || !self.checked.types.agent_inferences.contains_key(expr)
+                {
+                    return Err(format!(
+                        "{context} inference continuation requires checked inference facts"
+                    ));
+                }
+                Ok(())
+            }
             ContinuationSnapshot::Chain { .. } => Ok(()),
         }
     }
 
     fn snapshot_value(&self, root: &ValueSnapshot) -> Result<(), String> {
+        self.snapshot_value_in(root, call_target::ReferenceScope::NoCheckedSlot)
+    }
+
+    fn snapshot_value_in(
+        &self,
+        root: &ValueSnapshot,
+        scope: call_target::ReferenceScope,
+    ) -> Result<(), String> {
         // Iterator frames track depth, not the width of a collection.
         for value in root.walk() {
             match value {
@@ -869,6 +905,13 @@ impl<'a> SnapshotValidator<'a> {
                 ValueSnapshot::MemoryWriteIntent(value) => {
                     value.validate(self.checked, self.limits)?
                 }
+                ValueSnapshot::Schema(ty) => {
+                    self.type_id(*ty, "checkpoint schema descriptor type")?
+                }
+                ValueSnapshot::CodeIdentity { ty, identity } => {
+                    self.type_id(*ty, "checkpoint compiler identity type")?;
+                    identity.restore(&self.checked.types.known_std_types.code, *ty)?;
+                }
                 ValueSnapshot::Nominal { ty, .. } => {
                     self.type_id(*ty, "checkpoint nominal value type")?
                 }
@@ -876,7 +919,7 @@ impl<'a> SnapshotValidator<'a> {
                     crate::value::conversation::validate_snapshot(conversation, self.limits)?
                 }
                 ValueSnapshot::Callable(target) => {
-                    self.call_target(target, "checkpoint callable value")?
+                    self.call_target_in(target, "checkpoint callable value", scope)?
                 }
                 ValueSnapshot::Handler {
                     fact_expr,
@@ -988,13 +1031,6 @@ impl<'a> SnapshotValidator<'a> {
         Ok(())
     }
 
-    fn slice_eval(&self, value: &SliceExprEvalSnapshot, context: &str) -> Result<(), String> {
-        self.expr(value.expr, context)?;
-        self.expr(value.base, context)?;
-        self.expr(value.start, context)?;
-        self.expr(value.end, context)
-    }
-
     fn args(&self, args: &[HirArg], context: &str) -> Result<(), String> {
         for arg in args {
             match arg {
@@ -1014,14 +1050,6 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 HirFieldInit::Named { value, .. } => self.expr(*value, context)?,
             }
-        }
-        Ok(())
-    }
-
-    fn stages(&self, stages: &[HirStage], context: &str) -> Result<(), String> {
-        for stage in stages {
-            self.expr(stage.expr, context)?;
-            self.exprs(&stage.limits, context)?;
         }
         Ok(())
     }
@@ -1087,13 +1115,6 @@ impl<'a> SnapshotValidator<'a> {
                 ))
             }
         }
-    }
-
-    fn exprs(&self, values: &[HirExprId], context: &str) -> Result<(), String> {
-        for value in values {
-            self.expr(*value, context)?;
-        }
-        Ok(())
     }
 
     fn hir_types(&self, values: &[HirTypeId], context: &str) -> Result<(), String> {
@@ -1215,7 +1236,10 @@ impl<'a> SnapshotValidator<'a> {
         let expected_variant = match record.path.as_ref().map(|path| &path.resolution) {
             Some(etas_hir::ResolveResult::Resolved(symbol)) => {
                 let symbol = self.checked.symbols.get(*symbol).ok_or_else(error)?;
-                matches!(symbol.def, etas_hir::SymbolDef::EnumVariant { .. }).then_some(symbol.id)
+                self.checked
+                    .types
+                    .enum_constructor(&self.checked.type_store, symbol)
+                    .map(|_| symbol.id)
             }
             None => None,
             _ => return Err(error()),
@@ -1249,33 +1273,20 @@ impl<'a> SnapshotValidator<'a> {
     ) -> Result<(), String> {
         let error =
             || format!("{context}: named enum continuation does not match its checked constructor");
-        let Some(etas_hir::SymbolDef::EnumVariant {
-            enum_item,
-            variant_index,
-        }) = self.checked.symbols.get(symbol).map(|symbol| &symbol.def)
-        else {
-            return Err(error());
-        };
-        let Some(etas_hir::HirItem::Enum(decl)) = self.checked.hir.items.get(*enum_item) else {
-            return Err(error());
-        };
-        let names = decl
-            .variants
-            .get(*variant_index as usize)
-            .and_then(|variant| variant.field_names.as_ref())
+        let symbol = self.checked.symbols.get(symbol).ok_or_else(error)?;
+        let (owner, _, variant) = self
+            .checked
+            .types
+            .enum_constructor(&self.checked.type_store, symbol)
             .ok_or_else(error)?;
-        let Some(etas_types::SymbolTypeFact::Type { constructor }) =
-            self.checked.types.symbol_types.get(&decl.symbol)
-        else {
-            return Err(error());
-        };
+        let names = variant.field_names.as_ref().ok_or_else(error)?;
         let ty = ty.ok_or_else(error)?;
         let base = match self.checked.type_store.get(ty) {
             Some(etas_types::Type::Applied { constructor, .. }) => TypeId(constructor.0),
             Some(etas_types::Type::Enum(_)) => ty,
             _ => return Err(error()),
         };
-        if base != TypeId(constructor.0) || fields.len() != names.len() {
+        if base != owner || fields.len() != names.len() {
             return Err(error());
         }
         let actual = fields
@@ -1345,6 +1356,7 @@ flow main() -> unit {
 
     fn empty_locals() -> LocalsSnapshot {
         LocalsSnapshot {
+            effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
             type_bindings: Vec::new(),
@@ -1367,6 +1379,8 @@ flow main() -> unit {
             &etas_host::StorageLimits::default(),
         )
         .validate_machine(&MachineSnapshot {
+            program_owners: Default::default(),
+            suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation { continuation }],
         })
     }
@@ -1406,6 +1420,8 @@ flow main() -> unit {
             .unwrap();
             let frame = super::super::frame::capture_frame(&frame).unwrap();
             let machine = MachineSnapshot {
+                program_owners: Default::default(),
+                suspended_programs: Vec::new(),
                 frames: (0..3)
                     .map(|_| MachineFrameSnapshot::Continuation {
                         continuation: ContinuationSnapshot::ContinueBlock {
@@ -1519,6 +1535,7 @@ flow main() -> unit {
             ),
             (
                 ContinuationSnapshot::CallArgs {
+                    call: expr,
                     target: CallTargetSnapshot::ToolItem(HirItemId(u32::MAX)),
                     args: Vec::new().into(),
                     next_arg_index: 0,
@@ -1546,8 +1563,13 @@ flow main() -> unit {
 
     #[test]
     fn rejects_invalid_scope_in_nested_handler_snapshot() {
-        let checked = checked_project();
-        let block = checked.hir.blocks.iter().next().expect("block").0;
+        let checked = crate::testing::project::checked_project(
+            r#"module app.main;
+effect Gate { action request() -> unit; }
+flow main() -> unit { perform Gate.request() with { Gate.request() => resume; }; }
+"#,
+        );
+        let (arm, handler) = checked.hir.handler_arms.iter().next().expect("handler arm");
         let slots = SlotLayoutTable::for_project(&checked);
         let dispatch = crate::plan::IntrinsicDispatchTable::for_project(&checked)
             .expect("test intrinsic dispatch");
@@ -1557,19 +1579,18 @@ flow main() -> unit {
         let error = validator
             .handler_arm(
                 &ActiveHandlerArmRecord {
+                    arm,
                     effect_segments: vec!["Gate".to_owned()],
                     action: "request".to_owned(),
-                    action_symbol: None,
-                    type_args: Vec::new(),
-                    effect_type_args: Vec::new(),
-                    patterns: Vec::new(),
-                    body: block,
+                    action_symbol: Some(checked.types.handler_actions[&arm].action_symbol),
+                    patterns: handler.patterns.clone(),
+                    body: handler.body,
                     scope: ScopeId(u32::MAX),
-                    span: span(),
+                    span: handler.span,
                 },
                 "test handler",
             )
             .expect_err("invalid handler scope must fail closed");
-        assert!(error.contains("missing HIR scope"));
+        assert!(error.contains("does not match its checked handler arm"));
     }
 }

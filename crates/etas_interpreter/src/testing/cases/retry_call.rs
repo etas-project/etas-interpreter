@@ -67,7 +67,7 @@ import std.agent.prompt.Prompt;
 import std.runtime.limits.Attempts;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main() -> string {
@@ -149,7 +149,7 @@ import std.agent.prompt.Prompt;
 import std.runtime.limits.Attempts;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow helper() -> string {
@@ -223,7 +223,7 @@ type Review = {
 };
 
 agent Writer(input: string) -> Review {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow helper() -> Review ![Error<IOError>] {
@@ -579,7 +579,7 @@ import std.agent.prompt.Prompt;
 import std.runtime.limits.Attempts;
 
 agent Writer(input: string) -> string {
-  return Prompt.new().user(Public(input));
+  return perform infer(Prompt.new().user(Public(input)));
 }
 
 flow main() -> string {

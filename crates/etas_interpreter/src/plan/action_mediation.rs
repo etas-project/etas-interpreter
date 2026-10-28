@@ -47,12 +47,15 @@ impl Pass<PlanContext<'_>> for ComputeEntryActionMediationPass {
         let Some(entry) = context.entry.map(|entry| entry.item) else {
             return PassResult::unchanged();
         };
-        let Some(summary) = context.project.effects.item_effects.get(&entry) else {
-            context.push_missing_fact(
-                item_span(context.project, entry),
-                "checked project is missing effect summary for action mediation",
-            );
+        let Some(root) = context.requested_root else {
             return PassResult::unchanged();
+        };
+        let summary = match context.project.checked_callable_effects(root) {
+            Ok(summary) => summary,
+            Err(error) => {
+                context.push_missing_fact(item_span(context.project, entry), &error.to_string());
+                return PassResult::unchanged();
+            }
         };
         let mut table = ActionMediationTable::default();
         table.include_summary(summary);

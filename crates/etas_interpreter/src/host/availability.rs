@@ -20,6 +20,7 @@ pub struct HostServiceAvailability {
     pub time: bool,
     pub secret_access: bool,
     pub console: bool,
+    pub compiler: bool,
 }
 
 impl HostServiceAvailability {
@@ -61,6 +62,7 @@ impl HostServiceAvailability {
             HostRequirementKind::FileIO => self.filesystem = true,
             HostRequirementKind::Command => self.command = true,
             HostRequirementKind::SecretAccess => self.secret_access = true,
+            HostRequirementKind::Compiler => self.compiler = true,
         }
     }
 
@@ -82,6 +84,7 @@ impl HostServiceAvailability {
             HostRequirementKind::FileIO => self.filesystem,
             HostRequirementKind::Command => self.command,
             HostRequirementKind::SecretAccess => self.secret_access,
+            HostRequirementKind::Compiler => self.compiler,
         }
     }
 }
@@ -89,6 +92,23 @@ impl HostServiceAvailability {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn compiler_readiness_is_independent_of_model_network_filesystem_and_authority() {
+        for kind in [
+            HostRequirementKind::HostAuthority,
+            HostRequirementKind::Network,
+            HostRequirementKind::FileIO,
+            HostRequirementKind::Agentic,
+        ] {
+            assert!(
+                !HostServiceAvailability::with_host(kind).supports(HostRequirementKind::Compiler)
+            );
+        }
+        let compiler = HostServiceAvailability::with_host(HostRequirementKind::Compiler);
+        assert!(compiler.compiler);
+        assert!(!compiler.model && !compiler.network && !compiler.filesystem && !compiler.tool);
+    }
 
     #[test]
     fn substrate_availability_is_granular() {
