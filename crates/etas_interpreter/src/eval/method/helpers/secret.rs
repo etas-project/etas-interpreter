@@ -21,6 +21,10 @@ enum Children<'a> {
         entries: slice::Iter<'a, (Value, Value)>,
         value: Option<&'a Value>,
     },
+    PriorityQueue {
+        entries: crate::value::priority_queue::PriorityQueueIter<'a>,
+        value: Option<&'a Value>,
+    },
     Messages(slice::Iter<'a, MessageValue>),
 }
 
@@ -38,12 +42,14 @@ impl<'a> Children<'a> {
             Value::Set(values) | Value::OrderedSet(values) => Self::Values(values.borrow().iter()),
             Value::Deque(values) | Value::Queue(values) => Self::Deque(values.borrow().iter()),
             Value::List(values) => Self::List(values.iter()),
-            Value::Map(entries) | Value::OrderedMap(entries) | Value::PriorityQueue(entries) => {
-                Self::Pairs {
-                    entries: entries.borrow().iter(),
-                    value: None,
-                }
-            }
+            Value::PriorityQueue(entries) => Self::PriorityQueue {
+                entries: entries.iter(),
+                value: None,
+            },
+            Value::Map(entries) | Value::OrderedMap(entries) => Self::Pairs {
+                entries: entries.borrow().iter(),
+                value: None,
+            },
             Value::Record(fields) => Self::Fields(fields.borrow().iter()),
             Value::Range(range) => {
                 Self::Two([range.start.as_ref(), range.end.as_ref()].into_iter())
@@ -63,6 +69,7 @@ impl<'a> Children<'a> {
             Self::List(values) => values.len() == 0,
             Self::Fields(values) => values.len() == 0,
             Self::Pairs { entries, value } => entries.len() == 0 && value.is_none(),
+            Self::PriorityQueue { entries, value } => entries.len() == 0 && value.is_none(),
             Self::Messages(values) => values.len() == 0,
         }
     }
@@ -81,6 +88,14 @@ impl<'a> Children<'a> {
                 .flatten(),
             Self::Fields(values) => values.next().map(|(_, value)| value),
             Self::Pairs { entries, value } => {
+                if value.is_some() {
+                    return value.take();
+                }
+                let (key, next) = entries.next()?;
+                *value = Some(next);
+                Some(key)
+            }
+            Self::PriorityQueue { entries, value } => {
                 if value.is_some() {
                     return value.take();
                 }

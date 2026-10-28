@@ -11,6 +11,7 @@ enum Children {
     },
     Deque(vec_deque::IntoIter<Value>),
     List(ListValue),
+    PriorityQueue(crate::value::priority_queue::PriorityQueueIntoIter),
     Messages(std::vec::IntoIter<crate::value::MessageValue>),
     Range {
         start: Option<Box<Value>>,
@@ -30,6 +31,7 @@ impl Children {
             Self::Entries { entries, value } => entries.len() == 0 && value.is_none(),
             Self::Deque(values) => values.len() == 0,
             Self::List(values) => values.is_empty(),
+            Self::PriorityQueue(_) => false,
             Self::Messages(values) => values.len() == 0,
             Self::Range { start, end } => start.is_none() && end.is_none(),
         }
@@ -53,6 +55,7 @@ impl Iterator for Children {
             }
             Self::Deque(values) => values.next(),
             Self::List(values) => values.pop_unique_front_for_drop(),
+            Self::PriorityQueue(values) => values.next(),
             Self::Messages(values) => values.next().map(Value::Message),
             Self::Range { start, end } => start.take().or_else(|| end.take()).map(|value| *value),
         }
@@ -92,7 +95,10 @@ pub(crate) fn release_value(mut current: Value) {
             Value::Record(values) => values
                 .into_unique_values()
                 .map(|values| Children::Record(values.into_iter())),
-            Value::Map(values) | Value::OrderedMap(values) | Value::PriorityQueue(values) => {
+            Value::PriorityQueue(values) => {
+                values.into_unique_values().map(Children::PriorityQueue)
+            }
+            Value::Map(values) | Value::OrderedMap(values) => {
                 values.into_unique_values().map(|values| Children::Entries {
                     entries: values.into_iter(),
                     value: None,

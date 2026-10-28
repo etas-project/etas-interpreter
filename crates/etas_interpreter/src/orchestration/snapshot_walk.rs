@@ -81,7 +81,16 @@ fn children(value: &ValueSnapshot) -> Children<'_> {
         | V::Stack(values)
         | V::OrderedSet(values)
         | V::Variant { fields: values, .. } => return Children::Values(values.iter()),
-        V::Map(values) | V::OrderedMap(values) | V::PriorityQueue(values) => {
+        V::PriorityQueue {
+            entries,
+            comparator,
+        } => {
+            return Children::Pairs {
+                entries: entries.iter(),
+                value: comparator.as_deref(),
+            };
+        }
+        V::Map(values) | V::OrderedMap(values) => {
             return Children::Pairs {
                 entries: values.iter(),
                 value: None,

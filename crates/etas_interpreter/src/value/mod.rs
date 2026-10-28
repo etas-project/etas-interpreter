@@ -25,6 +25,8 @@ mod json_tests;
 pub(crate) mod membership;
 mod numeric;
 mod primitive;
+pub(crate) mod priority_queue;
+pub use priority_queue::PriorityQueueValue;
 mod prompt;
 pub use prompt::PromptValue;
 mod shared;

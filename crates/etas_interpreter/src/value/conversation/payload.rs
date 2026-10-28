@@ -74,7 +74,17 @@ impl Payload for InterpValue {
                 }
                 Ok(())
             }
-            Map(values) | OrderedMap(values) | PriorityQueue(values) => {
+            PriorityQueue(values) => {
+                if values.comparator().is_some() {
+                    return Err("callable priority comparison is not a storage payload".into());
+                }
+                for (key, value) in values.iter() {
+                    key.measure(budget, depth + 1)?;
+                    value.measure(budget, depth + 1)?;
+                }
+                Ok(())
+            }
+            Map(values) | OrderedMap(values) => {
                 for (key, value) in values.borrow().iter() {
                     key.measure(budget, depth + 1)?;
                     value.measure(budget, depth + 1)?;
@@ -134,7 +144,20 @@ impl Payload for ValueSnapshot {
                 }
                 Ok(())
             }
-            Map(values) | OrderedMap(values) | PriorityQueue(values) => {
+            PriorityQueue {
+                entries: values,
+                comparator,
+            } => {
+                if comparator.is_some() {
+                    return Err("callable priority comparison is not a storage payload".into());
+                }
+                for (key, value) in values {
+                    key.measure(budget, depth + 1)?;
+                    value.measure(budget, depth + 1)?;
+                }
+                Ok(())
+            }
+            Map(values) | OrderedMap(values) => {
                 for (key, value) in values {
                     key.measure(budget, depth + 1)?;
                     value.measure(budget, depth + 1)?;

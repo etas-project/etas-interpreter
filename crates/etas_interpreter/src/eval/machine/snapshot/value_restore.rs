@@ -30,7 +30,7 @@ enum SequenceKind {
 enum PairKind {
     Map,
     OrderedMap,
-    PriorityQueue,
+    PriorityQueue(Option<crate::control::CallTarget>),
 }
 enum UnaryState {
     Child(ValueSnapshot),
@@ -128,7 +128,18 @@ fn start(value: ValueSnapshot, context: &mut RestoreContext) -> Result<Started, 
         ValueSnapshot::Variant { name, fields } => sequence(SequenceKind::Variant(name), fields),
         ValueSnapshot::Map(v) => pairs(PairKind::Map, v),
         ValueSnapshot::OrderedMap(v) => pairs(PairKind::OrderedMap, v),
-        ValueSnapshot::PriorityQueue(v) => pairs(PairKind::PriorityQueue, v),
+        ValueSnapshot::PriorityQueue {
+            entries,
+            comparator,
+        } => {
+            let comparator = comparator
+                .map(|value| match value.into_value() {
+                    ValueSnapshot::Callable(target) => context.restore_call_target(target),
+                    _ => Err("checkpoint priority comparison is not a callable".into()),
+                })
+                .transpose()?;
+            pairs(PairKind::PriorityQueue(comparator), entries)
+        }
         ValueSnapshot::Record(v) => Frame::Record {
             values: Vec::with_capacity(v.len()),
             remaining: v.into_iter(),
@@ -288,11 +299,12 @@ impl Frame {
                 if awaiting_value || pending_value.is_some() {
                     return Err("restored map has an unmatched key or value".into());
                 }
-                let values = MapValue::new(values);
                 match kind {
-                    PairKind::Map => InterpValue::Map(values),
-                    PairKind::OrderedMap => InterpValue::OrderedMap(values),
-                    PairKind::PriorityQueue => InterpValue::PriorityQueue(values),
+                    PairKind::Map => InterpValue::Map(MapValue::new(values)),
+                    PairKind::OrderedMap => InterpValue::OrderedMap(MapValue::new(values)),
+                    PairKind::PriorityQueue(comparator) => InterpValue::PriorityQueue(
+                        PriorityQueueValue::from_entries(values, comparator),
+                    ),
                 }
             }
             Self::Record { name, values, .. } => {

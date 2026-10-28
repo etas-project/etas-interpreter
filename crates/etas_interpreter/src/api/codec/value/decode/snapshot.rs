@@ -38,12 +38,29 @@ impl DecodedValue for ValueSnapshot {
             },
         })
     }
-    fn pairs(kind: Pairs, values: Vec<(Self, Self)>) -> Self {
-        match kind {
+    fn pairs(
+        kind: Pairs,
+        values: Vec<(Self, Self)>,
+        comparator: Option<Self>,
+    ) -> Result<Self, InterpreterCodecError> {
+        Ok(match kind {
             Pairs::Map => Self::Map(values.into()),
             Pairs::OrderedMap => Self::OrderedMap(values.into()),
-            Pairs::PriorityQueue => Self::PriorityQueue(values.into()),
-        }
+            Pairs::PriorityQueue => {
+                if comparator
+                    .as_ref()
+                    .is_some_and(|value| !matches!(value, Self::Callable(_)))
+                {
+                    return Err(InterpreterCodecError::new(
+                        "priority comparison must be a callable",
+                    ));
+                }
+                Self::PriorityQueue {
+                    entries: values.into(),
+                    comparator: comparator.map(crate::orchestration::SnapshotBox::new),
+                }
+            }
+        })
     }
     fn record(values: Vec<(String, Self)>) -> Self {
         Self::Record(values.into())

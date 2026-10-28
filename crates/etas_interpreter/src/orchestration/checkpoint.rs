@@ -367,7 +367,10 @@ pub(crate) enum ValueSnapshot {
     Deque(SnapshotChildren<ValueSnapshot>),
     Queue(SnapshotChildren<ValueSnapshot>),
     Stack(SnapshotChildren<ValueSnapshot>),
-    PriorityQueue(SnapshotChildren<(ValueSnapshot, ValueSnapshot)>),
+    PriorityQueue {
+        entries: SnapshotChildren<(ValueSnapshot, ValueSnapshot)>,
+        comparator: Option<SnapshotBox>,
+    },
     OrderedMap(SnapshotChildren<(ValueSnapshot, ValueSnapshot)>),
     OrderedSet(SnapshotChildren<ValueSnapshot>),
     Range {

@@ -454,9 +454,8 @@ impl<'a> EvalContext<'a> {
                 self.eval_conversation_type_method_values(expr, method, args, span)
             }
             StaticMethodKind::Range => self.eval_range_type_method_values(method, args, span),
-            StaticMethodKind::AdvancedCollection(collection) => {
-                self.eval_advanced_collection_type_method(&collection, method, type_args, &[], span)
-            }
+            StaticMethodKind::AdvancedCollection(collection) => self
+                .eval_advanced_collection_type_method(&collection, method, type_args, args, span),
         }
     }
 

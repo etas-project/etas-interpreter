@@ -37,7 +37,34 @@ enum SequenceKind {
 enum PairKind {
     Map,
     OrderedMap,
-    PriorityQueue,
+    PriorityQueue(Option<SnapshotBox>),
+}
+
+enum PairSource {
+    Map(MapValue),
+    PriorityQueue {
+        value: PriorityQueueValue,
+        slot: usize,
+    },
+}
+
+impl PairSource {
+    fn get(&self, index: usize) -> Option<&(InterpValue, InterpValue)> {
+        match self {
+            Self::Map(value) => value.borrow().get(index),
+            Self::PriorityQueue { value, slot } => {
+                (*slot..value.slot_count()).find_map(|slot| value.slot(slot))
+            }
+        }
+    }
+    fn advance(&mut self) {
+        if let Self::PriorityQueue { value, slot } = self {
+            while *slot < value.slot_count() && value.slot(*slot).is_none() {
+                *slot += 1;
+            }
+            *slot += 1;
+        }
+    }
 }
 
 enum SequenceSource {
@@ -67,7 +94,7 @@ enum Frame {
     },
     Pairs {
         kind: PairKind,
-        source: MapValue,
+        source: PairSource,
         key: Option<ValueSnapshot>,
         values: Vec<(ValueSnapshot, ValueSnapshot)>,
     },
@@ -199,7 +226,24 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
         ),
         InterpValue::Map(values) => pairs(PairKind::Map, values),
         InterpValue::OrderedMap(values) => pairs(PairKind::OrderedMap, values),
-        InterpValue::PriorityQueue(values) => pairs(PairKind::PriorityQueue, values),
+        InterpValue::PriorityQueue(values) => Frame::Pairs {
+            kind: PairKind::PriorityQueue(
+                values
+                    .comparator()
+                    .map(|target| {
+                        cache
+                            .call_target(target)
+                            .map(|target| SnapshotBox::new(ValueSnapshot::Callable(target)))
+                    })
+                    .transpose()?,
+            ),
+            source: PairSource::PriorityQueue {
+                value: values.clone(),
+                slot: 0,
+            },
+            key: None,
+            values: Vec::with_capacity(values.len()),
+        },
         InterpValue::Record(values) => Frame::Record {
             source: values.clone(),
             values: Vec::with_capacity(values.borrow().len()),
@@ -220,7 +264,7 @@ fn sequence(kind: SequenceKind, source: SequenceSource, count: usize) -> Frame {
 fn pairs(kind: PairKind, source: &MapValue) -> Frame {
     Frame::Pairs {
         kind,
-        source: source.clone(),
+        source: PairSource::Map(source.clone()),
         key: None,
         values: Vec::with_capacity(source.borrow().len()),
     }
@@ -261,7 +305,6 @@ impl Frame {
                 values,
                 ..
             } => source
-                .borrow()
                 .get(values.len())
                 .map(|(k, v)| start(if key.is_some() { v } else { k }))
                 .transpose(),
@@ -295,9 +338,15 @@ impl Frame {
                     }
                 }
             }
-            Self::Pairs { key, values, .. } => {
+            Self::Pairs {
+                key,
+                values,
+                source,
+                ..
+            } => {
                 if let Some(key) = key.take() {
                     values.push((key, value));
+                    source.advance();
                 } else {
                     *key = Some(value);
                 }
@@ -350,7 +399,10 @@ impl Frame {
                 match kind {
                     PairKind::Map => ValueSnapshot::Map(values.into()),
                     PairKind::OrderedMap => ValueSnapshot::OrderedMap(values.into()),
-                    PairKind::PriorityQueue => ValueSnapshot::PriorityQueue(values.into()),
+                    PairKind::PriorityQueue(comparator) => ValueSnapshot::PriorityQueue {
+                        entries: values.into(),
+                        comparator,
+                    },
                 }
             }
             Self::Record { values, .. } => ValueSnapshot::Record(values.into()),

@@ -36,10 +36,11 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
         ),
     ] {
         let wire = codec::value_json(&value);
-        assert_eq!(
-            wire,
-            json!({"kind":kind,"entries":[{key:{"kind":"string","value":"key"},"value":{"kind":"option_some","value":{"kind":"bool","value":true}}}]})
-        );
+        let mut expected = json!({"kind":kind,"entries":[{key:{"kind":"string","value":"key"},"value":{"kind":"option_some","value":{"kind":"bool","value":true}}}]});
+        if kind == "priority_queue" {
+            expected["comparator"] = serde_json::Value::Null;
+        }
+        assert_eq!(wire, expected);
         assert_eq!(codec::value_from_json(&wire).unwrap(), value);
     }
     let value = V::Nominal {

@@ -36,9 +36,8 @@ impl Visited {
             }
             Value::Set(values) | Value::OrderedSet(values) => values.shared_capture_identity(),
             Value::Deque(values) | Value::Queue(values) => values.shared_capture_identity(),
-            Value::Map(values) | Value::OrderedMap(values) | Value::PriorityQueue(values) => {
-                values.shared_capture_identity()
-            }
+            Value::PriorityQueue(values) => values.shared_capture_identity(),
+            Value::Map(values) | Value::OrderedMap(values) => values.shared_capture_identity(),
             Value::Record(values) => values.shared_capture_identity(),
             // The caller checks Secret before reaching this child-only cache.
             Value::Trust { value, .. }

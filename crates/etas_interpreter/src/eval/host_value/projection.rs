@@ -34,13 +34,19 @@ impl HostValueProjection for BorrowedValue<'_> {
             InterpValue::Deque(v) | InterpValue::Queue(v) => {
                 visitor.list(v.borrow().iter().map(BorrowedValue))
             }
-            InterpValue::Map(v) | InterpValue::OrderedMap(v) | InterpValue::PriorityQueue(v) => {
-                visitor.map(
-                    v.borrow()
-                        .iter()
-                        .map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))),
-                )
+            InterpValue::PriorityQueue(v) => {
+                if v.comparator().is_some() {
+                    return Err(projection_error(
+                        "a priority comparison flow is not host-encodable",
+                    ));
+                }
+                visitor.map(v.iter().map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))))
             }
+            InterpValue::Map(v) | InterpValue::OrderedMap(v) => visitor.map(
+                v.borrow()
+                    .iter()
+                    .map(|(k, v)| (BorrowedValue(k), BorrowedValue(v))),
+            ),
             InterpValue::Record(v) => visitor.record(
                 v.borrow()
                     .iter()

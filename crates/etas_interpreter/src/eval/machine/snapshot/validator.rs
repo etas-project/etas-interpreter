@@ -6,6 +6,7 @@ mod call_target;
 mod callable_types;
 mod construction;
 mod frame;
+mod priority_queue;
 mod program;
 mod reference_presence;
 mod reference_type_presence;
@@ -899,6 +900,15 @@ impl<'a> SnapshotValidator<'a> {
         // Iterator frames track depth, not the width of a collection.
         for value in root.walk() {
             match value {
+                ValueSnapshot::PriorityQueue {
+                    comparator: Some(comparator),
+                    ..
+                } => {
+                    let ValueSnapshot::Callable(target) = comparator.as_ref() else {
+                        return Err("checkpoint priority comparison is not a callable".into());
+                    };
+                    self.priority_comparator(target, scope)?;
+                }
                 ValueSnapshot::Set(values) | ValueSnapshot::OrderedSet(values) => {
                     crate::value::membership::MembershipIndex::require_unique(values)?;
                 }
@@ -980,7 +990,9 @@ impl<'a> SnapshotValidator<'a> {
                 self.index_at_most(position, values.len(), context)?
             }
             ValueSnapshot::Map(values)
-            | ValueSnapshot::PriorityQueue(values)
+            | ValueSnapshot::PriorityQueue {
+                entries: values, ..
+            }
             | ValueSnapshot::OrderedMap(values) => {
                 self.index_at_most(position, values.len(), context)?
             }

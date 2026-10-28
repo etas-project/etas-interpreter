@@ -23,6 +23,10 @@ enum Storage {
     Deque(DequeValue),
     Set(SetValue),
     Map(MapValue),
+    PriorityQueue {
+        queue: crate::value::PriorityQueueValue,
+        slot: usize,
+    },
     Record(RecordValue),
 }
 
@@ -104,7 +108,14 @@ impl StructuralPartition for InterpValue {
                 values.borrow().len().hash(state);
                 Storage::Set(values.clone())
             }
-            Self::Map(values) | Self::OrderedMap(values) | Self::PriorityQueue(values) => {
+            Self::PriorityQueue(values) => {
+                values.len().hash(state);
+                Storage::PriorityQueue {
+                    queue: values.clone(),
+                    slot: 0,
+                }
+            }
+            Self::Map(values) | Self::OrderedMap(values) => {
                 values.borrow().len().hash(state);
                 Storage::Map(values.clone())
             }
@@ -141,6 +152,18 @@ impl StructuralPartition for InterpValue {
                 let child = values.get(0)?.start(state);
                 values.advance();
                 child
+            }
+            Storage::PriorityQueue { queue, slot } => {
+                while *slot < queue.slot_count() && queue.slot(*slot).is_none() {
+                    *slot += 1;
+                }
+                let pair = queue.slot(*slot)?;
+                if index % 2 == 0 {
+                    pair.0.start(state)
+                } else {
+                    *slot += 1;
+                    pair.1.start(state)
+                }
             }
             Storage::Map(values) => {
                 let values = values.borrow();

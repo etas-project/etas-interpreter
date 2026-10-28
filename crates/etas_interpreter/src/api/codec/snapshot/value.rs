@@ -51,11 +51,43 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
             *slot = json!({"kind":"variant", "name":name, "fields":null});
             sequence(fields, &mut slot["fields"], pending);
         }
-        V::Map(values) | V::OrderedMap(values) | V::PriorityQueue(values) => {
+        V::PriorityQueue {
+            entries,
+            comparator,
+        } => {
+            *slot = json!({"kind":"priority_queue", "entries":null, "comparator":null});
+            if let Value::Object(fields) = slot {
+                for (name, slot) in fields {
+                    if name == "comparator" {
+                        if let Some(comparator) = comparator {
+                            pending.push((Node::Value(comparator), slot));
+                        }
+                    } else if name == "entries" {
+                        for ((priority, value), entry) in
+                            entries.iter().zip(array(slot, entries.len()))
+                        {
+                            *entry = json!({"priority":null, "value":null});
+                            if let Value::Object(fields) = entry {
+                                for (name, slot) in fields {
+                                    pending.push((
+                                        Node::Value(if name == "priority" {
+                                            priority
+                                        } else {
+                                            value
+                                        }),
+                                        slot,
+                                    ));
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+        V::Map(values) | V::OrderedMap(values) => {
             let (kind, key_name) = match value {
                 V::Map(_) => ("map", "key"),
                 V::OrderedMap(_) => ("ordered_map", "key"),
-                V::PriorityQueue(_) => ("priority_queue", "priority"),
                 _ => unreachable!("pair variant was matched"),
             };
             *slot = json!({"kind":kind, "entries":null});
@@ -220,7 +252,7 @@ fn leaf(value: &ValueSnapshot) -> Value {
         | V::Variant { .. }
         | V::Map(_)
         | V::OrderedMap(_)
-        | V::PriorityQueue(_)
+        | V::PriorityQueue { .. }
         | V::Record(_)
         | V::Range { .. }
         | V::Message(_)

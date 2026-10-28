@@ -84,7 +84,14 @@ pub(super) fn release_value(mut current: Value) {
             | Value::Variant { fields: values, .. } => values
                 .into_unique()
                 .map(|v| Children::Values(v.into_iter())),
-            Value::Map(values) | Value::OrderedMap(values) | Value::PriorityQueue(values) => {
+            Value::PriorityQueue {
+                entries,
+                comparator,
+            } => entries.into_unique().map(|v| Children::Pairs {
+                pairs: v.into_iter(),
+                pending: comparator.and_then(|v| v.into_unique()),
+            }),
+            Value::Map(values) | Value::OrderedMap(values) => {
                 values.into_unique().map(|v| Children::Pairs {
                     pairs: v.into_iter(),
                     pending: None,

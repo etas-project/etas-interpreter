@@ -24,6 +24,7 @@ pub enum StaticMethodKind {
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    PriorityQueueUpdate(Box<crate::eval::priority_queue::PriorityQueueUpdate>),
     StreamReadReduction(Box<super::StreamReadReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
     ContinueBlock {

@@ -138,7 +138,7 @@ fn capture_identity_preserves_container_kinds_views_and_nominal_identity() {
         },
         InterpValue::Map(map.clone()),
         InterpValue::OrderedMap(map.clone()),
-        InterpValue::PriorityQueue(map),
+        InterpValue::PriorityQueue(map.snapshot().into()),
         InterpValue::Set(set.clone()),
         InterpValue::OrderedSet(set),
         InterpValue::Deque(deque.clone()),

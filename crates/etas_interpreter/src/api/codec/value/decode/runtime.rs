@@ -36,12 +36,28 @@ impl DecodedValue for InterpValue {
             },
         })
     }
-    fn pairs(kind: Pairs, values: Vec<(Self, Self)>) -> Self {
-        match kind {
+    fn pairs(
+        kind: Pairs,
+        values: Vec<(Self, Self)>,
+        comparator: Option<Self>,
+    ) -> Result<Self, InterpreterCodecError> {
+        Ok(match kind {
             Pairs::Map => Self::Map(values.into()),
             Pairs::OrderedMap => Self::OrderedMap(values.into()),
-            Pairs::PriorityQueue => Self::PriorityQueue(values.into()),
-        }
+            Pairs::PriorityQueue => {
+                let comparator = comparator
+                    .map(|value| match value {
+                        Self::Callable(target) => Ok(target),
+                        _ => Err(InterpreterCodecError::new(
+                            "priority comparison must be a callable",
+                        )),
+                    })
+                    .transpose()?;
+                Self::PriorityQueue(crate::value::PriorityQueueValue::from_entries(
+                    values, comparator,
+                ))
+            }
+        })
     }
     fn record(values: Vec<(String, Self)>) -> Self {
         Self::Record(values.into())
