@@ -9,6 +9,9 @@ use etas_hir::SymbolId;
 
 use crate::{plan::SlotLayoutTable, value::InterpValue};
 
+mod comparison;
+pub(crate) use comparison::{FrameComparison, FrameComparisonStep};
+
 #[derive(Clone, Debug)]
 pub struct Frame {
     snapshot_id: u64,
@@ -50,7 +53,7 @@ struct SlotStorage {
     scope_symbols: Option<Rc<HashSet<SymbolId>>>,
 }
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct RestoredStorage(HashMap<SymbolId, InterpValue>);
 
 impl std::ops::Deref for RestoredStorage {
@@ -101,21 +104,11 @@ impl Iterator for FrameValues {
     }
 }
 
-impl PartialEq for SlotStorage {
-    fn eq(&self, other: &Self) -> bool {
-        self.values == other.values && self.additional == other.additional
-    }
-}
-impl Eq for SlotStorage {}
-
 static NEXT_FRAME_ID: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(1);
 
 impl PartialEq for Frame {
     fn eq(&self, other: &Self) -> bool {
-        self.layout == other.layout
-            && self.slots == other.slots
-            && self.restored == other.restored
-            && self.type_bindings == other.type_bindings
+        crate::value::comparison::frames_equal(self, other)
     }
 }
 impl Eq for Frame {}

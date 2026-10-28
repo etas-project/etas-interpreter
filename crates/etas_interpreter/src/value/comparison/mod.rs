@@ -1,6 +1,7 @@
 mod engine;
 mod runtime;
 pub(crate) use engine::{Comparison, CursorStep, EqualityCursor, compare};
+pub(crate) use runtime::{frames_equal, scoped_equal, target_lists_equal, targets_equal};
 pub(super) use runtime::{messages_equal, sets_equal, value_equal};
 
 /// Matching continuations retain failed candidates instead of recursing into

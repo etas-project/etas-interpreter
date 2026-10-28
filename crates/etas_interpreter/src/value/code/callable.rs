@@ -229,8 +229,14 @@ impl ScopedCallableValue {
 
 impl PartialEq for ScopedCallableValue {
     fn eq(&self, other: &Self) -> bool {
+        crate::value::comparison::scoped_equal(self, other)
+    }
+}
+impl Eq for ScopedCallableValue {}
+
+impl ScopedCallableValue {
+    pub(crate) fn equality_header_matches(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.native.program.checked, &other.native.program.checked)
-            && self.native.target == other.native.target
             && self.projections.len() == other.projections.len()
             && self
                 .projections
@@ -245,7 +251,6 @@ impl PartialEq for ScopedCallableValue {
                 })
     }
 }
-impl Eq for ScopedCallableValue {}
 
 fn callable_root(
     execution: &CheckedExecutionProgram,

@@ -4,7 +4,6 @@ use std::{
     rc::Rc,
 };
 
-mod equality;
 mod release;
 
 // Share target structure, not a durable capture. Frame aliasing remains Frame's
@@ -81,14 +80,14 @@ impl DerefMut for CallTargetChildren {
 
 impl PartialEq for CallTargetLink {
     fn eq(&self, other: &Self) -> bool {
-        equality::equal(std::slice::from_ref(self), std::slice::from_ref(other))
+        crate::value::comparison::targets_equal(self, other)
     }
 }
 impl Eq for CallTargetLink {}
 
 impl PartialEq for CallTargetChildren {
     fn eq(&self, other: &Self) -> bool {
-        equality::equal(self, other)
+        crate::value::comparison::target_lists_equal(self, other)
     }
 }
 impl Eq for CallTargetChildren {}

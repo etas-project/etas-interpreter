@@ -8,7 +8,7 @@ use crate::{
 mod storage;
 pub use storage::{CallTargetChildren, CallTargetLink};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug)]
 pub enum CallTarget {
     FlowItem(HirItemId),
     AgentItem(HirItemId),
@@ -35,3 +35,10 @@ pub enum CallTarget {
     },
     Composed(CallTargetChildren),
 }
+
+impl PartialEq for CallTarget {
+    fn eq(&self, other: &Self) -> bool {
+        crate::value::comparison::targets_equal(self, other)
+    }
+}
+impl Eq for CallTarget {}

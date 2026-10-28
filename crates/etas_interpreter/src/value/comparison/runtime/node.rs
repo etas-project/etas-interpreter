@@ -1,4 +1,4 @@
-use super::{Children, Cursor, set_comparison};
+use super::{Children, Context, Cursor, set_comparison, target};
 use crate::value::{InterpValue as V, comparison::Comparison};
 
 pub(super) fn message_headers_equal(
@@ -14,7 +14,12 @@ pub(super) fn message_headers_equal(
         && a.provenance == b.provenance
 }
 
-pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
+pub(super) fn compare_node<'c>(
+    mut a: &V,
+    mut b: &V,
+    context: &'c Context,
+) -> Comparison<Cursor<'c>> {
+    context.visit();
     let children = loop {
         match (a, b) {
             (V::Nominal { ty: at, value: av }, V::Nominal { ty: bt, value: bv }) => {
@@ -111,7 +116,7 @@ pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
                 break Children::List(av.clone(), bv.clone());
             }
             (V::PriorityQueue(av), V::PriorityQueue(bv)) => {
-                if av.len() != bv.len() || av.comparator() != bv.comparator() {
+                if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
                 break Children::PriorityQueue {
@@ -128,7 +133,7 @@ pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
                 break Children::Map(av.clone(), bv.clone());
             }
             (V::OrderedMap(av), V::OrderedMap(bv)) => {
-                if av.len() != bv.len() || av.comparator() != bv.comparator() {
+                if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
                 break Children::OrderedMap(av.clone(), bv.clone());
@@ -140,18 +145,51 @@ pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
                 break Children::Record(av.clone(), bv.clone());
             }
             (V::Set(av), V::Set(bv)) => {
-                return set_comparison(av, bv);
+                return set_comparison(av, bv, context);
             }
             (V::OrderedSet(av), V::OrderedSet(bv)) => {
-                if av.len() != bv.len() || av.comparator() != bv.comparator() {
+                if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
                 break Children::OrderedSet(av.clone(), bv.clone());
             }
+            (V::Callable(a), V::Callable(b)) => return target::target(a, b, context),
+            (
+                V::MemorySelection {
+                    region_stable_id: ar,
+                    path: ap,
+                    key_type: ak,
+                    value_type: av,
+                    kind: ai,
+                    predicate: a_pred,
+                    limit: al,
+                },
+                V::MemorySelection {
+                    region_stable_id: br,
+                    path: bp,
+                    key_type: bk,
+                    value_type: bv,
+                    kind: bi,
+                    predicate: b_pred,
+                    limit: bl,
+                },
+            ) => {
+                if ar != br || ap != bp || ak != bk || av != bv || ai != bi || al != bl {
+                    return Comparison::Ready(false);
+                }
+                match (a_pred, b_pred) {
+                    (Some(av), Some(bv)) => {
+                        a = av;
+                        b = bv;
+                    }
+                    (None, None) => return Comparison::Ready(true),
+                    _ => return Comparison::Ready(false),
+                }
+            }
             _ => return Comparison::Ready(leaf_equal(a, b)),
         }
     };
-    Comparison::Pending(Cursor { children, index: 0 })
+    context.pending(children)
 }
 
 fn leaf_equal(a: &V, b: &V) -> bool {
@@ -171,7 +209,6 @@ fn leaf_equal(a: &V, b: &V) -> bool {
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
         (V::Range(a), V::Range(b)) => a == b,
-        (V::Callable(a), V::Callable(b)) => a == b,
         (V::HostHandle(a), V::HostHandle(b)) => a == b,
         (V::MemoryWriteIntent(a), V::MemoryWriteIntent(b)) => a == b,
         (V::WorkspacePath(a), V::WorkspacePath(b)) => a == b,
@@ -237,26 +274,6 @@ fn leaf_equal(a: &V, b: &V) -> bool {
                 value_type: h,
             },
         ) => a == b && c == d && e == f && g == h,
-        (
-            V::MemorySelection {
-                region_stable_id: a,
-                path: c,
-                key_type: e,
-                value_type: g,
-                kind: i,
-                predicate: k,
-                limit: m,
-            },
-            V::MemorySelection {
-                region_stable_id: b,
-                path: d,
-                key_type: f,
-                value_type: h,
-                kind: j,
-                predicate: l,
-                limit: n,
-            },
-        ) => a == b && c == d && e == f && g == h && i == j && k == l && m == n,
         _ => false,
     }
 }
