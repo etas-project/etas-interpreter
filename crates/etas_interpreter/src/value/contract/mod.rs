@@ -45,7 +45,14 @@ pub(crate) fn validate<'a>(
 ) -> Result<(), String> {
     let checked = context.checked();
     let store = &checked.type_store;
-    let mut substitution = bindings.substitution(store);
+    let known = &checked.types.known_std_types;
+    let named_types = |ty| {
+        known.runtime_types.values().any(|native| *native == ty)
+            || known.opaque_values.contains(&ty)
+    };
+    let mut substitution = bindings
+        .substitution(store)
+        .require_closed_parameters(&named_types);
     let mut layouts = crate::plan::code::CheckedValueTypes::default();
     let mut records = HashMap::<TypeId, HashMap<&str, TypeId>>::new();
     let mut completed = HashSet::new();
@@ -70,9 +77,12 @@ pub(crate) fn validate<'a>(
             }
             Task::Visit(seed, flag) => (
                 seed.value,
-                substitution
-                    .substitute(seed.ty)
-                    .map_err(|error| format!("input type is not materialized: {error}"))?,
+                substitution.substitute(seed.ty).map_err(|error| {
+                    format!(
+                        "input type `{}` is not materialized: {error}",
+                        etas_types::ty::display_type(store, seed.ty)
+                    )
+                })?,
                 flag,
             ),
         };

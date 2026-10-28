@@ -49,6 +49,85 @@ fn validate_both(checked: &etas_frontend::CheckedProject, value: &V, valid: bool
 }
 
 #[test]
+fn ingress_contract_rejects_unbound_types_even_without_payload_elements() {
+    for (template, concrete, kind) in [
+        ("Array<Payload>", "Array<i32>", 0),
+        ("List<Payload>", "List<i32>", 1),
+        ("Option<Payload>", "Option<i32>", 2),
+        ("Choice<Payload>", "Choice<i32>", 3),
+        ("Marker<Payload>", "Marker<i32>", 4),
+    ] {
+        let checked = checked(&format!(
+            "module app.main; enum Choice<T> {{ Empty, Value(T), }} type Marker<T> = {{ flag: bool }}; flow template<Payload>(value: {template}) -> unit {{ return; }} flow main(value: {concrete}) -> unit {{ return; }}"
+        ));
+        let (item, ty) = checked
+            .types
+            .item_signatures
+            .iter()
+            .find_map(|(item, signature)| {
+                let etas_hir::HirItem::Flow(flow) = checked.hir.items.get(*item)? else {
+                    return None;
+                };
+                if checked.symbols.get(flow.symbol)?.name != "template" {
+                    return None;
+                }
+                let ItemSignature::Flow(signature) = signature else {
+                    return None;
+                };
+                Some((*item, signature.params[0]))
+            })
+            .unwrap();
+        let value = |ty| match kind {
+            0 => V::Array(vec![].into()),
+            1 => V::List(vec![].into()),
+            2 => V::OptionNone,
+            3 => V::Nominal {
+                ty,
+                value: V::Variant {
+                    name: "Empty".into(),
+                    fields: vec![].into(),
+                }
+                .into(),
+            },
+            4 => V::Nominal {
+                ty,
+                value: V::Record(vec![("flag".into(), V::Bool(true))].into()).into(),
+            },
+            _ => unreachable!(),
+        };
+        validate_both(&checked, &value(parameter(&checked)), true);
+        let plan = crate::Interpreter.plan(&checked, PlanOptions).plan.unwrap();
+        let limits = Default::default();
+        let input = value(ty);
+        let runtime = super::runtime::validate_arguments(
+            &checked,
+            &plan,
+            item,
+            std::slice::from_ref(&input),
+            &limits,
+        );
+        let validator = SnapshotValidator::new(
+            &checked,
+            &plan.slots,
+            &plan.dispatch,
+            &plan.closures,
+            &limits,
+        );
+        let snapshot =
+            validator.validate_arguments(item, &[ValueSnapshot::capture(&input).unwrap()]);
+        for (boundary, result) in [("runtime", runtime), ("snapshot", snapshot)] {
+            let Err(error) = result else {
+                panic!("{boundary} accepted unbound {template}");
+            };
+            assert!(
+                error.contains("unresolved generic value type"),
+                "{boundary}: {error}"
+            );
+        }
+    }
+}
+
+#[test]
 fn ingress_contract_requires_checked_standard_constant_role_and_owner() {
     use crate::value::StdConstantValue;
     use etas_std::StdValueRole;
