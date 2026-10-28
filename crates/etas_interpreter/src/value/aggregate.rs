@@ -118,7 +118,10 @@ impl fmt::Debug for ArrayValue {
 
 impl PartialEq for ArrayValue {
     fn eq(&self, other: &Self) -> bool {
-        *self.borrow() == *other.borrow()
+        super::comparison::value_equal(
+            &InterpValue::Array(self.clone()),
+            &InterpValue::Array(other.clone()),
+        )
     }
 }
 
@@ -221,7 +224,10 @@ impl fmt::Debug for SliceValue {
 
 impl PartialEq for SliceValue {
     fn eq(&self, other: &Self) -> bool {
-        *self.borrow() == *other.borrow()
+        super::comparison::value_equal(
+            &InterpValue::Slice(self.clone()),
+            &InterpValue::Slice(other.clone()),
+        )
     }
 }
 

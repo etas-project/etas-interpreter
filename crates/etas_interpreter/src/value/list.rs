@@ -175,7 +175,10 @@ impl fmt::Debug for ListValue {
 
 impl PartialEq for ListValue {
     fn eq(&self, other: &Self) -> bool {
-        self.len == other.len && self.iter().eq(other.iter())
+        super::comparison::value_equal(
+            &InterpValue::List(self.clone()),
+            &InterpValue::List(other.clone()),
+        )
     }
 }
 

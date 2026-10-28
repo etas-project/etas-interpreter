@@ -9,9 +9,22 @@ use crate::value::{
     SharedValue, SliceValue,
 };
 
+#[cfg(test)]
+thread_local! { static VISITS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) }; }
+#[cfg(test)]
+pub(super) fn reset_visits() {
+    VISITS.with(|visits| visits.set(0));
+}
+#[cfg(test)]
+pub(super) fn visits() -> usize {
+    VISITS.with(std::cell::Cell::get)
+}
+
 pub(crate) struct Cursor {
     storage: Storage,
     index: usize,
+    identity: Option<crate::value::identity::ValueIdentity>,
+    child_context: *const (),
 }
 
 enum Storage {
@@ -39,9 +52,13 @@ impl MembershipValue for InterpValue {
 }
 
 impl StructuralPartition for InterpValue {
+    type Identity = crate::value::identity::ValueIdentity;
     type Cursor<'a> = Cursor;
 
     fn start(&self, state: &mut impl Hasher) -> Option<Cursor> {
+        #[cfg(test)]
+        VISITS.with(|visits| visits.set(visits.get() + 1));
+        let identity = Self::Identity::of(self);
         std::mem::discriminant(self).hash(state);
         let storage = match self {
             Self::Bool(value) => {
@@ -137,7 +154,20 @@ impl StructuralPartition for InterpValue {
             // A partition is not permission to erase or serialize their identity.
             _ => return None,
         };
-        Some(Cursor { storage, index: 0 })
+        Some(Cursor {
+            storage,
+            index: 0,
+            identity,
+            child_context: std::ptr::null(),
+        })
+    }
+
+    fn identity(cursor: &Cursor) -> Option<Self::Identity> {
+        cursor.identity.clone()
+    }
+
+    fn child_context(cursor: &Cursor) -> *const () {
+        cursor.child_context
     }
 
     fn next<'a>(cursor: &mut Cursor, state: &mut impl Hasher) -> Option<Option<Cursor>>
@@ -146,6 +176,7 @@ impl StructuralPartition for InterpValue {
     {
         let index = cursor.index;
         cursor.index += 1;
+        cursor.child_context = std::ptr::null();
         Some(match &mut cursor.storage {
             Storage::Single(value) => {
                 if index != 0 {
@@ -202,6 +233,7 @@ impl StructuralPartition for InterpValue {
             Storage::Record(values) => {
                 let values = values.borrow();
                 let (name, value) = values.get(index)?;
+                cursor.child_context = (name as *const String).cast();
                 name.hash(state);
                 value.start(state)
             }

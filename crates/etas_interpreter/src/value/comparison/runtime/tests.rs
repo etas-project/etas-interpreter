@@ -16,6 +16,113 @@ fn equality_work(a: &V, b: &V) -> (bool, usize) {
 }
 
 #[test]
+fn shared_aggregate_dag_equality_visits_distinct_pairs_not_logical_expansion() {
+    let graph = |depth, leaf| {
+        (0..depth).fold(V::Bool(leaf), |child, _| {
+            V::Tuple(vec![child.clone(), child].into())
+        })
+    };
+    // Bound the old-code baseline before larger DAGs are tried.
+    for depth in [20, 1000, 2000, 4000] {
+        let a = graph(depth, true);
+        let b = graph(depth, true);
+        let different = graph(depth, false);
+        let ((equal, visits), cost) = measure(|| equality_work(&a, &b));
+        assert!(equal);
+        assert!(visits <= 4 * depth + 1, "depth={depth}, visits={visits}");
+        assert!(cost.bytes <= 1024 * depth + 4096, "{cost:?}");
+        assert_eq!(cost.bytes, cost.released_bytes);
+        eprintln!("shared aggregate equality depth={depth}, visits={visits}, scratch={cost:?}");
+        let (equal, visits) = equality_work(&a, &different);
+        assert!(!equal);
+        assert!(visits <= depth + 1, "depth={depth}, visits={visits}");
+    }
+}
+
+#[test]
+fn direct_container_equality_reuses_one_context_for_all_children() {
+    fn direct(a: &V, b: &V) -> bool {
+        match (a, b) {
+            (V::Array(a), V::Array(b)) => a == b,
+            (V::Slice(a), V::Slice(b)) => a == b,
+            (V::Deque(a), V::Deque(b)) => a == b,
+            (V::List(a), V::List(b)) => a == b,
+            (V::Record(a), V::Record(b)) => a == b,
+            (V::Map(a), V::Map(b)) => a == b,
+            (V::Tuple(a), V::Tuple(b)) => a == b,
+            _ => panic!("container test kinds"),
+        }
+    }
+    for count in [32, 1000, 2000, 4000] {
+        for family in 0..7 {
+            let build = || {
+                let dag = (0..count).fold(V::Bool(true), |child, _| {
+                    V::Tuple(vec![child.clone(), child].into())
+                });
+                let values: Vec<_> = (0..count).map(|_| dag.clone()).collect();
+                match family {
+                    0 => V::Array(values.into()),
+                    1 => V::Slice(values.into()),
+                    2 => V::Deque(values.into()),
+                    3 => V::List(values.into()),
+                    4 => V::Record(crate::value::RecordValue::new(
+                        values
+                            .into_iter()
+                            .enumerate()
+                            .map(|(n, v)| (format!("field-{n}"), v))
+                            .collect(),
+                    )),
+                    5 => V::Map(crate::value::MapValue::new(
+                        values
+                            .into_iter()
+                            .enumerate()
+                            .map(|(n, v)| (V::usize(n), v))
+                            .collect(),
+                    )),
+                    _ => V::Tuple(values.into()),
+                }
+            };
+            let a = build();
+            let b = build();
+            let (equal, cost) = measure(|| direct(&a, &b));
+            assert!(equal);
+            assert!(
+                cost.bytes <= 2048 * count + 4096,
+                "family={family}, n={count}: {cost:?}"
+            );
+            assert_eq!(cost.bytes, cost.released_bytes);
+        }
+    }
+}
+
+#[test]
+fn aggregate_memo_keeps_slice_bounds_and_nominal_variant_headers() {
+    let array = crate::value::ArrayValue::new(vec![V::Bool(true), V::Bool(false)]);
+    let first = crate::value::SliceValue::from_array(array.clone(), 0..1).unwrap();
+    let second = crate::value::SliceValue::from_array(array, 1..2).unwrap();
+    let a = V::Tuple(vec![V::Slice(first.clone()), V::Slice(first.clone())].into());
+    let b = V::Tuple(vec![V::Slice(first), V::Slice(second)].into());
+    assert!(a != b);
+
+    let fields = crate::value::SharedFields::from(vec![V::Bool(true)]);
+    let variant = |name: &str| V::Variant {
+        name: name.into(),
+        fields: fields.clone(),
+    };
+    let a = V::Tuple(vec![variant("A"), variant("B")].into());
+    let b = V::Tuple(vec![variant("A"), variant("C")].into());
+    assert!(a != b);
+    let payload: crate::value::SharedValue = V::Tuple(fields).into();
+    let nominal = |ty| V::Nominal {
+        ty: etas_types::TypeId(ty),
+        value: payload.clone(),
+    };
+    let a = V::Tuple(vec![nominal(1), nominal(2)].into());
+    let b = V::Tuple(vec![nominal(1), nominal(3)].into());
+    assert!(a != b);
+}
+
+#[test]
 fn shared_callable_diamonds_are_compared_once_per_pair() {
     fn graph(depth: usize, leaf: bool) -> V {
         (0..depth).fold(V::Bool(leaf), |child, _| {

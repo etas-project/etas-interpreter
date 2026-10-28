@@ -140,7 +140,10 @@ impl fmt::Debug for MapValue {
 
 impl PartialEq for MapValue {
     fn eq(&self, other: &Self) -> bool {
-        *self.borrow() == *other.borrow()
+        super::comparison::value_equal(
+            &InterpValue::Map(self.clone()),
+            &InterpValue::Map(other.clone()),
+        )
     }
 }
 impl Eq for MapValue {}
