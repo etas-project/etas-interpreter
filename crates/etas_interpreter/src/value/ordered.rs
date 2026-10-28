@@ -213,6 +213,7 @@ impl OrderedTree {
         Cursor {
             pending: Vec::new(),
             next: self.root.clone(),
+            current: None,
             remaining: self.len(),
         }
     }
@@ -292,20 +293,42 @@ impl ExactSizeIterator for Iter<'_> {}
 pub struct Cursor {
     pending: Vec<Rc<Node>>,
     next: Link,
+    current: Link,
     remaining: usize,
+}
+
+impl Cursor {
+    pub(crate) fn current(&mut self) -> Option<&(InterpValue, InterpValue)> {
+        if self.current.is_none() {
+            while let Some(node) = self.next.take() {
+                self.next = node.left.clone();
+                self.pending.push(node);
+            }
+            let node = self.pending.pop()?;
+            self.next = node.right.clone();
+            self.current = Some(node);
+            #[cfg(test)]
+            tests::record_read();
+        }
+        self.current.as_ref().map(|node| &node.entry)
+    }
+
+    pub(crate) fn advance(&mut self) -> bool {
+        if self.current().is_none() {
+            return false;
+        }
+        self.current = None;
+        self.remaining -= 1;
+        true
+    }
 }
 
 impl Iterator for Cursor {
     type Item = (InterpValue, InterpValue);
     fn next(&mut self) -> Option<Self::Item> {
-        while let Some(node) = self.next.take() {
-            self.next = node.left.clone();
-            self.pending.push(node);
-        }
-        let node = self.pending.pop()?;
-        self.next = node.right.clone();
-        self.remaining -= 1;
-        Some(node.entry.clone())
+        let entry = self.current()?.clone();
+        self.advance();
+        Some(entry)
     }
     fn size_hint(&self) -> (usize, Option<usize>) {
         (self.remaining, Some(self.remaining))

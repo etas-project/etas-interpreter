@@ -3,6 +3,9 @@ use std::{cell::OnceCell, rc::Rc};
 use super::{Cursor, InterpValue, OrderedTree, Search, SearchStep};
 use crate::control::CallTarget;
 
+#[cfg(test)]
+mod read_tests;
+
 #[derive(Debug)]
 struct Storage {
     tree: OrderedTree,

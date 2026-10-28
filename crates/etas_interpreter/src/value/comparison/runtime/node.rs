@@ -1,4 +1,4 @@
-use super::{Children, Context, Cursor, set_comparison, target};
+use super::{Children, Context, Cursor, ordered::OrderedComparison, set_comparison, target};
 use crate::value::{InterpValue as V, comparison::Comparison};
 
 pub(super) fn message_headers_equal(
@@ -136,7 +136,7 @@ pub(super) fn compare_node<'c>(
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::OrderedMap(av.clone(), bv.clone());
+                break Children::Ordered(Box::new(OrderedComparison::map(av, bv)));
             }
             (V::Record(av), V::Record(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
@@ -151,7 +151,7 @@ pub(super) fn compare_node<'c>(
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
-                break Children::OrderedSet(av.clone(), bv.clone());
+                break Children::Ordered(Box::new(OrderedComparison::set(av, bv)));
             }
             (V::Callable(a), V::Callable(b)) => return target::target(a, b, context),
             (
