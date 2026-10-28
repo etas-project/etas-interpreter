@@ -16,10 +16,12 @@ pub(super) struct CallArgsState {
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_static_collection_constructor_call(
         &mut self,
+        expr: HirExprId,
         callee: HirExprId,
         type_args: &[etas_hir::HirTypeId],
         args: &[HirArg],
         span: Span,
+        frame: &mut Frame,
     ) -> Option<ControlSignal> {
         let HirExpr::Path(path) = &self.checked.hir.exprs[callee] else {
             return None;
@@ -52,7 +54,19 @@ impl<'a> EvalContext<'a> {
             ["std", "collections", "OrderedSet"] => "OrderedSet",
             _ => return None,
         };
-        Some(self.eval_advanced_collection_type_method(collection, method, type_args, args, span))
+        Some(self.resume_static_method_args(
+            crate::eval::method::StaticMethodArgsState {
+                expr,
+                kind: StaticMethodKind::AdvancedCollection(collection.into()),
+                method: method.clone(),
+                type_args: type_args.to_vec(),
+                args: args.to_vec(),
+                start_arg_index: 0,
+                evaluated_args: Vec::new(),
+                span,
+            },
+            frame,
+        ))
     }
 
     pub(super) fn eval_call(

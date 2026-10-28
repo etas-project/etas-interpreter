@@ -57,6 +57,7 @@ pub(super) enum Sequence {
     Variant(String),
 }
 
+#[derive(Clone, Copy)]
 pub(super) enum Pairs {
     Map,
     OrderedMap,
@@ -83,6 +84,8 @@ enum Frame<'a, T> {
         input: &'a [Value],
         output: Vec<(T, T)>,
         key: Option<T>,
+        comparator_input: Option<&'a Value>,
+        comparator: Option<T>,
     },
     Range {
         input: &'a Value,
@@ -151,6 +154,20 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
                 input,
                 output: Vec::with_capacity(input.len()),
                 key: None,
+                comparator_input: if matches!(kind, Pairs::PriorityQueue) {
+                    match value.get("comparator") {
+                        Some(Value::Null) => None,
+                        Some(value) => Some(value),
+                        None => {
+                            return Err(InterpreterCodecError::new(
+                                "priority queue is missing its comparator field",
+                            ));
+                        }
+                    }
+                } else {
+                    None
+                },
+                comparator: None,
             }));
         }
         Ok(match kind {
@@ -186,21 +203,33 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
                 input,
                 output,
                 key,
-            } => input
-                .get(output.len())
-                .map(|entry| {
-                    required_obj(
-                        entry,
-                        if key.is_some() {
-                            "value"
-                        } else if matches!(kind, Pairs::PriorityQueue) {
-                            "priority"
-                        } else {
-                            "key"
-                        },
-                    )
-                })
-                .transpose(),
+                comparator_input,
+                comparator,
+            } => {
+                if output.len() == input.len() && key.is_none() {
+                    Ok(if comparator.is_none() {
+                        *comparator_input
+                    } else {
+                        None
+                    })
+                } else {
+                    input
+                        .get(output.len())
+                        .map(|entry| {
+                            required_obj(
+                                entry,
+                                if key.is_some() {
+                                    "value"
+                                } else if matches!(kind, Pairs::PriorityQueue) {
+                                    "priority"
+                                } else {
+                                    "key"
+                                },
+                            )
+                        })
+                        .transpose()
+                }
+            }
             Self::Range { input, start, end } => {
                 if start.is_none() {
                     required_obj(input, "start").map(Some)
@@ -221,8 +250,16 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
                 let field = input.get(output.len()).ok_or_else(invalid_builder)?;
                 output.push((required_str(field, "name")?.to_owned(), value));
             }
-            Self::Pairs { output, key, .. } => {
-                if let Some(key) = key.take() {
+            Self::Pairs {
+                input,
+                output,
+                key,
+                comparator,
+                ..
+            } => {
+                if output.len() == input.len() && key.is_none() {
+                    *comparator = Some(value);
+                } else if let Some(key) = key.take() {
                     output.push((key, value));
                 } else {
                     *key = Some(value);
@@ -245,12 +282,16 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
             Self::Sequence { kind, output, .. } => T::sequence(kind, output)?,
             Self::Record { output, .. } => T::record(output),
             Self::Pairs {
-                kind, output, key, ..
+                kind,
+                output,
+                key,
+                comparator,
+                ..
             } => {
                 if key.is_some() {
                     return Err(invalid_builder());
                 }
-                T::pairs(kind, output)
+                T::pairs(kind, output, comparator)?
             }
             Self::Range { input, start, end } => T::range(
                 start.ok_or_else(invalid_builder)?,
@@ -269,7 +310,11 @@ pub(super) trait DecodedValue: Sized {
     ) -> Result<Self, InterpreterCodecError>;
     fn unary(kind: Unary, value: Self) -> Self;
     fn sequence(kind: Sequence, values: Vec<Self>) -> Result<Self, InterpreterCodecError>;
-    fn pairs(kind: Pairs, values: Vec<(Self, Self)>) -> Self;
+    fn pairs(
+        kind: Pairs,
+        values: Vec<(Self, Self)>,
+        comparator: Option<Self>,
+    ) -> Result<Self, InterpreterCodecError>;
     fn record(values: Vec<(String, Self)>) -> Self;
     fn range(start: Self, end: Self, bounds: crate::value::RangeBounds) -> Self;
 }

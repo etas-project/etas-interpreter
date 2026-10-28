@@ -265,6 +265,27 @@ impl SnapshotValidator<'_> {
                 continue;
             }
             match (ty, value) {
+                (
+                    Type::Applied { constructor, args },
+                    ValueSnapshot::PriorityQueue {
+                        entries,
+                        comparator,
+                    },
+                ) if self.checked.types.known_std_types.priority_queue
+                    == Some(TypeId(constructor.0))
+                    && args.len() == 2 =>
+                {
+                    if let Some(comparator) = comparator {
+                        let ValueSnapshot::Callable(target) = comparator.as_ref() else {
+                            return Err("checkpoint priority comparison is not a callable".into());
+                        };
+                        self.priority_comparator_interface(target, args[1], bindings)?;
+                    }
+                    for (priority, value) in entries.iter() {
+                        pending.push((priority, args[1]));
+                        pending.push((value, args[0]));
+                    }
+                }
                 (Type::Array(inner), ValueSnapshot::Array(values))
                 | (Type::List(inner), ValueSnapshot::List(values))
                 | (Type::Slice(inner), ValueSnapshot::Slice(values))

@@ -115,12 +115,37 @@ fn write<'a>(node: Node<'a>, slot: &'a mut Value, mut child: impl FnMut(Node<'a>
         InterpValue::OrderedSet(values) => {
             sequence("ordered_set", values.borrow().iter(), slot, child)
         }
-        InterpValue::Map(values) => entries("map", "key", values.borrow(), slot, child),
+        InterpValue::Map(values) => entries("map", "key", values.borrow().iter(), slot, child),
         InterpValue::OrderedMap(values) => {
-            entries("ordered_map", "key", values.borrow(), slot, child)
+            entries("ordered_map", "key", values.borrow().iter(), slot, child)
         }
         InterpValue::PriorityQueue(values) => {
-            entries("priority_queue", "priority", values.borrow(), slot, child)
+            *slot = json!({"kind":"priority_queue", "entries":null, "comparator":null});
+            if let Value::Object(fields) = slot {
+                for (name, slot) in fields {
+                    if name == "comparator" {
+                        *slot = values.comparator().map_or(Value::Null, |target| json!({"kind":"callable", "target":machine::call_target_snapshot(target)}));
+                    } else if name == "entries" {
+                        for ((priority, value), slot) in
+                            values.iter().zip(array(slot, values.len()))
+                        {
+                            *slot = json!({"priority":null, "value":null});
+                            if let Value::Object(fields) = slot {
+                                for (name, slot) in fields {
+                                    child(
+                                        Node::Value(if name == "priority" {
+                                            priority
+                                        } else {
+                                            value
+                                        }),
+                                        slot,
+                                    );
+                                }
+                            }
+                        }
+                    }
+                }
+            }
         }
         InterpValue::Range(value) => {
             *slot = json!({"kind":"range","start":null,"end":null,"bounds":value_codec::range_bounds_json(value.bounds)});
@@ -235,15 +260,13 @@ fn sequence<'a>(
 fn entries<'a>(
     kind: &str,
     key_name: &str,
-    entries: &'a [(InterpValue, InterpValue)],
+    entries: impl ExactSizeIterator<Item = &'a (InterpValue, InterpValue)>,
     slot: &'a mut Value,
     mut child: impl FnMut(Node<'a>, &'a mut Value),
 ) {
     *slot = json!({"kind":kind,"entries":null});
-    for ((key, value), slot) in entries
-        .iter()
-        .zip(array(&mut slot["entries"], entries.len()))
-    {
+    let count = entries.len();
+    for ((key, value), slot) in entries.zip(array(&mut slot["entries"], count)) {
         *slot = json!({key_name:null,"value":null});
         let Value::Object(fields) = slot else {
             unreachable!("object initialized above")

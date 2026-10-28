@@ -61,6 +61,12 @@ enum Children {
     Deque(DequeValue, DequeValue),
     List(ListValue, ListValue),
     Map(MapValue, MapValue),
+    PriorityQueue {
+        a: crate::value::PriorityQueueValue,
+        b: crate::value::PriorityQueueValue,
+        a_slot: usize,
+        b_slot: usize,
+    },
     Record(RecordValue, RecordValue),
     SetSequence(SetValue, SetValue),
     SetSearch {
@@ -140,6 +146,27 @@ impl EqualityCursor for Cursor {
                 a.advance();
                 b.advance();
                 next
+            }
+            Children::PriorityQueue {
+                a,
+                b,
+                a_slot,
+                b_slot,
+            } => {
+                while *a_slot < a.slot_count() && a.slot(*a_slot).is_none() {
+                    *a_slot += 1;
+                }
+                while *b_slot < b.slot_count() && b.slot(*b_slot).is_none() {
+                    *b_slot += 1;
+                }
+                let pair = a.slot(*a_slot).zip(b.slot(*b_slot));
+                if position % 2 == 0 {
+                    pair.map(|(a, b)| compare_node(&a.0, &b.0))
+                } else {
+                    *a_slot += 1;
+                    *b_slot += 1;
+                    pair.map(|(a, b)| compare_node(&a.1, &b.1))
+                }
             }
             Children::Map(a, b) => {
                 let a = a.borrow();

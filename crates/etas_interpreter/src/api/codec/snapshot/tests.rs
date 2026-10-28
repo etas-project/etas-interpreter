@@ -45,7 +45,7 @@ fn captured_value_json_preserves_the_runtime_wire_contract() {
         InterpValue::Stack(ArrayValue::new(values)),
         InterpValue::Map(MapValue::new(pairs.clone())),
         InterpValue::OrderedMap(MapValue::new(pairs.clone())),
-        InterpValue::PriorityQueue(MapValue::new(pairs)),
+        InterpValue::PriorityQueue(pairs.into()),
         InterpValue::Record(RecordValue::new(vec![("value".into(), leaf.clone())])),
         InterpValue::Variant {
             name: "Response.Success".into(),

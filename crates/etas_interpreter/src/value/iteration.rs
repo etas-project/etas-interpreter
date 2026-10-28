@@ -8,6 +8,7 @@ use super::{InterpValue, ListValue, range::IntegerRange};
 pub(crate) struct IterationSource {
     value: InterpValue,
     list_cursor: RefCell<Option<(usize, ListValue)>>,
+    queue_cursor: RefCell<(usize, usize)>,
 }
 
 impl IterationSource {
@@ -33,6 +34,7 @@ impl IterationSource {
         Ok(Self {
             value,
             list_cursor: RefCell::new(None),
+            queue_cursor: RefCell::new((0, 0)),
         })
     }
 
@@ -69,9 +71,27 @@ impl IterationSource {
             InterpValue::Set(values) | InterpValue::OrderedSet(values) => {
                 values.borrow().get(index).cloned()
             }
-            InterpValue::Map(values)
-            | InterpValue::PriorityQueue(values)
-            | InterpValue::OrderedMap(values) => values
+            InterpValue::PriorityQueue(values) => {
+                let mut cursor = self.queue_cursor.borrow_mut();
+                if cursor.0 > index {
+                    *cursor = (0, 0);
+                }
+                loop {
+                    if cursor.1 == values.slot_count() {
+                        return Ok(None);
+                    }
+                    if let Some((priority, value)) = values.slot(cursor.1) {
+                        if cursor.0 == index {
+                            break Some(InterpValue::Tuple(
+                                vec![priority.clone(), value.clone()].into(),
+                            ));
+                        }
+                        cursor.0 += 1;
+                    }
+                    cursor.1 += 1;
+                }
+            }
+            InterpValue::Map(values) | InterpValue::OrderedMap(values) => values
                 .borrow()
                 .get(index)
                 .map(|(key, value)| InterpValue::Tuple(vec![key.clone(), value.clone()].into())),

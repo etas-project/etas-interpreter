@@ -20,6 +20,12 @@ impl ContinuationSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match continuation {
+            Continuation::PriorityQueueUpdate(_) => {
+                return Err(
+                    "an in-progress pure priority comparison cannot cross a checkpoint boundary"
+                        .into(),
+                );
+            }
             Continuation::StreamReadReduction(state) => Self::StreamReadReduction {
                 call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
                     state.call.clone(),

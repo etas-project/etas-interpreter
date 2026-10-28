@@ -44,6 +44,7 @@ mod operator_expr;
 mod pattern;
 mod perform;
 mod pipeline;
+pub(crate) mod priority_queue;
 mod reflection;
 mod run_state;
 pub use run_state::EvalRunState;

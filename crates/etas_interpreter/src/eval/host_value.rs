@@ -120,7 +120,6 @@ pub(super) fn boundary_key_fragment(value: &InterpValue) -> String {
         InterpValue::PriorityQueue(entries) => format!(
             "priority_queue:[{}]",
             entries
-                .borrow()
                 .iter()
                 .map(|(priority, value)| format!(
                     "{}:{}",

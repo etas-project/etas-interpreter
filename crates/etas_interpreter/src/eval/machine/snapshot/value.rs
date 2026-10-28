@@ -226,7 +226,7 @@ impl ValueSnapshot {
             | Self::Queue(_)
             | Self::Map(_)
             | Self::OrderedMap(_)
-            | Self::PriorityQueue(_) => {
+            | Self::PriorityQueue { .. } => {
                 return Err("compound checkpoint value must use its restore builder".into());
             }
             Self::Callable(target) => {

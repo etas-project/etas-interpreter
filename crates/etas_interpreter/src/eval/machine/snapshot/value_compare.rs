@@ -76,9 +76,29 @@ fn same_node<'a>(
             pending.extend(x.iter().zip(y));
             a == b && x.len() == y.len()
         }
-        (V::Map(a), V::Map(b))
-        | (V::OrderedMap(a), V::OrderedMap(b))
-        | (V::PriorityQueue(a), V::PriorityQueue(b)) => {
+        (
+            V::PriorityQueue {
+                entries: a,
+                comparator: ac,
+            },
+            V::PriorityQueue {
+                entries: b,
+                comparator: bc,
+            },
+        ) => {
+            if ac.is_some() != bc.is_some() {
+                return false;
+            }
+            if let (Some(a), Some(b)) = (ac, bc) {
+                pending.push((a, b));
+            }
+            for ((ak, av), (bk, bv)) in a.iter().zip(b) {
+                pending.push((ak, bk));
+                pending.push((av, bv));
+            }
+            a.len() == b.len()
+        }
+        (V::Map(a), V::Map(b)) | (V::OrderedMap(a), V::OrderedMap(b)) => {
             for ((ak, av), (bk, bv)) in a.iter().zip(b) {
                 pending.push((ak, bk));
                 pending.push((av, bv));

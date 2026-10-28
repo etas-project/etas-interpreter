@@ -103,7 +103,11 @@ impl StructuralPartition for ValueSnapshot {
                 values.len().hash(state);
                 Storage::Set(values)
             }
-            Self::Map(values) | Self::OrderedMap(values) | Self::PriorityQueue(values) => {
+            Self::Map(values)
+            | Self::OrderedMap(values)
+            | Self::PriorityQueue {
+                entries: values, ..
+            } => {
                 values.len().hash(state);
                 Storage::Map(values)
             }

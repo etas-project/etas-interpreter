@@ -110,9 +110,18 @@ pub(super) fn compare_node(mut a: &V, mut b: &V) -> Comparison<Cursor> {
                 }
                 break Children::List(av.clone(), bv.clone());
             }
-            (V::Map(av), V::Map(bv))
-            | (V::OrderedMap(av), V::OrderedMap(bv))
-            | (V::PriorityQueue(av), V::PriorityQueue(bv)) => {
+            (V::PriorityQueue(av), V::PriorityQueue(bv)) => {
+                if av.len() != bv.len() || av.comparator() != bv.comparator() {
+                    return Comparison::Ready(false);
+                }
+                break Children::PriorityQueue {
+                    a: av.clone(),
+                    b: bv.clone(),
+                    a_slot: 0,
+                    b_slot: 0,
+                };
+            }
+            (V::Map(av), V::Map(bv)) | (V::OrderedMap(av), V::OrderedMap(bv)) => {
                 if av.borrow().len() != bv.borrow().len() {
                     return Comparison::Ready(false);
                 }

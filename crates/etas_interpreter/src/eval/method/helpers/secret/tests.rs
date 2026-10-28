@@ -225,7 +225,7 @@ fn iterative_secret_scan_covers_each_supported_container_child() {
             Value::Map(MapValue::new(vec![(child.clone(), Value::Unit)])),
             Value::Map(MapValue::new(vec![(Value::Unit, child.clone())])),
             Value::OrderedMap(MapValue::new(vec![(Value::Unit, child.clone())])),
-            Value::PriorityQueue(MapValue::new(vec![(child.clone(), Value::Unit)])),
+            Value::PriorityQueue(vec![(child.clone(), Value::Unit)].into()),
             Value::Range(RangeValue {
                 start: Box::new(child.clone()),
                 end: Box::new(Value::Unit),

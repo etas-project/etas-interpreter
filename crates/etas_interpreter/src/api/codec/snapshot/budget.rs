@@ -92,9 +92,18 @@ impl EncodingBudget {
                 | ValueSnapshot::Stack(values)
                 | ValueSnapshot::OrderedSet(values)
                 | ValueSnapshot::Variant { fields: values, .. } => (values.len(), 0),
-                ValueSnapshot::Map(values)
-                | ValueSnapshot::OrderedMap(values)
-                | ValueSnapshot::PriorityQueue(values) => {
+                ValueSnapshot::PriorityQueue {
+                    entries,
+                    comparator,
+                } => (
+                    entries
+                        .len()
+                        .checked_mul(2)
+                        .and_then(|v| v.checked_add(usize::from(comparator.is_some())))
+                        .ok_or_else(exhausted)?,
+                    0,
+                ),
+                ValueSnapshot::Map(values) | ValueSnapshot::OrderedMap(values) => {
                     (values.len().checked_mul(2).ok_or_else(exhausted)?, 0)
                 }
                 ValueSnapshot::Record(fields) => (fields.len(), 0),

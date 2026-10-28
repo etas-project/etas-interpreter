@@ -20,6 +20,7 @@ enum Cursor<'a> {
         a: &'a [(V, V)],
         b: &'a [(V, V)],
         index: usize,
+        comparator: Option<(&'a V, &'a V)>,
     },
     Record {
         a: &'a [(String, V)],
@@ -129,9 +130,27 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                     index: 0,
                 }
             }
-            (V::Map(av), V::Map(bv))
-            | (V::OrderedMap(av), V::OrderedMap(bv))
-            | (V::PriorityQueue(av), V::PriorityQueue(bv)) => {
+            (
+                V::PriorityQueue {
+                    entries: av,
+                    comparator: ac,
+                },
+                V::PriorityQueue {
+                    entries: bv,
+                    comparator: bc,
+                },
+            ) => {
+                if av.len() != bv.len() || ac.is_some() != bc.is_some() {
+                    return Comparison::Ready(false);
+                }
+                Cursor::Map {
+                    a: av,
+                    b: bv,
+                    index: 0,
+                    comparator: ac.as_deref().zip(bc.as_deref()),
+                }
+            }
+            (V::Map(av), V::Map(bv)) | (V::OrderedMap(av), V::OrderedMap(bv)) => {
                 if av.len() != bv.len() {
                     return Comparison::Ready(false);
                 }
@@ -139,6 +158,7 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                     a: av,
                     b: bv,
                     index: 0,
+                    comparator: None,
                 }
             }
             (V::Record(av), V::Record(bv)) => {
@@ -215,7 +235,15 @@ impl<'a> EqualityCursor for Cursor<'a> {
                     .zip(b.get(position))
                     .map(|(a, b)| node(a, b))
             }
-            Self::Map { a, b, index } => {
+            Self::Map {
+                a,
+                b,
+                index,
+                comparator,
+            } => {
+                if let Some((a, b)) = comparator.take() {
+                    return CursorStep::Child(node(a, b));
+                }
                 let position = *index;
                 *index += 1;
                 a.get(position / 2).zip(b.get(position / 2)).map(|(a, b)| {

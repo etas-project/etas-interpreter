@@ -32,13 +32,13 @@ impl<'a> EvalContext<'a> {
         collection: &str,
         method: &str,
         type_args: &[etas_hir::HirTypeId],
-        args: &[HirArg],
+        args: &[InterpValue],
         span: Span,
     ) -> ControlSignal {
         if method != "new" {
             return unsupported_method(span, &format!("{collection} type"), method);
         }
-        if !args.is_empty() {
+        if !args.is_empty() && collection != "PriorityQueue" {
             return ControlSignal::invalid_arguments(
                 format!("{collection}.new expects no method arguments"),
                 span,
@@ -59,7 +59,24 @@ impl<'a> EvalContext<'a> {
             "Deque" => InterpValue::Deque(crate::value::DequeValue::new(Vec::new())),
             "Queue" => InterpValue::Queue(crate::value::DequeValue::new(Vec::new())),
             "Stack" => InterpValue::Stack(ArrayValue::new(Vec::new())),
-            "PriorityQueue" => InterpValue::PriorityQueue(MapValue::new(Vec::new())),
+            "PriorityQueue" => {
+                let comparator = match args {
+                    [] => None,
+                    [InterpValue::Callable(target)] => {
+                        if let Err(message) = self.validate_priority_comparator(target) {
+                            return ControlSignal::invalid_arguments(message, span);
+                        }
+                        Some(target.clone())
+                    }
+                    _ => {
+                        return ControlSignal::invalid_arguments(
+                            "PriorityQueue.new expects zero arguments or one pure comparison flow",
+                            span,
+                        );
+                    }
+                };
+                InterpValue::PriorityQueue(crate::value::PriorityQueueValue::new(comparator))
+            }
             "OrderedMap" => InterpValue::OrderedMap(MapValue::new(Vec::new())),
             "OrderedSet" => InterpValue::OrderedSet(Vec::new().into()),
             _ => {

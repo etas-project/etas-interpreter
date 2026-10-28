@@ -383,6 +383,9 @@ impl<'a> EvalContext<'a> {
         value: InterpValue,
     ) -> ControlSignal {
         match continuation {
+            Continuation::PriorityQueueUpdate(state) => {
+                self.continue_priority_update(*state, value)
+            }
             Continuation::StreamReadReduction(state) => self.continue_stream_read(*state, value),
             Continuation::ContinueBlock {
                 block,

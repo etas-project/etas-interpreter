@@ -78,6 +78,12 @@ enum Task<'a> {
     Compose(usize),
 }
 
+#[derive(Clone, Copy)]
+enum ExpectedInterface {
+    Value(TypeId),
+    PriorityComparison(TypeId),
+}
+
 impl SnapshotValidator<'_> {
     pub(super) fn reference_target_type(
         &self,
@@ -93,23 +99,57 @@ impl SnapshotValidator<'_> {
         expected: TypeId,
         bindings: &Bindings,
     ) -> Result<(), String> {
-        let key = root_key(root, expected, bindings);
+        self.reference_interface(root, ExpectedInterface::Value(expected), bindings)
+    }
+
+    pub(super) fn priority_comparator_interface(
+        &self,
+        target: &Target,
+        priority: TypeId,
+        bindings: &Bindings,
+    ) -> Result<(), String> {
+        self.reference_interface(
+            target,
+            ExpectedInterface::PriorityComparison(priority),
+            bindings,
+        )
+    }
+
+    fn reference_interface(
+        &self,
+        root: &Target,
+        expected: ExpectedInterface,
+        bindings: &Bindings,
+    ) -> Result<(), String> {
+        let key = match expected {
+            ExpectedInterface::Value(expected) => root_key(root, expected, bindings),
+            ExpectedInterface::PriorityComparison(_) => None,
+        };
         if key
             .as_ref()
             .is_some_and(|key| self.typed_callables.borrow().roots.contains_key(key))
         {
             return Ok(());
         }
-        let signature = match self.checked.type_store.get(expected) {
-            Some(Type::Function(signature)) => {
-                Some(leaf::substitute(self, signature.clone(), bindings)?)
-            }
-            Some(_) => None,
-            None => return Err("checkpoint callable slot type is missing".into()),
+        let signature = match expected {
+            ExpectedInterface::Value(expected) => match self.checked.type_store.get(expected) {
+                Some(Type::Function(signature)) => {
+                    Some(leaf::substitute(self, signature.clone(), bindings)?)
+                }
+                Some(_) => None,
+                None => return Err("checkpoint callable slot type is missing".into()),
+            },
+            ExpectedInterface::PriorityComparison(_) => None,
         };
-        let allowed = signature
-            .as_ref()
-            .and_then(|signature| signature.effects.clone());
+        let allowed = match expected {
+            ExpectedInterface::PriorityComparison(_) => Some(etas_types::EffectRowRef {
+                effects: Vec::new(),
+                tail: None,
+            }),
+            ExpectedInterface::Value(_) => signature
+                .as_ref()
+                .and_then(|signature| signature.effects.clone()),
+        };
         // Shared compositions are DAGs. Cache by immutable edge and binding
         // environment, not just target ID, and never recursively walk the DAG.
         let mut cache: HashMap<CacheKey, Interface> = HashMap::new();
@@ -209,14 +249,28 @@ impl SnapshotValidator<'_> {
         let interface = results
             .pop()
             .ok_or("checkpoint callable has no checked interface")?;
-        let matches = match signature {
-            Some(expected) => {
+        let matches = match (expected, signature) {
+            (ExpectedInterface::PriorityComparison(priority), _) => {
+                let priority = bindings
+                    .substitution(&self.checked.type_store)
+                    .substitute(priority)
+                    .map_err(|error| error.to_string())?;
+                interface.component.is_none()
+                    && interface.signature.as_ref().is_some_and(|signature| {
+                        signature.input == [priority, priority]
+                            && matches!(
+                                self.checked.type_store.get(signature.output),
+                                Some(Type::Primitive(etas_types::PrimitiveType::I32))
+                            )
+                    })
+            }
+            (ExpectedInterface::Value(_), Some(expected)) => {
                 interface.component.is_none()
                     && interface.signature.as_ref().is_some_and(|actual| {
                         actual.input == expected.input && actual.output == expected.output
                     })
             }
-            None => {
+            (ExpectedInterface::Value(expected), None) => {
                 let component = etas_types::TypeSubstitutionEngine::existing(
                     &self.checked.type_store,
                     bindings,

@@ -362,31 +362,28 @@ impl<'a> EvalContext<'a> {
 
     fn eval_priority_queue_method_values(
         &mut self,
-        entries: MapValue,
+        entries: crate::value::PriorityQueueValue,
         method: &str,
         args: EvaluatedLocalArgs,
         span: Span,
     ) -> ControlSignal {
         match (method, args) {
             ("len", EvaluatedLocalArgs::None) => {
-                ControlSignal::Value(InterpValue::usize(entries.borrow().len()))
+                ControlSignal::Value(InterpValue::usize(entries.len()))
             }
             ("is_empty", EvaluatedLocalArgs::None) => {
-                ControlSignal::Value(InterpValue::Bool(entries.borrow().is_empty()))
+                ControlSignal::Value(InterpValue::Bool(entries.is_empty()))
             }
-            ("push", EvaluatedLocalArgs::Two(value, priority)) => {
-                let mut next = entries.into_values();
-                next.push((priority, value));
-                ControlSignal::Value(InterpValue::PriorityQueue(MapValue::new(next)))
-            }
-            ("pop", EvaluatedLocalArgs::None) => {
-                let mut next = entries.into_values();
-                let popped = next.pop().map(|(_, value)| value);
-                ControlSignal::Value(collection_pop_result(
-                    InterpValue::PriorityQueue(MapValue::new(next)),
-                    popped,
-                ))
-            }
+            ("push", EvaluatedLocalArgs::Two(value, priority)) => self.start_priority_update(
+                entries,
+                crate::value::priority_queue::Operation::push(priority, value),
+                span,
+            ),
+            ("pop", EvaluatedLocalArgs::None) => self.start_priority_update(
+                entries,
+                crate::value::priority_queue::Operation::pop(),
+                span,
+            ),
             _ => unsupported_collection_method(span, "PriorityQueue", method),
         }
     }
