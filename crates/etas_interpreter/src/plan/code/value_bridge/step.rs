@@ -27,6 +27,15 @@ impl Walk<'_> {
             .get(from)
             .ok_or(Failure::MissingType)?;
         let target = self.target.type_store.get(to).ok_or(Failure::MissingType)?;
+        if matches!(&value, InterpValue::CommandResult { .. }) {
+            if self.source.types.known_std_types.command_result != Some(from)
+                || self.target.types.known_std_types.command_result != Some(to)
+            {
+                return Err(Failure::UnsupportedType);
+            }
+            self.values.push(value);
+            return Ok(());
+        }
         if let InterpValue::WorkspacePath(path) = value {
             let source_region = super::projection::workspace_path_region(self.source, from)?;
             let target_region = super::projection::workspace_path_region(self.target, to)?;

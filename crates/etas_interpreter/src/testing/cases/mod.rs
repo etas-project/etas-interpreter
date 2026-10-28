@@ -11,6 +11,7 @@ mod checkpoint;
 mod checkpoint_model_policy;
 mod closures;
 mod collection_conformance;
+mod command_results;
 mod compiler_definitions;
 mod compiler_syntax;
 mod container_limits;

@@ -60,6 +60,7 @@ pub(crate) enum FieldAccessSite<'a> {
 #[derive(Clone, Debug, PartialEq, Eq)]
 struct PathField {
     field: Option<CheckedRecordField>,
+    native: Option<etas_std::RuntimeField>,
     output: TypeId,
 }
 
@@ -69,11 +70,23 @@ type PathFields = HashMap<SymbolId, HashMap<Vec<String>, Vec<PathField>>>;
 pub struct RecordLayoutTable {
     constructions: HashMap<HirExprId, RecordConstruction>,
     fields: HashMap<HirExprId, CheckedRecordField>,
+    native_fields: HashMap<HirExprId, etas_std::RuntimeField>,
     patterns: HashMap<HirPatId, Vec<RecordPatternField>>,
     paths: PathFields,
 }
 
 impl RecordLayoutTable {
+    pub(crate) fn native_field(&self, site: FieldAccessSite<'_>) -> Option<etas_std::RuntimeField> {
+        match site {
+            FieldAccessSite::Expr(expr) => self.native_fields.get(&expr).copied(),
+            FieldAccessSite::Path {
+                prefix,
+                remaining,
+                index,
+            } => self.paths.get(&prefix)?.get(remaining)?.get(index)?.native,
+        }
+    }
+
     pub(crate) fn field(&self, site: FieldAccessSite<'_>) -> Option<&CheckedRecordField> {
         match site {
             FieldAccessSite::Expr(expr) => self.fields.get(&expr),
@@ -170,6 +183,26 @@ impl RecordLayoutTable {
                     let Some(ty) = project.types.expr_types.get(base) else {
                         continue;
                     };
+                    if Some(*ty) == project.types.known_std_types.command_result {
+                        let projections = project
+                            .types
+                            .field_projections
+                            .get(&expr)
+                            .ok_or("native field has no checked projection fact")?;
+                        let [projection] = projections.as_slice() else {
+                            return Err("native field requires one checked projection".into());
+                        };
+                        if projection.receiver != *ty
+                            || projection.field != *field
+                            || project.types.expr_types.get(&expr) != Some(&projection.output)
+                        {
+                            return Err("native field differs from checked projection fact".into());
+                        }
+                        let native = native_field(project, *ty, field, projection.output)?
+                            .ok_or("native field has no checked runtime descriptor")?;
+                        table.native_fields.insert(expr, native);
+                        continue;
+                    }
                     let Some(names) = shapes.get(*ty)? else {
                         continue;
                     };
@@ -239,6 +272,7 @@ impl RecordLayoutTable {
                         }
                         fields.push(PathField {
                             field,
+                            native: native_field(project, projection.receiver, name, current)?,
                             output: current,
                         });
                     }
@@ -285,6 +319,31 @@ impl RecordLayoutTable {
         }
         Ok(table)
     }
+}
+
+fn native_field(
+    project: &CheckedProject,
+    receiver: TypeId,
+    name: &str,
+    output: TypeId,
+) -> Result<Option<etas_std::RuntimeField>, String> {
+    if Some(receiver) != project.types.known_std_types.command_result {
+        return Ok(None);
+    }
+    let descriptor = etas_std::RuntimeTypeRole::CommandResult
+        .fields()
+        .iter()
+        .find(|field| field.name == name)
+        .ok_or("native field is absent from its canonical runtime type descriptor")?;
+    let expected = match descriptor.ty {
+        etas_std::StdPrimitiveType::I32 => etas_types::PrimitiveType::I32,
+        etas_std::StdPrimitiveType::Bytes => etas_types::PrimitiveType::Bytes,
+        _ => return Err("native field descriptor has an unsupported ABI type".into()),
+    };
+    if project.type_store.get(output) != Some(&Type::Primitive(expected)) {
+        return Err("native field output differs from its canonical runtime ABI".into());
+    }
+    Ok(Some(*descriptor))
 }
 
 fn checked_field(names: Arc<[String]>, name: &str) -> Result<CheckedRecordField, String> {

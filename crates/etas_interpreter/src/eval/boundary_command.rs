@@ -19,8 +19,8 @@ impl<'a> EvalContext<'a> {
         match command.decode {
             CommandDecode::CommandResult => Some(InterpValue::CommandResult {
                 exit_code: result.exit_code,
-                stdout: result.stdout,
-                stderr: result.stderr,
+                stdout: result.stdout.into(),
+                stderr: result.stderr.into(),
             }),
         }
     }

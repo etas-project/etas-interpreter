@@ -24,8 +24,8 @@ pub(super) enum ScalarValue {
     },
     CommandResult {
         exit_code: i32,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
+        stdout: BytesValue,
+        stderr: BytesValue,
     },
     MemoryWriteIntent(Box<MemoryWriteIntentValue>),
     OptionNone,
@@ -120,8 +120,8 @@ pub(super) fn decode(
                 i32::try_from(exit_code)
                     .map_err(|_| InterpreterCodecError::new("command exit_code must fit i32"))
             })?,
-            stdout: byte_array(value, "stdout")?,
-            stderr: byte_array(value, "stderr")?,
+            stdout: byte_array(value, "stdout")?.into(),
+            stderr: byte_array(value, "stderr")?.into(),
         }),
         "memory_write_intent" => {
             reject_unknown_fields(

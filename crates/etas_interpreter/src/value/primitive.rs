@@ -46,8 +46,8 @@ pub enum InterpValue {
     },
     CommandResult {
         exit_code: i32,
-        stdout: Vec<u8>,
-        stderr: Vec<u8>,
+        stdout: super::BytesValue,
+        stderr: super::BytesValue,
     },
     Tuple(super::SharedFields),
     Array(ArrayValue),
