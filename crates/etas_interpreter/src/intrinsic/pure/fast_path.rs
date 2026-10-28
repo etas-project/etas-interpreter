@@ -4,6 +4,7 @@ use etas_types::PrimitiveType;
 use crate::intrinsic::dispatch::CheckedPureIntrinsicCall;
 use crate::value::InterpValue;
 
+use super::abi::borrowed::check_payload_identity;
 use super::abi::input::type_mismatch;
 use super::abi::{AbiShape, AdapterError, PureAbiProjector};
 
@@ -38,7 +39,7 @@ pub(super) fn checked_container_fast_path(
     };
     match call.intrinsic.0 {
         intrinsic::pure::OPTION_IS_SOME | intrinsic::pure::OPTION_IS_NONE => {
-            let Some(AbiShape::Option(_)) = projector.shape(call.parameter_types[0]) else {
+            let Some(AbiShape::Option(inner)) = projector.shape(call.parameter_types[0]) else {
                 return Err(invalid_checked_abi(call, projector));
             };
             let Some(AbiShape::Primitive(PrimitiveType::Bool)) = projector.shape(call.result_type)
@@ -46,7 +47,10 @@ pub(super) fn checked_container_fast_path(
                 return Err(invalid_checked_abi(call, projector));
             };
             let is_some = match arg {
-                InterpValue::OptionSome(_) => true,
+                InterpValue::OptionSome(value) => {
+                    check_payload_identity(&value, *inner, projector)?;
+                    true
+                }
                 InterpValue::OptionNone => false,
                 other => return Err(type_mismatch(call.parameter_types[0], &other)),
             };
@@ -59,7 +63,8 @@ pub(super) fn checked_container_fast_path(
             )))
         }
         intrinsic::pure::RESULT_IS_OK | intrinsic::pure::RESULT_IS_ERR => {
-            let Some(AbiShape::Result { .. }) = projector.shape(call.parameter_types[0]) else {
+            let Some(AbiShape::Result { ok, err }) = projector.shape(call.parameter_types[0])
+            else {
                 return Err(invalid_checked_abi(call, projector));
             };
             let Some(AbiShape::Primitive(PrimitiveType::Bool)) = projector.shape(call.result_type)
@@ -70,6 +75,11 @@ pub(super) fn checked_container_fast_path(
                 InterpValue::Variant { name, fields }
                     if (name == "Ok" || name == "Err") && fields.len() == 1 =>
                 {
+                    check_payload_identity(
+                        &fields[0],
+                        if name == "Ok" { *ok } else { *err },
+                        projector,
+                    )?;
                     name == "Ok"
                 }
                 other => return Err(type_mismatch(call.parameter_types[0], &other)),
@@ -90,7 +100,10 @@ pub(super) fn checked_container_fast_path(
                 return Err(invalid_checked_abi(call, projector));
             }
             match arg {
-                InterpValue::OptionSome(value) => Ok(FastPathResult::Value(value.into_value())),
+                InterpValue::OptionSome(value) => {
+                    check_payload_identity(&value, *inner, projector)?;
+                    Ok(FastPathResult::Value(value.into_value()))
+                }
                 InterpValue::OptionNone => {
                     args.push(InterpValue::OptionNone);
                     Ok(FastPathResult::Kernel(args))
@@ -106,12 +119,15 @@ pub(super) fn checked_container_fast_path(
                 return Err(invalid_checked_abi(call, projector));
             }
             match arg {
-                InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => Ok(
-                    FastPathResult::Value(fields.into_single().ok_or(AdapterError::Arity {
-                        expected: 1,
-                        actual: 0,
-                    })?),
-                ),
+                InterpValue::Variant { name, fields } if name == "Ok" && fields.len() == 1 => {
+                    check_payload_identity(&fields[0], *ok, projector)?;
+                    Ok(FastPathResult::Value(fields.into_single().ok_or(
+                        AdapterError::Arity {
+                            expected: 1,
+                            actual: 0,
+                        },
+                    )?))
+                }
                 InterpValue::Variant { name, fields } if name == "Err" && fields.len() == 1 => {
                     args.push(InterpValue::Variant { name, fields });
                     Ok(FastPathResult::Kernel(args))
@@ -126,6 +142,7 @@ pub(super) fn checked_container_fast_path(
             if *inner != call.parameter_types[0] {
                 return Err(invalid_checked_abi(call, projector));
             }
+            check_payload_identity(&arg, *inner, projector)?;
             Ok(FastPathResult::Value(InterpValue::OptionSome(
                 crate::value::SharedValue::new(arg),
             )))
@@ -142,6 +159,7 @@ pub(super) fn checked_container_fast_path(
             if expected != call.parameter_types[0] {
                 return Err(invalid_checked_abi(call, projector));
             }
+            check_payload_identity(&arg, expected, projector)?;
             Ok(FastPathResult::Value(InterpValue::Variant {
                 name: if call.intrinsic.0 == intrinsic::pure::RESULT_OK {
                     "Ok"

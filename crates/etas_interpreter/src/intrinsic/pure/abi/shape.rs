@@ -1,4 +1,4 @@
-use std::collections::HashMap;
+use std::collections::{HashMap, HashSet};
 
 use etas_types::{
     PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner, TypeStore, applied_representation,
@@ -44,6 +44,7 @@ pub enum AbiShape {
 pub struct PureAbiProjector {
     shapes: HashMap<TypeId, AbiShape>,
     wrapper_walks: WrapperWalkLimits,
+    nominal_identities: HashSet<TypeId>,
 }
 
 impl PureAbiProjector {
@@ -62,6 +63,19 @@ impl PureAbiProjector {
         }
 
         let store = interner.into_store();
+        let nominal_identities = store
+            .iter()
+            .filter_map(|(id, ty)| {
+                let nominal = match ty {
+                    Type::Nominal(_) => true,
+                    Type::Applied { constructor, .. } => {
+                        matches!(store.get(TypeId(constructor.0)), Some(Type::Nominal(_)))
+                    }
+                    _ => false,
+                };
+                nominal.then_some(id)
+            })
+            .collect();
         let shapes = store
             .iter()
             .map(|(id, ty)| {
@@ -112,6 +126,7 @@ impl PureAbiProjector {
         Ok(Self {
             shapes,
             wrapper_walks,
+            nominal_identities,
         })
     }
 
@@ -121,5 +136,9 @@ impl PureAbiProjector {
 
     pub(super) fn wrapper_steps(&self, ty: TypeId) -> Option<usize> {
         self.wrapper_walks.get(ty)
+    }
+
+    pub(super) fn has_nominal_identity(&self, ty: TypeId) -> bool {
+        self.nominal_identities.contains(&ty)
     }
 }

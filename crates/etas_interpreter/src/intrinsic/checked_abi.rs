@@ -2,7 +2,30 @@ use std::collections::HashMap;
 
 use etas_types::{TypeId, TypeStore, substitute_named_params_in_store};
 
-use super::dispatch::CheckedStdIntrinsicCall;
+use super::dispatch::{CheckedPureIntrinsicCall, CheckedStdIntrinsicCall};
+
+impl CheckedPureIntrinsicCall {
+    pub(crate) fn specialize(
+        mut self,
+        store: &TypeStore,
+        bindings: &crate::control::GenericBindings,
+    ) -> Result<Self, String> {
+        if bindings.is_empty() {
+            return Ok(self);
+        }
+        let mut substitution = bindings.substitution(store);
+        for ty in self
+            .parameter_types
+            .iter_mut()
+            .chain(std::iter::once(&mut self.result_type))
+        {
+            *ty = substitution.substitute(*ty).map_err(|error| {
+                format!("checked pure intrinsic ABI is not materialized: {error}")
+            })?;
+        }
+        Ok(self)
+    }
+}
 
 impl CheckedStdIntrinsicCall {
     pub(crate) fn specialize(
@@ -71,6 +94,34 @@ mod tests {
     use super::*;
     use crate::intrinsic::dispatch::StdIntrinsicIdentity;
     use etas_types::{NamedTypeRef, PrimitiveType, Type, TypeInterner};
+
+    #[test]
+    fn pure_abi_specialization_requires_existing_checked_result_types() {
+        let mut types = TypeInterner::new();
+        let param = types.intern(Type::Named(NamedTypeRef {
+            source_parameter: None,
+            name: "K".into(),
+        }));
+        let generic = types.intern(Type::Option(param));
+        let concrete = types.primitive(PrimitiveType::String);
+        let call = CheckedPureIntrinsicCall {
+            intrinsic: etas_std::StdIntrinsicId(etas_std::intrinsic::pure::OPTION_SOME),
+            parameter_types: vec![param],
+            result_type: generic,
+        };
+        let bindings = crate::control::GenericBindings::from([("K".into(), concrete)]);
+        let size = types.store().iter().count();
+        let error = call
+            .clone()
+            .specialize(types.store(), &bindings)
+            .unwrap_err();
+        assert!(error.contains("not materialized"), "{error}");
+        assert_eq!(types.store().iter().count(), size);
+        let result = types.intern(Type::Option(concrete));
+        let specialized = call.specialize(types.store(), &bindings).unwrap();
+        assert_eq!(specialized.parameter_types, [concrete]);
+        assert_eq!(specialized.result_type, result);
+    }
 
     #[test]
     fn checked_abi_specialization_requires_materialized_parameter_and_result_types() {

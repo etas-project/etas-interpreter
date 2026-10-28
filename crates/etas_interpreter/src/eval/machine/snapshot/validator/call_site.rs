@@ -34,6 +34,7 @@ impl SnapshotValidator<'_> {
         call: HirExprId,
         mut target: &CallTargetSnapshot,
         site: &HirExpr,
+        bindings: &crate::control::GenericBindings,
     ) -> Result<bool, String> {
         let HirExpr::Call { callee, args, .. } = site else {
             return Ok(false);
@@ -62,12 +63,33 @@ impl SnapshotValidator<'_> {
             } if identity.dispatch == etas_std::IntrinsicDispatch::PureKernel
                 && identity.intrinsic == *intrinsic =>
             {
-                if parameter_types.len() != args.len()
-                    || parameter_types.iter().zip(args).any(|(ty, arg)| {
+                let expected_parameters = args
+                    .iter()
+                    .map(|arg| {
                         let (HirArg::Positional(expr) | HirArg::Named { value: expr, .. }) = arg;
-                        self.checked.types.expr_types.get(expr) != Some(ty)
+                        self.checked
+                            .types
+                            .expr_types
+                            .get(expr)
+                            .copied()
+                            .ok_or("checkpoint pure intrinsic argument has no checked type")
+                            .map_err(str::to_owned)
                     })
-                    || self.checked.types.expr_types.get(&call) != Some(result_type)
+                    .collect::<Result<Vec<_>, String>>()?;
+                let expected_result = *self
+                    .checked
+                    .types
+                    .expr_types
+                    .get(&call)
+                    .ok_or("checkpoint pure intrinsic call has no checked result type")?;
+                let expected = crate::intrinsic::dispatch::CheckedPureIntrinsicCall {
+                    intrinsic: *intrinsic,
+                    parameter_types: expected_parameters,
+                    result_type: expected_result,
+                }
+                .specialize(&self.checked.type_store, bindings)?;
+                if parameter_types != &expected.parameter_types
+                    || *result_type != expected.result_type
                 {
                     return Err(
                         "checkpoint pure intrinsic ABI differs from its checked call site".into(),
