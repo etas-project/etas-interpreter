@@ -331,9 +331,14 @@ impl<'a> EvalContext<'a> {
                 .checked_add(rhs)
                 .map(InterpValue::Number)
                 .map_err(|error| numeric_fault(error, span, "addition")),
-            (InterpValue::String(mut lhs), InterpValue::String(rhs)) => {
-                lhs.push_str(&rhs);
-                Ok(InterpValue::String(lhs))
+            (InterpValue::String(lhs), InterpValue::String(rhs)) => {
+                lhs.concat(rhs).map(InterpValue::String).map_err(|_| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::InvalidArguments,
+                        span,
+                        "concatenated text exceeds representable capacity",
+                    )
+                })
             }
             (InterpValue::Array(lhs), InterpValue::Array(rhs)) => {
                 Ok(InterpValue::Array(lhs.concat(rhs)))
