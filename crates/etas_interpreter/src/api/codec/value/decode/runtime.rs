@@ -1,6 +1,22 @@
 use super::*;
 
 impl DecodedValue for InterpValue {
+    type Frame = crate::control::Frame;
+    fn frame_cache(
+        limits: &etas_host::StorageLimits,
+        root: machine::DecodeRoot<'_>,
+    ) -> Result<machine::FrameDecodeCache<Self::Frame>, String> {
+        machine::runtime_frame_cache(limits, root)
+    }
+    fn callable(
+        limits: &etas_host::StorageLimits,
+        value: &Value,
+        cache: &machine::FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, InterpreterCodecError> {
+        machine::call_target_with_frames(limits, value, cache)
+            .map(Self::Callable)
+            .map_err(InterpreterCodecError::new)
+    }
     fn scalar(
         limits: &etas_host::StorageLimits,
         value: &Value,

@@ -176,18 +176,54 @@ impl RestoreContext {
     }
 
     pub(super) fn frame(&mut self, snapshot: LocalsSnapshot) -> Result<Frame, String> {
+        if let Some(restored) = self.cached_frame(&snapshot)? {
+            return Ok(restored);
+        }
+        let root = snapshot.id;
+        let mut pending = vec![(snapshot, false)];
+        let mut entered = Vec::new();
+        let result = (|| {
+            while let Some((snapshot, complete)) = pending.pop() {
+                if complete {
+                    self.restore_ready_frame(snapshot)?;
+                } else if self.cached_frame(&snapshot)?.is_none() {
+                    if !self.active.insert(snapshot.id) {
+                        return Err("cyclic local-frame snapshot definitions".into());
+                    }
+                    entered.push(snapshot.id);
+                    let mut children = Vec::new();
+                    for (_, value) in snapshot.locals.iter() {
+                        super::frame_dependencies::snapshot_frames(value, &mut children);
+                    }
+                    pending.push((snapshot, true));
+                    pending.extend(children.into_iter().rev());
+                }
+            }
+            self.frames
+                .get(&root)
+                .map(|(_, frame)| frame.clone())
+                .ok_or_else(|| "restored frame dependency graph did not produce its root".into())
+        })();
+        for id in entered {
+            self.active.remove(&id);
+        }
+        result
+    }
+
+    fn cached_frame(&self, snapshot: &LocalsSnapshot) -> Result<Option<Frame>, String> {
         if snapshot.id == 0 {
             return Err("snapshot frame identity must be nonzero".into());
         }
         if let Some((definition, frame)) = self.frames.get(&snapshot.id) {
-            if definition != &snapshot {
+            if definition != snapshot {
                 return Err("conflicting definitions for snapshot frame identity".into());
             }
-            return Ok(frame.clone());
+            return Ok(Some(frame.clone()));
         }
-        if !self.active.insert(snapshot.id) {
-            return Err("cyclic local-frame snapshot definitions".into());
-        }
+        Ok(None)
+    }
+
+    fn restore_ready_frame(&mut self, snapshot: LocalsSnapshot) -> Result<(), String> {
         let locals = snapshot
             .locals
             .iter()
@@ -202,8 +238,8 @@ impl RestoreContext {
             },
         )?;
         self.active.remove(&snapshot.id);
-        self.frames.insert(snapshot.id, (snapshot, frame.clone()));
-        Ok(frame)
+        self.frames.insert(snapshot.id, (snapshot, frame));
+        Ok(())
     }
 }
 

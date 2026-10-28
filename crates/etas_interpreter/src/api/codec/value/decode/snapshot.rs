@@ -3,6 +3,22 @@ use super::*;
 use crate::orchestration::ValueSnapshot;
 
 impl DecodedValue for ValueSnapshot {
+    type Frame = crate::orchestration::LocalsSnapshot;
+    fn frame_cache(
+        limits: &etas_host::StorageLimits,
+        root: machine::DecodeRoot<'_>,
+    ) -> Result<machine::FrameDecodeCache<Self::Frame>, String> {
+        machine::snapshot_frame_cache(limits, root)
+    }
+    fn callable(
+        limits: &etas_host::StorageLimits,
+        value: &Value,
+        cache: &machine::FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, InterpreterCodecError> {
+        machine::call_target_snapshot_with_frames(limits, value, cache)
+            .map(Self::Callable)
+            .map_err(InterpreterCodecError::new)
+    }
     fn scalar(
         limits: &etas_host::StorageLimits,
         value: &Value,

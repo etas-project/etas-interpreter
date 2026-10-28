@@ -7,6 +7,43 @@ pub(super) enum FrameValidation {
 
 impl SnapshotValidator<'_> {
     pub(super) fn frame(&self, frame: &LocalsSnapshot, context: &str) -> Result<(), String> {
+        if self.frame_state(frame, context)? {
+            return Ok(());
+        }
+        let mut pending = vec![(frame.clone(), true)];
+        let mut children = Vec::new();
+        for (_, value) in frame.locals.iter() {
+            super::super::frame_dependencies::snapshot_frames(value, &mut children);
+        }
+        pending.extend(children.into_iter().rev());
+        let result = (|| {
+            while let Some((frame, complete)) = pending.pop() {
+                if complete {
+                    self.frame_contents(&frame, context)?;
+                    self.frame_definitions
+                        .borrow_mut()
+                        .insert(frame.id, FrameValidation::Complete(frame));
+                } else if !self.frame_state(&frame, context)? {
+                    let mut children = Vec::new();
+                    for (_, value) in frame.locals.iter() {
+                        super::super::frame_dependencies::snapshot_frames(value, &mut children);
+                    }
+                    pending.push((frame, true));
+                    pending.extend(children.into_iter().rev());
+                }
+            }
+            Ok(())
+        })();
+        if result.is_err() {
+            self.frame_definitions
+                .borrow_mut()
+                .retain(|_, state| matches!(state, FrameValidation::Complete(_)));
+        }
+        result
+    }
+
+    // Returns true only for a definition whose complete dependency graph passed.
+    fn frame_state(&self, frame: &LocalsSnapshot, context: &str) -> Result<bool, String> {
         if frame.id == 0 {
             return Err(format!("{context} has a zero frame identity"));
         }
@@ -27,7 +64,7 @@ impl SnapshotValidator<'_> {
                     return Err(format!("{context} has conflicting local-frame definitions"));
                 }
                 return match state {
-                    FrameValidation::Complete(_) => Ok(()),
+                    FrameValidation::Complete(_) => Ok(true),
                     FrameValidation::Active(_) => {
                         Err(format!("{context} has cyclic local-frame definitions"))
                     }
@@ -35,14 +72,7 @@ impl SnapshotValidator<'_> {
             }
             definitions.insert(frame.id, FrameValidation::Active(frame.clone()));
         }
-        let result = self.frame_contents(frame, context);
-        let mut definitions = self.frame_definitions.borrow_mut();
-        if result.is_ok() {
-            definitions.insert(frame.id, FrameValidation::Complete(frame.clone()));
-        } else {
-            definitions.remove(&frame.id);
-        }
-        result
+        Ok(false)
     }
 
     fn frame_contents(&self, frame: &LocalsSnapshot, context: &str) -> Result<(), String> {

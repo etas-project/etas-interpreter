@@ -1,3 +1,4 @@
+use super::super::frame::{DecodeRoot, FrameDecodeCache};
 use super::super::{
     continuation::runtime_limits_from_snapshot,
     intrinsic::intrinsic_dispatch_from_name,
@@ -7,6 +8,21 @@ use super::target::{DecodedTarget, TargetValue};
 use crate::{control::CallTarget, orchestration::CallTargetSnapshot};
 use etas_hir::{HirExprId, SymbolId};
 use serde_json::Value;
+
+pub(in crate::api::codec) fn call_target_snapshot_with_frames(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+    cache: &FrameDecodeCache<crate::orchestration::LocalsSnapshot>,
+) -> Result<CallTargetSnapshot, String> {
+    decode_with_frames(limits, value, cache)
+}
+pub(in crate::api::codec) fn call_target_with_frames(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+    cache: &FrameDecodeCache<crate::control::Frame>,
+) -> Result<CallTarget, String> {
+    decode_with_frames(limits, value, cache)
+}
 
 pub(crate) fn call_target_from_artifact_snapshot(
     limits: &etas_host::StorageLimits,
@@ -58,9 +74,15 @@ fn target_array(value: &Value) -> Result<&[Value], String> {
         .ok_or_else(|| "machine snapshot call targets must be an array".to_owned())
 }
 
-fn decode<T: TargetValue>(
+fn decode<T: TargetValue>(limits: &etas_host::StorageLimits, current: &Value) -> Result<T, String> {
+    let cache = T::frame_cache(limits, DecodeRoot::Target(current))?;
+    decode_with_frames(limits, current, &cache)
+}
+
+fn decode_with_frames<T: TargetValue>(
     limits: &etas_host::StorageLimits,
     mut current: &Value,
+    cache: &FrameDecodeCache<T::Frame>,
 ) -> Result<T, String> {
     let mut pending = Vec::new();
     loop {
@@ -102,7 +124,7 @@ fn decode<T: TargetValue>(
                 }
                 T::build(DecodedTarget::Composed(vec![]))
             }
-            _ => T::build(decode_leaf::<T>(limits, current, kind)?),
+            _ => T::build(decode_leaf::<T>(limits, current, kind, cache)?),
         };
         loop {
             let target = match pending.pop() {
@@ -162,6 +184,7 @@ fn decode_leaf<T: TargetValue>(
     limits: &etas_host::StorageLimits,
     value: &Value,
     kind: &str,
+    cache: &FrameDecodeCache<T::Frame>,
 ) -> Result<DecodedTarget<T::Frame, T>, String> {
     Ok(match kind {
         "flow" => DecodedTarget::FlowItem(etas_hir::HirItemId(required_u32(value, "item")?)),
@@ -172,7 +195,7 @@ fn decode_leaf<T: TargetValue>(
         }
         "lambda" => DecodedTarget::Lambda {
             expr: HirExprId(required_u32(value, "expr")?),
-            captured: T::frame(limits, required(value, "captured")?)?,
+            captured: T::frame(required(value, "captured")?, cache)?,
         },
         "enum_variant" => DecodedTarget::EnumVariant(SymbolId(required_u32(value, "symbol")?)),
         "nominal_constructor" => {

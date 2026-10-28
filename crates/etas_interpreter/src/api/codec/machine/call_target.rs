@@ -5,6 +5,7 @@ use super::{
 use crate::control::CallTarget;
 use serde_json::{Value, json};
 mod decode;
+pub(in crate::api::codec) use decode::{call_target_snapshot_with_frames, call_target_with_frames};
 pub(super) mod revision;
 mod target;
 #[cfg(test)]

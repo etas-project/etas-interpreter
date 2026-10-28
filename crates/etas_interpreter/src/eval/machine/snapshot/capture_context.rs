@@ -114,14 +114,56 @@ impl CaptureContext {
     }
 
     pub(super) fn frame(&mut self, frame: &Frame) -> Result<LocalsSnapshot, String> {
-        let identity = frame.shared_capture_identity();
-        if let Some(saved) = identity.and_then(|key| self.saved_frame(key)) {
+        let identity = frame.capture_identity();
+        if let Some(saved) = self.saved_frame(identity) {
             return Ok(saved.clone());
         }
-        if let Some((backing, _)) = identity {
-            if !self.enter_frame(backing) {
-                return Err("cyclic captured frame definitions cannot enter a checkpoint".into());
+        if self.first_active.is_some() {
+            return Err("cyclic captured frame definitions cannot enter a checkpoint".into());
+        }
+        let dependencies = self.frame_dependencies(frame)?;
+        if dependencies.is_empty() {
+            return self.capture_ready_frame(frame);
+        }
+        let mut active = HashSet::new();
+        active.insert(identity.0);
+        let mut pending = vec![(frame.clone(), true)];
+        pending.extend(dependencies.into_iter().rev());
+        while let Some((frame, complete)) = pending.pop() {
+            let key = frame.capture_identity();
+            if complete {
+                self.capture_ready_frame(&frame)?;
+                active.remove(&key.0);
+            } else if self.saved_frame(key).is_none() {
+                if !active.insert(key.0) {
+                    return Err(
+                        "cyclic captured frame definitions cannot enter a checkpoint".into(),
+                    );
+                }
+                let dependencies = self.frame_dependencies(&frame)?;
+                pending.push((frame, true));
+                pending.extend(dependencies.into_iter().rev());
             }
+        }
+        self.saved_frame(identity)
+            .cloned()
+            .ok_or_else(|| "captured frame dependency graph did not produce its root".into())
+    }
+
+    fn frame_dependencies(&self, frame: &Frame) -> Result<Vec<(Frame, bool)>, String> {
+        let mut discovery = super::frame_dependencies::Discovery::default();
+        let mut result = Vec::new();
+        frame.try_visit_locals(|value| {
+            discovery.frames(value, &self.values, &mut result);
+            Ok::<_, String>(())
+        })?;
+        Ok(result)
+    }
+
+    fn capture_ready_frame(&mut self, frame: &Frame) -> Result<LocalsSnapshot, String> {
+        let key @ (backing, _) = frame.capture_identity();
+        if !self.enter_frame(backing) {
+            return Err("cyclic captured frame definitions cannot enter a checkpoint".into());
         }
         let result = frame
             .try_map_locals(|value| self.value(value))
@@ -131,18 +173,16 @@ impl CaptureContext {
                 type_bindings: frame.sorted_type_bindings(),
                 effect_row_bindings: frame.generic_bindings().sorted_rows(),
             });
-        if let Some(key @ (backing, _)) = identity {
-            if self.first_active == Some(backing) {
-                self.first_active = None;
+        if self.first_active == Some(backing) {
+            self.first_active = None;
+        } else {
+            self.active_frames.remove(&backing);
+        }
+        if let Ok(saved) = &result {
+            if self.first_frame.is_none() {
+                self.first_frame = Some((key, saved.clone()));
             } else {
-                self.active_frames.remove(&backing);
-            }
-            if let Ok(saved) = &result {
-                if self.first_frame.is_none() {
-                    self.first_frame = Some((key, saved.clone()));
-                } else {
-                    self.frames.insert(key, saved.clone());
-                }
+                self.frames.insert(key, saved.clone());
             }
         }
         result

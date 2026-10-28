@@ -1,6 +1,8 @@
 use crate::orchestration::{MessageSnapshot, ValueSnapshot as Value};
 
 enum Children {
+    Locals(std::vec::IntoIter<(etas_hir::SymbolId, Value)>),
+    Targets(std::vec::IntoIter<crate::orchestration::CallTargetSnapshot>),
     Values(std::vec::IntoIter<Value>),
     OrderedValues {
         values: std::vec::IntoIter<Value>,
@@ -21,6 +23,8 @@ enum Children {
 impl Children {
     fn is_empty(&self) -> bool {
         match self {
+            Self::Locals(values) => values.len() == 0,
+            Self::Targets(values) => values.len() == 0,
             Self::Values(values) => values.len() == 0,
             Self::OrderedValues { values, comparator } => values.len() == 0 && comparator.is_none(),
             Self::Fields(values) => values.len() == 0,
@@ -35,6 +39,8 @@ impl Iterator for Children {
     type Item = Value;
     fn next(&mut self) -> Option<Value> {
         match self {
+            Self::Locals(values) => values.next().map(|(_, value)| value),
+            Self::Targets(values) => values.next().map(Value::Callable),
             Self::Values(values) => values.next(),
             Self::OrderedValues { values, comparator } => {
                 comparator.take().or_else(|| values.next())
@@ -60,6 +66,25 @@ pub(super) fn release_value(mut current: Value) {
     let mut ancestors = Vec::new();
     loop {
         let children = match current {
+            Value::Callable(crate::orchestration::CallTargetSnapshot::Lambda {
+                captured, ..
+            }) => captured
+                .into_unique_values()
+                .map(|values| Children::Locals(values.into_iter())),
+            Value::Callable(
+                crate::orchestration::CallTargetSnapshot::Scoped { target, .. }
+                | crate::orchestration::CallTargetSnapshot::Specialized { target, .. }
+                | crate::orchestration::CallTargetSnapshot::Limited { target, .. },
+            ) => {
+                if let Some(target) = target.into_unique() {
+                    current = Value::Callable(target);
+                    continue;
+                }
+                None
+            }
+            Value::Callable(crate::orchestration::CallTargetSnapshot::Composed(targets)) => targets
+                .into_unique()
+                .map(|values| Children::Targets(values.into_iter())),
             Value::Nominal { value, .. }
             | Value::Trust { value, .. }
             | Value::OptionSome(value)

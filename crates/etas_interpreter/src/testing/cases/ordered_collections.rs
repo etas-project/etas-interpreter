@@ -344,7 +344,7 @@ flow main() -> bool {
     }
     for kind in ["ordered_map", "ordered_set"] {
         let mut corrupted = wire.clone();
-        let mut pending = vec![&mut corrupted];
+        let mut pending: Vec<&mut serde_json::Value> = vec![&mut corrupted];
         let mut edited = false;
         while let Some(value) = pending.pop() {
             if value.get("kind").and_then(serde_json::Value::as_str) == Some(kind) {

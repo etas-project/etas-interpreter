@@ -14,7 +14,7 @@ pub struct Frame {
     snapshot_id: u64,
     layout: Arc<SlotLayoutTable>,
     slots: Rc<RefCell<SlotStorage>>,
-    restored: Option<Rc<RefCell<HashMap<SymbolId, InterpValue>>>>,
+    restored: Option<Rc<RefCell<RestoredStorage>>>,
     type_bindings: Arc<super::GenericBindings>,
 }
 
@@ -23,6 +23,57 @@ struct SlotStorage {
     values: Vec<Option<InterpValue>>,
     additional: HashMap<SymbolId, usize>,
     scope_symbols: Option<Rc<HashSet<SymbolId>>>,
+}
+
+#[derive(Debug, PartialEq, Eq)]
+struct RestoredStorage(HashMap<SymbolId, InterpValue>);
+
+impl std::ops::Deref for RestoredStorage {
+    type Target = HashMap<SymbolId, InterpValue>;
+    fn deref(&self) -> &Self::Target {
+        &self.0
+    }
+}
+impl std::ops::DerefMut for RestoredStorage {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.0
+    }
+}
+impl Drop for RestoredStorage {
+    fn drop(&mut self) {
+        for value in std::mem::take(&mut self.0).into_values() {
+            crate::value::release_value(value);
+        }
+    }
+}
+impl Drop for SlotStorage {
+    fn drop(&mut self) {
+        for value in std::mem::take(&mut self.values).into_iter().flatten() {
+            crate::value::release_value(value);
+        }
+    }
+}
+
+pub(crate) struct FrameValues {
+    slots: std::vec::IntoIter<Option<InterpValue>>,
+    restored: Option<std::collections::hash_map::IntoValues<SymbolId, InterpValue>>,
+}
+impl FrameValues {
+    pub(crate) fn is_empty(&self) -> bool {
+        self.slots.len() == 0
+            && self
+                .restored
+                .as_ref()
+                .is_none_or(|values| values.len() == 0)
+    }
+}
+impl Iterator for FrameValues {
+    type Item = InterpValue;
+    fn next(&mut self) -> Option<Self::Item> {
+        self.slots
+            .find_map(|value| value)
+            .or_else(|| self.restored.as_mut()?.next())
+    }
 }
 
 impl PartialEq for SlotStorage {
@@ -129,7 +180,7 @@ impl Frame {
                 additional: HashMap::new(),
                 scope_symbols: None,
             })),
-            restored: Some(Rc::new(RefCell::new(restored))),
+            restored: Some(Rc::new(RefCell::new(RestoredStorage(restored)))),
             type_bindings: super::GenericBindings::new().shared(),
         })
     }
@@ -153,9 +204,23 @@ impl Frame {
 
     // Frame aliases share slots, restored locals, layout and immutable type bindings.
     // Include the wire identity separately: decoding may assign a different ID.
-    pub(crate) fn shared_capture_identity(&self) -> Option<(*const (), u64)> {
-        (Rc::strong_count(&self.slots) > 1)
-            .then(|| (Rc::as_ptr(&self.slots).cast(), self.snapshot_id))
+    pub(crate) fn capture_identity(&self) -> (*const (), u64) {
+        (Rc::as_ptr(&self.slots).cast(), self.snapshot_id)
+    }
+
+    pub(crate) fn into_unique_values(self) -> FrameValues {
+        let slots = Rc::try_unwrap(self.slots)
+            .ok()
+            .map(|slots| std::mem::take(&mut slots.into_inner().values))
+            .unwrap_or_default();
+        let restored = self
+            .restored
+            .and_then(|locals| Rc::try_unwrap(locals).ok())
+            .map(|locals| std::mem::take(&mut locals.into_inner().0).into_values());
+        FrameValues {
+            slots: slots.into_iter(),
+            restored,
+        }
     }
 
     pub(crate) fn set_snapshot_id(&mut self, id: u64) -> Result<(), String> {
@@ -342,6 +407,24 @@ impl Frame {
         }
         output.sort_unstable_by_key(|(symbol, _)| symbol.0);
         Ok(output)
+    }
+
+    pub(crate) fn try_visit_locals<E>(
+        &self,
+        mut visit: impl FnMut(&InterpValue) -> Result<(), E>,
+    ) -> Result<(), E> {
+        let slots = self.slots.borrow();
+        for (_, index) in self.slot_symbols(&slots) {
+            if let Some(value) = &slots.values[index] {
+                visit(value)?;
+            }
+        }
+        if let Some(restored) = &self.restored {
+            for value in restored.borrow().values() {
+                visit(value)?;
+            }
+        }
+        Ok(())
     }
 
     fn resolve(&self, slots: &SlotStorage, symbol: SymbolId) -> Option<usize> {

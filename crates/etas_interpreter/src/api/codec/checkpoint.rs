@@ -13,7 +13,7 @@ pub fn checkpoint_artifact_json(
     sources: &[PathBuf],
     flow: &str,
     checkpoint: &InterpreterCheckpoint,
-) -> Result<Value, InterpreterCodecError> {
+) -> Result<CheckpointDocument, InterpreterCodecError> {
     let mut artifact = CheckpointDocument::from_value(json!({
         "schema": crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA,
         "sources": sources,
@@ -21,7 +21,7 @@ pub fn checkpoint_artifact_json(
         "checkpoint": null,
     }));
     artifact.value_mut()["checkpoint"] = checkpoint_json(checkpoint)?;
-    Ok(artifact.into_value())
+    Ok(artifact)
 }
 
 pub fn checkpoint_id(checkpoint: &InterpreterCheckpoint) -> u32 {

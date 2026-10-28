@@ -5,7 +5,6 @@ use std::{
 
 use super::CallTargetSnapshot;
 
-mod equality;
 mod release;
 
 // Only durable captured data is shared, never live evaluator Frames. None is
@@ -24,6 +23,9 @@ impl CallTargetSnapshotLink {
     pub(crate) fn into_value(mut self) -> CallTargetSnapshot {
         Rc::unwrap_or_clone(self.0.take().expect("live call target snapshot link"))
     }
+    pub(crate) fn into_unique(mut self) -> Option<CallTargetSnapshot> {
+        Rc::try_unwrap(self.0.take()?).ok()
+    }
 }
 
 impl CallTargetSnapshotChildren {
@@ -33,6 +35,9 @@ impl CallTargetSnapshotChildren {
     }
     pub(crate) fn into_values(mut self) -> Vec<CallTargetSnapshot> {
         Rc::unwrap_or_clone(self.0.take().expect("live call target snapshot children"))
+    }
+    pub(crate) fn into_unique(mut self) -> Option<Vec<CallTargetSnapshot>> {
+        Rc::try_unwrap(self.0.take()?).ok()
     }
 }
 
@@ -78,13 +83,16 @@ impl DerefMut for CallTargetSnapshotChildren {
 
 impl PartialEq for CallTargetSnapshotLink {
     fn eq(&self, other: &Self) -> bool {
-        equality::equal(std::slice::from_ref(self), std::slice::from_ref(other))
+        crate::eval::machine::snapshot::value_compare::equal_targets(
+            std::slice::from_ref(self),
+            std::slice::from_ref(other),
+        )
     }
 }
 
 impl PartialEq for CallTargetSnapshotChildren {
     fn eq(&self, other: &Self) -> bool {
-        equality::equal(self, other)
+        crate::eval::machine::snapshot::value_compare::equal_targets(self, other)
     }
 }
 

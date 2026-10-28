@@ -10,6 +10,16 @@ pub(super) fn decode<T: DecodedValue>(
     limits: &etas_host::StorageLimits,
     root: &Value,
 ) -> Result<T, InterpreterCodecError> {
+    let cache = T::frame_cache(limits, machine::DecodeRoot::Value(root))
+        .map_err(InterpreterCodecError::new)?;
+    decode_with_frames(limits, root, &cache)
+}
+
+pub(in crate::api::codec) fn decode_with_frames<T: DecodedValue>(
+    limits: &etas_host::StorageLimits,
+    root: &Value,
+    cache: &machine::FrameDecodeCache<T::Frame>,
+) -> Result<T, InterpreterCodecError> {
     let mut frames = Vec::new();
     let mut next = root;
     loop {
@@ -21,7 +31,11 @@ pub(super) fn decode<T: DecodedValue>(
             }
             frame.finish()?
         } else {
-            T::scalar(limits, next)?
+            if required_str(next, "kind")? == "callable" {
+                T::callable(limits, required_obj(next, "target")?, cache)?
+            } else {
+                T::scalar(limits, next)?
+            }
         };
         loop {
             let Some(mut frame) = frames.pop() else {
@@ -38,13 +52,13 @@ pub(super) fn decode<T: DecodedValue>(
     }
 }
 
-pub(super) enum Unary {
+pub(in crate::api::codec) enum Unary {
     Nominal(TypeId),
     Trust(etas_types::TrustWrapper),
     Some,
 }
 
-pub(super) enum Sequence {
+pub(in crate::api::codec) enum Sequence {
     Tuple,
     Array,
     List,
@@ -58,7 +72,7 @@ pub(super) enum Sequence {
 }
 
 #[derive(Clone, Copy)]
-pub(super) enum Pairs {
+pub(in crate::api::codec) enum Pairs {
     Map,
     OrderedMap,
     PriorityQueue,
@@ -331,7 +345,17 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
     }
 }
 
-pub(super) trait DecodedValue: Sized {
+pub(in crate::api::codec) trait DecodedValue: Sized {
+    type Frame: Clone;
+    fn frame_cache(
+        limits: &etas_host::StorageLimits,
+        root: machine::DecodeRoot<'_>,
+    ) -> Result<machine::FrameDecodeCache<Self::Frame>, String>;
+    fn callable(
+        limits: &etas_host::StorageLimits,
+        value: &Value,
+        cache: &machine::FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, InterpreterCodecError>;
     fn scalar(
         limits: &etas_host::StorageLimits,
         value: &Value,

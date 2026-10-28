@@ -45,6 +45,30 @@ fn deep_file_roundtrip_uses_bounded_json_nesting() {
 }
 
 #[test]
+fn owned_checkpoint_documents_clone_compare_and_release_deep_graphs() {
+    for depth in [1000, 4000, 30000] {
+        let mut value = json!("leaf");
+        for _ in 0..depth {
+            value = Value::Array(vec![value]);
+        }
+        let document = CheckpointDocument::from_value(artifact(value));
+        let mut changed = document.clone();
+        assert_eq!(document, changed);
+        let mut leaf = &mut changed["checkpoint"];
+        for _ in 0..depth {
+            leaf = &mut leaf[0];
+        }
+        *leaf = json!("changed");
+        assert_ne!(document, changed);
+        let bytes =
+            checkpoint_file_to_bytes(document.clone(), CheckpointFileLimits::default()).unwrap();
+        let decoded = checkpoint_file_from_bytes(&bytes, CheckpointFileLimits::default()).unwrap();
+        assert_eq!(document, decoded);
+        drop((decoded, changed, document));
+    }
+}
+
+#[test]
 fn file_versions_are_explicit_and_legacy_nested_artifacts_are_rejected() {
     let old = serde_json::to_vec(&artifact(json!({}))).unwrap();
     assert!(

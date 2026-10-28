@@ -21,6 +21,7 @@ mod continuation_tests;
 pub use continuation::{Continuation, ContinuationLink, StaticMethodKind};
 pub use fault::ExecutionFault;
 pub use frame::Frame;
+pub(crate) use frame::FrameValues;
 pub(crate) use generics::{CheckedCallBindings, GenericBindings};
 pub use signal::{
     CallPurity, CommandDecode, ConsoleDecode, ContinuationInput, ControlSignal, HostBoundaryDecode,

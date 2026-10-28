@@ -2,10 +2,28 @@ use etas_core::{SourceId, Span, TextRange, TextSize};
 use etas_hir::{HirBlockId, HirPatId, ScopeId, SymbolId};
 use serde_json::{Value, json};
 
-use crate::{
-    api::codec::value::snapshot_from_json_with_limits,
-    orchestration::{ActiveHandlerArmRecord, LocalsSnapshot},
-};
+mod graph;
+pub(in crate::api::codec) use graph::{DecodeRoot, FrameDecodeCache};
+
+pub(in crate::api::codec) fn snapshot_frame_cache(
+    limits: &etas_host::StorageLimits,
+    root: DecodeRoot<'_>,
+) -> Result<FrameDecodeCache<LocalsSnapshot>, String> {
+    graph::prepare(root, |value, cache| {
+        decode_snapshot_frame(limits, value, cache)
+    })
+}
+
+pub(in crate::api::codec) fn runtime_frame_cache(
+    limits: &etas_host::StorageLimits,
+    root: DecodeRoot<'_>,
+) -> Result<FrameDecodeCache<crate::control::Frame>, String> {
+    graph::prepare(root, |value, cache| {
+        decode_runtime_frame(limits, value, cache)
+    })
+}
+
+use crate::orchestration::{ActiveHandlerArmRecord, LocalsSnapshot};
 
 use super::value::{
     optional_u32, required, required_str, required_string_array, required_u32, required_u32_array,
@@ -45,8 +63,17 @@ pub(super) fn locals_from_snapshot(
     limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<LocalsSnapshot, String> {
+    snapshot_frame_cache(limits, DecodeRoot::Frame(value))?.get(value)
+}
+
+fn decode_snapshot_frame(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+    cache: &FrameDecodeCache<LocalsSnapshot>,
+) -> Result<LocalsSnapshot, String> {
     let decoded = decode_locals(limits, value, |limits, value| {
-        snapshot_from_json_with_limits(limits, value).map_err(|error| error.to_string())
+        crate::api::codec::value::decode::decode_with_frames(limits, value, cache)
+            .map_err(|error| error.to_string())
     })?;
     Ok(LocalsSnapshot {
         id: decoded.id,
@@ -56,12 +83,13 @@ pub(super) fn locals_from_snapshot(
     })
 }
 
-pub(super) fn runtime_frame_from_snapshot(
+fn decode_runtime_frame(
     limits: &etas_host::StorageLimits,
     value: &Value,
+    cache: &FrameDecodeCache<crate::control::Frame>,
 ) -> Result<crate::control::Frame, String> {
     let decoded = decode_locals(limits, value, |limits, value| {
-        crate::api::codec::value_from_json_with_limits(limits, value)
+        crate::api::codec::value::decode::decode_with_frames(limits, value, cache)
             .map_err(|error| error.to_string())
     })?;
     let mut frame = crate::control::Frame::from_snapshot_with_generic_bindings(

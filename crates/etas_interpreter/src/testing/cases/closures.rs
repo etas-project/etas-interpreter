@@ -4,6 +4,123 @@ use crate::{
     control::CallTarget,
 };
 
+#[test]
+fn nested_closure_checkpoint_lifecycle_does_not_recurse_through_rust_frames() {
+    const WORKER: &str = "ETAS_TEST_NESTED_CLOSURE_CHECKPOINT_WORKER";
+    if std::env::var_os(WORKER).is_none() {
+        let current = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", current.name().unwrap(), "--nocapture"])
+            .env(WORKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "nested closure checkpoint subprocess failed: {}\n{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stdout),
+            String::from_utf8_lossy(&output.stderr)
+        );
+        return;
+    }
+    eprintln!("closure checkpoint: checking source");
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+flow wrap(inner: () -> unit ![]) -> () -> unit ![] {
+    return () => { inner(); };
+}
+flow main() -> i32 {
+    var callback: () -> unit ![] = () => { return; };
+    var count = 0;
+    while count < 1000 limit Iterations(1001) {
+        callback = wrap(callback);
+        count = count + 1;
+    }
+    checkpoint("closure-graph");
+    return count;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    eprintln!("closure checkpoint: running source");
+    tokio::runtime::Builder::new_current_thread()
+        .enable_all()
+        .build()
+        .unwrap()
+        .block_on(async {
+            let result = Interpreter
+                .run_checked(
+                    &checked,
+                    EntryPoint {
+                        item: checked.entry.unwrap(),
+                    },
+                    vec![],
+                    &host,
+                    RunOptions::default(),
+                )
+                .await
+                .unwrap();
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+            assert_eq!(result.value(), Some(&InterpValue::i32(1000)));
+            eprintln!("closure checkpoint: encoding artifact");
+            let wire = crate::api::codec::checkpoint_artifact_json(
+                &["main.es".into()],
+                "main",
+                &result.checkpoints[0],
+            )
+            .unwrap();
+            eprintln!("closure checkpoint: decoding artifact");
+            let decoded = crate::api::codec::checkpoint_from_json(&wire, &checked).unwrap();
+            for checkpoint in [&result.checkpoints[0], &decoded] {
+                eprintln!("closure checkpoint: resuming artifact");
+                let resumed = Interpreter
+                    .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                    .await
+                    .unwrap();
+                assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+                assert_eq!(resumed.value(), result.value());
+                eprintln!("closure checkpoint: resume completed");
+            }
+            let mut invalid = wire.clone();
+            let mut pending: Vec<&mut serde_json::Value> = vec![&mut invalid];
+            let mut closures = 0;
+            while let Some(value) = pending.pop() {
+                match value {
+                    serde_json::Value::Object(fields) => {
+                        if fields.get("kind").and_then(serde_json::Value::as_str) == Some("lambda")
+                        {
+                            closures += 1;
+                            if closures == 700 {
+                                fields.insert("expr".into(), serde_json::json!(u32::MAX));
+                                break;
+                            }
+                        }
+                        pending.extend(fields.values_mut());
+                    }
+                    serde_json::Value::Array(values) => pending.extend(values.iter_mut()),
+                    _ => (),
+                }
+            }
+            assert_eq!(closures, 700);
+            drop(pending);
+            let error = checkpoint_from_json(&invalid, &checked).unwrap_err();
+            assert!(
+                error.message().contains("missing HIR expression"),
+                "{error:?}"
+            );
+            drop(invalid);
+            eprintln!("closure checkpoint: releasing decoded snapshot");
+            drop(decoded);
+            eprintln!("closure checkpoint: releasing wire document");
+            drop(wire);
+            eprintln!("closure checkpoint: releasing run result");
+            drop(result);
+            eprintln!("closure checkpoint: released all roots");
+        });
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn calling_a_lambda_does_not_retain_parameters_in_its_capture_frame() {
     let checked = checked_project(

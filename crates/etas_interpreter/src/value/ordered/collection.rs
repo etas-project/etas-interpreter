@@ -66,6 +66,9 @@ macro_rules! common {
             pub(crate) fn cursor(&self) -> Cursor {
                 self.0.tree.cursor()
             }
+            pub(crate) fn iter(&self) -> super::Iter<'_> {
+                self.0.tree.iter()
+            }
             pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {
                 (Rc::strong_count(&self.0) > 1).then(|| Rc::as_ptr(&self.0).cast())
             }
