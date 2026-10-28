@@ -17,6 +17,7 @@ mod container_limits;
 mod conversation;
 mod generic_calls;
 mod handler;
+mod handler_completion;
 mod http_framing;
 mod imported_agent;
 mod inferred_returns;
