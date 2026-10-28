@@ -23,8 +23,8 @@ enum Storage {
     Deque(DequeValue),
     Set(SetValue),
     Map(MapValue),
-    OrderedSet(crate::value::OrderedSetValue),
-    OrderedMap(crate::value::OrderedMapValue),
+    OrderedSet(Box<crate::value::ordered::Cursor>),
+    OrderedMap(Box<crate::value::ordered::Cursor>),
     PriorityQueue {
         queue: crate::value::PriorityQueueValue,
         slot: usize,
@@ -112,7 +112,7 @@ impl StructuralPartition for InterpValue {
             }
             Self::OrderedSet(values) => {
                 values.len().hash(state);
-                Storage::OrderedSet(values.clone())
+                Storage::OrderedSet(Box::new(values.cursor()))
             }
             Self::PriorityQueue(values) => {
                 values.len().hash(state);
@@ -127,7 +127,7 @@ impl StructuralPartition for InterpValue {
             }
             Self::OrderedMap(values) => {
                 values.len().hash(state);
-                Storage::OrderedMap(values.clone())
+                Storage::OrderedMap(Box::new(values.cursor()))
             }
             Self::Record(values) => {
                 values.borrow().len().hash(state);
@@ -158,7 +158,11 @@ impl StructuralPartition for InterpValue {
             Storage::Slice(values) => values.borrow().get(index)?.start(state),
             Storage::Deque(values) => values.borrow().get(index)?.start(state),
             Storage::Set(values) => values.borrow().get(index)?.start(state),
-            Storage::OrderedSet(values) => values.borrow().get(index)?.start(state),
+            Storage::OrderedSet(cursor) => {
+                let child = cursor.current()?.0.start(state);
+                cursor.advance();
+                child
+            }
             Storage::List(values) => {
                 let child = values.get(0)?.start(state);
                 values.advance();
@@ -185,12 +189,14 @@ impl StructuralPartition for InterpValue {
                     pair.1.start(state)
                 }
             }
-            Storage::OrderedMap(values) => {
-                let pair = values.borrow().get(index / 2)?;
+            Storage::OrderedMap(cursor) => {
+                let pair = cursor.current()?;
                 if index % 2 == 0 {
                     pair.0.start(state)
                 } else {
-                    pair.1.start(state)
+                    let child = pair.1.start(state);
+                    cursor.advance();
+                    child
                 }
             }
             Storage::Record(values) => {

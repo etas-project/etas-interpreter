@@ -2,6 +2,16 @@ use super::*;
 use std::cell::Cell;
 
 thread_local! { static COPIES: Cell<usize> = const { Cell::new(0) }; }
+thread_local! { static READS: Cell<usize> = const { Cell::new(0) }; }
+pub(super) fn record_read() {
+    READS.with(|count| count.set(count.get() + 1));
+}
+pub(super) fn reset_reads() {
+    READS.with(|count| count.set(0));
+}
+pub(super) fn reads() -> usize {
+    READS.with(Cell::get)
+}
 pub(super) fn record_copy() {
     COPIES.with(|count| count.set(count.get() + 1));
 }
@@ -177,6 +187,39 @@ fn ordered_tree_cursor_is_linear_and_does_not_materialize_a_value_snapshot() {
             cost.count, cost.bytes
         );
     }
+}
+
+#[test]
+fn borrowed_cursor_peek_advance_and_owned_next_share_the_same_snapshot() {
+    let mut tree = OrderedTree::default();
+    for key in 0..16 {
+        tree = execute(tree.search(
+            InterpValue::i32(key),
+            Some(InterpValue::String(format!("old-{key}").into())),
+        ))
+        .0
+        .tree;
+    }
+    let mut cursor = tree.cursor();
+    reset_reads();
+    assert_eq!(cursor.len(), 16);
+    let original = tree.entry(0).unwrap() as *const _;
+    assert_eq!(cursor.current().unwrap() as *const _, original);
+    assert_eq!(cursor.current().unwrap() as *const _, original);
+    assert_eq!(reads(), 1, "peeking twice must not advance");
+    let mut alias = cursor.clone();
+    let changed = execute(tree.search(InterpValue::i32(0), Some(InterpValue::Bool(false))))
+        .0
+        .tree;
+    assert_eq!(changed.entry(0).unwrap().1, InterpValue::Bool(false));
+    assert_eq!(cursor.next(), alias.next());
+    assert_eq!(cursor.len(), 15);
+    assert_eq!(cursor.current().unwrap().0, InterpValue::i32(1));
+    assert!(cursor.advance());
+    assert_eq!(cursor.len(), 14);
+    assert_eq!(cursor.next().unwrap().0, InterpValue::i32(2));
+    assert_eq!(alias.next().unwrap().0, InterpValue::i32(1));
+    assert_eq!(cursor.count(), 13);
 }
 
 #[test]
