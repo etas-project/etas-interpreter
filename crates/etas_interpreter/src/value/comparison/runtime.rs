@@ -253,19 +253,17 @@ impl EqualityCursor for Cursor<'_> {
                     }
                 })
             }
-            Children::Record(a, b) => {
-                let a = a.borrow();
-                let b = b.borrow();
-                a.get(position)
-                    .zip(b.get(position))
-                    .map(|((an, av), (bn, bv))| {
-                        if an != bn {
-                            Comparison::Ready(false)
-                        } else {
-                            compare_node(av, bv)
-                        }
-                    })
-            }
+            Children::Record(a, b) => a.borrow().get(position).map(|(name, value)| {
+                let other = b
+                    .borrow()
+                    .get(position)
+                    .filter(|(other_name, _)| name == other_name)
+                    .map(|(_, value)| value)
+                    .or_else(|| b.get_ref(name));
+                other
+                    .map(|other| compare_node(value, other))
+                    .unwrap_or(Comparison::Ready(false))
+            }),
             Children::SetSearch { .. } => unreachable!("set searches handled above"),
         };
         match child {

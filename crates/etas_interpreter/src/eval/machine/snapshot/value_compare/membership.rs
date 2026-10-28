@@ -3,6 +3,7 @@ use crate::{
     value::{
         comparison::{Comparison, CursorStep, EqualityCursor, SetSearch, compare},
         membership::MembershipIndex,
+        record::RecordLayout,
     },
 };
 
@@ -26,6 +27,8 @@ enum Cursor<'a> {
     Record {
         a: &'a [(String, V)],
         b: &'a [(String, V)],
+        a_layout: RecordLayout,
+        b_layout: RecordLayout,
         index: usize,
     },
     Pairs(std::vec::IntoIter<super::Comparison<'a>>),
@@ -212,6 +215,8 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                 Cursor::Record {
                     a: av,
                     b: bv,
+                    a_layout: RecordLayout::from_fields(av),
+                    b_layout: RecordLayout::from_fields(bv),
                     index: 0,
                 }
             }
@@ -306,11 +311,18 @@ impl<'a> EqualityCursor for Cursor<'a> {
                     }
                 })
             }
-            Self::Record { a, b, index } => {
+            Self::Record {
+                a,
+                b,
+                a_layout,
+                b_layout,
+                index,
+            } => {
                 let position = *index;
                 *index += 1;
-                a.get(position)
-                    .zip(b.get(position))
+                a_layout
+                    .field_at(a, position)
+                    .zip(b_layout.field_at(b, position))
                     .map(|((an, av), (bn, bv))| {
                         if an == bn {
                             node(av, bv)
