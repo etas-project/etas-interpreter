@@ -102,6 +102,81 @@ fn new_capture_observes_frame_mutation_but_saved_frame_does_not() {
 }
 
 #[test]
+fn selection_predicate_restore_keeps_the_outer_captured_frame_identity() {
+    let frame = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(1))]).unwrap();
+    let root = InterpValue::Tuple(
+        vec![
+            lambda(frame.clone()),
+            InterpValue::MemorySelection {
+                region_stable_id: "r".into(),
+                path: vec![],
+                key_type: etas_types::TypeId(0),
+                value_type: etas_types::TypeId(0),
+                kind: MemorySelectionKind::Select,
+                predicate: Some(Box::new(lambda(frame))),
+                limit: None,
+            },
+        ]
+        .into(),
+    );
+    let saved = ValueSnapshot::capture(&root).unwrap();
+    let restored = saved.restore().unwrap();
+    let InterpValue::Tuple(values) = restored else {
+        panic!("tuple")
+    };
+    let InterpValue::Callable(CallTarget::Lambda { captured, .. }) = &values[0] else {
+        panic!("lambda")
+    };
+    let mut captured = captured.clone();
+    let InterpValue::MemorySelection {
+        predicate: Some(predicate),
+        ..
+    } = &values[1]
+    else {
+        panic!("selection")
+    };
+    let InterpValue::Callable(CallTarget::Lambda {
+        captured: selected, ..
+    }) = predicate.as_ref()
+    else {
+        panic!("predicate")
+    };
+    assert_eq!(captured.snapshot_id(), selected.snapshot_id());
+    assert!(captured.set(SymbolId(0), InterpValue::i32(42)));
+    assert_eq!(selected.get(SymbolId(0)), Some(InterpValue::i32(42)));
+    assert_eq!(captured.capture_identity(), selected.capture_identity());
+}
+
+#[test]
+fn selection_predicate_restore_rejects_conflicting_outer_frame_definitions() {
+    let first = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(1))]).unwrap();
+    let mut conflicting = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(2))]).unwrap();
+    conflicting.set_snapshot_id(first.snapshot_id()).unwrap();
+    let root = InterpValue::Tuple(
+        vec![
+            lambda(first),
+            InterpValue::MemorySelection {
+                region_stable_id: "r".into(),
+                path: vec![],
+                key_type: etas_types::TypeId(0),
+                value_type: etas_types::TypeId(0),
+                kind: MemorySelectionKind::Select,
+                predicate: Some(Box::new(lambda(conflicting))),
+                limit: None,
+            },
+        ]
+        .into(),
+    );
+    let saved = ValueSnapshot::capture(&root).unwrap();
+    assert!(
+        saved
+            .restore()
+            .unwrap_err()
+            .contains("conflicting definitions")
+    );
+}
+
+#[test]
 fn frame_cache_uses_storage_identity_not_untrusted_wire_id() {
     let first = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(1))]).unwrap();
     let mut second = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(2))]).unwrap();

@@ -141,6 +141,13 @@ pub(crate) fn release_value(mut current: Value) {
                 }
                 None
             }
+            Value::MemorySelection {
+                predicate: Some(predicate),
+                ..
+            } => {
+                current = *predicate;
+                continue;
+            }
             Value::Conversation(conversation) => conversation
                 .messages
                 .into_unique_messages()

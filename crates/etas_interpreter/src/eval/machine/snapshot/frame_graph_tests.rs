@@ -112,3 +112,71 @@ fn captured_frame_graph_capture_restore_compare_and_release_are_stack_safe() {
         ));
     }
 }
+
+#[test]
+fn selection_predicate_frame_graph_restores_and_releases_without_recursion() {
+    const WORKER: &str = "ETAS_TEST_SELECTION_PREDICATE_FRAME_GRAPH";
+    if std::env::var_os(WORKER).is_none() {
+        let current = std::thread::current();
+        let output = std::process::Command::new(std::env::current_exe().unwrap())
+            .args(["--exact", current.name().unwrap(), "--nocapture"])
+            .env(WORKER, "1")
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "{}\n{}",
+            output.status,
+            String::from_utf8_lossy(&output.stderr)
+        );
+        eprint!("{}", String::from_utf8_lossy(&output.stderr));
+        return;
+    }
+    for depth in [1000, 2000, 4000, 30000] {
+        let mut runtime = InterpValue::Bool(true);
+        for _ in 0..depth {
+            runtime = InterpValue::MemorySelection {
+                region_stable_id: "r".into(),
+                path: vec![],
+                key_type: etas_types::TypeId(0),
+                value_type: etas_types::TypeId(0),
+                kind: crate::value::MemorySelectionKind::Select,
+                predicate: Some(Box::new(InterpValue::Callable(CallTarget::Lambda {
+                    expr: HirExprId(7),
+                    captured: Frame::from_snapshot(vec![(SymbolId(0), runtime)]).unwrap(),
+                }))),
+                limit: None,
+            };
+        }
+        let (saved, capture_cost) = measure(|| ValueSnapshot::capture(&runtime).unwrap());
+        let independent = ValueSnapshot::capture(&runtime).unwrap();
+        assert_eq!(saved, independent);
+        let (copy, clone_cost) = measure(|| saved.clone());
+        assert!(
+            clone_cost.count <= 2,
+            "copied descendant graph: {clone_cost:?}"
+        );
+        let (restored, restore_cost) = measure(|| copy.restore().unwrap());
+        assert!(capture_cost.count < depth * 64 + 64, "{capture_cost:?}");
+        assert!(restore_cost.count < depth * 64 + 64, "{restore_cost:?}");
+        eprintln!(
+            "selection frame graph depth={depth}: capture={capture_cost:?}, clone={clone_cost:?}, restore={restore_cost:?}"
+        );
+        let mut cursor = restored.clone();
+        for _ in 0..depth {
+            let InterpValue::MemorySelection {
+                predicate: Some(predicate),
+                ..
+            } = cursor
+            else {
+                panic!("selection")
+            };
+            let InterpValue::Callable(CallTarget::Lambda { captured, .. }) = *predicate else {
+                panic!("lambda")
+            };
+            cursor = captured.get(SymbolId(0)).unwrap();
+        }
+        assert_eq!(cursor, InterpValue::Bool(true));
+        drop((cursor, restored, independent, saved, runtime));
+    }
+}
