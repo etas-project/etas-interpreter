@@ -6,6 +6,9 @@ mod capture_context;
 mod capture_identity;
 mod continuation;
 mod frame;
+mod frame_dependencies;
+#[cfg(test)]
+mod frame_graph_tests;
 mod machine_frame;
 mod message;
 #[cfg(test)]
@@ -16,7 +19,7 @@ pub(crate) mod program;
 mod validator;
 mod value;
 mod value_capture;
-mod value_compare;
+pub(crate) mod value_compare;
 mod value_membership;
 mod value_restore;
 

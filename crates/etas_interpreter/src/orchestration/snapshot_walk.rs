@@ -1,11 +1,21 @@
 use super::{MessageSnapshot, ValueSnapshot};
-use std::slice::Iter;
+use std::{collections::HashSet, slice::Iter};
 
 impl ValueSnapshot {
     pub(crate) fn walk(&self) -> impl Iterator<Item = &Self> {
         Walk {
             next: Some(self),
             parents: Vec::new(),
+            seen: None,
+        }
+    }
+
+    // Revisit scalar occurrences, but do not expand shared composite nodes twice.
+    pub(crate) fn walk_unique(&self) -> impl Iterator<Item = &Self> {
+        Walk {
+            next: Some(self),
+            parents: Vec::new(),
+            seen: Some(HashSet::new()),
         }
     }
 }
@@ -13,26 +23,36 @@ impl ValueSnapshot {
 struct Walk<'a> {
     next: Option<&'a ValueSnapshot>,
     parents: Vec<Children<'a>>,
+    seen: Option<HashSet<*const ValueSnapshot>>,
 }
 impl<'a> Iterator for Walk<'a> {
     type Item = &'a ValueSnapshot;
     fn next(&mut self) -> Option<Self::Item> {
-        let value = if let Some(value) = self.next.take() {
-            value
-        } else {
-            loop {
-                if let Some(value) = self.parents.last_mut()?.next() {
-                    break value;
+        loop {
+            let value = if let Some(value) = self.next.take() {
+                value
+            } else {
+                loop {
+                    if let Some(value) = self.parents.last_mut()?.next() {
+                        break value;
+                    }
+                    self.parents.pop();
                 }
-                self.parents.pop();
+            };
+            let mut children = children(value);
+            if let Some(first) = children.next() {
+                if self
+                    .seen
+                    .as_mut()
+                    .is_some_and(|seen| !seen.insert(value as *const _))
+                {
+                    continue;
+                }
+                self.parents.push(children);
+                self.next = Some(first);
             }
-        };
-        let mut children = children(value);
-        if let Some(first) = children.next() {
-            self.parents.push(children);
-            self.next = Some(first);
+            return Some(value);
         }
-        Some(value)
     }
 }
 

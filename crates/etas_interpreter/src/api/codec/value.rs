@@ -1,5 +1,5 @@
 use super::*;
-mod decode;
+pub(in crate::api::codec) mod decode;
 pub(super) mod encode_host;
 pub(super) mod encode_model;
 mod encode_runtime;

@@ -32,6 +32,7 @@ pub use priority_queue::PriorityQueueValue;
 mod prompt;
 pub use prompt::PromptValue;
 mod shared;
+pub(crate) use shared::release_value;
 pub use shared::{SharedFields, SharedValue};
 pub(crate) mod range;
 pub(crate) mod record;

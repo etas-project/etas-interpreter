@@ -3,6 +3,8 @@ use std::{collections::vec_deque, rc::Rc};
 use crate::value::{InterpValue as Value, ListValue};
 
 enum Children {
+    Frame(crate::control::FrameValues),
+    Targets(std::vec::IntoIter<crate::control::CallTarget>),
     Values(std::vec::IntoIter<Value>),
     Record(std::vec::IntoIter<(String, Value)>),
     Entries {
@@ -27,6 +29,8 @@ impl Children {
 
     fn is_empty(&self) -> bool {
         match self {
+            Self::Frame(values) => values.is_empty(),
+            Self::Targets(values) => values.len() == 0,
             Self::Values(values) => values.len() == 0,
             Self::Record(values) => values.len() == 0,
             Self::Entries { entries, value } => entries.len() == 0 && value.is_none(),
@@ -45,6 +49,8 @@ impl Iterator for Children {
 
     fn next(&mut self) -> Option<Value> {
         match self {
+            Self::Frame(values) => values.next(),
+            Self::Targets(values) => values.next().map(Value::Callable),
             Self::Values(values) => values.next(),
             Self::Record(values) => values.next().map(|(_, value)| value),
             Self::Entries { entries, value } => {
@@ -72,6 +78,29 @@ pub(crate) fn release_value(mut current: Value) {
     let mut pending: Vec<Children> = Vec::new();
     loop {
         let children = match current {
+            Value::Callable(crate::control::CallTarget::Lambda { captured, .. }) => {
+                Some(Children::Frame(captured.into_unique_values()))
+            }
+            Value::Callable(
+                crate::control::CallTarget::Specialized { target, .. }
+                | crate::control::CallTarget::Limited { target, .. },
+            ) => {
+                if let Some(target) = target.into_unique() {
+                    current = Value::Callable(target);
+                    continue;
+                }
+                None
+            }
+            Value::Callable(crate::control::CallTarget::Composed(targets)) => targets
+                .into_unique()
+                .map(|values| Children::Targets(values.into_iter())),
+            Value::Callable(crate::control::CallTarget::Scoped(value)) => {
+                if let Some(target) = value.into_unique_target() {
+                    current = Value::Callable(target);
+                    continue;
+                }
+                None
+            }
             Value::Nominal { value, .. }
             | Value::Trust { value, .. }
             | Value::OptionSome(value) => {

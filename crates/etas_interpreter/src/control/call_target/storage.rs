@@ -23,6 +23,9 @@ impl CallTargetLink {
     pub fn into_value(mut self) -> CallTarget {
         Rc::unwrap_or_clone(self.0.take().expect("live call target link"))
     }
+    pub(crate) fn into_unique(mut self) -> Option<CallTarget> {
+        Rc::try_unwrap(self.0.take()?).ok()
+    }
 }
 
 impl CallTargetChildren {
@@ -32,6 +35,9 @@ impl CallTargetChildren {
     }
     pub fn into_values(mut self) -> Vec<CallTarget> {
         Rc::unwrap_or_clone(self.0.take().expect("live call target children"))
+    }
+    pub(crate) fn into_unique(mut self) -> Option<Vec<CallTarget>> {
+        Rc::try_unwrap(self.0.take()?).ok()
     }
 }
 

@@ -1,6 +1,12 @@
 mod call_target;
+pub(in crate::api::codec) use call_target::{
+    call_target_snapshot_with_frames, call_target_with_frames,
+};
 mod continuation;
 mod frame;
+pub(in crate::api::codec) use frame::{
+    DecodeRoot, FrameDecodeCache, runtime_frame_cache, snapshot_frame_cache,
+};
 mod intrinsic;
 mod model;
 mod program;

@@ -173,7 +173,7 @@ fn checked_project() -> etas_frontend::CheckedProject {
     crate::testing::project::checked_project("module app.main; flow main() -> unit { return; }")
 }
 
-fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> Value {
+fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> CheckpointDocument {
     let entry = checked.entry.expect("test entry");
     let checkpoint = InterpreterCheckpoint {
         retained_code: None,

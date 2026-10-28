@@ -33,6 +33,9 @@ pub struct ScopedCallableValue {
 }
 
 impl ScopedCallableValue {
+    pub(crate) fn into_unique_target(self) -> Option<CallTarget> {
+        Rc::try_unwrap(self.native).ok()?.target.into_unique()
+    }
     pub(crate) fn action_projections(
         &self,
     ) -> Result<Vec<crate::plan::code::RevisionProjection>, String> {

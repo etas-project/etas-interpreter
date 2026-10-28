@@ -249,7 +249,7 @@ impl MachineSnapshot {
     }
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug)]
 pub(crate) enum CallTargetSnapshot {
     Scoped {
         metadata: Box<ScopedCallableMetadata>,
@@ -301,20 +301,24 @@ pub(crate) struct LocalsSnapshot {
     pub(crate) effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
 }
 
-impl PartialEq for LocalsSnapshot {
-    fn eq(&self, other: &Self) -> bool {
-        self.id == other.id
-            && self.type_bindings == other.type_bindings
-            && self.effect_row_bindings == other.effect_row_bindings
-            && (std::rc::Rc::ptr_eq(&self.locals, &other.locals) || self.locals == other.locals)
-    }
-}
-
 impl LocalsSnapshot {
+    pub(crate) fn into_unique_values(mut self) -> Option<Vec<(SymbolId, ValueSnapshot)>> {
+        std::rc::Rc::get_mut(&mut self.locals).map(std::mem::take)
+    }
     pub(crate) fn generic_bindings(&self) -> crate::control::GenericBindings {
         crate::control::GenericBindings {
             types: self.type_bindings.iter().cloned().collect(),
             rows: self.effect_row_bindings.iter().cloned().collect(),
+        }
+    }
+}
+
+impl Drop for LocalsSnapshot {
+    fn drop(&mut self) {
+        if let Some(values) = std::rc::Rc::get_mut(&mut self.locals) {
+            for (_, value) in std::mem::take(values) {
+                super::snapshot_storage::SnapshotChild::release(value);
+            }
         }
     }
 }

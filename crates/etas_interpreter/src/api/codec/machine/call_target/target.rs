@@ -1,4 +1,6 @@
-use super::super::frame::{locals_from_snapshot, runtime_frame_from_snapshot};
+use super::super::frame::{
+    DecodeRoot, FrameDecodeCache, runtime_frame_cache, snapshot_frame_cache,
+};
 use crate::{
     control::{CallTarget, Frame},
     orchestration::{CallTargetSnapshot, LocalsSnapshot},
@@ -9,8 +11,12 @@ use etas_types::TypeId;
 use serde_json::Value;
 
 pub(super) trait TargetValue: Sized {
-    type Frame;
-    fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String>;
+    type Frame: Clone;
+    fn frame_cache(
+        limits: &etas_host::StorageLimits,
+        root: DecodeRoot<'_>,
+    ) -> Result<FrameDecodeCache<Self::Frame>, String>;
+    fn frame(value: &Value, cache: &FrameDecodeCache<Self::Frame>) -> Result<Self::Frame, String>;
     fn build(target: DecodedTarget<Self::Frame, Self>) -> Self;
     fn agent_reference(
         reference: crate::orchestration::CheckpointAgentReference,
@@ -59,6 +65,12 @@ pub(super) enum DecodedTarget<F, T> {
 
 impl TargetValue for CallTargetSnapshot {
     type Frame = LocalsSnapshot;
+    fn frame_cache(
+        limits: &etas_host::StorageLimits,
+        root: DecodeRoot<'_>,
+    ) -> Result<FrameDecodeCache<Self::Frame>, String> {
+        snapshot_frame_cache(limits, root)
+    }
     fn scoped(
         metadata: Box<crate::orchestration::ScopedCallableMetadata>,
         target: Self,
@@ -73,8 +85,8 @@ impl TargetValue for CallTargetSnapshot {
     ) -> Result<Self, String> {
         Ok(Self::AgentRevision(Box::new(reference)))
     }
-    fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
-        locals_from_snapshot(limits, value)
+    fn frame(value: &Value, cache: &FrameDecodeCache<Self::Frame>) -> Result<Self::Frame, String> {
+        cache.get(value)
     }
     fn build(target: DecodedTarget<Self::Frame, Self>) -> Self {
         match target {
@@ -130,6 +142,12 @@ impl TargetValue for CallTargetSnapshot {
 
 impl TargetValue for CallTarget {
     type Frame = Frame;
+    fn frame_cache(
+        limits: &etas_host::StorageLimits,
+        root: DecodeRoot<'_>,
+    ) -> Result<FrameDecodeCache<Self::Frame>, String> {
+        runtime_frame_cache(limits, root)
+    }
     fn scoped(
         _: Box<crate::orchestration::ScopedCallableMetadata>,
         _: Self,
@@ -139,8 +157,8 @@ impl TargetValue for CallTarget {
     fn agent_reference(_: crate::orchestration::CheckpointAgentReference) -> Result<Self, String> {
         Err("checkpoint agent reference requires checked native revision restoration".into())
     }
-    fn frame(limits: &etas_host::StorageLimits, value: &Value) -> Result<Self::Frame, String> {
-        runtime_frame_from_snapshot(limits, value)
+    fn frame(value: &Value, cache: &FrameDecodeCache<Self::Frame>) -> Result<Self::Frame, String> {
+        cache.get(value)
     }
     fn build(target: DecodedTarget<Self::Frame, Self>) -> Self {
         match target {

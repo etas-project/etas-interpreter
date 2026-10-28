@@ -11,10 +11,10 @@ use super::*;
 /// Consumes a logical artifact without cloning its recursive JSON tree.
 /// The file envelope has a separate version from the checked machine schema.
 pub fn checkpoint_file_to_bytes(
-    artifact: Value,
+    artifact: impl Into<CheckpointDocument>,
     limits: CheckpointFileLimits,
 ) -> Result<Vec<u8>, InterpreterCodecError> {
-    let artifact = CheckpointDocument(artifact);
+    let artifact = artifact.into();
     limits.validate()?;
     check_document_schema(&artifact)?;
     let nodes = FlatNodes {

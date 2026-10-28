@@ -28,7 +28,7 @@ enum Cursor<'a> {
         b: &'a [(String, V)],
         index: usize,
     },
-    Pairs(std::vec::IntoIter<(&'a V, &'a V)>),
+    Pairs(std::vec::IntoIter<super::Comparison<'a>>),
     Range(std::array::IntoIter<(&'a V, &'a V), 2>),
     Set {
         a: &'a [V],
@@ -233,14 +233,14 @@ fn node<'a>(mut a: &'a V, mut b: &'a V) -> Comparison<Cursor<'a>> {
                 Cursor::Range([(a.as_ref(), b.as_ref()), (c.as_ref(), d.as_ref())].into_iter())
             }
             _ => {
-                let mut pairs = Vec::new();
+                let mut pairs = super::Pending(Vec::new());
                 if !super::same_node(a, b, &mut pairs) {
                     return Comparison::Ready(false);
                 }
-                if pairs.is_empty() {
+                if pairs.0.is_empty() {
                     return Comparison::Ready(true);
                 }
-                Cursor::Pairs(pairs.into_iter())
+                Cursor::Pairs(pairs.0.into_iter())
             }
         };
         return Comparison::Pending(cursor);
@@ -319,7 +319,10 @@ impl<'a> EqualityCursor for Cursor<'a> {
                         }
                     })
             }
-            Self::Pairs(pairs) => pairs.next().map(|(a, b)| node(a, b)),
+            Self::Pairs(pairs) => pairs.next().map(|pair| match pair {
+                super::Comparison::Value(a, b) => node(a, b),
+                pair => Comparison::Ready(super::equal(pair)),
+            }),
             Self::Range(pairs) => pairs.next().map(|(a, b)| node(a, b)),
             Self::Set { .. } => unreachable!("set searches handled above"),
         };

@@ -1,5 +1,80 @@
 use crate::orchestration::{MessageSnapshot, ValueSnapshot};
+use std::collections::HashSet;
+mod callables;
 mod membership;
+
+enum Comparison<'a> {
+    Value(&'a ValueSnapshot, &'a ValueSnapshot),
+    Target(
+        &'a crate::orchestration::CallTargetSnapshot,
+        &'a crate::orchestration::CallTargetSnapshot,
+    ),
+    Frame(
+        &'a crate::orchestration::LocalsSnapshot,
+        &'a crate::orchestration::LocalsSnapshot,
+    ),
+    Targets(TargetPairs<'a>),
+}
+
+type TargetPairs<'a> = std::iter::Zip<
+    std::slice::Iter<'a, crate::orchestration::CallTargetSnapshot>,
+    std::slice::Iter<'a, crate::orchestration::CallTargetSnapshot>,
+>;
+
+#[derive(Default)]
+struct Seen(HashSet<(u8, usize, usize)>);
+impl Seen {
+    fn edge<T>(&mut self, kind: u8, a: Option<*const T>, b: Option<*const T>) -> bool {
+        match (a, b) {
+            (Some(a), Some(b)) => !self.0.insert((kind, a as usize, b as usize)),
+            _ => false,
+        }
+    }
+}
+
+struct Pending<'a>(Vec<Comparison<'a>>);
+impl<'a> Pending<'a> {
+    fn push(&mut self, (a, b): (&'a ValueSnapshot, &'a ValueSnapshot)) {
+        self.0.push(Comparison::Value(a, b));
+    }
+    fn extend(&mut self, pairs: impl IntoIterator<Item = (&'a ValueSnapshot, &'a ValueSnapshot)>) {
+        self.0
+            .extend(pairs.into_iter().map(|(a, b)| Comparison::Value(a, b)));
+    }
+}
+
+fn equal(root: Comparison<'_>) -> bool {
+    let mut pending = Pending(Vec::new());
+    let mut next = Some(root);
+    let mut seen = Seen::default();
+    while let Some(pair) = next.take().or_else(|| pending.0.pop()) {
+        let same = match pair {
+            Comparison::Value(a, b) => same_node(a, b, &mut pending),
+            Comparison::Target(a, b) => callables::target(a, b, &mut pending, &mut next, &mut seen),
+            Comparison::Frame(a, b) => callables::frame(a, b, &mut pending, &mut seen),
+            Comparison::Targets(mut pairs) => {
+                if let Some((a, b)) = pairs.next() {
+                    if pairs.len() > 0 {
+                        pending.0.push(Comparison::Targets(pairs));
+                    }
+                    next = Some(Comparison::Target(a, b));
+                }
+                true
+            }
+        };
+        if !same {
+            return false;
+        }
+    }
+    true
+}
+
+pub(crate) fn equal_targets(
+    a: &[crate::orchestration::CallTargetSnapshot],
+    b: &[crate::orchestration::CallTargetSnapshot],
+) -> bool {
+    a.len() == b.len() && equal(Comparison::Targets(a.iter().zip(b)))
+}
 
 // Runtime Set equality is order-independent; snapshot equality below remains
 // order-sensitive so conflicting definitions of a frame cannot change iteration.
@@ -9,21 +84,11 @@ pub(super) fn membership_equal(a: &ValueSnapshot, b: &ValueSnapshot) -> bool {
 
 impl PartialEq for ValueSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        let mut pending = vec![(self, other)];
-        while let Some((left, right)) = pending.pop() {
-            if !same_node(left, right, &mut pending) {
-                return false;
-            }
-        }
-        true
+        equal(Comparison::Value(self, other))
     }
 }
 
-fn same_node<'a>(
-    a: &'a ValueSnapshot,
-    b: &'a ValueSnapshot,
-    pending: &mut Vec<(&'a ValueSnapshot, &'a ValueSnapshot)>,
-) -> bool {
+fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pending<'a>) -> bool {
     use ValueSnapshot as V;
     match (a, b) {
         (V::Unit, V::Unit) | (V::OptionNone, V::OptionNone) => true,
@@ -205,7 +270,10 @@ fn same_node<'a>(
                 stderr: f,
             },
         ) => a == b && c == d && e == f,
-        (V::Callable(a), V::Callable(b)) => a == b,
+        (V::Callable(a), V::Callable(b)) => {
+            pending.0.push(Comparison::Target(a, b));
+            true
+        }
         (
             V::Handler {
                 fact_expr: a,
@@ -288,11 +356,7 @@ fn same_node<'a>(
     }
 }
 
-fn message<'a>(
-    a: &'a MessageSnapshot,
-    b: &'a MessageSnapshot,
-    pending: &mut Vec<(&'a ValueSnapshot, &'a ValueSnapshot)>,
-) -> bool {
+fn message<'a>(a: &'a MessageSnapshot, b: &'a MessageSnapshot, pending: &mut Pending<'a>) -> bool {
     pending.push((&a.payload, &b.payload));
     a.id == b.id
         && a.from == b.from
