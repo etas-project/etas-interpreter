@@ -49,6 +49,51 @@ fn validate_both(checked: &etas_frontend::CheckedProject, value: &V, valid: bool
 }
 
 #[test]
+fn ingress_contract_checks_cold_text_without_contiguous_payload_materialization() {
+    use crate::testing::allocation::measure;
+    use etas_builtin::text::input::TextInput;
+    let checked = checked("module app.main; flow main(value: string) -> unit { return; }");
+    let plan = crate::Interpreter.plan(&checked, PlanOptions).plan.unwrap();
+    let limits = Default::default();
+    let validator = SnapshotValidator::new(
+        &checked,
+        &plan.slots,
+        &plan.dispatch,
+        &plan.closures,
+        &limits,
+    );
+    let mut measured = Vec::new();
+    for count in [1000, 2000, 4000] {
+        for boundary in ["runtime", "snapshot"] {
+            let prefix = crate::value::StringValue::from("中😀e\u{301}".repeat(count));
+            let previous = prefix.clone();
+            let text = prefix.concat("end".into()).unwrap();
+            let input = V::String(text.clone());
+            let snapshot = ValueSnapshot::capture(&input).unwrap();
+            let (result, cost) = measure(|| match boundary {
+                "runtime" => super::runtime::validate_arguments(
+                    &checked,
+                    &plan,
+                    checked.entry.unwrap(),
+                    std::slice::from_ref(&input),
+                    &limits,
+                ),
+                _ => validator
+                    .validate_arguments(checked.entry.unwrap(), std::slice::from_ref(&snapshot)),
+            });
+            result.unwrap();
+            assert_eq!(previous.len(), count * 10);
+            measured.push((boundary, count, cost, text.contiguous().is_some()));
+        }
+    }
+    eprintln!("cold checked string allocation costs: {measured:?}");
+    for (boundary, count, cost, cached) in measured {
+        assert!(cost.bytes < 4096, "{boundary} n={count}: {cost:?}");
+        assert!(!cached, "{boundary} materialized a contiguous payload");
+    }
+}
+
+#[test]
 fn ingress_contract_rejects_unbound_types_even_without_payload_elements() {
     for (template, concrete, kind) in [
         ("Array<Payload>", "Array<i32>", 0),

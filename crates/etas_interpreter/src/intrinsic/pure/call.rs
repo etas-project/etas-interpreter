@@ -49,12 +49,21 @@ pub fn execute_pure_intrinsic(
                 actual: args.len(),
             });
         }
-        let mut borrowed = [""; 2];
-        for ((slot, value), ty) in borrowed.iter_mut().zip(&args).zip(&call.parameter_types) {
-            *slot = super::abi::borrowed::string_for_type(value, *ty, projector)?;
+        let first = super::abi::borrowed::shared_string_for_type(
+            &args[0],
+            call.parameter_types[0],
+            projector,
+        )?;
+        let mut borrowed = [first; 2];
+        if args.len() == 2 {
+            borrowed[1] = super::abi::borrowed::shared_string_for_type(
+                &args[1],
+                call.parameter_types[1],
+                projector,
+            )?;
         }
         let result = query
-            .evaluate(&borrowed[..args.len()])
+            .evaluate_projected(&borrowed[..args.len()])
             .map_err(AdapterError::Builtin)?;
         return from_builtin_for_type(result, call.result_type, projector);
     }

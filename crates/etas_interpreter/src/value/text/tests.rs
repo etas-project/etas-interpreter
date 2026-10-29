@@ -6,6 +6,56 @@ use etas_hir::SymbolId;
 use std::sync::Arc;
 
 #[test]
+fn borrowed_text_chunks_preserve_mixed_iteration_without_caching_payloads() {
+    use etas_builtin::text::input::TextInput;
+    let parts = ["first", "é", "中", "🙂", "\0", "last"];
+    let mut text = StringValue::from(parts[0]);
+    for part in &parts[1..] {
+        text = text.clone().concat((*part).into()).unwrap();
+    }
+    assert!(text.contiguous().is_none());
+    assert_eq!(text.chunks().collect::<Vec<_>>(), parts);
+    assert_eq!(
+        text.chunks().rev().collect::<Vec<_>>(),
+        parts.into_iter().rev().collect::<Vec<_>>()
+    );
+    let mut chunks = text.chunks();
+    assert_eq!(chunks.len(), parts.len());
+    assert_eq!(chunks.next(), Some("first"));
+    assert_eq!(chunks.next_back(), Some("last"));
+    assert_eq!(chunks.next_back(), Some("\0"));
+    assert_eq!(chunks.next(), Some("é"));
+    assert_eq!(chunks.next(), Some("中"));
+    assert_eq!(chunks.next_back(), Some("🙂"));
+    assert_eq!(chunks.next(), None);
+    assert_eq!(chunks.next_back(), None);
+    assert!(text.contiguous().is_none());
+}
+
+#[test]
+fn borrowed_text_chunks_allocate_only_cursor_metadata_for_deep_chains() {
+    use etas_builtin::text::input::TextInput;
+    for count in [1000, 2000, 4000] {
+        let piece = StringValue::from("中😀e\u{301}".repeat(128));
+        let mut text = StringValue::default();
+        for _ in 0..count {
+            text = text.clone().concat(piece.clone()).unwrap();
+        }
+        let (scalars, cost) = measure(|| text.chunks().flat_map(str::chars).count());
+        assert_eq!(scalars, count * 128 * 4);
+        assert!(text.contiguous().is_none());
+        assert!(
+            cost.bytes <= count * 64,
+            "cursor metadata n={count}: {cost:?}"
+        );
+        eprintln!(
+            "deep chunk cursor n={count}: {cost:?}, logical payload={}",
+            text.len()
+        );
+    }
+}
+
+#[test]
 fn text_reads_and_unique_extraction_preserve_the_payload_buffer() {
     for length in [1024, 2048, 4096] {
         let mut buffer = String::with_capacity(length + 16);

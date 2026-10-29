@@ -24,6 +24,8 @@ mod record_input_tests;
 #[cfg(test)]
 mod record_tests;
 #[cfg(test)]
+mod rope_query_tests;
+#[cfg(test)]
 mod sequence_input_tests;
 #[cfg(test)]
 mod shared_field_input_tests;
