@@ -2,6 +2,61 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn segmented_text_keys_preserve_membership_order_and_checkpoint_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+flow main() -> bool {
+    let prefix = "中😀";
+    let key = prefix + "é";
+    let map = {key => 7};
+    let set = #{key, "中😀é"};
+    let ordered = OrderedMap.new<string, i32>().insert(key, 9).insert("a", 1);
+    checkpoint("segmented-text-keys");
+    let other = "中" + "😀é";
+    var count = 0;
+    for item in set limit Iterations(4) {
+        if item != other { return false; }
+        count = count + 1;
+    }
+    return key == other && key != "中😀é"
+        && map.get(other) == Some(7) && map.get("missing") == None
+        && count == 1
+        && ordered.get(other) == Some(9) && ordered.get("a") == Some(1);
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let saved = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&[], "main", saved).unwrap();
+    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+    for checkpoint in [saved, &decoded] {
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn segmented_text_transforms_preserve_unicode_fragments_and_file_resume() {
     let checked = checked_project(
         r#"

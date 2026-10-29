@@ -18,7 +18,16 @@ enum Kind {
     Some,
     Nominal(etas_types::TypeId),
     Trust(etas_types::TrustWrapper),
-    Variant(StringValue),
+    Variant(IdentityText),
+}
+
+#[derive(Clone, PartialEq, Eq)]
+struct IdentityText(StringValue);
+
+impl std::hash::Hash for IdentityText {
+    fn hash<H: std::hash::Hasher>(&self, state: &mut H) {
+        self.0.hash_membership(state);
+    }
 }
 
 /// Only meaningful while the immutable root (or entire frame) remains borrowed.
@@ -56,7 +65,7 @@ impl ValueIdentity {
                 (Kind::Trust(*wrapper), value.shared_capture_identity()?)
             }
             InterpValue::Variant { name, fields } => (
-                Kind::Variant(name.clone()),
+                Kind::Variant(IdentityText(name.clone())),
                 fields.shared_capture_identity()?,
             ),
             // Envelope metadata is not identified by its shared payload alone.
