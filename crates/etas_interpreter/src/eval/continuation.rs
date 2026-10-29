@@ -1026,6 +1026,7 @@ impl<'a> EvalContext<'a> {
             Continuation::HandlerDispatch { outer } => {
                 self.apply_continuation(outer.into_value(), value)
             }
+            Continuation::ReenterHandler { boundary } => self.reenter_handler(boundary, value),
             Continuation::HandleBoundary {
                 scope_id,
                 inner,

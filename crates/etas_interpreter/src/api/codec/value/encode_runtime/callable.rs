@@ -15,9 +15,6 @@ pub(super) fn write<'a>(
             *slot = json!({"kind":"scoped_callable_display","persistent":false})
         }
         CallTarget::ToolItem(item) => *slot = json!({"kind":"tool","item":item.0}),
-        CallTarget::SpecImplMethod(symbol) => {
-            *slot = json!({"kind":"spec_impl_method","symbol":symbol.0})
-        }
         CallTarget::EnumVariant(symbol) => *slot = json!({"kind":"enum_variant","symbol":symbol.0}),
         CallTarget::NominalConstructor(ty) => {
             *slot = json!({"kind":"nominal_constructor","ty":ty.0})

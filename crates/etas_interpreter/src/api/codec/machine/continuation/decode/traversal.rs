@@ -7,6 +7,7 @@ enum PendingParent<'a> {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
     CallBoundary(etas_core::Span),
     HandlerDispatch,
+    ReenterHandler,
     HandleBoundary {
         scope_id: HandlerScopeId,
         value: &'a Value,
@@ -41,6 +42,11 @@ pub(crate) fn continuation_from_snapshot(
             "handler_dispatch" => {
                 pending.push(PendingParent::HandlerDispatch);
                 value = required(value, "outer")?;
+                continue;
+            }
+            "reenter_handler" => {
+                pending.push(PendingParent::ReenterHandler);
+                value = required(value, "boundary")?;
                 continue;
             }
             "handle_boundary" => {
@@ -79,6 +85,9 @@ pub(crate) fn continuation_from_snapshot(
                 Some(PendingParent::HandlerDispatch) => {
                     ContinuationSnapshot::HandlerDispatch { outer: node.into() }
                 }
+                Some(PendingParent::ReenterHandler) => ContinuationSnapshot::ReenterHandler {
+                    boundary: node.into(),
+                },
                 Some(PendingParent::HandleBoundary { scope_id, value }) => {
                     ContinuationSnapshot::HandleBoundary {
                         scope_id,

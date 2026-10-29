@@ -190,9 +190,6 @@ fn decode_leaf<T: TargetValue>(
         "flow" => DecodedTarget::FlowItem(etas_hir::HirItemId(required_u32(value, "item")?)),
         "agent" => DecodedTarget::AgentItem(etas_hir::HirItemId(required_u32(value, "item")?)),
         "tool" => DecodedTarget::ToolItem(etas_hir::HirItemId(required_u32(value, "item")?)),
-        "spec_impl_method" => {
-            DecodedTarget::SpecImplMethod(SymbolId(required_u32(value, "symbol")?))
-        }
         "lambda" => DecodedTarget::Lambda {
             expr: HirExprId(required_u32(value, "expr")?),
             captured: T::frame(required(value, "captured")?, cache)?,

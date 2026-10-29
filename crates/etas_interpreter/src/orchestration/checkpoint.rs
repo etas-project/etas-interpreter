@@ -259,7 +259,6 @@ pub(crate) enum CallTargetSnapshot {
     AgentItem(HirItemId),
     AgentRevision(Box<CheckpointAgentReference>),
     ToolItem(HirItemId),
-    SpecImplMethod(SymbolId),
     Lambda {
         expr: etas_hir::HirExprId,
         captured: LocalsSnapshot,
@@ -868,6 +867,9 @@ pub(crate) enum ContinuationSnapshot {
     },
     HandlerDispatch {
         outer: ContinuationSnapshotLink,
+    },
+    ReenterHandler {
+        boundary: ContinuationSnapshotLink,
     },
     HandleBoundary {
         scope_id: HandlerScopeId,

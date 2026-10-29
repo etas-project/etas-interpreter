@@ -218,10 +218,13 @@ impl<'a> EvalContext<'a> {
                     {
                         Some(signal) => signal,
                         None => {
-                            if let Err(fault) = self.close_handler_scope(scope_id, span) {
-                                return ControlSignal::Fault(Box::new(fault));
-                            }
-                            return ControlSignal::Perform(perform);
+                            return self.suspend_handler_for_perform(
+                                *perform,
+                                scope_id,
+                                handler_records,
+                                span,
+                                frame,
+                            );
                         }
                     };
                 }
@@ -515,10 +518,9 @@ impl<'a> EvalContext<'a> {
                     signal = match self.dispatch_handler(*perform.clone(), &handlers, frame) {
                         Some(signal) => signal,
                         None => {
-                            if let Err(fault) = self.close_handler_scope(scope_id, span) {
-                                return ControlSignal::Fault(Box::new(fault));
-                            }
-                            return ControlSignal::Perform(perform);
+                            return self.suspend_handler_for_perform(
+                                *perform, scope_id, handlers, span, frame,
+                            );
                         }
                     };
                 }
@@ -611,6 +613,72 @@ impl<'a> EvalContext<'a> {
                 }
             }
         }
+    }
+
+    fn suspend_handler_for_perform(
+        &mut self,
+        mut perform: PendingPerform,
+        scope_id: HandlerScopeId,
+        handlers: Vec<ActiveHandlerArmRecord>,
+        span: Span,
+        frame: &Frame,
+    ) -> ControlSignal {
+        if perform.continuation.handler_scope_occurrences(scope_id) != 0 {
+            return ControlSignal::runtime_fault(
+                "forwarded handler scope already has a boundary owner",
+                span,
+            );
+        }
+        if let Err(fault) = self.close_handler_scope(scope_id, span) {
+            return ControlSignal::Fault(Box::new(fault));
+        }
+        perform.continuation = Continuation::ReenterHandler {
+            boundary: Continuation::HandleBoundary {
+                scope_id,
+                inner: perform.continuation.into(),
+                handlers,
+                span,
+                frame: frame.clone(),
+            }
+            .into(),
+        };
+        ControlSignal::pending_perform(perform)
+    }
+
+    pub(super) fn reenter_handler(
+        &mut self,
+        boundary: crate::control::ContinuationLink,
+        value: InterpValue,
+    ) -> ControlSignal {
+        let Continuation::HandleBoundary {
+            scope_id,
+            handlers,
+            span,
+            ..
+        } = &*boundary
+        else {
+            return ControlSignal::missing_checked_fact(
+                "handler reentry requires a saved handler boundary",
+                item_span(self.checked, self.entry_item),
+            );
+        };
+        if self
+            .handler_stack
+            .last()
+            .is_some_and(|active| active.id >= *scope_id)
+        {
+            return ControlSignal::runtime_fault("handler reentry scope order is invalid", *span);
+        }
+        self.handler_stack.push(ActiveHandlerRecord {
+            id: *scope_id,
+            handled_actions: handlers
+                .iter()
+                .map(|handler| format!("{}.{}", handler.effect_segments.join("."), handler.action))
+                .collect(),
+            handlers: handlers.clone(),
+            span: *span,
+        });
+        self.apply_continuation(boundary.into_value(), value)
     }
 
     fn wrap_handler_boundary_signal(

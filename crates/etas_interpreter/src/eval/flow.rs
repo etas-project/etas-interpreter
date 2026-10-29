@@ -77,22 +77,6 @@ impl<'a> EvalContext<'a> {
         self.drive_restored_handlers(signal, &mut frame)
     }
 
-    pub(super) fn callable_frame(
-        &self,
-        scope: etas_hir::ScopeId,
-        type_bindings: std::collections::HashMap<String, etas_types::TypeId>,
-        span: Span,
-    ) -> Result<Frame, ExecutionFault> {
-        self.callable_frame_with_generics(
-            scope,
-            crate::control::GenericBindings {
-                types: type_bindings,
-                rows: Default::default(),
-            },
-            span,
-        )
-    }
-
     pub(super) fn callable_frame_with_generics(
         &self,
         scope: etas_hir::ScopeId,

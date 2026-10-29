@@ -15,7 +15,6 @@ pub enum CallTarget {
     AgentRevision(crate::value::AgentRevisionValue),
     Scoped(crate::value::ScopedCallableValue),
     ToolItem(HirItemId),
-    SpecImplMethod(SymbolId),
     Lambda {
         expr: HirExprId,
         captured: Frame,

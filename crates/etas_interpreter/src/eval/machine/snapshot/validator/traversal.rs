@@ -8,6 +8,7 @@ use std::{collections::HashSet, ptr::NonNull};
 #[derive(Clone, Copy)]
 enum Visit<'a> {
     Node(&'a ContinuationSnapshot),
+    LeaveReentry,
     LeaveHandler {
         scope_id: HandlerScopeId,
         handlers: &'a [ActiveHandlerArmRecord],
@@ -75,6 +76,10 @@ impl<'a> Iterator for ContinuationWalk<'a> {
         };
         if let Visit::Node(node) = event {
             match node {
+                ContinuationSnapshot::ReenterHandler { boundary } => {
+                    self.pending.push(Task::Visit(Visit::LeaveReentry));
+                    self.next = Some(Task::Link(boundary));
+                }
                 ContinuationSnapshot::HandleBoundary {
                     scope_id,
                     inner,
@@ -115,9 +120,35 @@ impl SnapshotValidator<'_> {
         context: &str,
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
+        let mut suspended_scopes = Vec::new();
         for event in ContinuationWalk::new(continuation) {
             match event {
-                Visit::Node(node) => self.continuation_node(node, context, boundary_scopes)?,
+                Visit::Node(node) => {
+                    self.continuation_node(node, context, boundary_scopes)?;
+                    if let ContinuationSnapshot::ReenterHandler { boundary } = node {
+                        let ContinuationSnapshot::HandleBoundary { scope_id, .. } = &**boundary
+                        else {
+                            return Err(format!(
+                                "{context} handler reentry does not contain a handler boundary"
+                            ));
+                        };
+                        if suspended_scopes
+                            .last()
+                            .is_some_and(|parent| parent >= scope_id)
+                        {
+                            return Err(format!(
+                                "{context} suspended handler scope order is invalid at scope {}",
+                                scope_id.0
+                            ));
+                        }
+                        suspended_scopes.push(*scope_id);
+                    }
+                }
+                Visit::LeaveReentry => {
+                    if suspended_scopes.pop().is_none() {
+                        return Err(format!("{context} handler reentry traversal is unbalanced"));
+                    }
+                }
                 Visit::LeaveHandler {
                     handlers, frame, ..
                 } => {
@@ -138,9 +169,14 @@ impl SnapshotValidator<'_> {
         scopes: &mut Vec<HandlerScopeId>,
         retries: &mut Vec<crate::orchestration::RetryAttemptRecord>,
     ) {
+        let mut suspended_depth = 0;
         for event in ContinuationWalk::new(continuation) {
             match event {
-                Visit::LeaveHandler { scope_id, .. } => scopes.push(scope_id),
+                Visit::Node(ContinuationSnapshot::ReenterHandler { .. }) => suspended_depth += 1,
+                Visit::LeaveReentry => suspended_depth -= 1,
+                Visit::LeaveHandler { scope_id, .. } if suspended_depth == 0 => {
+                    scopes.push(scope_id)
+                }
                 Visit::Node(ContinuationSnapshot::RetryAttempt { retry, .. }) => {
                     retries.push(retry.clone())
                 }

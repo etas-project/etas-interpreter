@@ -661,6 +661,7 @@ impl ContinuationSnapshot {
             Continuation::RestoreModelPolicy { .. }
             | Continuation::CallBoundary { .. }
             | Continuation::HandlerDispatch { .. }
+            | Continuation::ReenterHandler { .. }
             | Continuation::HandleBoundary { .. }
             | Continuation::ScopedModelPolicy { .. }
             | Continuation::Chain { .. } => {
@@ -1308,6 +1309,7 @@ impl ContinuationSnapshot {
             Self::RestoreModelPolicy { .. }
             | Self::CallBoundary { .. }
             | Self::HandlerDispatch { .. }
+            | Self::ReenterHandler { .. }
             | Self::HandleBoundary { .. }
             | Self::ScopedModelPolicy { .. }
             | Self::Chain { .. } => {

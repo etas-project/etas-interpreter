@@ -72,23 +72,6 @@ pub(super) fn interface(
             }
             return agent_interface(checked, agent.source_agent()?, bindings, allowed, specs);
         }
-        Target::SpecImplMethod(symbol) => {
-            let Some(etas_hir::SymbolDef::Item { item }) =
-                checked.symbols.get(*symbol).map(|symbol| &symbol.def)
-            else {
-                return Err("spec method input has no checked item".into());
-            };
-            let Some(ItemSignature::Flow(signature)) = checked.types.item_signatures.get(item)
-            else {
-                return Err("spec method input has no checked flow signature".into());
-            };
-            (
-                CheckedCallableRoot::Item(*item),
-                flow(signature),
-                None,
-                bindings.clone(),
-            )
-        }
         Target::Lambda { expr, captured } => {
             if plan.closures.get(*expr).is_none() {
                 return Err("lambda input has no checked capture layout".into());

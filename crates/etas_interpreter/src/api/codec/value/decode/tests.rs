@@ -2,6 +2,33 @@ use super::*;
 use crate::{orchestration::ValueSnapshot, testing::allocation::measure};
 
 #[test]
+fn empty_tuple_encoding_cannot_restore_a_second_unit_representation() {
+    let limits = etas_host::StorageLimits::default();
+    let wire = json!({"kind": "tuple", "values": []});
+    assert!(
+        decode::<InterpValue>(&limits, &wire)
+            .unwrap_err()
+            .message()
+            .contains("canonical unit")
+    );
+    assert!(
+        decode::<ValueSnapshot>(&limits, &wire)
+            .unwrap_err()
+            .message()
+            .contains("canonical unit")
+    );
+    let unit = json!({"kind": "unit"});
+    assert_eq!(
+        decode::<InterpValue>(&limits, &unit).unwrap(),
+        InterpValue::Unit
+    );
+    assert!(matches!(
+        decode::<ValueSnapshot>(&limits, &unit).unwrap(),
+        ValueSnapshot::Unit
+    ));
+}
+
+#[test]
 fn set_decoders_reject_duplicates_instead_of_changing_the_saved_iteration() {
     for kind in ["set", "ordered_set"] {
         let mut wire = json!({"kind":kind, "values":[
