@@ -15,8 +15,9 @@ fn borrowed_projection_handles_deep_refinement_without_query_allocations() {
     }
     let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     let value = InterpValue::String("中😀e\u{301}".into());
-    let (text, cost) =
-        crate::testing::allocation::measure(|| string_for_type(&value, ty, &projector).unwrap());
+    let (text, cost) = crate::testing::allocation::measure(|| {
+        shared_string_for_type(&value, ty, &projector).unwrap()
+    });
     assert_eq!(text, "中😀e\u{301}");
     assert_eq!(cost.count, 0);
     assert_eq!(cost.bytes, 0);
@@ -39,7 +40,7 @@ fn borrowed_projection_rejects_cycles_after_validating_entered_wrappers() {
         value: SharedValue::new(InterpValue::String("end".into())),
     };
     assert_eq!(
-        string_for_type(&value, root, &projector),
+        shared_string_for_type(&value, root, &projector),
         Err(AdapterError::UnsupportedValue(
             "cyclic checked borrowed ABI".into()
         ))
@@ -49,7 +50,7 @@ fn borrowed_projection_rejects_cycles_after_validating_entered_wrappers() {
         value: SharedValue::new(InterpValue::String("end".into())),
     };
     assert!(
-        matches!(string_for_type(&invalid, root, &projector), Err(AdapterError::TypeMismatch { expected, .. }) if expected == cyclic)
+        matches!(shared_string_for_type(&invalid, root, &projector), Err(AdapterError::TypeMismatch { expected, .. }) if expected == cyclic)
     );
 
     let mut store = TypeStore::new();
@@ -59,7 +60,7 @@ fn borrowed_projection_rejects_cycles_after_validating_entered_wrappers() {
     });
     let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     assert_eq!(
-        string_for_type(&InterpValue::String("end".into()), cyclic, &projector),
+        shared_string_for_type(&InterpValue::String("end".into()), cyclic, &projector),
         Err(AdapterError::UnsupportedValue(
             "cyclic checked borrowed ABI".into()
         ))
@@ -77,11 +78,11 @@ fn borrowed_projection_keeps_missing_type_errors() {
     let projector = PureAbiProjector::build(&store, &Default::default()).unwrap();
     let value = InterpValue::String("end".into());
     assert_eq!(
-        string_for_type(&value, root, &projector),
+        shared_string_for_type(&value, root, &projector),
         Err(AdapterError::MissingType(missing))
     );
     assert_eq!(
-        string_for_type(&value, missing, &projector),
+        shared_string_for_type(&value, missing, &projector),
         Err(AdapterError::MissingType(missing))
     );
 }

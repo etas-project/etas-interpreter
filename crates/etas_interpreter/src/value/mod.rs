@@ -48,6 +48,7 @@ mod support;
 mod text;
 pub use bytes::BytesValue;
 pub use text::StringValue;
+pub(crate) use text::{TextRangeError, TextRangeProjector};
 
 pub use aggregate::{ArrayValue, SliceValue};
 pub use json::{JsonArray, JsonObject};

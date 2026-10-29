@@ -7,14 +7,6 @@ use super::{AbiShape, AdapterError, PureAbiProjector, input::type_mismatch};
 #[cfg(test)]
 mod tests;
 
-pub(in crate::intrinsic::pure) fn string_for_type<'a>(
-    value: &'a InterpValue,
-    ty: TypeId,
-    projector: &PureAbiProjector,
-) -> Result<&'a str, AdapterError> {
-    shared_string_for_type(value, ty, projector).map(|text| text.as_str())
-}
-
 pub(in crate::intrinsic::pure) fn shared_string_for_type<'a>(
     value: &'a InterpValue,
     ty: TypeId,
