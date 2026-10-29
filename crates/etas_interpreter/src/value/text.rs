@@ -6,7 +6,9 @@ use std::{
     rc::Rc,
 };
 
+mod chunks;
 mod concat;
+pub use chunks::TextChunks;
 use concat::Repr;
 pub(crate) use concat::TextCapacityExceeded;
 
@@ -42,6 +44,10 @@ impl StringValue {
 
     pub fn is_empty(&self) -> bool {
         self.len() == 0
+    }
+
+    pub fn chunks(&self) -> TextChunks<'_> {
+        TextChunks::new(self)
     }
 
     /// Share an unchanged prefix while the caller's old slot or aliases remain
@@ -100,6 +106,26 @@ impl StringValue {
 impl Drop for StringValue {
     fn drop(&mut self) {
         concat::release(std::mem::take(&mut self.0));
+    }
+}
+
+impl etas_builtin::text::input::TextInput for StringValue {
+    type Chunks<'a> = TextChunks<'a>;
+
+    fn byte_len(&self) -> usize {
+        self.len()
+    }
+
+    fn contiguous(&self) -> Option<&str> {
+        match &self.0 {
+            Repr::Empty => Some(""),
+            Repr::Flat(text) => Some(text.as_str()),
+            Repr::Concat(node) => node.materialized.get().map(|text| text.as_str()),
+        }
+    }
+
+    fn chunks(&self) -> Self::Chunks<'_> {
+        StringValue::chunks(self)
     }
 }
 

@@ -34,7 +34,7 @@ pub(super) fn execute_count(
             query.evaluate_count(values.borrow().len())
         }
         (Some(AbiShape::Primitive(PrimitiveType::String)), InterpValue::String(text)) => {
-            query.evaluate_text(text.as_str())
+            query.evaluate_text_projected(text)
         }
         _ => return Err(type_mismatch(ty, value)),
     };

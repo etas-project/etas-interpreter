@@ -1,7 +1,7 @@
 use crate::{
     control::CallTarget,
     orchestration::{CallTargetSnapshot, ValueSnapshot},
-    value::{InterpValue, NumericValue},
+    value::{InterpValue, NumericValue, StringValue},
 };
 use etas_std::RuntimeTypeRole;
 use etas_types::{TrustWrapper, TypeId};
@@ -37,7 +37,7 @@ pub(super) enum Node<'a> {
     Unit,
     Bool,
     Number(NumericValue),
-    String(&'a str),
+    String(&'a StringValue),
     Bytes,
     Nominal(TypeId, Value<'a>),
     Trust(TrustWrapper, Value<'a>),
@@ -217,7 +217,7 @@ impl<'a> Value<'a> {
                 R::Unit => Node::Unit,
                 R::Bool(_) => Node::Bool,
                 R::Number(value) => Node::Number(*value),
-                R::String(value) => Node::String(value.as_str()),
+                R::String(value) => Node::String(value),
                 R::Bytes(_) => Node::Bytes,
                 R::Nominal { ty, value } => Node::Nominal(*ty, Self::Runtime(value)),
                 R::Trust { wrapper, value } => Node::Trust(*wrapper, Self::Runtime(value)),
@@ -304,7 +304,7 @@ impl<'a> Value<'a> {
                 S::Unit => Node::Unit,
                 S::Bool(_) => Node::Bool,
                 S::Number(value) => Node::Number(*value),
-                S::String(value) => Node::String(value.as_str()),
+                S::String(value) => Node::String(value),
                 S::Bytes(_) => Node::Bytes,
                 S::Nominal { ty, value } => Node::Nominal(*ty, Self::Snapshot(value)),
                 S::Trust { wrapper, value } => Node::Trust(*wrapper, Self::Snapshot(value)),

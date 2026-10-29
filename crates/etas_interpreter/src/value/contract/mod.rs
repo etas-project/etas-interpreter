@@ -125,7 +125,8 @@ pub(crate) fn validate<'a>(
             | (Type::Primitive(P::Bool), Node::Bool)
             | (Type::Primitive(P::String), Node::String(_))
             | (Type::Primitive(P::Bytes), Node::Bytes) => {}
-            (Type::Primitive(P::Char), Node::String(text)) if text.chars().count() == 1 => {}
+            (Type::Primitive(P::Char), Node::String(text))
+                if text.chunks().flat_map(str::chars).take(2).count() == 1 => {}
             (Type::Primitive(primitive), Node::Number(number))
                 if *primitive == number.primitive() => {}
             (_, Node::Nominal(actual, inner)) if actual == expected => {

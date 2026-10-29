@@ -169,7 +169,7 @@ impl<'a> EvalContext<'a> {
                         span,
                     );
                 };
-                match scalar_at(value.chars(), index) {
+                match scalar_at(value.chunks().flat_map(str::chars), index) {
                     Ok(ch) => ControlSignal::Value(InterpValue::String(ch.to_string().into())),
                     Err(len) => self.raise_index_error(
                         expr,
