@@ -2,6 +2,64 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn segmented_text_transforms_preserve_unicode_fragments_and_file_resume() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.text.{trim, lines, split, join};
+import std.runtime.checkpoint;
+flow main() -> bool {
+    let prefix = "  A\r";
+    let source = prefix + "\n中😀\n\ré  ";
+    let alias = source;
+    let trimmed = trim(source);
+    let parts = lines(trimmed);
+    let split_prefix = "中😀:";
+    let separator_prefix = ":";
+    let separated = split(split_prefix + ":tail::", separator_prefix + ":");
+    let joined = join(separated, "-" + ":");
+    checkpoint("segmented-text-transform");
+    return parts == ["A", "中😀", "\ré"]
+        && separated == ["中😀", "tail", ""]
+        && joined == "中😀-:tail-:"
+        && alias == "  A\r\n中😀\n\ré  ";
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let saved = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+    for checkpoint in [saved, &decoded] {
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+    }
+    assert_eq!(
+        checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap(),
+        artifact
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn checked_composite_text_queries_preserve_values_and_file_resume() {
     let checked = checked_project(
         r#"

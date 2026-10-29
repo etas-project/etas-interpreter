@@ -8,9 +8,11 @@ use std::{
 
 mod chunks;
 mod concat;
+mod ranges;
 pub use chunks::TextChunks;
 use concat::Repr;
 pub(crate) use concat::TextCapacityExceeded;
+pub(crate) use ranges::{TextRangeError, TextRangeProjector};
 
 /// Immutable aliases share text; consuming operations may reuse a unique buffer.
 #[derive(Clone, Default)]

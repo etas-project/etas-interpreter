@@ -272,7 +272,7 @@ fn text_transforms_preserve_checked_nominal_and_trust_output_identity() {
     let output = execute_pure_intrinsic(&call, vec![valid.clone()], &projector).unwrap();
     assert_eq!(output, expected);
     assert_eq!(
-        abi::borrowed::string_for_type(&output, output_ty, &projector)
+        abi::borrowed::shared_string_for_type(&output, output_ty, &projector)
             .unwrap()
             .as_ptr(),
         pointer

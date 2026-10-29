@@ -62,7 +62,8 @@ fn owned_wrapper_input_projection_is_stack_safe_and_moves_the_unique_payload() {
             super::super::output::from_builtin_for_type(BuiltinValue::String(text), ty, &projector)
                 .unwrap()
         });
-        let leaf = super::super::borrowed::string_for_type(&restored, ty, &projector).unwrap();
+        let leaf =
+            super::super::borrowed::shared_string_for_type(&restored, ty, &projector).unwrap();
         assert_eq!(leaf.as_ptr(), pointer);
         eprintln!("required restored wrapper nodes depth={depth}: {result_cost:?}");
     }
@@ -169,7 +170,7 @@ fn shared_wrapper_input_copies_only_the_required_final_owned_text() {
         assert_eq!(cost.count, 1, "depth={depth}: {cost:?}");
         assert_eq!(cost.bytes, text.len(), "depth={depth}: {cost:?}");
         assert_eq!(
-            super::super::borrowed::string_for_type(&value, ty, &projector)
+            super::super::borrowed::shared_string_for_type(&value, ty, &projector)
                 .unwrap()
                 .as_ptr(),
             pointer
