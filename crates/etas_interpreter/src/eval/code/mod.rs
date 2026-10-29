@@ -12,7 +12,7 @@ mod signature;
 mod spec;
 pub(super) use definition_fields::{agent_field, callable_field};
 
-use etas_code::definition::CodeDefinitionOperations;
+use etas_code::definition::DefinitionOperationError;
 use etas_code::syntax::{ParseBodyFailure, SyntaxOperationError};
 use etas_core::{AnalysisDiagnosticCode, Span};
 use etas_types::Type;
@@ -167,6 +167,10 @@ impl EvalContext<'_> {
                 span,
             );
         };
+        let control = match self.code_syntax_control(span) {
+            Ok(control) => control,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
         if let InterpValue::CallableDefinition(definition) = &definition {
             if call.parameter_types != [definition.ty(), syntax.ty()]
                 || call.result_type != definition.ty()
@@ -181,14 +185,18 @@ impl EvalContext<'_> {
                 Ok(snapshot) => snapshot,
                 Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
             };
-            return match definition
-                .backend()
-                .with_body(snapshot, syntax.syntax().clone())
-            {
+            return match definition.backend().with_body_controlled(
+                snapshot,
+                syntax.syntax().clone(),
+                &control,
+            ) {
                 Ok(edited) => match definition.with_definition(edited) {
                     Ok(edited) => ControlSignal::Value(InterpValue::CallableDefinition(edited)),
                     Err(reason) => ControlSignal::missing_checked_fact(reason, span),
                 },
+                Err(DefinitionOperationError::Syntax(error)) => {
+                    self.controlled_syntax_failure(error, span)
+                }
                 Err(error) => definition_operation_failure(error.into(), span),
             };
         }
@@ -207,10 +215,11 @@ impl EvalContext<'_> {
                 span,
             );
         }
-        match definition
-            .backend()
-            .with_body(definition.definition(), syntax.syntax().clone())
-        {
+        match definition.backend().with_body_controlled(
+            definition.definition(),
+            syntax.syntax().clone(),
+            &control,
+        ) {
             Ok(edited) => ControlSignal::Value(InterpValue::AgentDefinition(
                 crate::value::AgentDefinitionValue::with_abi(
                     call.result_type,
@@ -219,6 +228,9 @@ impl EvalContext<'_> {
                     self.checked.clone(),
                 ),
             )),
+            Err(DefinitionOperationError::Syntax(error)) => {
+                self.controlled_syntax_failure(error, span)
+            }
             Err(error) => definition_operation_failure(error.into(), span),
         }
     }

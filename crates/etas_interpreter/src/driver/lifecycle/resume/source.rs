@@ -186,7 +186,7 @@ async fn restore_draft(
                     &control,
                 )
                 .map(RestoredDraft)
-                .map_err(|error| HostError::new(HostErrorCode::InvalidRequest, error.to_string()))
+                .map_err(source_restore_error)
         })
         .await;
     registration.complete(ExternalOutcome::Confirmed, vec![])?;
@@ -339,6 +339,22 @@ fn invalid(message: impl Into<String>) -> HostError {
     HostError::new(HostErrorCode::InvalidRequest, message)
 }
 
+fn source_restore_error(
+    error: etas_frontend::code::definition::NativeDefinitionError,
+) -> HostError {
+    use etas_code::{definition::DefinitionOperationError, syntax::SyntaxOperationError};
+    use etas_frontend::code::{definition::NativeDefinitionError, descriptor::ProjectionError};
+    match error {
+        NativeDefinitionError::Operation(DefinitionOperationError::Syntax(
+            SyntaxOperationError::Interrupted(interruption),
+        ))
+        | NativeDefinitionError::Projection(ProjectionError::Syntax(
+            SyntaxOperationError::Interrupted(interruption),
+        )) => interrupted(interruption),
+        error => invalid(error.to_string()),
+    }
+}
+
 fn interrupted(interruption: etas_utils::PipelineInterruption) -> HostError {
     let code = match interruption.kind {
         etas_utils::PipelineInterruptionKind::Cancelled => HostErrorCode::Cancelled,
@@ -346,4 +362,50 @@ fn interrupted(interruption: etas_utils::PipelineInterruption) -> HostError {
         _ => HostErrorCode::ProviderUnavailable,
     };
     HostError::new(code, interruption.reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etas_code::{definition::DefinitionOperationError, syntax::SyntaxOperationError};
+    use etas_frontend::code::{definition::NativeDefinitionError, descriptor::ProjectionError};
+    use etas_utils::{PipelineInterruption, PipelineInterruptionKind};
+
+    #[test]
+    fn restore_preserves_interruption_kind_from_operations_and_projections() {
+        for (kind, expected) in [
+            (
+                PipelineInterruptionKind::Cancelled,
+                HostErrorCode::Cancelled,
+            ),
+            (
+                PipelineInterruptionKind::ResourceLimit,
+                HostErrorCode::BudgetExceeded,
+            ),
+            (
+                PipelineInterruptionKind::Unavailable,
+                HostErrorCode::ProviderUnavailable,
+            ),
+        ] {
+            for projection in [false, true] {
+                let interruption = PipelineInterruption {
+                    kind,
+                    reason: "stopped".into(),
+                };
+                let syntax = SyntaxOperationError::Interrupted(interruption);
+                let error = if projection {
+                    NativeDefinitionError::Projection(ProjectionError::Syntax(syntax))
+                } else {
+                    NativeDefinitionError::Operation(DefinitionOperationError::Syntax(syntax))
+                };
+                let actual = source_restore_error(error);
+                assert_eq!(actual.code, expected);
+                assert_eq!(actual.message, "stopped");
+            }
+        }
+        assert_eq!(
+            source_restore_error(NativeDefinitionError::MissingBodySource).code,
+            HostErrorCode::InvalidRequest
+        );
+    }
 }
