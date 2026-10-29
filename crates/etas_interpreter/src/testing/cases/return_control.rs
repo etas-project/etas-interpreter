@@ -1,6 +1,39 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn inferred_handler_value_keeps_its_produced_effect_at_runtime() {
+    let checked = checked_project(
+        r#"module app.main;
+import std.io.println;
+effect Gate { action ask() -> bool; }
+flow main() -> bool ![Console.stdout_write] {
+    let handler_value: ![Gate] = handler {
+        Gate.ask() => { println("handler")?; resume true; }
+    };
+    let alias: ![Gate] = handler_value;
+    return handle { perform Gate.ask() } with alias;
+}"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .expect("execution lifecycle infrastructure");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&value::InterpValue::Bool(true)));
+    assert_eq!(host.stdout_text(), "handler\n");
+    assert_eq!(host.console_call_count(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn callback_handler_resume_and_finish_have_distinct_continuations() {
     for (completion, expected) in [("resume;", "after\n"), ("finish ();", "")] {
         let checked = checked_project(&format!(
