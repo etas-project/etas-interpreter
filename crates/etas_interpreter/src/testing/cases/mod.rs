@@ -43,6 +43,7 @@ mod priority_queue;
 mod prompt_data;
 mod pure_queries;
 mod records;
+mod recursive_type_identity;
 mod retry_call;
 mod return_control;
 mod secret_values;
