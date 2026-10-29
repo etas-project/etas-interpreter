@@ -151,6 +151,11 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
                     "values"
                 },
             )?;
+            if matches!(kind, Sequence::Tuple) && input.is_empty() {
+                return Err(InterpreterCodecError::new(
+                    "empty tuple must use the canonical unit value encoding",
+                ));
+            }
             return Ok(Some(Self::Sequence {
                 comparator_input: if matches!(kind, Sequence::OrderedSet) {
                     comparison_input(value)?
