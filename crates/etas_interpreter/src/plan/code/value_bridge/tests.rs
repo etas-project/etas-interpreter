@@ -15,7 +15,7 @@ use etas_frontend::{
 use etas_types::{ItemSignature, TypeId};
 
 use super::*;
-use crate::api::code::{InterpreterCandidatePublisher, PreparedAgentRevision};
+use crate::api::code::{InterpreterCandidatePublisher, PreparedCodeRevision};
 
 mod action;
 mod code;
@@ -161,7 +161,7 @@ fn workspace_paths_preserve_their_checked_region_and_reject_region_substitution(
     );
 }
 
-fn prepared(declarations: &str, input: &str) -> (Arc<PreparedAgentRevision>, GenericOwner, TypeId) {
+fn prepared(declarations: &str, input: &str) -> (Arc<PreparedCodeRevision>, GenericOwner, TypeId) {
     prepared_body(declarations, input, input, "return value;")
 }
 
@@ -170,7 +170,7 @@ fn prepared_body(
     input: &str,
     output: &str,
     body: &str,
-) -> (Arc<PreparedAgentRevision>, GenericOwner, TypeId) {
+) -> (Arc<PreparedCodeRevision>, GenericOwner, TypeId) {
     let source = format!(
         "module app; {declarations} agent Worker(value: {input}) -> {output} {{ {body} }} flow inspect() -> unit {{ let definition = ^Worker; return; }}"
     );
@@ -193,7 +193,7 @@ fn prepared_body(
         .unwrap()
         .freeze_agent(reflection)
         .unwrap();
-    let callable = frozen.contract().header().default_entry.as_ref().unwrap();
+    let callable = frozen.contract().entry().unwrap();
     let scope = GenericOwner::Method(callable.as_method().unwrap().clone());
     let param = match &frozen.checked().types.item_signatures[&frozen.default_body().unwrap()] {
         ItemSignature::Agent(signature) => signature.callable().unwrap().params[0],
@@ -214,7 +214,7 @@ fn prepared_body(
 }
 
 fn roundtrip(
-    prepared: &PreparedAgentRevision,
+    prepared: &PreparedCodeRevision,
     scope: &GenericOwner,
     ty: TypeId,
     value: InterpValue,

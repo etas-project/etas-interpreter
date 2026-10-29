@@ -2,7 +2,7 @@ use super::*;
 use crate::value::AgentDefinitionValue;
 use etas_frontend::code::definition::NativeDefinitionStore;
 
-fn definitions(prepared: &PreparedAgentRevision) -> Arc<NativeDefinitionStore> {
+fn definitions(prepared: &PreparedCodeRevision) -> Arc<NativeDefinitionStore> {
     let program = prepared.type_bridge().original_program().clone();
     let package = PackageKey::from_canonical_fingerprint(CodeFingerprint::of_bytes(
         "etas.test.value-bridge",

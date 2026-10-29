@@ -1,6 +1,71 @@
 use super::super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn callback_handler_resume_and_finish_have_distinct_continuations() {
+    for (completion, expected) in [("resume;", "after\n"), ("finish ();", "")] {
+        let checked = checked_project(&format!(
+            r#"module app.main;
+import std.io.println;
+effect Gate {{ action ping() -> unit; }}
+flow callback() -> unit ![Gate.ping, Console.stdout_write] {{
+    perform Gate.ping();
+    println("after")?;
+}}
+flow wrapped(f: () -> unit ![Gate.ping, Console.stdout_write]) -> unit ![Console.stdout_write] {{
+    handle {{ f(); }} with {{ Gate.ping() => {{ {completion} }} }};
+}}
+flow main() -> unit ![Console.stdout_write] {{ wrapped(callback); }}"#
+        ));
+        let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                Vec::new(),
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .expect("execution lifecycle infrastructure");
+        assert!(
+            result.diagnostics.is_empty(),
+            "{completion}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(host.stdout_text(), expected, "{completion}");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn nonreturning_handler_factory_propagates_its_error_before_handled_body() {
+    let checked = checked_project(
+        r#"module app.main;
+effect Gate { action ask() -> bool; }
+flow choose() -> ![Gate => [] for bool] ![Error<i32>] { return perform Error<i32>.raise(1); }
+flow target() -> bool ![Error<i32>] { return handle { perform Gate.ask() } with choose(); }
+flow main() -> i32 {
+    return handle { let unused = target(); 0 } with { Error<i32>.raise(_) => { finish 7; } };
+}"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await
+        .expect("execution lifecycle infrastructure");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value().cloned(), Some(value::InterpValue::i32(7)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn expression_body_trailing_handler_preserves_resume_and_finish_after_host_suspension() {
     for (signal, expected) in [("resume 7;", 7), ("finish 9;", 9)] {
         let checked = checked_project(&format!(

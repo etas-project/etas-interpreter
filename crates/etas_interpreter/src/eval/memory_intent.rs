@@ -160,11 +160,7 @@ impl EvalContext<'_> {
             ("code".into(), HostValue::String(error.code.as_str().into())),
             ("message".into(), HostValue::String(error.message)),
         ]);
-        let value = match super::host_value::host_to_typed_interp_value(
-            payload,
-            ty,
-            &self.checked.type_store,
-        ) {
+        let value = match super::host_value::decode_checked_host_value(payload, ty, self.checked) {
             Ok(value) => value,
             Err(error) => return ControlSignal::missing_checked_fact(error, span),
         };

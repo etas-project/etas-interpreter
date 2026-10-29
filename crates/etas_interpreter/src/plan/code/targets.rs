@@ -16,8 +16,7 @@ pub(crate) struct RevisionCallable {
 }
 
 pub(crate) struct RevisionTargets {
-    pub candidate_agent: HirItemId,
-    pub component: TypeId,
+    owner: RevisionOwner,
     pub default: CallableId,
     pub callables: BTreeMap<CallableId, RevisionCallable>,
     pub frozen_callables: BTreeMap<CallableId, RevisionCallable>,
@@ -25,33 +24,69 @@ pub(crate) struct RevisionTargets {
     pub frozen_methods: BTreeMap<HirItemId, (HirItemId, CallableId)>,
 }
 
+enum RevisionOwner {
+    Agent { item: HirItemId, component: TypeId },
+    Flow,
+}
+
 impl RevisionTargets {
+    pub(crate) fn agent_component(&self) -> Option<TypeId> {
+        match self.owner {
+            RevisionOwner::Agent { component, .. } => Some(component),
+            RevisionOwner::Flow => None,
+        }
+    }
+
+    pub(crate) fn agent_item(&self) -> Option<HirItemId> {
+        match self.owner {
+            RevisionOwner::Agent { item, .. } => Some(item),
+            RevisionOwner::Flow => None,
+        }
+    }
+
     pub fn build(
         candidate: &CheckedCandidate,
         original: &DefinitionCatalog,
         compiled: &DefinitionCatalog,
     ) -> Result<Self, Error> {
-        let missing = || Error::InconsistentAgent(candidate.identity().clone());
+        let missing = || Error::InconsistentDefinition(candidate.identity().clone());
         let default = candidate
             .frozen()
             .contract()
-            .header()
-            .default_entry
-            .clone()
+            .entry()
+            .cloned()
             .ok_or_else(missing)?;
-        let component = original
-            .agent_component(candidate.identity())
-            .ok_or_else(missing)?;
-        let candidate_component = compiled
-            .agent_component(candidate.identity())
-            .ok_or_else(missing)?;
-        let mut agents = compiled.checked_program().types.item_signatures.iter().filter_map(|(item, signature)| {
+        let owner = match candidate.identity().kind() {
+            etas_code::DefinitionKind::Agent => {
+                let component = original
+                    .agent_component(candidate.identity())
+                    .ok_or_else(missing)?;
+                let candidate_component = compiled
+                    .agent_component(candidate.identity())
+                    .ok_or_else(missing)?;
+                let mut agents = compiled.checked_program().types.item_signatures.iter().filter_map(|(item, signature)| {
             matches!(signature, ItemSignature::Agent(signature) if signature.component == candidate_component).then_some(*item)
         });
-        let candidate_agent = agents.next().ok_or_else(missing)?;
-        if agents.next().is_some() {
-            return Err(missing());
-        }
+                let candidate_agent = agents.next().ok_or_else(missing)?;
+                if agents.next().is_some() {
+                    return Err(missing());
+                }
+                RevisionOwner::Agent {
+                    item: candidate_agent,
+                    component,
+                }
+            }
+            etas_code::DefinitionKind::Flow => {
+                if default.as_declaration() != Some(candidate.identity())
+                    || original.item_owner(&default) != candidate.frozen().default_body()
+                    || compiled.item_owner(&default) != Some(candidate.entry())
+                {
+                    return Err(missing());
+                }
+                RevisionOwner::Flow
+            }
+            _ => return Err(missing()),
+        };
         let mut callables = BTreeMap::new();
         for (id, _) in candidate.frozen().contract().callables() {
             let signature = |catalog: &DefinitionCatalog| {
@@ -172,8 +207,7 @@ impl RevisionTargets {
             }
         }
         Ok(Self {
-            candidate_agent,
-            component,
+            owner,
             default,
             callables,
             frozen_callables,

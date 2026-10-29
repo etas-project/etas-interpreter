@@ -17,7 +17,7 @@ pub(crate) struct CallableValueProjection {
     source_signature: FlowType,
     target_signature: FlowType,
     revision: Option<super::RevisionProjection>,
-    revision_owner: Option<Arc<crate::api::code::PreparedAgentRevision>>,
+    revision_owner: Option<Arc<crate::api::code::PreparedCodeRevision>>,
 }
 
 impl CallableValueProjection {
@@ -53,7 +53,7 @@ impl CallableValueProjection {
         }
     }
 
-    pub(crate) fn revision_owner(&self) -> Option<&Arc<crate::api::code::PreparedAgentRevision>> {
+    pub(crate) fn revision_owner(&self) -> Option<&Arc<crate::api::code::PreparedCodeRevision>> {
         self.revision_owner.as_ref()
     }
 

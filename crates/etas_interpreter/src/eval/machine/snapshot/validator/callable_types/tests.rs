@@ -53,6 +53,7 @@ flow main(
     loud: (() -> unit ![Console.stdout_write]) -> unit ![Console.stdout_write]
 ) -> unit ![] {
     let selected: (() -> unit ![]) -> unit ![] = apply;
+    let loud_selected: (() -> unit ![Console.stdout_write]) -> unit ![Console.stdout_write] = apply;
     return;
 }
 "#,
@@ -163,6 +164,56 @@ flow main(good: Good -> Good, wrong: i32 -> i32) -> Good {
                 error.contains("spec bound"),
                 "generic environment cache skipped validation: {error}"
             );
+        },
+    );
+}
+
+#[test]
+fn checkpoint_phantom_arguments_must_match_a_prepared_native_application() {
+    with_validator(
+        "module app.main;
+        type Allowed; type Unchecked;
+        flow phantom<R>() -> i32 ![] { return 0; }
+        flow main(callback: () -> i32 ![]) -> i32 ![] { return phantom<Allowed>(); }",
+        |validator| {
+            let nominal = |name: &str| {
+                let symbol = validator
+                    .checked
+                    .symbols
+                    .iter()
+                    .find(|symbol| symbol.name == name)
+                    .unwrap()
+                    .id;
+                match &validator.checked.types.symbol_types[&symbol] {
+                    SymbolTypeFact::NominalType { constructor, .. }
+                    | SymbolTypeFact::Type { constructor } => TypeId(constructor.0),
+                    _ => panic!("nominal declaration"),
+                }
+            };
+            let target = |name| Target::Specialized {
+                target: Target::FlowItem(item(validator, "phantom")).into(),
+                type_bindings: vec![("R".into(), nominal(name))],
+                effect_row_bindings: vec![],
+            };
+            let expected = parameter(validator, 0);
+            validator
+                .reference_target_type(&target("Allowed"), expected)
+                .unwrap();
+            let error = validator
+                .reference_target_type(&target("Unchecked"), expected)
+                .unwrap_err();
+            assert!(
+                error.contains("not prepared by this checked program"),
+                "{error}"
+            );
+            assert!(
+                validator
+                    .reference_target_type(&Target::FlowItem(item(validator, "phantom")), expected)
+                    .is_err()
+            );
+            validator
+                .reference_target_type(&target("Allowed"), expected)
+                .unwrap();
         },
     );
 }

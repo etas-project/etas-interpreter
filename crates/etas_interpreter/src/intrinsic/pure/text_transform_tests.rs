@@ -225,11 +225,13 @@ fn text_transforms_preserve_checked_nominal_and_trust_output_identity() {
     let string = types.primitive(PrimitiveType::String);
     let boolean = types.primitive(PrimitiveType::Bool);
     let left = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "LeftText".into(),
         representation: Some(string),
         params: vec![],
     }));
     let right = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "RightText".into(),
         representation: Some(string),
         params: vec![],

@@ -51,6 +51,9 @@ impl<'a> EvalContext<'a> {
             }
             HirPat::Wildcard { .. } => Ok(true),
             HirPat::Literal(literal) => self.match_literal_pattern(literal, value, span),
+            HirPat::Tuple { elems, .. } if elems.is_empty() => {
+                self.match_unit_pattern(pat, value, span)
+            }
             HirPat::Tuple { elems, .. } => match pattern_projection_value(value) {
                 InterpValue::Tuple(values) if values.len() == elems.len() => {
                     for (pat, value) in elems.iter().zip(values.iter()) {
@@ -164,6 +167,53 @@ impl<'a> EvalContext<'a> {
                 span,
                 "error pattern cannot be executed",
             )),
+        }
+    }
+
+    fn match_unit_pattern(
+        &self,
+        pat: etas_hir::HirPatId,
+        mut value: &InterpValue,
+        span: Span,
+    ) -> Result<bool, ExecutionFault> {
+        let invalid = || {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "unit pattern has no checked unit projection",
+            )
+        };
+        let mut ty = *self
+            .checked
+            .types
+            .pattern_types
+            .get(&pat)
+            .ok_or_else(invalid)?;
+        let mut visited = std::collections::HashSet::new();
+        loop {
+            if !visited.insert(ty) {
+                return Err(invalid());
+            }
+            match self.checked.type_store.get(ty) {
+                Some(etas_types::Type::Primitive(etas_types::PrimitiveType::Unit)) => {
+                    return Ok(matches!(value, InterpValue::Unit));
+                }
+                Some(etas_types::Type::Nominal(nominal)) => {
+                    let InterpValue::Nominal {
+                        ty: actual,
+                        value: inner,
+                    } = value
+                    else {
+                        return Ok(false);
+                    };
+                    if *actual != ty {
+                        return Ok(false);
+                    }
+                    ty = nominal.representation.ok_or_else(invalid)?;
+                    value = inner;
+                }
+                _ => return Err(invalid()),
+            }
         }
     }
 

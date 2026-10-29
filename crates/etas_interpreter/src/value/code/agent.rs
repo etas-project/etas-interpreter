@@ -4,7 +4,7 @@ use etas_code::CallableId;
 use etas_frontend::CheckedProgram;
 use etas_hir::HirItemId;
 
-use crate::{api::code::PreparedAgentRevision, plan::code::RevisionCallable};
+use crate::{api::code::PreparedCodeRevision, plan::code::RevisionCallable};
 
 mod bridge;
 mod checkpoint;
@@ -12,7 +12,7 @@ mod checkpoint;
 /// A native executable reference, never deserialized from descriptive code data.
 #[derive(Clone)]
 pub struct AgentRevisionValue {
-    prepared: Arc<PreparedAgentRevision>,
+    prepared: Arc<PreparedCodeRevision>,
     source_revision: Option<Arc<crate::plan::code::RevisionTypeBridge>>,
     callable: CallableId,
     frozen_agent: Option<HirItemId>,
@@ -20,8 +20,8 @@ pub struct AgentRevisionValue {
 
 impl AgentRevisionValue {
     pub(crate) fn new_in_program(
-        prepared: Arc<PreparedAgentRevision>,
-        source_revision: Option<Arc<PreparedAgentRevision>>,
+        prepared: Arc<PreparedCodeRevision>,
+        source_revision: Option<Arc<PreparedCodeRevision>>,
         program: &CheckedProgram,
         ty: etas_types::TypeId,
     ) -> Result<Self, String> {
@@ -51,7 +51,7 @@ impl AgentRevisionValue {
     }
 
     pub(crate) fn frozen_declaration(
-        prepared: Arc<PreparedAgentRevision>,
+        prepared: Arc<PreparedCodeRevision>,
         program: &CheckedProgram,
         agent: HirItemId,
     ) -> Result<Self, String> {
@@ -79,7 +79,7 @@ impl AgentRevisionValue {
     }
 
     pub(crate) fn frozen_method(
-        prepared: Arc<PreparedAgentRevision>,
+        prepared: Arc<PreparedCodeRevision>,
         program: &CheckedProgram,
         body: HirItemId,
     ) -> Result<Self, String> {
@@ -142,7 +142,10 @@ impl AgentRevisionValue {
                 .agent_component(identity)
                 .ok_or("agent callable has no checked source nominal component")?
         } else {
-            self.prepared.targets.component
+            self.prepared
+                .targets
+                .agent_component()
+                .ok_or("agent revision has no nominal agent owner")?
         };
         match &self.source_revision {
             Some(source) => source
@@ -213,7 +216,7 @@ impl AgentRevisionValue {
         })
     }
 
-    pub(crate) fn prepared(&self) -> &Arc<PreparedAgentRevision> {
+    pub(crate) fn prepared(&self) -> &Arc<PreparedCodeRevision> {
         &self.prepared
     }
     pub(crate) fn is_default_entry(&self) -> bool {

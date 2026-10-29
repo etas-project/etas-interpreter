@@ -9,8 +9,11 @@ use crate::{
     plan::code::CallableValueProjection,
     value::InterpValue,
 };
+#[cfg(test)]
+mod application_tests;
 mod checkpoint;
 mod effects;
+mod revision;
 mod signature;
 
 pub(crate) use signature::validate_bounds as validate_snapshot_bounds;
@@ -19,6 +22,7 @@ pub(crate) use signature::validate_snapshot_signature;
 #[derive(Debug)]
 struct NativeCallable {
     program: CheckedExecutionProgram,
+    application: Option<etas_frontend::CheckedCallableApplication>,
     target: CallTargetLink,
     ty: TypeId,
     signature: FlowType,
@@ -33,6 +37,28 @@ pub struct ScopedCallableValue {
 }
 
 impl ScopedCallableValue {
+    pub(crate) fn checked_flow_application(
+        program: &CheckedProgram,
+        target: &CallTarget,
+        expected: &FlowType,
+    ) -> Result<etas_frontend::CheckedCallableApplication, String> {
+        let mut inner = target;
+        while let CallTarget::Specialized { target, .. } = inner {
+            inner = target;
+        }
+        let CallTarget::FlowItem(item) = inner else {
+            return Err(
+                "reflection requires an ordinary flow, not a closure or decorated callable".into(),
+            );
+        };
+        validate_signature(program, CheckedCallableRoot::Item(*item), target, expected)?
+            .ok_or_else(|| "ordinary flow has no sealed native application".into())
+    }
+
+    pub(crate) fn native_application(&self) -> Option<&etas_frontend::CheckedCallableApplication> {
+        self.native.application.as_ref()
+    }
+
     pub(crate) fn into_unique_target(self) -> Option<CallTarget> {
         Rc::try_unwrap(self.native).ok()?.target.into_unique()
     }
@@ -70,7 +96,8 @@ impl ScopedCallableValue {
                     return Err("unscoped callable has no native execution environment in the source program".into());
                 }
                 let root = callable_root(execution, &target)?;
-                validate_signature(source, root, &target, projection.signature())?;
+                let application =
+                    validate_signature(source, root, &target, projection.signature())?;
                 let plan = execution
                     .plan
                     .select_callable(source, root)
@@ -83,6 +110,7 @@ impl ScopedCallableValue {
                             plan: Arc::new(plan),
                             ..execution.clone()
                         },
+                        application,
                         target: target.into(),
                         ty,
                         signature: projection.signature().clone(),
@@ -153,6 +181,16 @@ impl ScopedCallableValue {
         &self,
     ) -> Result<&[etas_types::CallableGenericParam], String> {
         let checked = &self.native.program.checked;
+        if let Some(application) = &self.native.application {
+            if !Arc::ptr_eq(application.program(), checked)
+                || native_application_owner(
+                    checked,
+                    callable_root(&self.native.program, &self.native.target)?,
+                )? != Some(application.owner())
+            {
+                return Err("native application belongs to a different checked callable".into());
+            }
+        }
         match callable_root(&self.native.program, &self.native.target)? {
             CheckedCallableRoot::Item(item) => match checked.types.item_signatures.get(&item) {
                 Some(
@@ -297,7 +335,7 @@ fn validate_signature(
     root: CheckedCallableRoot,
     target: &CallTarget,
     expected: &FlowType,
-) -> Result<(), String> {
+) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
     let mut bindings = crate::control::GenericBindings::new();
     let mut target = target;
     loop {
@@ -307,27 +345,117 @@ fn validate_signature(
                 type_bindings,
                 effect_row_bindings,
             } => {
-                bindings.extend(type_bindings.iter().cloned());
-                bindings.rows.extend(effect_row_bindings.iter().cloned());
+                merge_checked_bindings(&mut bindings, type_bindings, effect_row_bindings)?;
                 target = inner;
             }
             CallTarget::Limited { target: inner, .. } => target = inner,
             CallTarget::Lambda { captured, .. } => {
-                for (name, ty) in captured.type_bindings() {
-                    bindings.entry(name.clone()).or_insert(*ty);
-                }
-                for (name, row) in &captured.generic_bindings().rows {
-                    bindings
+                merge_checked_bindings(
+                    &mut bindings,
+                    &captured
+                        .type_bindings()
+                        .iter()
+                        .map(|(name, ty)| (name.clone(), *ty))
+                        .collect::<Vec<_>>(),
+                    &captured
+                        .generic_bindings()
                         .rows
-                        .entry(name.clone())
-                        .or_insert_with(|| row.clone());
-                }
+                        .iter()
+                        .map(|(name, row)| (name.clone(), row.clone()))
+                        .collect::<Vec<_>>(),
+                )?;
                 break;
             }
             _ => break,
         }
     }
-    validate_signature_bindings(program, root, expected, &bindings)
+    validate_signature_bindings(program, root, expected, &bindings)?;
+    checked_item_application(program, root, &bindings)
+}
+
+fn checked_item_application(
+    program: &CheckedProgram,
+    root: CheckedCallableRoot,
+    bindings: &crate::control::GenericBindings,
+) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
+    let Some(item) = native_application_owner(program, root)? else {
+        return Ok(None);
+    };
+    if !matches!(
+        program.items.get(item),
+        Some(etas_hir::HirItem::Flow(_) | etas_hir::HirItem::Tool(_))
+    ) {
+        return Ok(None);
+    }
+    program
+        .checked_callable_application(
+            item,
+            &bindings
+                .iter()
+                .map(|(name, ty)| (name.clone(), *ty))
+                .collect::<Vec<_>>(),
+            &bindings
+                .rows
+                .iter()
+                .map(|(name, row)| (name.clone(), row.clone()))
+                .collect::<Vec<_>>(),
+        )
+        .map(Some)
+        .map_err(|error| error.to_string())
+}
+
+fn native_application_owner(
+    program: &CheckedProgram,
+    root: CheckedCallableRoot,
+) -> Result<Option<etas_hir::HirItemId>, String> {
+    match root {
+        CheckedCallableRoot::Item(item) => Ok(Some(item)),
+        CheckedCallableRoot::Lambda(expr) => program
+            .hir
+            .view()
+            .index()
+            .expr_item
+            .get(&expr)
+            .copied()
+            .map(Some)
+            .ok_or_else(|| "native closure has no checked lexical body owner".into()),
+        CheckedCallableRoot::StdReference(_) => Ok(None),
+    }
+}
+
+fn merge_checked_bindings(
+    bindings: &mut crate::control::GenericBindings,
+    types: &[(String, TypeId)],
+    rows: &[(String, etas_types::EffectRowRef)],
+) -> Result<(), String> {
+    for (name, ty) in types {
+        if bindings
+            .insert(name.clone(), *ty)
+            .is_some_and(|previous| previous != *ty)
+        {
+            return Err("native callable has conflicting type arguments".into());
+        }
+    }
+    for (name, row) in rows {
+        if bindings
+            .rows
+            .insert(name.clone(), row.clone())
+            .is_some_and(|previous| {
+                previous.tail != row.tail
+                    || previous
+                        .effects
+                        .iter()
+                        .any(|effect| !row.effects.contains(effect))
+                    || row
+                        .effects
+                        .iter()
+                        .any(|effect| !previous.effects.contains(effect))
+            })
+        {
+            return Err("native callable has conflicting effect-row arguments".into());
+        }
+    }
+    Ok(())
 }
 
 fn validate_signature_bindings(

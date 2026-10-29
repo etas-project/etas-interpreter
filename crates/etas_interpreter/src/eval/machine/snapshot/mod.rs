@@ -49,6 +49,6 @@ pub(crate) struct CapturedMachineSnapshot {
     pub machine: crate::orchestration::MachineSnapshot,
     pub revisions: std::collections::BTreeMap<
         etas_code::RevisionKey,
-        std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+        std::sync::Arc<crate::api::code::PreparedCodeRevision>,
     >,
 }

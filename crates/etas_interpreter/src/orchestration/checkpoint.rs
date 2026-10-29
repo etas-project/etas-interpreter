@@ -150,7 +150,7 @@ pub struct CheckpointCodeRevision {
 }
 
 impl CheckpointCodeRevision {
-    pub(crate) fn for_revision(revision: &crate::api::code::PreparedAgentRevision) -> Self {
+    pub(crate) fn for_revision(revision: &crate::api::code::PreparedCodeRevision) -> Self {
         Self {
             target: revision.identity().clone(),
             revision_key: revision.revision().key(),
@@ -162,15 +162,23 @@ impl CheckpointCodeRevision {
         if etas_code::RevisionKey::from_inputs(&self.revision) != self.revision_key {
             return Err("checkpoint code revision key differs from its inputs".into());
         }
-        if self.target.kind() != etas_code::DefinitionKind::Agent
-            || !self.revision.definition.as_method().is_some_and(|method| {
-                method.implementation().subject() == &self.target
-                    && method.name() == "run"
-                    && method.implementation().selected_spec().is_none()
-            })
-        {
+        let valid_target = match self.target.kind() {
+            etas_code::DefinitionKind::Agent => {
+                self.revision.definition.as_method().is_some_and(|method| {
+                    method.implementation().subject() == &self.target
+                        && method.name() == "run"
+                        && method.implementation().selected_spec().is_none()
+                })
+            }
+            etas_code::DefinitionKind::Flow => {
+                self.revision.definition.as_declaration() == Some(&self.target)
+            }
+            _ => false,
+        };
+        if !valid_target {
             return Err(
-                "checkpoint code revision does not identify an agent default method".into(),
+                "checkpoint code revision does not identify its agent entry or ordinary flow"
+                    .into(),
             );
         }
         Ok(())

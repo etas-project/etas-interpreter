@@ -29,7 +29,9 @@ mod handler;
 mod host_enum;
 mod host_type_environment;
 mod host_value;
-pub(crate) use host_value::{host_to_checked_interp_value, host_to_typed_interp_value};
+pub(crate) use host_value::{
+    decode_checked_host_value, host_to_checked_interp_value, host_to_typed_interp_value,
+};
 pub(crate) mod collection_ordering;
 mod index_access;
 pub(crate) mod limit;
@@ -124,7 +126,7 @@ use etas_host::{
 
 pub struct EvalContext<'a> {
     pub(crate) handler_floor: usize,
-    pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+    pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     code_syntax: std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,

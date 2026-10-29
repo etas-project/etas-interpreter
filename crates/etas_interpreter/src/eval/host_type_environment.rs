@@ -1,21 +1,28 @@
 use etas_types::TypeId;
 use std::collections::HashMap;
 
+#[cfg(test)]
+mod tests;
+
 #[derive(Default)]
 pub(super) struct HostTypeEnvironment<'a> {
     parent: Option<&'a HostTypeEnvironment<'a>>,
     bindings: HashMap<String, TypeId>,
     enum_layouts: Option<&'a HashMap<TypeId, etas_types::EnumLayoutFact>>,
+    json_value: Option<TypeId>,
 }
 
 impl<'a> HostTypeEnvironment<'a> {
-    pub(super) fn with_enum_layouts(
-        layouts: &'a HashMap<TypeId, etas_types::EnumLayoutFact>,
-    ) -> Self {
+    pub(super) fn with_checked_types(facts: &'a etas_types::TypeFacts) -> Self {
         Self {
-            enum_layouts: Some(layouts),
+            enum_layouts: Some(&facts.enum_layouts),
+            json_value: facts.known_std_types.json_value,
             ..Self::default()
         }
+    }
+
+    pub(super) fn is_json_value(&self, ty: TypeId) -> bool {
+        self.json_value == Some(ty)
     }
 
     pub(super) fn enum_layout(&self, ty: TypeId) -> Result<&'a etas_types::EnumLayoutFact, String> {
@@ -44,6 +51,7 @@ impl<'a> HostTypeEnvironment<'a> {
             parent: Some(parent),
             bindings: names.iter().cloned().zip(args.iter().copied()).collect(),
             enum_layouts: parent.enum_layouts,
+            json_value: parent.json_value,
         }
     }
 

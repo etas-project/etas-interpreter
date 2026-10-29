@@ -1,5 +1,6 @@
 mod annotation;
 mod behavior;
+mod compile_result;
 mod control;
 mod definition_fields;
 mod diagnostic;
@@ -150,21 +151,50 @@ impl EvalContext<'_> {
         args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        let [
-            InterpValue::AgentDefinition(definition),
-            InterpValue::SyntaxBlock(syntax),
-        ]: [InterpValue; 2] = (match args.try_into() {
-            Ok(args) => args,
-            Err(_) => {
-                return ControlSignal::invalid_arguments(
-                    "with_body expects a definition and structured syntax",
-                    span,
-                );
-            }
-        })
+        let [definition, InterpValue::SyntaxBlock(syntax)]: [InterpValue; 2] =
+            (match args.try_into() {
+                Ok(args) => args,
+                Err(_) => {
+                    return ControlSignal::invalid_arguments(
+                        "with_body expects a definition and structured syntax",
+                        span,
+                    );
+                }
+            })
         else {
             return ControlSignal::invalid_arguments(
                 "with_body argument differs from its checked definition/syntax ABI",
+                span,
+            );
+        };
+        if let InterpValue::CallableDefinition(definition) = &definition {
+            if call.parameter_types != [definition.ty(), syntax.ty()]
+                || call.result_type != definition.ty()
+                || !std::sync::Arc::ptr_eq(definition.program(), self.checked)
+            {
+                return ControlSignal::missing_checked_fact(
+                    "with_body does not preserve its checked CallableDef<F> ABI and frozen environment",
+                    span,
+                );
+            }
+            let snapshot = match definition.definition() {
+                Ok(snapshot) => snapshot,
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+            };
+            return match definition
+                .backend()
+                .with_body(snapshot, syntax.syntax().clone())
+            {
+                Ok(edited) => match definition.with_definition(edited) {
+                    Ok(edited) => ControlSignal::Value(InterpValue::CallableDefinition(edited)),
+                    Err(reason) => ControlSignal::missing_checked_fact(reason, span),
+                },
+                Err(error) => definition_operation_failure(error.into(), span),
+            };
+        }
+        let InterpValue::AgentDefinition(definition) = definition else {
+            return ControlSignal::invalid_arguments(
+                "with_body requires a checked definition descriptor",
                 span,
             );
         };

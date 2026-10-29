@@ -39,6 +39,21 @@ impl EvalContext<'_> {
                 span,
             );
         };
+        if let etas_types::CheckedReflectionTarget::CallableValue { binding, .. } = fact.target {
+            let value = match frame.get(binding) {
+                Some(value) => value,
+                None => match self.eval_global_symbol(binding, span) {
+                    Ok(value) => value,
+                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                },
+            };
+            return match self.reflect_callable_binding(expr, fact.descriptor_type, value) {
+                Ok(value) => self
+                    .code_operation_boundary(span)
+                    .unwrap_or(ControlSignal::Value(value)),
+                Err(error) => error.into_signal(span),
+            };
+        }
         if let etas_types::CheckedReflectionTarget::AgentValue { binding, .. } = fact.target {
             let value = match frame.get(binding) {
                 Some(value) => value,
@@ -90,6 +105,32 @@ impl EvalContext<'_> {
                 ) {
                     Ok(definition) => definition,
                     Err(error) => return ControlSignal::missing_checked_fact(error, span),
+                };
+                let definition = if header
+                    .id
+                    .as_declaration()
+                    .is_some_and(|key| key.kind() == etas_code::DefinitionKind::Flow)
+                    && backend.has_flow_snapshot(&header.id)
+                {
+                    let snapshot = match backend.reflect_flow(expr) {
+                        Ok(snapshot) => snapshot,
+                        Err(error) => return code::definition_operation_failure(error, span),
+                    };
+                    match definition.with_definition(snapshot) {
+                        Ok(definition) => definition,
+                        Err(error) => return ControlSignal::missing_checked_fact(error, span),
+                    }
+                } else if header.id.as_method().is_some() {
+                    let snapshot = match backend.reflect_method_snapshot(expr) {
+                        Ok(snapshot) => snapshot,
+                        Err(error) => return code::definition_operation_failure(error, span),
+                    };
+                    match definition.with_method_snapshot(snapshot) {
+                        Ok(definition) => definition,
+                        Err(error) => return ControlSignal::missing_checked_fact(error, span),
+                    }
+                } else {
+                    definition
                 };
                 InterpValue::CallableDefinition(definition)
             }

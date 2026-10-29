@@ -1,6 +1,4 @@
-use super::host_value::{
-    host_to_typed_interp_value, host_value_to_json_interp_value, interp_to_host_value,
-};
+use super::host_value::{host_value_to_json_interp_value, interp_to_host_value};
 use super::*;
 use crate::control::ExecutionFault;
 use etas_host::{MemoryEntry, MemoryVersion, host_value_to_json};
@@ -167,7 +165,7 @@ impl<'a> EvalContext<'a> {
             }
             (MemoryDecode::OptionValue { .. }, MemoryResult::None) => Ok(InterpValue::OptionNone),
             (MemoryDecode::OptionValue { value_type }, MemoryResult::Value { value, .. }) => {
-                host_to_typed_interp_value(value, value_type, &self.checked.type_store)
+                decode_checked_host_value(value, value_type, self.checked)
                     .map(|value| InterpValue::OptionSome(crate::value::SharedValue::new(value)))
                     .map_err(|error| {
                         ExecutionFault::new(
@@ -189,9 +187,7 @@ impl<'a> EvalContext<'a> {
                 },
             ) => entries
                 .into_iter()
-                .map(|entry| {
-                    host_to_typed_interp_value(entry.key, key_type, &self.checked.type_store)
-                })
+                .map(|entry| decode_checked_host_value(entry.key, key_type, self.checked))
                 .collect::<Result<Vec<_>, _>>()
                 .map(|values| InterpValue::List(values.into()))
                 .map_err(|error| {
@@ -238,7 +234,7 @@ impl<'a> EvalContext<'a> {
         result_type: etas_types::TypeId,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
-        host_to_typed_interp_value(value, result_type, &self.checked.type_store).map_err(|error| {
+        decode_checked_host_value(value, result_type, self.checked).map_err(|error| {
             ExecutionFault::new(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
                 span,

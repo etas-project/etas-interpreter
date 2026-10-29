@@ -1,17 +1,17 @@
 use etas_code::{
     CodeFingerprint,
-    definition::{AgentSourceBundle, SourceBundleLimits},
+    definition::{DefinitionSourceBundle, SourceBundleLimits},
 };
 
-use super::PreparedAgentRevision;
+use super::PreparedCodeRevision;
 
 /// Source restoration data, not executable evidence. An application must
 /// restore the draft and submit it through the normal authorized compiler.
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 #[serde(deny_unknown_fields)]
-pub struct SavedAgentRevision {
+pub struct SavedCodeRevision {
     pub schema: u32,
-    pub source: AgentSourceBundle,
+    pub source: DefinitionSourceBundle,
     pub snapshot_fingerprint: CodeFingerprint,
 }
 
@@ -26,7 +26,7 @@ pub enum RevisionCheckpointError {
     SnapshotMismatch,
 }
 
-impl SavedAgentRevision {
+impl SavedCodeRevision {
     pub fn validate(&self, limits: SourceBundleLimits) -> Result<(), RevisionCheckpointError> {
         if self.schema != 1 {
             return Err(RevisionCheckpointError::UnsupportedSchema(self.schema));
@@ -37,12 +37,12 @@ impl SavedAgentRevision {
     }
 }
 
-impl PreparedAgentRevision {
+impl PreparedCodeRevision {
     pub fn save_checkpoint_source(
         &self,
         checkpoint: &crate::api::InterpreterCheckpoint,
         limits: SourceBundleLimits,
-    ) -> Result<SavedAgentRevision, RevisionCheckpointError> {
+    ) -> Result<SavedCodeRevision, RevisionCheckpointError> {
         checkpoint
             .compilation
             .validate_for_project(self.program(), checkpoint.entry_item)
@@ -63,7 +63,7 @@ impl PreparedAgentRevision {
     pub fn save_source(
         &self,
         limits: SourceBundleLimits,
-    ) -> Result<SavedAgentRevision, RevisionCheckpointError> {
+    ) -> Result<SavedCodeRevision, RevisionCheckpointError> {
         let reflected = self
             .reflection
             .as_ref()
@@ -78,7 +78,7 @@ impl PreparedAgentRevision {
         {
             return Err(RevisionCheckpointError::RevisionMismatch);
         }
-        Ok(SavedAgentRevision {
+        Ok(SavedCodeRevision {
             schema: 1,
             source,
             snapshot_fingerprint: self.snapshot_fingerprint(),
@@ -89,7 +89,7 @@ impl PreparedAgentRevision {
     /// Stored analysis never substitutes for checking or current authority.
     pub fn validate_restored_source(
         &self,
-        saved: &SavedAgentRevision,
+        saved: &SavedCodeRevision,
         limits: SourceBundleLimits,
     ) -> Result<(), RevisionCheckpointError> {
         saved.validate(limits)?;

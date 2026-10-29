@@ -154,7 +154,10 @@ impl ProgramCall {
         let item = if call.frozen_agent().is_some() {
             target.original_item
         } else if call.is_default_entry() {
-            call.prepared().targets.candidate_agent
+            call.prepared()
+                .targets
+                .agent_item()
+                .ok_or("agent revision has no checked agent owner")?
         } else {
             target.candidate_item
         };

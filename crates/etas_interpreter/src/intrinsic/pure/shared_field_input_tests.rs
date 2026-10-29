@@ -149,11 +149,13 @@ fn tuple_abi_projection_preserves_checked_identity_and_releases_failed_output() 
         name: "Id".into(),
         params: vec![],
         representation: Some(text),
+        read_only_erased_view: false,
     }));
     let other = types.intern(Type::Nominal(NominalTypeRef {
         name: "OtherId".into(),
         params: vec![],
         representation: Some(text),
+        read_only_erased_view: false,
     }));
     let trusted = types.intern(Type::Trust {
         wrapper: TrustWrapper::Trusted,

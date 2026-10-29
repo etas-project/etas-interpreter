@@ -10,6 +10,7 @@ mod frame;
 mod program;
 mod reference_presence;
 mod reference_types;
+mod revision;
 mod scoped_callable;
 mod stream_reducer;
 mod suspension;
@@ -41,6 +42,7 @@ use crate::orchestration::{
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
+    execution_revision: Option<&'a crate::api::code::PreparedCodeRevision>,
     revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     frame_definitions:
         std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, frame::FrameValidation>>>,
@@ -66,6 +68,7 @@ impl<'a> SnapshotValidator<'a> {
         limits: &'a etas_host::StorageLimits,
     ) -> Self {
         Self {
+            execution_revision: None,
             revisions: None,
             frame_definitions: Default::default(),
             frame_owners: Default::default(),
@@ -87,6 +90,14 @@ impl<'a> SnapshotValidator<'a> {
         revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     ) -> Self {
         self.revisions = revisions;
+        self
+    }
+
+    pub(crate) fn with_execution_revision(
+        mut self,
+        revision: Option<&'a crate::api::code::PreparedCodeRevision>,
+    ) -> Self {
+        self.execution_revision = revision;
         self
     }
 
@@ -163,14 +174,7 @@ impl<'a> SnapshotValidator<'a> {
             ));
         }
         self.item(checkpoint.entry_item, "checkpoint entry item")?;
-        if checkpoint.code_revision.is_some()
-            != self.checked.definition_sources.requires_revision_context()
-        {
-            return Err("checkpoint code revision presence differs from the checked program's revision source".into());
-        }
-        if let Some(revision) = &checkpoint.code_revision {
-            revision.validate()?;
-        }
+        self.validate_root_revision(checkpoint)?;
         self.validate_arguments(checkpoint.entry_item, &checkpoint.args)?;
         let mut boundary_scopes = BTreeSet::new();
         self.validate_machine_with_handler_scopes(&checkpoint.machine, &mut boundary_scopes)?;

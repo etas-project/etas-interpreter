@@ -189,6 +189,7 @@ flow main() -> bool ![Memory.write] {
     );
     std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).type_store).intern(
         Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "MemoryConflict".to_owned(),
             params: Vec::new(),
             representation: None,

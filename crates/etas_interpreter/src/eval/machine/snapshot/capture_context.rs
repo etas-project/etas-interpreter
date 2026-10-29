@@ -26,7 +26,7 @@ type FrameIdentity = (*const (), u64);
 pub(in crate::eval::machine) struct CaptureContext {
     pub(in crate::eval::machine) revisions: std::collections::BTreeMap<
         etas_code::RevisionKey,
-        std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+        std::sync::Arc<crate::api::code::PreparedCodeRevision>,
     >,
     pub(super) values: HashMap<CaptureIdentity, ValueSnapshot>,
     pub(super) call_nodes: HashMap<*const CallTarget, CallTargetSnapshotLink>,

@@ -34,12 +34,6 @@ impl<'a> EvalContext<'a> {
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let Some(_application) = self.checked.effects.handle_applications.get(&handle_expr) else {
-            return ControlSignal::missing_checked_fact(
-                "handle execution requires a checked HandleApplicationFact",
-                span,
-            );
-        };
         if let Some(path) = self.external_handler_value_path(handler) {
             let message = format!(
                 "external handler value `{}` has a checked metadata contract but no runtime handler body in metadata-only package mode",
@@ -375,7 +369,14 @@ impl<'a> EvalContext<'a> {
         ) {
             return Some(ControlSignal::Fault(Box::new(fault)));
         }
-        let outer_continuation = perform.continuation;
+        let guard = match self.compile_handler_result_guard(&perform) {
+            Ok(guard) => guard,
+            Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        };
+        let outer_continuation = match guard {
+            Some(guard) => compose_continuation(guard, perform.continuation),
+            None => perform.continuation,
+        };
         let signal = self.execute_block(handler.body, &mut handler_frame);
         Some(match signal {
             ControlSignal::Apply(mut pending) => {

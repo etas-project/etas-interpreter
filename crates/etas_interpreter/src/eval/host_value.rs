@@ -360,13 +360,21 @@ pub(crate) fn host_to_checked_interp_value(
     limits
         .result_value_size(&value)
         .map_err(|error| error.message)?;
+    decode_checked_host_value(value, expected, checked)
+}
+
+/// Resource limits remain owned by the calling boundary. Opaque/std ABI
+/// identities, unlike primitive shape decoding, require checked type facts.
+pub(crate) fn decode_checked_host_value(
+    value: HostValue,
+    expected: TypeId,
+    checked: &etas_frontend::CheckedProject,
+) -> Result<InterpValue, String> {
     host_to_typed_interp_value_with_substitutions(
         value,
         expected,
         &checked.type_store,
-        &super::host_type_environment::HostTypeEnvironment::with_enum_layouts(
-            &checked.types.enum_layouts,
-        ),
+        &super::host_type_environment::HostTypeEnvironment::with_checked_types(&checked.types),
     )
 }
 
@@ -386,10 +394,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
             substitutions,
         );
     }
-    if matches!(
-        store.get(expected),
-        Some(Type::Named(named)) if named.name == "std.json.JsonValue"
-    ) {
+    if substitutions.is_json_value(expected) {
         return host_value_to_json_interp_value(value).map_err(|error| error.message);
     }
     let value = match value {
@@ -972,6 +977,7 @@ mod tests {
         let mut store = etas_types::TypeStore::new();
         let string = store.intern(Type::Primitive(PrimitiveType::String));
         let nominal = store.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.main.UserId".to_owned(),
             params: Vec::new(),
             representation: Some(string),
@@ -995,6 +1001,7 @@ mod tests {
             name: "T".into(),
         }));
         let inner = types.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.Inner".into(),
             params: vec!["T".into()],
             representation: Some(param),
@@ -1005,6 +1012,7 @@ mod tests {
             args: vec![list_param],
         });
         let outer = types.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "app.Outer".into(),
             params: vec!["T".into()],
             representation: Some(applied_inner),

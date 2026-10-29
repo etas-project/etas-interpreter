@@ -19,7 +19,7 @@ use std::sync::Arc;
 pub(crate) async fn resume_checkpoint_inner(
     project: &CheckedProject,
     checkpoint: &InterpreterCheckpoint,
-    prepared: Option<&Arc<crate::api::code::PreparedAgentRevision>>,
+    prepared: Option<&Arc<crate::api::code::PreparedCodeRevision>>,
     host: &dyn HostServices,
     options: RunOptions,
     execution: etas_host::execution::ExecutionScope,
@@ -69,7 +69,7 @@ pub(super) fn header(checkpoint: &InterpreterCheckpoint) -> ResumeHeader {
 pub(super) async fn resume(
     project: &CheckedProject,
     checkpoint: &InterpreterCheckpoint,
-    prepared: Option<&Arc<crate::api::code::PreparedAgentRevision>>,
+    prepared: Option<&Arc<crate::api::code::PreparedCodeRevision>>,
     host: &dyn HostServices,
     mut options: RunOptions,
     execution: etas_host::execution::ExecutionScope,
@@ -120,6 +120,7 @@ pub(super) async fn resume(
             &plan.closures,
             &options.storage_limits,
         )
+        .with_execution_revision(prepared.map(Arc::as_ref))
         .with_revisions(options.checkpoint_revisions.as_deref())
         .validate_checkpoint(checkpoint)
         .map_err(|message| format!("checkpoint state validation failed: {message}"))?;

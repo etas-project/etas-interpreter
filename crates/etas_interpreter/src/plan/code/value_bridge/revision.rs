@@ -12,7 +12,7 @@ pub(crate) enum RevisionProjection {
 }
 
 impl RevisionProjection {
-    pub(crate) fn runtime_owner(&self) -> Option<Arc<crate::api::code::PreparedAgentRevision>> {
+    pub(crate) fn runtime_owner(&self) -> Option<Arc<crate::api::code::PreparedCodeRevision>> {
         match self {
             Self::Candidate(bridge) | Self::Original(bridge) => bridge.runtime_owner(),
         }

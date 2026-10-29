@@ -23,7 +23,7 @@ impl PreparedCodeDefinitions {
     /// compile the definition, grant Code authority, or accept caller TypeIds.
     pub fn definition_value(
         &self,
-        definition: etas_code::definition::AgentDefinitionRef,
+        definition: etas_code::definition::DefinitionRef,
     ) -> Result<crate::api::InterpValue, etas_frontend::code::definition::NativeDefinitionError>
     {
         use etas_frontend::code::{definition::NativeDefinitionError, descriptor::ProjectionError};

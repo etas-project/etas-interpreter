@@ -3,6 +3,30 @@ use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 use crate::orchestration::{ContinuationSnapshot as C, MachineFrameSnapshot as F};
 
 #[tokio::test(flavor = "current_thread")]
+async fn unit_literal_preserves_its_checked_identity_through_a_call_and_match() {
+    for source in [
+        "module app.main; flow identity(value: unit) -> unit { return value; } flow main() -> bool { let value = identity(()); return match value { () => true, }; }",
+        "module app.main; type Marker = unit; flow main() -> bool { let value = Marker(()); return match value { () => true, }; }",
+    ] {
+        let checked = checked_project(source);
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &FakeHost::new(HostServiceAvailability::default()),
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn checked_literal_descriptors_preserve_order_and_reject_corrupt_resume_progress() {
     for (construction, expected, labels) in [
         (

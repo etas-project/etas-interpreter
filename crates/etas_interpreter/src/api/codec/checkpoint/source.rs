@@ -1,5 +1,5 @@
 use super::*;
-use crate::api::code::SavedAgentRevision;
+use crate::api::code::SavedCodeRevision;
 use etas_code::definition::SourceBundleLimits;
 
 /// Inert, bounded source restoration input. Native references are decoded only
@@ -8,7 +8,7 @@ pub struct SourceCheckpoint {
     value: super::super::CheckpointDocument,
     compilation: CheckpointCompilationIdentity,
     pub(crate) header: ResumeHeader,
-    pub(crate) sources: Vec<SavedAgentRevision>,
+    pub(crate) sources: Vec<SavedCodeRevision>,
 }
 
 pub(crate) struct ResumeHeader {
@@ -88,7 +88,7 @@ impl SourceCheckpoint {
         let mut sources = Vec::with_capacity(raw.len());
         let mut revisions = std::collections::BTreeSet::new();
         for source in raw {
-            let source: SavedAgentRevision =
+            let source: SavedCodeRevision =
                 serde::Deserialize::deserialize(source).map_err(|error| {
                     InterpreterCodecError::new(format!("invalid checkpoint source: {error}"))
                 })?;

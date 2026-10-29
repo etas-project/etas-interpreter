@@ -793,6 +793,7 @@ mod tests {
         let bytes = types.primitive(etas_types::PrimitiveType::Bytes);
         let boolean = types.primitive(etas_types::PrimitiveType::Bool);
         let digest = types.intern(etas_types::Type::Nominal(etas_types::NominalTypeRef {
+            read_only_erased_view: false,
             name: "std.crypto.Digest".into(),
             representation: Some(bytes),
             params: vec![],

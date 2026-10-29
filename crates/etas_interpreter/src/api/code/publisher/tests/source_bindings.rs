@@ -35,7 +35,7 @@ async fn publishing_a_revision_does_not_require_or_authorize_its_unanalyzed_orig
         !checked
             .reachability
             .analysis_items
-            .contains(&original.agent())
+            .contains(&original.declaration())
     );
     let store = etas_frontend::code::definition::NativeDefinitionStore::new(
         catalog,
@@ -49,7 +49,7 @@ async fn publishing_a_revision_does_not_require_or_authorize_its_unanalyzed_orig
     let prepared = InterpreterCandidatePublisher.publish(candidate).unwrap();
     assert!(
         prepared
-            .callable_plan(original.agent(), true)
+            .callable_plan(original.declaration(), true)
             .unwrap_err()
             .contains("MissingAnalysis")
     );
@@ -62,7 +62,7 @@ async fn publishing_a_revision_does_not_require_or_authorize_its_unanalyzed_orig
     };
     assert!(
         revisions
-            .execution_snapshot(&snapshot(original.agent()))
+            .execution_snapshot(&snapshot(original.declaration()))
             .unwrap_err()
             .contains("MissingAnalysis")
     );
@@ -84,14 +84,14 @@ async fn publishing_a_revision_does_not_require_or_authorize_its_unanalyzed_orig
 }
 
 async fn run_source_flow(
-    prepared: &Arc<PreparedAgentRevision>,
+    prepared: &Arc<PreparedCodeRevision>,
     name: &str,
 ) -> crate::api::RunOutcome {
     run_source_flow_with_limit(prepared, name, None).await
 }
 
 async fn run_source_flow_with_limit(
-    prepared: &Arc<PreparedAgentRevision>,
+    prepared: &Arc<PreparedCodeRevision>,
     name: &str,
     max_steps: Option<u64>,
 ) -> crate::api::RunOutcome {
@@ -168,12 +168,12 @@ fn native_source_plan_uses_its_selected_entry_instead_of_the_projects_main() {
     let source = "module app; import std.io.println; agent Worker() -> i32 { return 1; } flow main() -> unit { let definition = ^Worker; println(\"not the selected entry\")?; return; }";
     let base = frozen(source);
     let original_entry = base.checked().entry;
-    assert!(original_entry.is_some_and(|entry| entry != base.agent()));
+    assert!(original_entry.is_some_and(|entry| entry != base.declaration()));
     let prepared = InterpreterCandidatePublisher
         .publish(compile(base.clone(), "return 2;"))
         .unwrap();
     assert_eq!(base.checked().entry, original_entry);
-    let source_plan = prepared.callable_plan(base.agent(), true).unwrap();
+    let source_plan = prepared.callable_plan(base.declaration(), true).unwrap();
     assert_eq!(
         source_plan.host_requirements.entry,
         Some(etas_effects::InterpreterSupport::LocalOnly)
@@ -237,11 +237,11 @@ flow inspect() -> unit { let definition = ^Worker; return; }"#;
     );
     assert_eq!(
         prepared
-            .callable_plan(original.agent(), true)
+            .callable_plan(original.declaration(), true)
             .unwrap()
             .entry
             .item,
-        original.agent()
+        original.declaration()
     );
     for name in ["invoke_original", "invoke_alias"] {
         let outcome = run_source_flow(&prepared, name).await;
@@ -383,7 +383,7 @@ flow inspect() -> unit { let definition = ^Worker; return; }
         prepared.clone(),
         None,
         &original,
-        prepared.targets.component,
+        prepared.targets.agent_component().unwrap(),
     )
     .unwrap();
     let host = crate::testing::FakeHost::new(crate::host::HostServiceAvailability {
@@ -484,21 +484,21 @@ fn frozen_source_callable_bindings_reject_another_candidate_snapshot() {
     let error = crate::value::AgentRevisionValue::frozen_declaration(
         first.clone(),
         second.program(),
-        first.targets.candidate_agent,
+        first.targets.agent_item().unwrap(),
     )
     .unwrap_err();
     assert!(error.contains("different candidate program"), "{error}");
     let source = crate::value::AgentRevisionValue::frozen_declaration(
         first.clone(),
         first.program(),
-        first.targets.candidate_agent,
+        first.targets.agent_item().unwrap(),
     )
     .unwrap();
     let revised = crate::value::AgentRevisionValue::new_in_program(
         first.clone(),
         None,
         first.type_bridge().original_program(),
-        first.targets.component,
+        first.targets.agent_component().unwrap(),
     )
     .unwrap();
     assert_ne!(source, revised);

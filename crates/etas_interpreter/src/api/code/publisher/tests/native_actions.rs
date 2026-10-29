@@ -27,7 +27,7 @@ flow inspect() -> unit { let definition = ^Worker; return; }
         prepared.clone(),
         None,
         &original,
-        prepared.targets.component,
+        prepared.targets.agent_component().unwrap(),
     )
     .unwrap();
     let entry = original.entry.unwrap();
@@ -74,7 +74,7 @@ flow inspect() -> unit { let definition = ^Worker; return; }
         prepared.clone(),
         None,
         &original,
-        prepared.targets.component,
+        prepared.targets.agent_component().unwrap(),
     )
     .unwrap();
     let entry = original.entry.unwrap();
@@ -127,7 +127,7 @@ flow inspect() -> unit { let definition = ^Worker; return; }
         prepared.clone(),
         None,
         &original,
-        prepared.targets.component,
+        prepared.targets.agent_component().unwrap(),
     )
     .unwrap();
     let entry = original.entry.unwrap();

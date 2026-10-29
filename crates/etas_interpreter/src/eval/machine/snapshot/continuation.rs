@@ -20,6 +20,9 @@ impl ContinuationSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match continuation {
+            Continuation::ValidateCompileResult { .. } => {
+                return Err("pending compiler contract evidence must be restored from source in its locked definition environment, not an opaque checkpoint handle".into());
+            }
             Continuation::PriorityQueueUpdate(_) => {
                 return Err(
                     "an in-progress pure priority comparison cannot cross a checkpoint boundary"

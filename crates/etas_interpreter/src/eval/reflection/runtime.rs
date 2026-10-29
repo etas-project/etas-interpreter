@@ -41,6 +41,103 @@ impl RuntimeReflectionError {
 }
 
 impl EvalContext<'_> {
+    pub(super) fn reflect_callable_binding(
+        &self,
+        expr: HirExprId,
+        ty: etas_types::TypeId,
+        value: InterpValue,
+    ) -> Result<InterpValue, RuntimeReflectionError> {
+        if let InterpValue::Callable(CallTarget::Scoped(value)) = &value {
+            return self.reflect_scoped_flow(expr, ty, value);
+        }
+        let backend = self
+            .code_definitions
+            .as_ref()
+            .ok_or("flow value reflection has no prepared definitions")?
+            .definitions();
+        if !std::sync::Arc::ptr_eq(self.checked, backend.catalog().checked_program()) {
+            return Err(
+                "flow binding reflection requires the matching checked implementation program"
+                    .into(),
+            );
+        }
+        if let InterpValue::Callable(target @ CallTarget::Specialized { .. }) = &value {
+            let Some(etas_types::CheckedReflectionFact {
+                target: etas_types::CheckedReflectionTarget::CallableValue { signature, .. },
+                ..
+            }) = self.checked.types.reflections.get(&expr)
+            else {
+                return Err("generic reflection has no checked callable interface".into());
+            };
+            let Some(etas_types::Type::Function(expected)) =
+                self.checked.type_store.get(*signature)
+            else {
+                return Err("generic reflection interface is not a checked function type".into());
+            };
+            let application = crate::value::ScopedCallableValue::checked_flow_application(
+                self.checked,
+                target,
+                expected,
+            )?;
+            return self.reflect_native_application(expr, ty, &application);
+        }
+        let InterpValue::Callable(CallTarget::FlowItem(item)) = value else {
+            return Err(
+                "reflected binding is missing its checked ordinary-flow implementation".into(),
+            );
+        };
+        if let Some(revision) = self.revision {
+            let original = revision
+                .frozen_bindings
+                .frozen_flow_item(backend.catalog(), item)?;
+            return self.reflect_frozen_flow_binding(expr, ty, &revision.frozen_bindings, original);
+        }
+        let header = backend.catalog().callable_value_reflection(expr, item)?;
+        let body = backend.catalog().retained_callable_value_body(
+            expr,
+            item,
+            backend.syntax_operations(),
+        )?;
+        Ok(InterpValue::CallableDefinition(
+            CallableDefinitionValue::new(ty, header.clone(), body, backend.clone())?
+                .with_definition(backend.reflect_flow_value(expr, item)?)?,
+        ))
+    }
+
+    pub(super) fn reflect_native_application(
+        &self,
+        expr: HirExprId,
+        ty: etas_types::TypeId,
+        application: &etas_frontend::CheckedCallableApplication,
+    ) -> Result<InterpValue, RuntimeReflectionError> {
+        let backend = self
+            .code_definitions
+            .as_ref()
+            .ok_or("bound flow reflection has no prepared definition catalog")?
+            .definitions();
+        let definition =
+            backend.reflect_callable_application(expr, application, Default::default())?;
+        let view = backend.resolve(&definition)?;
+        let contract = view.environment()?.contract();
+        let header = contract
+            .entry()
+            .and_then(|id| contract.callable(id))
+            .ok_or("bound flow reflection has no frozen callable header")?
+            .clone();
+        Ok(InterpValue::CallableDefinition(
+            CallableDefinitionValue::with_abi(
+                ty,
+                header,
+                view.body().cloned(),
+                backend.clone(),
+                self.checked.clone(),
+                backend.syntax_operations().clone(),
+                view.signature_descriptors().clone(),
+            )
+            .with_definition(definition)?,
+        ))
+    }
+
     pub(super) fn reflect_agent_binding(
         &self,
         expr: HirExprId,
@@ -79,6 +176,9 @@ impl EvalContext<'_> {
                                 header.clone(),
                                 body,
                                 backend.clone(),
+                            )?
+                            .with_method_snapshot(
+                                backend.reflect_agent_value_method_snapshot(expr, item)?,
                             )?,
                         ))
                     }
@@ -134,8 +234,8 @@ impl EvalContext<'_> {
                     self.checked.clone(),
                 )),
             ),
-            etas_frontend::code::definition::NativeSourceReflection::Callable(callable) => Ok(
-                InterpValue::CallableDefinition(CallableDefinitionValue::with_abi(
+            etas_frontend::code::definition::NativeSourceReflection::Callable(callable) => {
+                let value = CallableDefinitionValue::with_abi(
                     ty,
                     callable.header,
                     callable.body,
@@ -143,8 +243,48 @@ impl EvalContext<'_> {
                     self.checked.clone(),
                     backend.syntax_operations().clone(),
                     callable.graph,
-                )),
-            ),
+                );
+                let value = match callable.definition {
+                    Some(definition) => value.with_definition(definition)?,
+                    None => value,
+                };
+                let value = match callable.method_snapshot {
+                    Some(snapshot) => value.with_method_snapshot(snapshot)?,
+                    None => value,
+                };
+                Ok(InterpValue::CallableDefinition(value))
+            }
         }
+    }
+
+    pub(super) fn reflect_frozen_flow_binding(
+        &self,
+        expr: HirExprId,
+        ty: etas_types::TypeId,
+        bindings: &etas_frontend::code::definition::FrozenReflectionBindings,
+        original: HirItemId,
+    ) -> Result<InterpValue, RuntimeReflectionError> {
+        let caller = self
+            .code_definitions
+            .as_ref()
+            .ok_or("flow binding reflection has no checked caller catalog")?
+            .definitions();
+        let callable = bindings.reflect_flow_binding(caller.catalog(), expr, original)?;
+        let backend = bindings.source();
+        let definition = callable
+            .definition
+            .ok_or("frozen flow binding reflection has no native definition lease")?;
+        Ok(InterpValue::CallableDefinition(
+            CallableDefinitionValue::with_abi(
+                ty,
+                callable.header,
+                callable.body,
+                backend.clone(),
+                self.checked.clone(),
+                backend.syntax_operations().clone(),
+                callable.graph,
+            )
+            .with_definition(definition)?,
+        ))
     }
 }

@@ -52,7 +52,7 @@ flow main(first: Worker, second: Worker) -> () -> i32 ![] {
     );
 }
 
-async fn run(prepared: Arc<PreparedAgentRevision>) -> crate::api::RunResult {
+async fn run(prepared: Arc<PreparedCodeRevision>) -> crate::api::RunResult {
     run_many(vec![prepared], false).await
 }
 
@@ -198,7 +198,7 @@ flow inspect() -> unit { let definition = ^Worker; return; }
         prepared.clone(),
         None,
         &original,
-        prepared.targets.component,
+        prepared.targets.agent_component().unwrap(),
     )
     .unwrap();
     let host = crate::testing::FakeHost::new(Default::default());
@@ -227,7 +227,7 @@ flow inspect() -> unit { let definition = ^Worker; return; }
 }
 
 async fn run_many(
-    revisions: Vec<Arc<PreparedAgentRevision>>,
+    revisions: Vec<Arc<PreparedCodeRevision>>,
     console: bool,
 ) -> crate::api::RunResult {
     let prepared = &revisions[0];
@@ -239,7 +239,7 @@ async fn run_many(
                 prepared.clone(),
                 None,
                 &original,
-                prepared.targets.component,
+                prepared.targets.agent_component().unwrap(),
             )
             .unwrap();
             InterpValue::Callable(CallTarget::AgentRevision(agent))

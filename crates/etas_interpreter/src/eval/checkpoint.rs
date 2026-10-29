@@ -186,6 +186,7 @@ impl<'a> EvalContext<'a> {
             &plan.closures,
             &self.storage_limits,
         )
+        .with_execution_revision(root.program.revision.as_deref())
         .with_revisions(revisions.as_ref())
         .validate_checkpoint(&checkpoint)
         .map_err(|message| {

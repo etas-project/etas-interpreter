@@ -16,11 +16,11 @@ mod checked_reference;
 mod plans;
 mod source;
 pub use checked_reference::CheckedReferencePublicationError;
-pub use source::{RevisionCheckpointError, SavedAgentRevision};
+pub use source::{RevisionCheckpointError, SavedCodeRevision};
 
 /// Engine-owned immutable preparation. It contains no caller frame, Host
 /// context, authority grant, model request or mutable agent binding.
-pub struct PreparedAgentRevision {
+pub struct PreparedCodeRevision {
     candidate: CheckedCandidate,
     plan: Arc<InterpreterPlan>,
     source_entries: plans::RevisionEntryPlans,
@@ -36,20 +36,20 @@ pub struct PreparedAgentRevision {
 }
 
 pub(crate) struct PreparedRevisionDefinition {
-    pub definition: etas_code::definition::AgentDefinitionRef,
+    pub definition: etas_code::definition::DefinitionRef,
     pub backend: Arc<etas_frontend::code::definition::NativeDefinitionStore>,
 }
 
-impl std::fmt::Debug for PreparedAgentRevision {
+impl std::fmt::Debug for PreparedCodeRevision {
     fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
-        f.debug_struct("PreparedAgentRevision")
+        f.debug_struct("PreparedCodeRevision")
             .field("identity", self.identity())
             .field("revision", self.revision())
             .finish_non_exhaustive()
     }
 }
 
-impl PreparedAgentRevision {
+impl PreparedCodeRevision {
     pub(crate) fn retain_service_lease(
         &mut self,
         lease: etas_code::artifact::CheckedCodeRef,
@@ -67,7 +67,7 @@ impl PreparedAgentRevision {
     pub(crate) fn retain_reflected_definition(
         &mut self,
         backend: Arc<etas_frontend::code::definition::NativeDefinitionStore>,
-        input: &etas_code::definition::AgentDefinitionRef,
+        input: &etas_code::definition::DefinitionRef,
     ) -> Result<(), String> {
         let definition = backend
             .reflect_checked(input, &self.candidate, Default::default())
@@ -94,6 +94,11 @@ impl PreparedAgentRevision {
     }
     pub fn identity(&self) -> &DefinitionKey {
         self.candidate.identity()
+    }
+    pub(crate) fn frozen_environment(
+        &self,
+    ) -> &etas_frontend::code::definition::FrozenDefinitionEnvironment {
+        self.candidate.frozen()
     }
     pub fn revision(&self) -> &RevisionInfo {
         self.candidate.revision()
@@ -211,7 +216,7 @@ impl std::error::Error for CandidatePublicationError {}
 pub struct InterpreterCandidatePublisher;
 
 impl CandidatePublisher for InterpreterCandidatePublisher {
-    type Artifact = Arc<PreparedAgentRevision>;
+    type Artifact = Arc<PreparedCodeRevision>;
     type Error = CandidatePublicationError;
 
     fn publish(&mut self, candidate: CheckedCandidate) -> Result<Self::Artifact, Self::Error> {
@@ -298,7 +303,7 @@ impl CandidatePublisher for InterpreterCandidatePublisher {
             type_bridge.original_program(),
             source_items.into_iter(),
         )?;
-        Ok(Arc::new(PreparedAgentRevision {
+        Ok(Arc::new(PreparedCodeRevision {
             candidate,
             plan,
             source_entries,

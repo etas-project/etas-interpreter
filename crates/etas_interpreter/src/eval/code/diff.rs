@@ -18,35 +18,46 @@ impl EvalContext<'_> {
         args: Vec<V>,
         span: Span,
     ) -> ControlSignal {
-        let [V::AgentDefinition(old), V::AgentDefinition(new)]: [V; 2] = (match args.try_into() {
+        let [old, new]: [V; 2] = match args.try_into() {
             Ok(args) => args,
             Err(_) => {
                 return ControlSignal::invalid_arguments(
-                    "diff expects two AgentDef snapshots",
+                    "diff expects two definition snapshots",
                     span,
                 );
             }
-        }) else {
-            return ControlSignal::invalid_arguments("diff requires checked AgentDef values", span);
         };
-        if call.parameter_types != [old.ty(), new.ty()]
-            || old.ty() != new.ty()
-            || !std::sync::Arc::ptr_eq(old.program(), self.checked)
-            || !std::sync::Arc::ptr_eq(new.program(), self.checked)
-        {
+        let [old_type, new_type] = call.parameter_types.as_slice() else {
             return ControlSignal::missing_checked_fact(
-                "diff argument ABI or program identity does not match the checked call",
+                "diff has no checked two-argument signature",
+                span,
+            );
+        };
+        if old_type != new_type {
+            return ControlSignal::missing_checked_fact(
+                "diff descriptors do not share the checked target type",
                 span,
             );
         }
-        let views = old
-            .backend()
-            .resolve(old.definition())
-            .and_then(|old_view| {
-                new.backend()
-                    .resolve(new.definition())
-                    .map(|new_view| (old_view, new_view))
-            });
+        let old = match Snapshot::checked(self, &old, *old_type) {
+            Ok(snapshot) => snapshot,
+            Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+        };
+        let new = match Snapshot::checked(self, &new, *new_type) {
+            Ok(snapshot) => snapshot,
+            Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+        };
+        if old.definition.identity() != new.definition.identity() {
+            return ControlSignal::invalid_arguments(
+                "diff requires snapshots of the same definition identity",
+                span,
+            );
+        }
+        let views = old.backend.resolve(old.definition).and_then(|old_view| {
+            new.backend
+                .resolve(new.definition)
+                .map(|new_view| (old_view, new_view))
+        });
         let (old_view, new_view) = match views {
             Ok(views) => views,
             Err(error) => return definition_operation_failure(error.into(), span),
@@ -57,8 +68,8 @@ impl EvalContext<'_> {
         };
         let changes = match old_view.diff(
             &new_view,
-            old.backend().syntax_operations().as_ref(),
-            new.backend().syntax_operations().as_ref(),
+            old.backend.syntax_operations().as_ref(),
+            new.backend.syntax_operations().as_ref(),
             self.syntax_limits.max_formatted_bytes,
             &control,
         ) {
@@ -77,6 +88,53 @@ impl EvalContext<'_> {
             Ok(value) => ControlSignal::Value(value),
             Err(reason) => ControlSignal::missing_checked_fact(reason, span),
         }
+    }
+}
+
+struct Snapshot<'a> {
+    definition: &'a etas_code::definition::DefinitionRef,
+    backend: &'a etas_frontend::code::definition::NativeDefinitionStore,
+}
+
+impl<'a> Snapshot<'a> {
+    fn checked(
+        context: &EvalContext<'_>,
+        value: &'a V,
+        expected: etas_types::TypeId,
+    ) -> Result<Self, String> {
+        let known = &context.checked.types.known_std_types.code;
+        let (ty, program, definition, backend, constructor, kind) = match value {
+            V::AgentDefinition(value) => (
+                value.ty(),
+                value.program(),
+                value.definition(),
+                value.backend(),
+                known.agent_definition,
+                etas_code::DefinitionKind::Agent,
+            ),
+            V::CallableDefinition(value) => (
+                value.ty(),
+                value.program(),
+                value.definition()?,
+                value.backend(),
+                known.callable_definition,
+                etas_code::DefinitionKind::Flow,
+            ),
+            _ => {
+                return Err("diff requires checked AgentDef<A> or CallableDef<F> snapshots".into());
+            }
+        };
+        if ty != expected
+            || !std::sync::Arc::ptr_eq(program, context.checked)
+            || definition.identity().kind() != kind
+            || !matches!(context.checked.type_store.get(expected), Some(etas_types::Type::Applied { constructor: actual, args }) if constructor == Some(etas_types::TypeId(actual.0)) && args.len() == 1)
+        {
+            return Err("diff argument ABI, definition family or program identity does not match the checked call".into());
+        }
+        Ok(Self {
+            definition,
+            backend,
+        })
     }
 }
 
@@ -99,7 +157,7 @@ fn project(
                 "identity",
                 p.metadata(
                     p.field(ty, "identity")?,
-                    CodeMetadataPayload::Agent(value.identity.clone()),
+                    CodeMetadataPayload::Definition(value.identity.clone()),
                 )?,
             ),
             (

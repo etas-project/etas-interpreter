@@ -69,18 +69,31 @@ impl EvalContext<'_> {
                 .and_then(|expr| self.checked.types.expr_types.get(&expr))
                 .ok_or_else(|| missing("compiler action has no checked call result ABI"))?
         };
-        let [InterpValue::AgentDefinition(definition)] = perform.args.as_slice() else {
-            return Err(missing(
-                "compiler action requires the checked AgentDef<A> payload",
-            ));
+        let (program, definitions, definition) = match perform.args.as_slice() {
+            [InterpValue::AgentDefinition(definition)] => (
+                definition.program(),
+                definition.backend().clone(),
+                definition.definition().clone(),
+            ),
+            [InterpValue::CallableDefinition(definition)] => (
+                definition.program(),
+                definition.backend().clone(),
+                definition
+                    .definition()
+                    .map_err(|reason| missing(&reason))?
+                    .clone(),
+            ),
+            _ => {
+                return Err(missing(
+                    "compiler action requires its checked AgentDef<A> or CallableDef<F> payload",
+                ));
+            }
         };
-        if !std::sync::Arc::ptr_eq(definition.program(), self.checked) {
+        if !std::sync::Arc::ptr_eq(program, self.checked) {
             return Err(missing(
                 "compiler definition is not bound to this checked program's frozen environment",
             ));
         }
-        let definitions = definition.backend().clone();
-        let definition = definition.definition().clone();
         Ok(Some(CompilerInvocation {
             definitions,
             request: CompilerRequest {
@@ -101,7 +114,7 @@ impl EvalContext<'_> {
         invocation: &CompilerInvocation,
         perform: PendingPerform,
         result: Result<CompilerResult, CompilerFailure>,
-        prepared: Option<std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+        prepared: Option<std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     ) -> ControlSignal {
         match result {
             Ok(CompilerResult::Checked(report)) => match super::report::check_report(
@@ -128,6 +141,19 @@ impl EvalContext<'_> {
                         "prepared code disagrees with the checked compiler response",
                         perform.span,
                     );
+                }
+                if prepared.identity().kind() == etas_code::DefinitionKind::Flow {
+                    return match crate::value::ScopedCallableValue::from_revision(
+                        prepared,
+                        self.revision,
+                        self.checked,
+                        invocation.result_type,
+                    ) {
+                        Ok(value) => {
+                            self.resume_perform_signal(perform, InterpValue::Callable(value))
+                        }
+                        Err(reason) => ControlSignal::missing_checked_fact(reason, perform.span),
+                    };
                 }
                 match crate::value::AgentRevisionValue::new_in_program(
                     prepared,

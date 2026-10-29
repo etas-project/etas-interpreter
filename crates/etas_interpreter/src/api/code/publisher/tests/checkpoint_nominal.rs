@@ -55,12 +55,12 @@ flow main(value: Worker, other: Other) -> i32 {
     };
     let worker = prepare("Worker", "return 19;");
     let other = prepare("Other", "return 31;");
-    let value = |revision: &Arc<PreparedAgentRevision>| {
+    let value = |revision: &Arc<PreparedCodeRevision>| {
         AgentRevisionValue::new_in_program(
             revision.clone(),
             None,
             &checked,
-            revision.targets.component,
+            revision.targets.agent_component().unwrap(),
         )
         .unwrap()
     };

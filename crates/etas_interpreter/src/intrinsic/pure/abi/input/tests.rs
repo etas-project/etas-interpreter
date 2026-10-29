@@ -22,6 +22,7 @@ fn wrapped_text(depth: usize) -> (TypeStore, TypeId, InterpValue, *const u8) {
             }
             1 => {
                 ty = store.intern(Type::Nominal(NominalTypeRef {
+                    read_only_erased_view: false,
                     name: format!("Layer{layer}"),
                     params: vec![],
                     representation: Some(ty),
@@ -78,11 +79,13 @@ fn owned_wrapper_input_rejects_deep_nominal_identity_without_copying_or_leaking_
         let mut store = TypeStore::new();
         let string = store.intern(Type::Primitive(PrimitiveType::String));
         let expected = store.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "Expected".into(),
             params: vec![],
             representation: Some(string),
         }));
         let actual = store.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "Actual".into(),
             params: vec![],
             representation: Some(string),

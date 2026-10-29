@@ -24,7 +24,7 @@ pub enum RevisionTypeBridgeError {
     MissingType { scope: GenericOwner, ty: TypeId },
     MissingCallable(etas_code::CallableId),
     InconsistentInterface(etas_code::CallableId),
-    InconsistentAgent(etas_code::DefinitionKey),
+    InconsistentDefinition(etas_code::DefinitionKey),
     AmbiguousAgentType(TypeId),
     InvalidRuntimeInterface(String),
     RuntimeType(etas_types::TypeSubstitutionError),
@@ -41,7 +41,7 @@ impl std::error::Error for RevisionTypeBridgeError {}
 /// descriptor fingerprints index nodes; they do not grant assignability or
 /// authorize a caller-supplied graph as executable evidence.
 pub struct RevisionTypeBridge {
-    runtime_owner: std::sync::OnceLock<std::sync::Weak<crate::api::code::PreparedAgentRevision>>,
+    runtime_owner: std::sync::OnceLock<std::sync::Weak<crate::api::code::PreparedCodeRevision>>,
     original: CheckedProgram,
     candidate: CheckedProgram,
     forward: BTreeMap<(GenericOwner, TypeId), Option<TypeId>>,
@@ -94,21 +94,25 @@ impl RevisionTypeBridge {
             runtime_types,
             actions,
         };
-        let component = |catalog: &DefinitionCatalog| {
-            catalog
-                .agent_component(candidate.identity())
-                .ok_or_else(|| {
-                    RevisionTypeBridgeError::InconsistentAgent(candidate.identity().clone())
-                })
-        };
-        let (source, target) = (component(original)?, component(compiled)?);
-        let owner = GenericOwner::Declaration(candidate.identity().clone());
-        if bridge.to_candidate(&bridge.original, &owner, source)? != target
-            || bridge.to_original(&bridge.candidate, &owner, target)? != source
-        {
-            return Err(RevisionTypeBridgeError::InconsistentAgent(
-                candidate.identity().clone(),
-            ));
+        if candidate.identity().kind() == etas_code::DefinitionKind::Agent {
+            let component = |catalog: &DefinitionCatalog| {
+                catalog
+                    .agent_component(candidate.identity())
+                    .ok_or_else(|| {
+                        RevisionTypeBridgeError::InconsistentDefinition(
+                            candidate.identity().clone(),
+                        )
+                    })
+            };
+            let (source, target) = (component(original)?, component(compiled)?);
+            let owner = GenericOwner::Declaration(candidate.identity().clone());
+            if bridge.to_candidate(&bridge.original, &owner, source)? != target
+                || bridge.to_original(&bridge.candidate, &owner, target)? != source
+            {
+                return Err(RevisionTypeBridgeError::InconsistentDefinition(
+                    candidate.identity().clone(),
+                ));
+            }
         }
         for (callable, _) in original.native_callables() {
             let owner = callable
@@ -165,7 +169,7 @@ impl RevisionTypeBridge {
 
     pub(crate) fn bind_runtime_owner(
         &self,
-        owner: &std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+        owner: &std::sync::Arc<crate::api::code::PreparedCodeRevision>,
     ) {
         self.runtime_owner
             .get_or_init(|| std::sync::Arc::downgrade(owner));
@@ -173,7 +177,7 @@ impl RevisionTypeBridge {
 
     pub(crate) fn runtime_owner(
         &self,
-    ) -> Option<std::sync::Arc<crate::api::code::PreparedAgentRevision>> {
+    ) -> Option<std::sync::Arc<crate::api::code::PreparedCodeRevision>> {
         self.runtime_owner.get().and_then(std::sync::Weak::upgrade)
     }
     pub fn candidate_program(&self) -> &CheckedProgram {

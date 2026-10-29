@@ -54,7 +54,12 @@ impl<'view, 'hir> HirVisitor<'view, 'hir> for Dispatches<'_> {
         let HirExpr::Call { callee, .. } = expr.data() else {
             return;
         };
-        if self.project.types.std_method_calls.contains_key(&expr.id()) {
+        if self
+            .project
+            .types
+            .std_intrinsic_calls
+            .contains_key(&expr.id())
+        {
             return;
         }
         // An Agent value pins a revision. A flow value can likewise carry a

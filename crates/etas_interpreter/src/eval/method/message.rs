@@ -138,11 +138,9 @@ impl<'a> EvalContext<'a> {
         let Ok(host_payload) = super::host_value::interp_to_host_value(&message.payload) else {
             return ControlSignal::Value(InterpValue::OptionNone);
         };
-        let Ok(payload) = super::host_value::host_to_typed_interp_value(
-            host_payload,
-            target,
-            &self.checked.type_store,
-        ) else {
+        let Ok(payload) =
+            super::host_value::decode_checked_host_value(host_payload, target, self.checked)
+        else {
             return ControlSignal::Value(InterpValue::OptionNone);
         };
         message.payload = payload.into();

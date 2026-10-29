@@ -22,7 +22,7 @@ pub(super) fn lower(
 > {
     let mut calls = HashMap::new();
     let mut type_members = HashSet::new();
-    for (expr, fact) in &project.types.std_method_calls {
+    for (expr, fact) in &project.types.std_intrinsic_calls {
         if project.types.agent_method_calls.contains_key(expr) {
             return Err("method call has conflicting agent and standard intrinsic targets".into());
         }
@@ -30,13 +30,15 @@ pub(super) fn lower(
             .std_registry
             .lookup_qualified(&fact.qualified_path)
             .ok_or("checked std method descriptor is absent from the canonical registry")?;
-        let StdDecl::Flow(flow) = &symbol.decl else {
+        let StdDecl::Flow(_) = &symbol.decl else {
             return Err("checked std method is not a flow".into());
         };
-        let source = flow
-            .source_method
-            .as_ref()
-            .ok_or("checked std method has no registry receiver contract")?;
+        let flow = project
+            .std_registry
+            .flow_declarations(symbol.id)
+            .nth(fact.overload)
+            .ok_or("checked standard call refers to an absent overload")?;
+        let source = flow.source_method.as_ref();
         let descriptor = symbol
             .intrinsic
             .as_ref()
@@ -45,7 +47,8 @@ pub(super) fn lower(
             etas_std::LoweringHint::Collection(operation) => Some(operation),
             _ => None,
         };
-        let type_member = source.kind == etas_std::FlowSourceMethodKind::TypeMember;
+        let type_member =
+            source.is_some_and(|source| source.kind == etas_std::FlowSourceMethodKind::TypeMember);
         let (receiver, method, args) = match project.hir.exprs.get(*expr) {
             Some(HirExpr::MethodCall {
                 receiver,
@@ -53,6 +56,10 @@ pub(super) fn lower(
                 args,
                 ..
             }) => {
+                let source = source.ok_or("checked method has no registry receiver contract")?;
+                if source.name != *method {
+                    return Err("checked method name differs from its selected declaration".into());
+                }
                 if type_member {
                     let Some(HirExpr::Path(path)) = project.hir.exprs.get(*receiver) else {
                         return Err("checked type member has no resolved type subject".into());
@@ -83,6 +90,7 @@ pub(super) fn lower(
                 )?;
                 (None, method, args)
             }
+            Some(HirExpr::Call { args, .. }) if !type_member => (None, &symbol.name, args),
             _ => {
                 return Err(
                     "checked std method does not refer to its checked call expression".into(),
@@ -90,17 +98,40 @@ pub(super) fn lower(
             }
         };
         if descriptor.id.0 != fact.intrinsic
-            || source.name != *method
-            || (source.operation != FlowSourceMethodOperation::CheckedIntrinsic
-                && !(type_member && collection.is_some()))
+            || source.is_some_and(|source| {
+                source.name != *method
+                    || (source.operation != FlowSourceMethodOperation::CheckedIntrinsic
+                        && !(type_member && collection.is_some()))
+            })
         {
             return Err("checked std method identity differs from its registry descriptor".into());
         }
         handlers.validate_descriptor(descriptor)?;
-        let Some(etas_types::Type::Function(signature)) = project.type_store.get(fact.signature)
+        let Some(etas_types::Type::Function(signature)) =
+            project.type_store.get(fact.callable_type)
         else {
             return Err("checked std method has no materialized callable ABI".into());
         };
+        if signature.input != fact.signature.params
+            || signature.output != fact.signature.output
+            || signature.effects != fact.signature.effects
+            || fact
+                .signature
+                .generic_params
+                .iter()
+                .map(|param| &param.name)
+                .collect::<Vec<_>>()
+                != flow
+                    .type_params
+                    .iter()
+                    .map(|param| &param.name)
+                    .collect::<Vec<_>>()
+        {
+            return Err(
+                "checked intrinsic signature differs from its selected overload or callable ABI"
+                    .into(),
+            );
+        }
         if signature.input.len() != args.len() + usize::from(receiver.is_some()) {
             return Err(
                 "checked std method ABI does not include its receiver and arguments".into(),
@@ -193,15 +224,16 @@ mod tests {
     #[test]
     fn checked_method_targets_validate_registry_identity_and_callable_abi() {
         let original = project();
-        for change in [0, 1, 2] {
+        for change in [0, 1, 2, 3] {
             let mut checked = original.clone();
             let project = Arc::make_mut(&mut checked);
             let facts = Arc::make_mut(&mut project.types);
-            let fact = facts.std_method_calls.values_mut().next().unwrap();
+            let fact = facts.std_intrinsic_calls.values_mut().next().unwrap();
             match change {
                 0 => fact.intrinsic = etas_std::intrinsic::runtime::COMMAND_RUN,
                 1 => fact.qualified_path = vec!["std".into(), "missing".into()],
-                2 => fact.signature = facts.known_std_types.code.syntax_block.unwrap(),
+                2 => fact.callable_type = facts.known_std_types.code.syntax_block.unwrap(),
+                3 => fact.overload = usize::MAX,
                 _ => unreachable!(),
             }
             assert!(super::super::IntrinsicDispatchTable::for_project(&checked).is_err());
@@ -226,7 +258,7 @@ mod tests {
         let original = crate::testing::project::checked_project(
             "module app.main; flow main() -> usize { return [1, 2].len(); }",
         );
-        let expr = *original.types.std_method_calls.keys().next().unwrap();
+        let expr = *original.types.std_intrinsic_calls.keys().next().unwrap();
         let HirExpr::MethodCall { receiver, .. } = &original.hir.exprs[expr] else {
             panic!("checked method expression");
         };

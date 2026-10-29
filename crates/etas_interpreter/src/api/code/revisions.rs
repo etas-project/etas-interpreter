@@ -3,7 +3,7 @@ use std::{collections::BTreeMap, sync::Arc};
 use etas_code::RevisionKey;
 use etas_frontend::CheckedProgram;
 
-use super::PreparedAgentRevision;
+use super::PreparedCodeRevision;
 use crate::{
     orchestration::{CheckpointAgentReference, CheckpointCodeRevision},
     value::AgentRevisionValue,
@@ -14,13 +14,13 @@ use crate::{
 #[derive(Debug)]
 pub struct PreparedRevisionSet {
     source: CheckedProgram,
-    revisions: BTreeMap<RevisionKey, Arc<PreparedAgentRevision>>,
+    revisions: BTreeMap<RevisionKey, Arc<PreparedCodeRevision>>,
 }
 
 struct PreparedRevisionProgram<'a> {
     program: &'a Arc<crate::plan::PreparedProgram>,
     definitions: Arc<super::PreparedCodeDefinitions>,
-    revision: Option<Arc<PreparedAgentRevision>>,
+    revision: Option<Arc<PreparedCodeRevision>>,
 }
 
 impl PreparedRevisionProgram<'_> {
@@ -45,7 +45,7 @@ impl PreparedRevisionSet {
         }
     }
 
-    pub fn insert(&mut self, revision: Arc<PreparedAgentRevision>) -> Result<(), String> {
+    pub fn insert(&mut self, revision: Arc<PreparedCodeRevision>) -> Result<(), String> {
         if !Arc::ptr_eq(&self.source, revision.type_bridge().original_program()) {
             return Err("restored revision belongs to a different checked source universe".into());
         }
@@ -67,7 +67,7 @@ impl PreparedRevisionSet {
     pub(crate) fn checked_revision(
         &self,
         identity: &CheckpointCodeRevision,
-    ) -> Result<&Arc<PreparedAgentRevision>, String> {
+    ) -> Result<&Arc<PreparedCodeRevision>, String> {
         identity.validate()?;
         let revision = self
             .revisions

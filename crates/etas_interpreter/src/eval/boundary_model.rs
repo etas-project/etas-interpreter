@@ -1,4 +1,4 @@
-use super::host_value::host_to_typed_interp_value;
+use super::host_value::decode_checked_host_value;
 use super::*;
 use etas_types::{PrimitiveType, Type, TypeId, TypeStore};
 mod json;
@@ -109,7 +109,7 @@ impl<'a> EvalContext<'a> {
                     "typed model response from {provider}/{model_name} for {expected_name} mixed structured value content with text content"
                 )));
             }
-            return host_value_to_typed_interp_value(value, expected, &self.checked.type_store)
+            return host_value_to_typed_interp_value(value, expected, self.checked)
                 .map_err(|error| {
                     ModelResultError::typed_output(format!(
                         "structured model response from {provider}/{model_name} did not match expected output {expected_name}: {error}"
@@ -226,12 +226,17 @@ fn text_preview(text: &str) -> String {
 fn host_value_to_typed_interp_value(
     value: HostValue,
     expected: TypeId,
-    store: &TypeStore,
+    checked: &etas_frontend::CheckedProject,
 ) -> Result<InterpValue, String> {
+    if checked.types.known_std_types.json_value == Some(expected) {
+        return decode_checked_host_value(value, expected, checked);
+    }
     match value {
-        HostValue::Json(json) => json_host_value_to_typed_interp_value(&json, expected, store)
-            .ok_or_else(|| "structured JSON host value does not match checked type".to_owned()),
-        value => host_to_typed_interp_value(value, expected, store),
+        HostValue::Json(json) => {
+            json_host_value_to_typed_interp_value(&json, expected, &checked.type_store)
+                .ok_or_else(|| "structured JSON host value does not match checked type".to_owned())
+        }
+        value => decode_checked_host_value(value, expected, checked),
     }
 }
 
@@ -317,6 +322,7 @@ mod tests {
             }],
         }));
         let nominal = store.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "Box".to_owned(),
             params: vec!["T".to_owned()],
             representation: Some(representation),

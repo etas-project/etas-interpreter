@@ -432,6 +432,28 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         let (kind, exprs) = match self.checked.hir.exprs.get(expr) {
+            Some(HirExpr::Tuple { elems, .. }) if elems.is_empty() => {
+                let unit = self
+                    .checked
+                    .types
+                    .expr_types
+                    .get(&expr)
+                    .and_then(|ty| self.checked.type_store.get(*ty))
+                    .is_some_and(|ty| {
+                        matches!(
+                            ty,
+                            etas_types::Type::Primitive(etas_types::PrimitiveType::Unit)
+                        )
+                    });
+                return if unit && start_index == 0 && values.is_empty() {
+                    ControlSignal::Value(InterpValue::Unit)
+                } else {
+                    ControlSignal::missing_checked_fact(
+                        "unit literal differs from its checked construction type or continuation",
+                        self.checked.hir.exprs[expr].span(&self.checked.hir.blocks),
+                    )
+                };
+            }
             Some(HirExpr::Tuple { elems, .. }) => (AggregateKind::Tuple, elems),
             Some(HirExpr::Array { elems, .. }) => (AggregateKind::Array, elems),
             Some(HirExpr::List { elems, .. }) => (AggregateKind::List, elems),

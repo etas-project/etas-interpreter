@@ -46,6 +46,7 @@ fn checked_crypto_validates_wrappers_and_restores_nominal_digest() {
     let boolean = types.primitive(PrimitiveType::Bool);
     let mut nominal = |name: &str| {
         types.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: name.into(),
             representation: Some(bytes),
             params: vec![],

@@ -22,6 +22,10 @@ pub enum StaticMethodKind {
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    ValidateCompileResult {
+        definition: Box<InterpValue>,
+        span: Span,
+    },
     PriorityQueueUpdate(Box<crate::eval::priority_queue::PriorityQueueUpdate>),
     OrderedSearch(Box<crate::eval::ordered_collection::OrderedSearch>),
     StreamReadReduction(Box<super::StreamReadReduction>),

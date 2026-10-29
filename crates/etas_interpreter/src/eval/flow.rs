@@ -256,10 +256,10 @@ impl<'a> EvalContext<'a> {
                         ),
                     ));
                 };
-                super::host_value::host_to_typed_interp_value(
+                super::host_value::decode_checked_host_value(
                     value.clone(),
                     ty,
-                    &self.checked.type_store,
+                    self.checked,
                 )
                 .map_err(|error| {
                     ExecutionFault::new(

@@ -4,7 +4,7 @@ use etas_frontend::CheckedProgram;
 
 use crate::api::{
     InterpreterPlan,
-    code::{PreparedAgentRevision, PreparedCodeDefinitions},
+    code::{PreparedCodeDefinitions, PreparedCodeRevision},
 };
 
 /// Immutable code ownership only. Invocation authority and mutable execution
@@ -14,7 +14,7 @@ pub(crate) struct CheckedExecutionProgram {
     pub checked: CheckedProgram,
     pub plan: Arc<InterpreterPlan>,
     pub definitions: Option<Arc<PreparedCodeDefinitions>>,
-    pub revision: Option<Arc<PreparedAgentRevision>>,
+    pub revision: Option<Arc<PreparedCodeRevision>>,
 }
 
 impl CheckedExecutionProgram {
@@ -22,7 +22,7 @@ impl CheckedExecutionProgram {
         &self,
         revisions: &mut std::collections::BTreeMap<
             etas_code::RevisionKey,
-            Arc<PreparedAgentRevision>,
+            Arc<PreparedCodeRevision>,
         >,
     ) -> crate::orchestration::ExecutionProgramSnapshot {
         use crate::orchestration::{

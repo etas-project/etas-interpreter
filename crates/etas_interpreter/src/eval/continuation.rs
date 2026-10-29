@@ -1010,6 +1010,12 @@ impl<'a> EvalContext<'a> {
                     ControlSignal::runtime_fault(message, span)
                 }
             },
+            Continuation::ValidateCompileResult { definition, span } => {
+                match self.validate_compile_handler_result(&definition, &value, span) {
+                    Ok(()) => ControlSignal::Value(value),
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                }
+            }
             Continuation::MemoryClearDeleteNext {
                 region_stable_id,
                 path,

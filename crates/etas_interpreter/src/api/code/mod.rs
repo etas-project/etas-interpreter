@@ -12,5 +12,5 @@ pub use crate::plan::code::{
 };
 pub use publisher::{
     CandidatePublicationError, CheckedReferencePublicationError, InterpreterCandidatePublisher,
-    PreparedAgentRevision, RevisionCheckpointError, SavedAgentRevision,
+    PreparedCodeRevision, RevisionCheckpointError, SavedCodeRevision,
 };

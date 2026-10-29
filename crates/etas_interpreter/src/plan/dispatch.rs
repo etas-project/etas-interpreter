@@ -15,8 +15,10 @@ use crate::intrinsic::{
     pure::PureAbiProjector,
     registry::StdIntrinsicHandlerRegistry,
 };
+mod checked_actions;
 mod checked_calls;
-mod checked_methods;
+mod checked_definition_ops;
+mod checked_signatures;
 mod default_actions;
 mod forwarded_actions;
 
@@ -83,6 +85,8 @@ impl IntrinsicDispatchTable {
     }
 
     fn for_program(project: &CheckedProject) -> Result<Self, Vec<String>> {
+        checked_actions::validate(project).map_err(|error| vec![error])?;
+        checked_definition_ops::validate(project).map_err(|error| vec![error])?;
         let handlers = StdIntrinsicHandlerRegistry::build(&project.std_registry);
         let mut std_intrinsics = HashMap::new();
         let mut enum_constructors = HashMap::new();
@@ -153,7 +157,7 @@ impl IntrinsicDispatchTable {
             return Err(errors);
         }
         let (std_methods, std_type_members) =
-            checked_methods::lower(project, &handlers, &mut imported_intrinsics)
+            checked_signatures::lower(project, &handlers, &mut imported_intrinsics)
                 .map_err(|error| vec![error])?;
         let std_call_origins = checked_calls::lower(project, &std_intrinsics, &std_methods)
             .map_err(|error| vec![error])?;

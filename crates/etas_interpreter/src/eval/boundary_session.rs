@@ -1,4 +1,4 @@
-use super::host_value::host_to_typed_interp_value;
+use super::host_value::decode_checked_host_value;
 use super::*;
 
 impl<'a> EvalContext<'a> {
@@ -41,7 +41,7 @@ impl<'a> EvalContext<'a> {
                 result,
                 &session.request.operation,
                 *payload_type,
-                &self.checked.type_store,
+                self.checked,
                 &self.storage_limits,
             )
             .map(InterpValue::Conversation)
@@ -146,7 +146,7 @@ impl<'a> EvalContext<'a> {
                 &result,
                 &session.request.operation,
                 payload_type,
-                &self.checked.type_store,
+                self.checked,
                 &self.storage_limits,
             ) {
                 Ok(conversation) => self.apply_continuation(
@@ -217,7 +217,7 @@ fn conversation_from_session_result(
     result: &etas_host::SessionResult,
     operation: &etas_host::SessionOperation,
     payload_type: etas_types::TypeId,
-    store: &etas_types::TypeStore,
+    checked: &etas_frontend::CheckedProject,
     limits: &etas_host::StorageLimits,
 ) -> Result<crate::value::ConversationValue, String> {
     let etas_host::SessionOperation::Load {
@@ -245,7 +245,7 @@ fn conversation_from_session_result(
             }
             let messages = messages
                 .iter()
-                .map(|message| message_value_from_session_message(message, payload_type, store))
+                .map(|message| message_value_from_session_message(message, payload_type, checked))
                 .collect::<Result<Vec<_>, _>>()?;
             let conversation = crate::value::ConversationValue {
                 selected_context: match policy {
@@ -334,7 +334,7 @@ pub(super) fn message_envelope_from_message_value(
 fn message_value_from_session_message(
     message: &etas_host::SessionMessage,
     payload_type: etas_types::TypeId,
-    store: &etas_types::TypeStore,
+    checked: &etas_frontend::CheckedProject,
 ) -> Result<crate::value::MessageValue, String> {
     Ok(crate::value::MessageValue {
         id: message.id.clone(),
@@ -344,7 +344,7 @@ fn message_value_from_session_message(
         session: Some(message.session.id.clone()),
         created_at: message.created_at.clone(),
         payload: crate::value::SharedValue::new(
-            host_to_typed_interp_value(message.payload.clone(), payload_type, store).map_err(
+            decode_checked_host_value(message.payload.clone(), payload_type, checked).map_err(
                 |error| {
                     format!(
                         "session message payload does not match checked Message<T> type: {error}"
