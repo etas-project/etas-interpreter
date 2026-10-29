@@ -256,7 +256,6 @@ fn callable_root(
     execution: &CheckedExecutionProgram,
     target: &CallTarget,
 ) -> Result<CheckedCallableRoot, String> {
-    let program = &execution.checked;
     let mut target = target;
     loop {
         match target {
@@ -276,14 +275,6 @@ fn callable_root(
             CallTarget::Lambda { expr, .. } => return Ok(CheckedCallableRoot::Lambda(*expr)),
             CallTarget::FlowItem(item) | CallTarget::ToolItem(item) => {
                 return Ok(CheckedCallableRoot::Item(*item));
-            }
-            CallTarget::SpecImplMethod(symbol) => {
-                match program.symbols.get(*symbol).map(|symbol| &symbol.def) {
-                    Some(etas_hir::SymbolDef::Item { item }) => {
-                        return Ok(CheckedCallableRoot::Item(*item));
-                    }
-                    _ => return Err("spec method callable has no checked body identity".into()),
-                }
             }
             CallTarget::Specialized { target: inner, .. }
             | CallTarget::Limited { target: inner, .. } => target = inner,

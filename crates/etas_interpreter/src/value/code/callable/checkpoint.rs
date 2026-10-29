@@ -8,7 +8,6 @@ impl ScopedCallableValue {
     /// Selects an identity from checked declarations before preparing its exact
     /// executable plan. This lookup alone never authorizes a checkpoint call.
     pub(crate) fn snapshot_root(
-        program: &CheckedProgram,
         dispatch: &crate::plan::IntrinsicDispatchTable,
         mut target: &crate::orchestration::CallTargetSnapshot,
     ) -> Result<CheckedCallableRoot, String> {
@@ -21,14 +20,6 @@ impl ScopedCallableValue {
                 T::Lambda { expr, .. } => return Ok(CheckedCallableRoot::Lambda(*expr)),
                 T::FlowItem(item) | T::ToolItem(item) => {
                     return Ok(CheckedCallableRoot::Item(*item));
-                }
-                T::SpecImplMethod(symbol) => {
-                    return match program.symbols.get(*symbol).map(|symbol| &symbol.def) {
-                        Some(etas_hir::SymbolDef::Item { item }) => {
-                            Ok(CheckedCallableRoot::Item(*item))
-                        }
-                        _ => Err("checkpoint spec callable has no checked item".into()),
-                    };
                 }
                 T::PureIntrinsic {
                     intrinsic,
@@ -56,7 +47,7 @@ impl ScopedCallableValue {
     ) -> Result<CheckedCallableRoot, String> {
         use crate::orchestration::CallTargetSnapshot as T;
         let mut bindings = crate::control::GenericBindings::new();
-        let root = Self::snapshot_root(&native.checked, &native.plan.dispatch, target)?;
+        let root = Self::snapshot_root(&native.plan.dispatch, target)?;
         loop {
             match target {
                 T::Specialized {
@@ -118,7 +109,7 @@ impl ScopedCallableValue {
                     )?;
                     break;
                 }
-                T::FlowItem(_) | T::ToolItem(_) | T::SpecImplMethod(_) => break,
+                T::FlowItem(_) | T::ToolItem(_) => break,
                 _ => return Err("checkpoint callable has no checked native root".into()),
             }
         }
