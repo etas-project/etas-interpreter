@@ -917,6 +917,9 @@ impl<'a> SnapshotValidator<'a> {
         let mut query_seeds = Vec::new();
         for value in root.walk() {
             match value {
+                ValueSnapshot::Tuple(values) if values.is_empty() => {
+                    return Err("empty tuple must use the canonical unit value encoding".into());
+                }
                 ValueSnapshot::PriorityQueue {
                     comparator: Some(comparator),
                     ..
