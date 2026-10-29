@@ -22,6 +22,7 @@ mod generic_calls;
 mod handler;
 mod handler_completion;
 mod http_framing;
+mod implicit_self;
 mod imported_agent;
 mod inferred_returns;
 mod iteration;

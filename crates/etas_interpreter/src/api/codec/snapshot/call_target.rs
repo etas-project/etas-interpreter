@@ -34,7 +34,6 @@ pub(super) fn encode<'a>(
             *slot = json!({"kind":"agent_revision","reference":reference})
         }
         T::ToolItem(item) => *slot = json!({"kind":"tool","item":item.0}),
-        T::SpecImplMethod(symbol) => *slot = json!({"kind":"spec_impl_method","symbol":symbol.0}),
         T::EnumVariant(symbol) => *slot = json!({"kind":"enum_variant","symbol":symbol.0}),
         T::NominalConstructor(ty) => *slot = json!({"kind":"nominal_constructor","ty":ty.0}),
         T::Lambda { expr, captured } => {

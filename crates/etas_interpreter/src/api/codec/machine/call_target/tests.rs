@@ -15,6 +15,21 @@ fn document(root: Value) -> CheckpointDocument {
 }
 
 #[test]
+fn obsolete_spec_impl_method_targets_cannot_reenter_through_checkpoint_decode() {
+    let limits = etas_host::StorageLimits::default();
+    let target = json!({"kind":"spec_impl_method","symbol":0});
+    for error in [
+        call_target_from_artifact_snapshot(&limits, &target).unwrap_err(),
+        call_target_snapshot_from_json(&limits, &target).unwrap_err(),
+    ] {
+        assert!(
+            error.contains("unknown machine call target `spec_impl_method`"),
+            "{error}"
+        );
+    }
+}
+
+#[test]
 fn standard_intrinsic_decode_requires_and_preserves_its_checked_origin() {
     let limits = etas_host::StorageLimits::default();
     let target = json!({

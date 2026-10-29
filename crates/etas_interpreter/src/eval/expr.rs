@@ -173,6 +173,7 @@ impl<'a> EvalContext<'a> {
                 method,
                 args,
                 span,
+                ..
             } => self.eval_spec_method_call(
                 crate::eval::spec_method::SpecMethodCall {
                     expr,

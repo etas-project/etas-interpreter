@@ -259,7 +259,6 @@ pub(crate) enum CallTargetSnapshot {
     AgentItem(HirItemId),
     AgentRevision(Box<CheckpointAgentReference>),
     ToolItem(HirItemId),
-    SpecImplMethod(SymbolId),
     Lambda {
         expr: etas_hir::HirExprId,
         captured: LocalsSnapshot,

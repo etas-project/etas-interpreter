@@ -118,11 +118,7 @@ impl PreparedProgram {
         ty: etas_types::TypeId,
         target: &crate::orchestration::CallTargetSnapshot,
     ) -> Result<Arc<InterpreterPlan>, String> {
-        let root = crate::value::ScopedCallableValue::snapshot_root(
-            &self.program,
-            &self.dispatch,
-            target,
-        )?;
+        let root = crate::value::ScopedCallableValue::snapshot_root(&self.dispatch, target)?;
         let plan = Arc::new(self.select_callable(root).map_err(|errors| {
             format!("checkpoint execution root has no current checked plan: {errors:?}")
         })?);

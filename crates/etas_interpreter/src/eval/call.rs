@@ -387,9 +387,6 @@ impl<'a> EvalContext<'a> {
                 self.execute_agent_call(item, call_args, span, Default::default())
             }
             CallTarget::ToolItem(item) => self.execute_source_tool_call(item, call_args, span),
-            CallTarget::SpecImplMethod(symbol) => {
-                self.execute_spec_impl_method_call(symbol, call_args, span)
-            }
             CallTarget::Lambda { expr, captured } => {
                 self.execute_lambda_call(expr, captured, call_args, span)
             }

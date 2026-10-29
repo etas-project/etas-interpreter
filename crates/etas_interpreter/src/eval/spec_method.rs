@@ -1,6 +1,8 @@
 use super::*;
 use crate::control::ExecutionFault;
 
+mod generics;
+
 pub(super) struct SpecMethodCall<'a> {
     pub expr: HirExprId,
     pub receiver_expr: HirExprId,
@@ -111,6 +113,18 @@ impl<'a> EvalContext<'a> {
             spec_symbol,
             spec_args,
             method,
+            frame,
+            span,
+        ) {
+            Ok(target) => target,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        let target = match self.specialize_spec_method_target(
+            expr,
+            target,
+            spec_symbol,
+            method,
+            frame,
             span,
         ) {
             Ok(target) => target,
@@ -135,8 +149,20 @@ impl<'a> EvalContext<'a> {
         spec_symbol: SymbolId,
         spec_args: &[HirTypeId],
         method: &str,
+        frame: &Frame,
         span: Span,
     ) -> Result<CallTarget, ExecutionFault> {
+        let spec_symbol = self
+            .checked
+            .hir
+            .canonical_source_symbol(spec_symbol)
+            .ok_or_else(|| {
+                ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    "spec method is missing its canonical checked spec symbol",
+                )
+            })?;
         let receiver_ty = self
             .checked
             .types
@@ -150,6 +176,7 @@ impl<'a> EvalContext<'a> {
                     "spec method receiver is missing checked type facts",
                 )
             })?;
+        let receiver_ty = self.materialized_type(receiver_ty, frame.generic_bindings(), span)?;
         if !self
             .checked
             .types
@@ -162,7 +189,11 @@ impl<'a> EvalContext<'a> {
                 "spec method selection is missing checked spec signature facts",
             ));
         }
-        let spec_arg_tys = self.checked_spec_arg_types(spec_args, span)?;
+        let spec_arg_tys = self
+            .checked_spec_arg_types(spec_args, span)?
+            .into_iter()
+            .map(|ty| self.materialized_type(ty, frame.generic_bindings(), span))
+            .collect::<Result<Vec<_>, _>>()?;
         let mut matches = self
             .checked
             .types
@@ -188,7 +219,25 @@ impl<'a> EvalContext<'a> {
         matches.sort_by_key(|symbol| symbol.0);
         matches.dedup();
         match matches.as_slice() {
-            [symbol] => Ok(CallTarget::SpecImplMethod(*symbol)),
+            [symbol] => {
+                let Some(SymbolDef::Item { item }) =
+                    self.checked.symbols.get(*symbol).map(|symbol| &symbol.def)
+                else {
+                    return Err(ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        "spec method has no checked executable item",
+                    ));
+                };
+                if !matches!(self.checked.hir.items.get(*item), Some(HirItem::Flow(_))) {
+                    return Err(ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        "spec method target is not a checked flow item",
+                    ));
+                }
+                Ok(CallTarget::FlowItem(*item))
+            }
             [] => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
@@ -219,82 +268,6 @@ impl<'a> EvalContext<'a> {
             lowered.push(ty);
         }
         Ok(lowered)
-    }
-
-    pub(super) fn execute_spec_impl_method_call(
-        &mut self,
-        method_symbol: SymbolId,
-        call_args: Vec<InterpValue>,
-        span: Span,
-    ) -> ControlSignal {
-        let flow = match self.spec_impl_method_flow(method_symbol, span) {
-            Ok(flow) => flow,
-            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-        };
-        if flow.params.len() != call_args.len() {
-            let message = format!(
-                "spec implementation method expects {} argument(s), got {}",
-                flow.params.len(),
-                call_args.len()
-            );
-            return ControlSignal::invalid_arguments(message, span);
-        }
-        let mut frame = match self.callable_frame(flow.scope, Default::default(), span) {
-            Ok(frame) => frame,
-            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-        };
-        for (symbol, arg) in flow.params.iter().zip(call_args.into_iter()) {
-            frame.insert(*symbol, arg);
-        }
-        let signal = self.execute_block(flow.body.block(), &mut frame);
-        let signal = self.drive_restored_handlers(signal, &mut frame);
-        match signal {
-            ControlSignal::Return(value) => ControlSignal::Value(value),
-            other => other,
-        }
-    }
-
-    fn spec_impl_method_flow(
-        &self,
-        method_symbol: SymbolId,
-        span: Span,
-    ) -> Result<etas_hir::HirFlowDecl, ExecutionFault> {
-        let Some(symbol) = self.checked.symbols.get(method_symbol) else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "spec implementation method symbol is missing from checked symbols",
-            ));
-        };
-        let SymbolDef::Item { item } = &symbol.def else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "spec implementation method symbol does not point at a HIR item",
-            ));
-        };
-        let Some(HirItem::Impl(decl)) = self.checked.hir.items.get(*item) else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "spec implementation method item is not an impl item",
-            ));
-        };
-        decl.items
-            .iter()
-            .find_map(|item| match item {
-                etas_hir::HirImplItem::Flow(flow) if flow.symbol == method_symbol => {
-                    Some(flow.clone())
-                }
-                _ => None,
-            })
-            .ok_or_else(|| {
-                ExecutionFault::new(
-                    AnalysisDiagnosticCode::MissingCheckedFact,
-                    span,
-                    "spec implementation method is missing from its checked impl item",
-                )
-            })
     }
 
     fn spec_type_ids_match(&self, left: etas_types::TypeId, right: etas_types::TypeId) -> bool {

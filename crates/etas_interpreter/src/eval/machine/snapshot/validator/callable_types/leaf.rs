@@ -40,24 +40,6 @@ impl SnapshotValidator<'_> {
                 }
                 return self.agent_interface(agent.source_agent()?, bindings, allowed);
             }
-            Target::SpecImplMethod(symbol) => {
-                let Some(etas_hir::SymbolDef::Item { item }) =
-                    self.checked.symbols.get(*symbol).map(|symbol| &symbol.def)
-                else {
-                    return Err("checkpoint spec method has no checked item".into());
-                };
-                let Some(ItemSignature::Flow(signature)) =
-                    self.checked.types.item_signatures.get(item)
-                else {
-                    return Err("checkpoint spec method has no checked signature".into());
-                };
-                (
-                    CheckedCallableRoot::Item(*item),
-                    flow_type(signature),
-                    None,
-                    bindings.clone(),
-                )
-            }
             Target::Lambda { expr, captured } => {
                 let mut bindings = bindings.clone();
                 for (name, ty) in &captured.type_bindings {
