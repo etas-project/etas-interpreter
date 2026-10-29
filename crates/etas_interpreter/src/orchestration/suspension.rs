@@ -87,6 +87,7 @@ fn references(mut work: Vec<&ContinuationSnapshot>) -> Vec<u32> {
                 found.insert(*id);
             }
             ContinuationSnapshot::HandleBoundary { inner, .. }
+            | ContinuationSnapshot::ReenterHandler { boundary: inner }
             | ContinuationSnapshot::RestoreModelPolicy { inner, .. }
             | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => work.push(inner),
             ContinuationSnapshot::CallBoundary { outer, .. }
@@ -108,6 +109,41 @@ impl ContinuationSnapshot {
 }
 
 impl super::MachineSnapshot {
+    pub(crate) fn handler_scope_ids(&self) -> Vec<super::HandlerScopeId> {
+        let mut work = Vec::new();
+        frame_roots(&self.frames, &mut work);
+        for node in &self.suspended_programs {
+            work.push(&node.continuation);
+            frame_roots(&node.frames, &mut work);
+        }
+        let mut visited = std::collections::HashSet::new();
+        let mut found = std::collections::BTreeSet::new();
+        while let Some(node) = work.pop() {
+            if !visited.insert(std::ptr::from_ref(node)) {
+                continue;
+            }
+            match node {
+                ContinuationSnapshot::HandleBoundary {
+                    scope_id, inner, ..
+                } => {
+                    found.insert(*scope_id);
+                    work.push(inner);
+                }
+                ContinuationSnapshot::ReenterHandler { boundary: inner }
+                | ContinuationSnapshot::RestoreModelPolicy { inner, .. }
+                | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => work.push(inner),
+                ContinuationSnapshot::CallBoundary { outer, .. }
+                | ContinuationSnapshot::HandlerDispatch { outer } => work.push(outer),
+                ContinuationSnapshot::Chain { inner, outer } => {
+                    work.push(outer);
+                    work.push(inner);
+                }
+                _ => {}
+            }
+        }
+        found.into_iter().collect()
+    }
+
     /// Validates a reachable DAG and returns a stack-safe, leaves-first restore order.
     pub(crate) fn suspension_order(&self) -> Result<Vec<usize>, String> {
         let mut roots = Vec::new();

@@ -9,6 +9,7 @@ enum UnaryParent {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
     CallBoundary(etas_core::Span),
     HandlerDispatch,
+    ReenterHandler,
     HandleBoundary {
         scope_id: HandlerScopeId,
         handlers: Vec<ActiveHandlerArmRecord>,
@@ -47,6 +48,7 @@ impl ContinuationSnapshot {
                     }
                     Self::CallBoundary { span, outer } => (UnaryParent::CallBoundary(span), outer),
                     Self::HandlerDispatch { outer } => (UnaryParent::HandlerDispatch, outer),
+                    Self::ReenterHandler { boundary } => (UnaryParent::ReenterHandler, boundary),
                     Self::HandleBoundary {
                         scope_id,
                         inner,
@@ -166,6 +168,7 @@ fn restore_parent(
         },
         UnaryParent::CallBoundary(span) => Continuation::CallBoundary { span, outer: child },
         UnaryParent::HandlerDispatch => Continuation::HandlerDispatch { outer: child },
+        UnaryParent::ReenterHandler => Continuation::ReenterHandler { boundary: child },
         UnaryParent::HandleBoundary {
             scope_id,
             handlers,

@@ -27,6 +27,7 @@ mod inferred_returns;
 mod iteration;
 mod json_values;
 mod language_control;
+mod latest_issues;
 mod local_collections;
 mod memory;
 mod memory_checkpoint;

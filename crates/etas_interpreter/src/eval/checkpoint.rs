@@ -56,7 +56,9 @@ impl<'a> EvalContext<'a> {
                     .iter()
                     .flat_map(|node| &node.handlers.handlers),
             )
-            .map(|handler| handler.id.0 + 1)
+            .map(|handler| handler.id)
+            .chain(checkpoint.machine.handler_scope_ids())
+            .map(|id| id.0 + 1)
             .max()
             .unwrap_or(0);
         if let Err(message) = self.seed_resume_counters(&checkpoint.trace) {

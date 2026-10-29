@@ -67,6 +67,7 @@ impl Drop for ContinuationSnapshotLink {
             };
             match &mut node {
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
+                | ContinuationSnapshot::ReenterHandler { boundary: inner }
                 | ContinuationSnapshot::HandleBoundary { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => next = inner.0.take(),
                 ContinuationSnapshot::CallBoundary { outer, .. }
