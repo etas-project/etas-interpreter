@@ -1,6 +1,72 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn compiled_flow_preserves_handler_finish_and_skips_callback_remainder() {
+    use crate::api::code::InterpreterCandidatePublisher;
+    use etas_code::{definition::CodeDefinitionOperations, syntax::CodeSyntaxOperations};
+    use etas_frontend::{FrontendSession, code::service::CandidatePublisher};
+
+    let (checked, definitions) = prepared(
+        r#"
+module app.main;
+import std.io.{println, eprintln};
+flow normalize(f: () -> unit ![]) -> unit ![] {
+    handle { f(); } with { Console.stdout_write(_) => { finish (); } };
+    return;
+}
+flow callback() -> unit ![] { println("intercepted")?; eprintln("must not execute")?; return; }
+flow inspect() -> unit { let definition = ^normalize; return; }
+flow main(current: ((() -> unit ![]) -> unit ![])) -> bool { current(callback); return true; }
+"#,
+        &["app.main.normalize"],
+    );
+    let reflection = *checked.types.reflections.keys().next().unwrap();
+    let backend = definitions.definitions().clone();
+    let original = backend.reflect_flow(reflection).unwrap();
+    let body = backend
+        .syntax_operations()
+        .parse_body("handle { f(); } with { Console.stdout_write(_) => { finish (); } }; return;")
+        .unwrap();
+    let draft = backend.with_body(&original, body).unwrap();
+    let candidate = FrontendSession::new()
+        .compile_body_overlay(backend.body_overlay(&draft).unwrap())
+        .unwrap();
+    let mut revision = InterpreterCandidatePublisher.publish(candidate).unwrap();
+    Arc::get_mut(&mut revision)
+        .unwrap()
+        .retain_reflected_definition(backend.clone(), &draft)
+        .unwrap();
+    let entry = checked.entry.unwrap();
+    let etas_types::ItemSignature::Flow(signature) = &checked.types.item_signatures[&entry] else {
+        panic!("source entry");
+    };
+    let current = crate::value::ScopedCallableValue::from_revision(
+        revision,
+        None,
+        &checked,
+        signature.params[0],
+    )
+    .unwrap();
+    let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint { item: entry },
+            vec![InterpValue::Callable(current)],
+            &host,
+            RunOptions {
+                code_definitions: Some(definitions),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.console_call_count(), 0);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn compiled_flow_preserves_branch_and_callback_order() {
     use crate::api::code::InterpreterCandidatePublisher;
     use etas_code::{definition::CodeDefinitionOperations, syntax::CodeSyntaxOperations};
