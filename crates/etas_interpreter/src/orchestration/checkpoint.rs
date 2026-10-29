@@ -869,6 +869,9 @@ pub(crate) enum ContinuationSnapshot {
     HandlerDispatch {
         outer: ContinuationSnapshotLink,
     },
+    ReenterHandler {
+        boundary: ContinuationSnapshotLink,
+    },
     HandleBoundary {
         scope_id: HandlerScopeId,
         inner: ContinuationSnapshotLink,

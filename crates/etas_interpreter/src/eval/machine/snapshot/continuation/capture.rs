@@ -35,6 +35,7 @@ impl ContinuationSnapshot {
         loop {
             let mut value = match current {
                 Continuation::RestoreModelPolicy { inner, .. }
+                | Continuation::ReenterHandler { boundary: inner }
                 | Continuation::HandleBoundary { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. }
                 | Continuation::CallBoundary { outer: inner, .. }
@@ -144,6 +145,9 @@ fn capture_parent(
         },
         Continuation::HandlerDispatch { .. } => {
             ContinuationSnapshot::HandlerDispatch { outer: child }
+        }
+        Continuation::ReenterHandler { .. } => {
+            ContinuationSnapshot::ReenterHandler { boundary: child }
         }
         Continuation::HandleBoundary {
             scope_id,

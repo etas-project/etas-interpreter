@@ -21,6 +21,7 @@ impl Drop for ProgramContinuation {
                 Continuation::CallBoundary { outer, .. }
                 | Continuation::HandlerDispatch { outer } => work.extend(outer.into_unique()),
                 Continuation::HandleBoundary { inner, .. }
+                | Continuation::ReenterHandler { boundary: inner }
                 | Continuation::RestoreModelPolicy { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. } => work.extend(inner.into_unique()),
                 _ => {}

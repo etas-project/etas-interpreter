@@ -369,6 +369,9 @@ pub enum Continuation {
     HandlerDispatch {
         outer: ContinuationLink,
     },
+    ReenterHandler {
+        boundary: ContinuationLink,
+    },
     HandleBoundary {
         scope_id: HandlerScopeId,
         inner: ContinuationLink,
@@ -427,9 +430,9 @@ impl Continuation {
                     count += usize::from(*boundary_scope == scope_id);
                     pending.push(inner);
                 }
-                Self::RestoreModelPolicy { inner, .. } | Self::ScopedModelPolicy { inner, .. } => {
-                    pending.push(inner)
-                }
+                Self::RestoreModelPolicy { inner, .. }
+                | Self::ReenterHandler { boundary: inner }
+                | Self::ScopedModelPolicy { inner, .. } => pending.push(inner),
                 Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer } => {
                     pending.push(outer);
                 }

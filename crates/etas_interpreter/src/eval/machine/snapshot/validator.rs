@@ -867,7 +867,18 @@ impl<'a> SnapshotValidator<'a> {
                 self.index_at_most(*next_index, remaining_keys.len(), context)?;
                 self.snapshot_values(remaining_keys)
             }
+            ContinuationSnapshot::ReenterHandler { boundary } => {
+                if !matches!(&**boundary, ContinuationSnapshot::HandleBoundary { .. }) {
+                    return Err(format!(
+                        "{context} handler reentry does not contain a handler boundary"
+                    ));
+                }
+                Ok(())
+            }
             ContinuationSnapshot::HandleBoundary { scope_id, .. } => {
+                if scope_id.0 == u32::MAX {
+                    return Err(format!("{context} handler scope identity is exhausted"));
+                }
                 if !boundary_scopes.insert(*scope_id) {
                     return Err(format!(
                         "{context} contains duplicate handle boundary scope {}",

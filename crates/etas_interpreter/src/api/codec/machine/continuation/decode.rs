@@ -461,6 +461,7 @@ fn continuation_leaf_from_snapshot(
         "restore_model_policy"
         | "handle_boundary"
         | "handler_dispatch"
+        | "reenter_handler"
         | "scoped_model_policy"
         | "call_boundary"
         | "chain" => {

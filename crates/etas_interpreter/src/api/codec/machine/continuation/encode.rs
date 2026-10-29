@@ -708,6 +708,10 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
+        Continuation::ReenterHandler { boundary } => object! { slot, pending;
+            "kind": json!("reenter_handler"),
+            "boundary": Node::Continuation(boundary),
+        },
         Continuation::HandlerDispatch { outer } => {
             object! { slot, pending;
             "kind": json!("handler_dispatch"),
