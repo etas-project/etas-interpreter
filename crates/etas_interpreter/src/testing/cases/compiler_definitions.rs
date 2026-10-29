@@ -11,6 +11,7 @@ use etas_frontend::{
 use std::{collections::BTreeMap, sync::Arc};
 
 mod applications;
+mod cancel_edit;
 mod checkpoints;
 mod compile_handlers;
 mod descriptors;
