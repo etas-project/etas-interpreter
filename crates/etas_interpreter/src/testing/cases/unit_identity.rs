@@ -21,6 +21,30 @@ async fn empty_tuple_executes_as_the_unit_value() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn empty_tuple_constants_execute_as_unit_including_nested_payloads() {
+    for source in [
+        "module app.main; let nothing: unit = (); flow main() -> unit { return nothing; }",
+        "module app.main; let pair: (unit, unit) = ((), ()); flow main() -> unit { let ((), value) = pair; return value; }",
+    ] {
+        let checked = checked_project(source);
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                Vec::new(),
+                &FakeHost::new(HostServiceAvailability::default()),
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.value(), Some(&value::InterpValue::Unit));
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn unit_patterns_and_generic_values_survive_checkpoint_replay() {
     let checked = checked_project(
         r#"
