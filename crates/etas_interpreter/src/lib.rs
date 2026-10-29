@@ -7,6 +7,7 @@ pub mod host;
 mod intrinsic;
 mod orchestration;
 mod plan;
+mod types;
 mod value;
 
 use api::{

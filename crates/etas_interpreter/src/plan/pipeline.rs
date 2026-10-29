@@ -93,6 +93,12 @@ pub(crate) fn prepare_program(
     };
     Ok(Arc::new(PreparedProgram {
         program: project.clone(),
+        type_catalog: crate::types::CheckedTypeCatalog::build(project).map_err(|reason| {
+            vec![diagnostics::missing_checked_fact(
+                diagnostics::primary_span(project),
+                reason,
+            )]
+        })?,
         known_std_types: crate::eval::KnownStdTypes::from_checked(project),
         spec_facts: Arc::new(std::sync::OnceLock::new()),
         slots: Arc::new(slots),

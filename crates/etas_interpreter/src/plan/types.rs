@@ -35,6 +35,7 @@ pub struct InterpreterPlan {
 #[derive(Debug)]
 pub(crate) struct PreparedProgram {
     pub(super) program: etas_frontend::CheckedProject,
+    pub(super) type_catalog: crate::types::CheckedTypeCatalog,
     pub(super) known_std_types: crate::eval::KnownStdTypes,
     pub(super) spec_facts: Arc<std::sync::OnceLock<etas_types::SpecFacts>>,
     pub(super) slots: Arc<SlotLayoutTable>,
@@ -47,4 +48,32 @@ pub(crate) struct PreparedProgram {
     pub(super) resources: Arc<ResourceTable>,
     pub(super) dispatch: IntrinsicDispatchTable,
     pub(super) diagnostics: Vec<Diagnostic>,
+}
+
+impl InterpreterPlan {
+    /// Authenticate a closed type from this checked plan. Generic expressions
+    /// are resolved internally with the invocation's closed argument bindings.
+    pub fn checked_type_identity(
+        &self,
+        ty: etas_types::TypeId,
+    ) -> Result<crate::types::CheckedTypeIdentity, String> {
+        self.prepared
+            .type_catalog
+            .resolve(ty, &Default::default(), &Default::default())
+    }
+
+    pub fn checked_variant_layout(
+        &self,
+        identity: &crate::types::CheckedTypeIdentity,
+        name: &str,
+    ) -> Result<crate::types::CheckedVariantLayout, String> {
+        self.prepared.type_catalog.variant(identity, name)
+    }
+
+    pub fn checked_nominal_representation(
+        &self,
+        identity: &crate::types::CheckedTypeIdentity,
+    ) -> Result<crate::types::CheckedTypeIdentity, String> {
+        self.prepared.type_catalog.representation(identity)
+    }
 }

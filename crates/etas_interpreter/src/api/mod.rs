@@ -7,6 +7,7 @@ mod entry_args;
 mod options;
 mod result;
 
+pub use crate::types::{CheckedTypeIdentity, CheckedVariantLayout};
 pub use crate::{
     orchestration::{CheckpointCodeRevision, InterpreterCheckpoint, WorkflowEvent},
     plan::InterpreterPlan,
