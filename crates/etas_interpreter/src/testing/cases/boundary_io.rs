@@ -219,6 +219,71 @@ flow main() -> unit ![Console, Error<IOError>] {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn policy_approval_with_missing_grant_does_not_execute_action() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.effects.Console;
+import std.io.println;
+flow main() -> unit ![Console, Error<IOError>] { println("blocked"); }
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    let requested = HostActionGrant::allow("Console", "stdout_write");
+    host.seed_policy_decision(PolicyDecision::RequireApproval {
+        request: ApprovalRequest {
+            id: HostRequestId(906),
+            reason: "console requires approval".to_owned(),
+            requested_grants: vec![requested.clone()],
+            trace: TraceContext::root(TraceId(93)),
+        },
+    });
+    host.seed_approval_response(ApprovalResponse {
+        id: HostRequestId(906),
+        decision: ApprovalDecision::Approved {
+            grant: etas_host::ApprovalGrant {
+                id: HostRequestId(906),
+                grants: vec![],
+            },
+        },
+    });
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: AuthorityContext {
+                        grants: vec![requested],
+                        policy: boundary_policy_context(HostValue::String("console-policy".into())),
+                        ..AuthorityContext::deny_all()
+                    },
+                    ..api::HostExecutionContext::default()
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert_eq!(host.approval_call_count(), 1);
+    assert_eq!(host.console_call_count(), 0);
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("approval did not grant all requested authority")),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn policy_approval_rejects_grants_outside_requested_authority() {
     let checked = checked_project(
         r#"
