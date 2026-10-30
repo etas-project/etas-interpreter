@@ -1,6 +1,6 @@
 use std::{fmt, ops::Deref, rc::Rc};
 
-use super::{PromptMessage, StringValue};
+use super::{PromptMessage, StringValue, TextCapacityExceeded};
 
 /// Immutable messages may be shared by values, continuations and saved snapshots.
 /// No mutable reference to this backing escapes; updates detach the message table
@@ -28,37 +28,21 @@ impl PromptValue {
         Rc::unwrap_or_clone(self.0)
     }
 
-    pub(crate) fn into_text(self) -> StringValue {
+    pub(crate) fn into_text(self) -> Result<StringValue, TextCapacityExceeded> {
         match Rc::try_unwrap(self.0) {
-            Ok(messages) => {
-                let mut messages = messages.into_iter();
-                let Some(first) = messages.next() else {
-                    return StringValue::default();
-                };
-                let mut text = first.text;
-                for message in messages {
-                    text.push_str("\n");
-                    text.push_str(&message.text);
-                }
-                text
-            }
-            Err(messages) => {
-                let mut messages = messages.iter();
-                let Some(first) = messages.next() else {
-                    return StringValue::default();
-                };
-                if messages.len() == 0 {
-                    return first.text.clone();
-                }
-                let mut text = first.text.as_str().to_owned();
-                for message in messages {
-                    text.push('\n');
-                    text.push_str(&message.text);
-                }
-                text.into()
-            }
+            Ok(messages) => assemble_text(messages.into_iter().map(|message| message.text)),
+            Err(messages) => assemble_text(messages.iter().map(|message| message.text.clone())),
         }
     }
+}
+
+fn assemble_text(
+    mut messages: impl Iterator<Item = StringValue>,
+) -> Result<StringValue, TextCapacityExceeded> {
+    let Some(first) = messages.next() else {
+        return Ok(StringValue::default());
+    };
+    messages.try_fold(first, |text, next| text.concat_separated(next, "\n"))
 }
 
 impl Deref for PromptValue {
@@ -104,3 +88,6 @@ impl fmt::Debug for PromptValue {
 
 #[cfg(test)]
 mod tests;
+
+#[cfg(test)]
+mod cold_tests;

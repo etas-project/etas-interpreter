@@ -152,6 +152,38 @@ fn prompt_text_projection_moves_nested_unique_prompt_capacity() {
 }
 
 #[test]
+fn oversized_prompt_text_fails_with_a_span_before_materializing_messages() {
+    use etas_builtin::text::input::TextInput;
+    super::tests::with_prompt_eval(|eval, span| {
+        let mut text = StringValue::from("x");
+        for _ in 0..isize::BITS - 2 {
+            text = text.clone().concat(text).unwrap();
+        }
+        let prompt = PromptValue::new(vec![
+            PromptMessage {
+                role: PromptRole::User,
+                text: text.clone(),
+                trust: None,
+            },
+            PromptMessage {
+                role: PromptRole::Assistant,
+                text: text.clone(),
+                trust: None,
+            },
+        ]);
+        let (result, cost) = measure(|| {
+            eval.prompt_channel_content("user", InterpValue::Prompt(prompt), span, false)
+        });
+        let error = result.unwrap_err();
+        assert_eq!(error.code, AnalysisDiagnosticCode::InvalidArguments);
+        assert_eq!(error.span, span);
+        assert!(error.message.contains("capacity"));
+        assert!(text.contiguous().is_none());
+        assert!(cost.bytes < 1024, "overflow expanded the input: {cost:?}");
+    });
+}
+
+#[test]
 fn unsupported_prompt_text_does_not_format_rejected_payloads() {
     super::tests::with_prompt_eval(|eval, span| {
         let secret = wrapped(

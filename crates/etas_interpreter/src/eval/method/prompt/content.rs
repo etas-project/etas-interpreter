@@ -1,5 +1,5 @@
 use super::*;
-use crate::value::StringValue;
+use crate::value::{StringValue, TextCapacityExceeded};
 use etas_types::TrustWrapper;
 
 pub(super) fn text(
@@ -23,7 +23,7 @@ pub(super) fn text(
                 value
             }
             InterpValue::Message(message) => message.payload,
-            InterpValue::String(text) => return state.finish(|| text),
+            InterpValue::String(text) => return state.finish(|| Ok(text)),
             InterpValue::Prompt(parts) => return state.finish(|| parts.into_text()),
             other => return Err(state.unsupported(&other)),
         };
@@ -40,7 +40,7 @@ pub(super) fn text(
                 value
             }
             InterpValue::Message(message) => &message.payload,
-            InterpValue::String(text) => return state.finish(|| text.clone()),
+            InterpValue::String(text) => return state.finish(|| Ok(text.clone())),
             InterpValue::Prompt(parts) => return state.finish(|| parts.clone().into_text()),
             other => return Err(state.unsupported(other)),
         };
@@ -69,12 +69,13 @@ impl Projection<'_> {
 
     fn finish(
         self,
-        text: impl FnOnce() -> StringValue,
+        text: impl FnOnce() -> Result<StringValue, TextCapacityExceeded>,
     ) -> Result<(StringValue, Option<TrustWrapper>), ExecutionFault> {
         if self.method == "system" && !self.allow_plain_system_content {
             return Err(self.untrusted_system());
         }
-        Ok((text(), self.outer_trust))
+        let text = text().map_err(|_| self.error("Prompt text exceeds runtime string capacity"))?;
+        Ok((text, self.outer_trust))
     }
 
     fn unsupported(&self, value: &InterpValue) -> ExecutionFault {
