@@ -8,7 +8,7 @@ pub fn run_report_json(
 ) -> Result<JsonDocument, InterpreterCodecError> {
     let report = &result.termination;
     let mut report = CheckpointDocument::from_value(json!({
-        "schema": "etas.cli.interpreter-report.v1",
+        "schema": "etas.cli.interpreter-report.v2",
         "command": command,
         "sources": sources,
         "flow": flow,
@@ -48,7 +48,7 @@ pub fn run_report_json(
         "diagnostics": result.diagnostics.iter().map(diagnostic_summary_json).collect::<Vec<_>>(),
     }));
     if let Some(value) = result.value() {
-        report.value_mut()["value"] = value_json(value)?.into_value();
+        report.value_mut()["value"] = value::report_value_json(value)?.into_value();
     }
     for event in &result.events {
         let event = event_json(event)?;
@@ -57,13 +57,16 @@ pub fn run_report_json(
             .ok_or_else(|| InterpreterCodecError::new("report event array is missing"))?
             .push(event.into_value());
     }
-    for checkpoint in &result.checkpoints {
-        let checkpoint = checkpoint_json(checkpoint)?;
-        report.value_mut()["checkpoints"]
-            .as_array_mut()
-            .expect("report checkpoint array was initialized above")
-            .push(checkpoint);
-    }
+    report["checkpoints"] = Value::Array(
+        result
+            .checkpoints
+            .iter()
+            .map(|checkpoint| {
+                json!({"kind":"checkpoint_summary", "resumable":false,
+            "id":checkpoint.id.0, "label":checkpoint.label, "entry_item":checkpoint.entry_item.0})
+            })
+            .collect(),
+    );
     Ok(report)
 }
 

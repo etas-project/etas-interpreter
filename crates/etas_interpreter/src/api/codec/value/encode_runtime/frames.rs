@@ -13,8 +13,16 @@ pub(super) struct FrameGraph {
 }
 
 impl FrameGraph {
-    pub(super) fn discover(value: &InterpValue) -> Result<Self, InterpreterCodecError> {
-        let roots = FrameDiscovery::default().frames(GraphNode::Value(value), false, |_| false);
+    pub(super) fn discover(
+        value: &InterpValue,
+        purpose: ValuePurpose,
+    ) -> Result<Self, InterpreterCodecError> {
+        let roots = FrameDiscovery::default().frames_filtered(
+            GraphNode::Value(value),
+            false,
+            |_| false,
+            |value| purpose.redacts(value),
+        );
         let mut graph = Self {
             frames: Vec::new(),
             indices: HashMap::new(),
@@ -30,7 +38,12 @@ impl FrameGraph {
             let mut discovery = FrameDiscovery::default();
             let mut children = Vec::new();
             for (_, value) in borrowed.sorted() {
-                for frame in discovery.frames(GraphNode::Value(value), false, |_| false) {
+                for frame in discovery.frames_filtered(
+                    GraphNode::Value(value),
+                    false,
+                    |_| false,
+                    |value| purpose.redacts(value),
+                ) {
                     children.push(graph.insert(frame));
                 }
             }

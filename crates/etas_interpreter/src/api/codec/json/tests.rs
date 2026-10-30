@@ -230,8 +230,8 @@ flow main(data: JsonValue) -> JsonValue {
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(resumed.value(), Some(&input));
 
-    // Reject after a prior deep checkpoint and report value were materialized.
-    // The oversized byte leaf fails admission before allocating its JSON array.
+    // Reports no longer serialize private machine state. Its budget failure
+    // belongs to the resumable artifact codec, after a deep report was built.
     let mut invalid = checkpoint.clone();
     invalid.machine.frames = vec![MachineFrameSnapshot::Continuation {
         continuation: ContinuationSnapshot::ListConsTail {
@@ -239,13 +239,15 @@ flow main(data: JsonValue) -> JsonValue {
             span: checked.hir.blocks.iter().next().unwrap().1.span,
         },
     }];
-    result.checkpoints.push(invalid);
     let (_, cost) = measure(|| {
-        let error = codec::run_report_json("run", &[], "main", &result).unwrap_err();
+        let report = codec::run_report_json("run", &[], "main", &result).unwrap();
+        assert_eq!(report["checkpoints"][0]["resumable"], false);
+        assert!(report["checkpoints"][0].get("machine").is_none());
+        let error = codec::checkpoint_artifact_json(&[], "main", &invalid).unwrap_err();
         assert!(error.message().contains("node budget"));
     });
     assert_eq!(
         cost.bytes, cost.released_bytes,
-        "partial report leaked: {cost:?}"
+        "report or failed artifact leaked: {cost:?}"
     );
 }
