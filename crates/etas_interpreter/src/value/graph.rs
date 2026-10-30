@@ -104,11 +104,35 @@ impl FrameDiscovery {
         follow_scoped: bool,
         skip: impl FnMut(&ValueIdentity) -> bool,
     ) -> Vec<Frame> {
-        self.discover(root, follow_scoped, skip, |_, frame| frame.clone())
+        self.discover(
+            root,
+            follow_scoped,
+            skip,
+            |_| false,
+            |_, frame| frame.clone(),
+        )
+    }
+
+    pub(crate) fn frames_filtered(
+        &mut self,
+        root: Node<'_>,
+        follow_scoped: bool,
+        skip: impl FnMut(&ValueIdentity) -> bool,
+        skip_value: impl FnMut(&Value) -> bool,
+    ) -> Vec<Frame> {
+        self.discover(root, follow_scoped, skip, skip_value, |_, frame| {
+            frame.clone()
+        })
     }
 
     pub(crate) fn captures(&mut self, root: Node<'_>) -> Vec<(etas_hir::HirExprId, Frame)> {
-        self.discover(root, false, |_| false, |expr, frame| (expr, frame.clone()))
+        self.discover(
+            root,
+            false,
+            |_| false,
+            |_| false,
+            |expr, frame| (expr, frame.clone()),
+        )
     }
 
     fn discover<T>(
@@ -116,6 +140,7 @@ impl FrameDiscovery {
         root: Node<'_>,
         follow_scoped: bool,
         mut skip: impl FnMut(&ValueIdentity) -> bool,
+        mut skip_value: impl FnMut(&Value) -> bool,
         mut capture: impl FnMut(etas_hir::HirExprId, &Frame) -> T,
     ) -> Vec<T> {
         let mut output = Vec::new();
@@ -150,6 +175,9 @@ impl FrameDiscovery {
                     }
                     Node::Target(_) => Children::One(None),
                     Node::Value(value) => {
+                        if skip_value(value) {
+                            continue;
+                        }
                         if let Some(key) = ValueIdentity::of(value)
                             && (skip(&key) || !self.values.insert(key))
                         {

@@ -5,10 +5,12 @@ pub(super) mod encode_model;
 mod encode_runtime;
 #[cfg(test)]
 mod projection_tests;
+mod purpose;
 #[cfg(test)]
 #[path = "value/encode_runtime/tests.rs"]
 mod runtime_encoding_tests;
 mod scalar;
+use purpose::ValuePurpose;
 pub(super) mod session;
 mod snapshot_support;
 
@@ -86,7 +88,13 @@ fn primitive_type_from_abi_name(name: &str) -> Option<etas_types::PrimitiveType>
 }
 
 pub fn value_json(value: &InterpValue) -> Result<JsonDocument, InterpreterCodecError> {
-    encode_runtime::encode(value)
+    encode_runtime::encode(value, ValuePurpose::Lossless)
+}
+
+pub(super) fn report_value_json(
+    value: &InterpValue,
+) -> Result<JsonDocument, InterpreterCodecError> {
+    encode_runtime::encode(value, ValuePurpose::Report)
 }
 
 pub(crate) fn host_value_json(value: &HostValue) -> Value {

@@ -12,13 +12,18 @@ enum Node<'a> {
     Frame(&'a Frame),
 }
 
-pub(super) fn encode(value: &InterpValue) -> Result<JsonDocument, InterpreterCodecError> {
-    let graph = frames::FrameGraph::discover(value)?;
+pub(super) fn encode(
+    value: &InterpValue,
+    purpose: ValuePurpose,
+) -> Result<JsonDocument, InterpreterCodecError> {
+    let graph = frames::FrameGraph::discover(value, purpose)?;
     let frames = graph.borrow()?;
     let mut output = CheckpointDocument::from_value(Value::Null);
     let mut pending = vec![(Node::Value(value), output.value_mut())];
     while let Some((node, slot)) = pending.pop() {
-        write(node, slot, &frames, |node, slot| pending.push((node, slot)))?;
+        write(node, slot, &frames, purpose, |node, slot| {
+            pending.push((node, slot))
+        })?;
     }
     Ok(output)
 }
@@ -27,6 +32,7 @@ fn write<'a>(
     node: Node<'a>,
     slot: &'a mut Value,
     frames: &'a frames::BorrowedFrames<'_>,
+    purpose: ValuePurpose,
     mut child: impl FnMut(Node<'a>, &'a mut Value),
 ) -> Result<(), InterpreterCodecError> {
     let value = match node {
@@ -53,6 +59,10 @@ fn write<'a>(
             return Ok(());
         }
     };
+    if purpose.redacts(value) {
+        *slot = json!({"kind":"redacted", "sensitivity":"secret"});
+        return Ok(());
+    }
     match value {
         InterpValue::Unit => *slot = json!({"kind":"unit"}),
         InterpValue::Bool(value) => *slot = json!({"kind":"bool","value":value}),
@@ -96,7 +106,14 @@ fn write<'a>(
                 .zip(array(&mut slot["messages"], messages.len()))
             {
                 *slot = json!({"role":value_codec::prompt_role_json(message.role),"text":null,"trust":message.trust.map(value_codec::trust_wrapper_json)});
-                slot["text"] = message.text.json_text();
+                slot["text"] = if message
+                    .trust
+                    .is_some_and(|wrapper| purpose.redacts_wrapper(wrapper))
+                {
+                    json!({"kind":"redacted", "sensitivity":"secret"})
+                } else {
+                    message.text.json_text()
+                };
             }
         }
         InterpValue::Message(message) => write_message(message, slot, child),

@@ -253,7 +253,7 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "payload": null,
             "provenance": provenance.as_ref().map(provenance_json),
             }));
-            event["payload"] = value_json(payload)?.into_value();
+            event["payload"] = value::report_value_json(payload)?.into_value();
             return Ok(event);
         }
         WorkflowEvent::MessageSessionAttached {
