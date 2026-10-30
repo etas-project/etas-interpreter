@@ -190,7 +190,7 @@ impl Context for RuntimeContext<'_> {
             }
             Value::Runtime(InterpValue::CallableDefinition(value))
                 if value.ty() == expected
-                    && known.code.callable_definition == Some(expected)
+                    && known.code.callable_definition == Some(constructor)
                     && std::sync::Arc::ptr_eq(value.program(), self.checked) =>
             {
                 Ok(())
