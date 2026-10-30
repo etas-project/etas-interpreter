@@ -67,13 +67,7 @@ impl StringValue {
         }
         self.collapse_materialized();
         suffix.collapse_materialized();
-        if let Repr::Flat(text) = &mut self.0
-            && text.capacity() >= length
-            && let Some(text) = Rc::get_mut(text)
-        {
-            for chunk in chunks::TextLeaves::new(&suffix.0) {
-                text.push_str(chunk);
-            }
+        if self.append_if_spare(&suffix, "", length) {
             return Ok(self);
         }
         if self.is_empty() {
@@ -91,6 +85,39 @@ impl StringValue {
             leaves,
             materialized: Default::default(),
         }))))
+    }
+
+    pub(crate) fn concat_separated(
+        mut self,
+        mut suffix: Self,
+        separator: &str,
+    ) -> Result<Self, TextCapacityExceeded> {
+        let length = self
+            .len()
+            .checked_add(separator.len())
+            .and_then(|length| length.checked_add(suffix.len()))
+            .filter(|length| *length <= isize::MAX as usize)
+            .ok_or(TextCapacityExceeded)?;
+        self.collapse_materialized();
+        suffix.collapse_materialized();
+        if self.append_if_spare(&suffix, separator, length) {
+            return Ok(self);
+        }
+        self.concat(separator.into())?.concat(suffix)
+    }
+
+    fn append_if_spare(&mut self, suffix: &Self, separator: &str, length: usize) -> bool {
+        if let Repr::Flat(text) = &mut self.0
+            && text.capacity() >= length
+            && let Some(text) = Rc::get_mut(text)
+        {
+            text.push_str(separator);
+            for chunk in chunks::TextLeaves::new(&suffix.0) {
+                text.push_str(chunk);
+            }
+            return true;
+        }
+        false
     }
 
     fn collapse_materialized(&mut self) {
