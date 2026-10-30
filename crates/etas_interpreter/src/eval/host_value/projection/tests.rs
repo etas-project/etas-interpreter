@@ -5,6 +5,132 @@ use crate::value::{
 };
 use etas_host::{HostValue, host_value_to_json_string};
 
+fn cold_host_text(prefix: &str, suffix: &str) -> crate::value::StringValue {
+    use etas_builtin::text::input::TextInput;
+    let value = crate::value::StringValue::from(prefix);
+    let alias = value.clone();
+    let value = value.concat(suffix.into()).unwrap();
+    drop(alias);
+    assert!(value.contiguous().is_none());
+    value
+}
+
+#[test]
+fn cold_host_text_projection_materializes_output_without_caching_source() {
+    use etas_builtin::text::input::TextInput;
+    let mut results = Vec::new();
+    for count in [1000, 2000, 4000] {
+        let prefix = "中😀\n\"\\payload".repeat(count);
+        let expected = format!("{prefix}suffix");
+        for json in [false, true] {
+            let source = cold_host_text(&prefix, "suffix");
+            let value = if json {
+                InterpValue::Json(HostJsonSupportValue::String(source.clone()))
+            } else {
+                InterpValue::Nominal {
+                    ty: etas_types::TypeId(0),
+                    value: InterpValue::Trust {
+                        wrapper: etas_types::TrustWrapper::Public,
+                        value: InterpValue::String(source.clone()).into(),
+                    }
+                    .into(),
+                }
+            };
+            let (output, cost) =
+                crate::testing::allocation::measure(|| interp_to_host_value(&value).unwrap());
+            let cached = source.contiguous().is_some();
+            assert_eq!(
+                output,
+                if json {
+                    HostValue::Json(etas_host::HostJsonValue::String(expected.clone()))
+                } else {
+                    HostValue::String(expected.clone())
+                }
+            );
+            results.push((count, json, expected.len(), cost, cached));
+        }
+    }
+    eprintln!("cold Host text projection: {results:?}");
+    for (count, json, output_bytes, cost, cached) in results {
+        assert!(!cached, "n={count}, json={json}: source was flattened");
+        assert!(
+            cost.bytes <= output_bytes + 256,
+            "n={count}, json={json}: {cost:?}, output={output_bytes}"
+        );
+    }
+}
+
+#[test]
+fn cold_json_text_projection_streams_escaping_without_caching_source() {
+    use etas_builtin::text::input::TextInput;
+    let mut results = Vec::new();
+    for count in [1000, 2000, 4000] {
+        let prefix = "中😀\n\"\\\u{0}\u{1f}payload".repeat(count);
+        let flat = format!("{prefix}suffix");
+        let expected = serde_json::to_string(&flat).unwrap();
+        for json in [false, true] {
+            let source = cold_host_text(&prefix, "suffix");
+            let value = if json {
+                InterpValue::Json(HostJsonSupportValue::String(source.clone()))
+            } else {
+                InterpValue::String(source.clone())
+            };
+            let (output, cost) =
+                crate::testing::allocation::measure(|| interp_to_host_json_string(&value).unwrap());
+            let cached = source.contiguous().is_some();
+            assert_eq!(output, expected);
+            results.push((count, json, expected.len(), cost, cached));
+        }
+    }
+    eprintln!("cold JSON text projection: {results:?}");
+    for (count, json, output_bytes, cost, cached) in results {
+        assert!(!cached, "n={count}, json={json}: source was flattened");
+        assert!(
+            cost.bytes <= output_bytes * 4 + 256,
+            "n={count}, json={json}: {cost:?}, output={output_bytes}"
+        );
+    }
+}
+
+#[test]
+fn deep_cold_host_text_projection_uses_cursor_scratch_without_a_flat_cache() {
+    use etas_builtin::text::input::TextInput;
+    for count in [1000, 2000, 4000] {
+        let piece = "中😀\n\"\\payload";
+        let expected = piece.repeat(count);
+        for json in [false, true] {
+            let mut source = crate::value::StringValue::default();
+            for _ in 0..count {
+                let alias = source.clone();
+                source = source.concat(piece.into()).unwrap();
+                drop(alias);
+            }
+            assert!(source.contiguous().is_none());
+            let value = InterpValue::String(source.clone());
+            let (output_bytes, cost) = if json {
+                let (output, cost) = crate::testing::allocation::measure(|| {
+                    interp_to_host_json_string(&value).unwrap()
+                });
+                assert_eq!(output, serde_json::to_string(&expected).unwrap());
+                (output.len(), cost)
+            } else {
+                let (output, cost) =
+                    crate::testing::allocation::measure(|| interp_to_host_value(&value).unwrap());
+                assert_eq!(output, HostValue::String(expected.clone()));
+                (expected.len(), cost)
+            };
+            assert!(source.contiguous().is_none(), "n={count}, json={json}");
+            assert!(
+                cost.bytes <= output_bytes * 4 + count * 64,
+                "n={count}, json={json}: {cost:?}, output={output_bytes}"
+            );
+            eprintln!(
+                "deep cold Host text n={count}, json={json}, output={output_bytes}: {cost:?}"
+            );
+        }
+    }
+}
+
 #[test]
 fn host_wrapper_projection_is_stack_safe_without_intermediate_payload_copies() {
     if crate::testing::in_subprocess("ETAS_TEST_HOST_ABI_WRAPPERS") {
