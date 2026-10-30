@@ -159,7 +159,7 @@ flow main(path: WorkspacePath<ProjectRoot>) -> i32 ![Error<ReadLimitError>] {
     );
     let host = FakeHost::new(availability(&[HostRequirementKind::FileIO]));
     host.seed_filesystem_response(Err(etas_host::HostError::new(
-        HostErrorCode::ProviderUnavailable,
+        HostErrorCode::IoFailure,
         "test read failed",
     )));
     let result = execute(&checked, &host, vec![]).await;

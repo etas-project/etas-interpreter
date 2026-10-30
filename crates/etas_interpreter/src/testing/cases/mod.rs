@@ -19,6 +19,7 @@ mod conversation;
 mod entry_validation;
 mod enum_identity;
 mod file_read_limited;
+mod filesystem_errors;
 mod generic_calls;
 mod handler;
 mod handler_completion;

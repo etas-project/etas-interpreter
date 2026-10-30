@@ -1,11 +1,11 @@
 use etas_core::Span;
-use etas_host::{FilesystemOperation, FilesystemRequest, HostError, HostValue};
+use etas_host::{FilesystemOperation, FilesystemRequest, HostValue};
 
 use super::EvalContext;
 use crate::{
     control::{
         Continuation, ControlSignal, DefaultActionBoundary, FileReadReduction, HostBoundaryDecode,
-        HostBoundaryRequest, PendingHostBoundary, PendingPerform,
+        HostBoundaryRequest, PendingHostBoundary,
     },
     intrinsic::dispatch::CheckedStdIntrinsicCall,
     value::InterpValue,
@@ -129,57 +129,5 @@ impl EvalContext<'_> {
             Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
         };
         self.raise_file_error(error_type, value, continuation, span)
-    }
-
-    pub(crate) fn filesystem_host_error_signal(
-        &mut self,
-        boundary: PendingHostBoundary,
-        error: HostError,
-    ) -> ControlSignal {
-        if let Some(signal) = self.cancellation_signal(boundary.span) {
-            return signal;
-        }
-        let Some(error_type) = self.known_std_types.filesystem_io_error else {
-            return ControlSignal::missing_checked_fact(
-                "filesystem read requires checked std.fs.IOError",
-                boundary.span,
-            );
-        };
-        // IOError is an opaque std support value, as in std.fs.path failures.
-        let value = InterpValue::Nominal {
-            ty: error_type,
-            value: InterpValue::String(error.message.into()).into(),
-        };
-        self.raise_file_error(error_type, value, boundary.continuation, boundary.span)
-    }
-
-    fn raise_file_error(
-        &mut self,
-        error_type: etas_types::TypeId,
-        value: InterpValue,
-        continuation: Continuation,
-        span: Span,
-    ) -> ControlSignal {
-        self.propagate_perform_signal(PendingPerform {
-            checked_action: None,
-            default_boundary: None,
-            forwarded_call: None,
-            inference: None,
-            expr: None,
-            action: etas_hir::ResolvedActionRef {
-                effect: etas_hir::HirEffectRef {
-                    path: etas_hir::unresolved_path_from_segments(&["Error"], span),
-                    args: vec![],
-                    span,
-                },
-                action: "raise".into(),
-                action_symbol: etas_hir::ResolveResult::Unresolved,
-                span,
-            },
-            error_type: Some(error_type),
-            args: vec![value],
-            span,
-            continuation,
-        })
     }
 }
