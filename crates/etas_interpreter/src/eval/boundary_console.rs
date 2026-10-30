@@ -4,15 +4,6 @@ use etas_host::console::ConsoleResult;
 use etas_host::{HostError, HostErrorCode};
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn replayed_console_result(&self, console: &PendingConsole) -> Option<InterpValue> {
-        let key = self.console_boundary_key(console);
-        self.completed_host_boundary_result(
-            &crate::orchestration::BoundaryOccurrenceId::HostRequest(console.request.id),
-            "console",
-            &key,
-        )
-    }
-
     pub(crate) fn console_result_value(
         &self,
         console: &PendingConsole,
@@ -34,18 +25,11 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(crate) fn console_boundary_key(&self, console: &PendingConsole) -> String {
-        let operation = match &console.request.operation {
-            ConsoleOperation::ReadAllStdin => "read_all".to_owned(),
-            ConsoleOperation::ReadLineStdin => "read_line".to_owned(),
-            ConsoleOperation::WriteStdout { text, newline } => {
-                format!("stdout:{newline}:{text}")
-            }
-            ConsoleOperation::WriteStderr { text, newline } => {
-                format!("stderr:{newline}:{text}")
-            }
-        };
-        format!("console:{operation}")
+    pub(crate) fn console_boundary_key(
+        &self,
+        console: &PendingConsole,
+    ) -> Result<etas_host::replay::ReplayFingerprint, crate::control::ExecutionFault> {
+        self.replay_fingerprint(&console.request, console.request.id, console.span)
     }
 
     pub(crate) fn console_host_error_signal(

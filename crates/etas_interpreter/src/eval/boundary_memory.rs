@@ -6,7 +6,11 @@ use crate::control::ExecutionFault;
 use etas_host::{MemoryEntry, MemoryVersion, host_value_to_json};
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn replayed_memory_result(&self, memory: &PendingMemory) -> Option<InterpValue> {
+    pub(crate) fn replayed_memory_result(
+        &self,
+        memory: &PendingMemory,
+        key: &etas_host::replay::ReplayFingerprint,
+    ) -> Result<Option<InterpValue>, crate::control::ExecutionFault> {
         if !matches!(
             (&memory.request.operation, memory.decode),
             (MemoryOperation::Get { .. }, _)
@@ -15,13 +19,13 @@ impl<'a> EvalContext<'a> {
                 | (MemoryOperation::Scan { .. }, MemoryDecode::JsonEntries)
                 | (MemoryOperation::Query { .. }, MemoryDecode::JsonEntries)
         ) {
-            return None;
+            return Ok(None);
         }
-        let key = self.memory_boundary_key(memory);
         self.completed_host_boundary_result(
             &crate::orchestration::BoundaryOccurrenceId::HostRequest(memory.request.id),
             "memory",
-            &key,
+            key,
+            memory.span,
         )
     }
 
@@ -247,47 +251,11 @@ impl<'a> EvalContext<'a> {
         })
     }
 
-    pub(crate) fn memory_boundary_key(&self, memory: &PendingMemory) -> String {
-        let op = match &memory.request.operation {
-            MemoryOperation::Get { key } => format!("get:{key:?}"),
-            MemoryOperation::Put {
-                key,
-                value,
-                condition,
-            } => format!(
-                "put:{key:?}:{value:?}:condition={}:expected={}",
-                match condition {
-                    etas_host::WriteCondition::Any => "any",
-                    etas_host::WriteCondition::Missing => "missing",
-                    etas_host::WriteCondition::Exists => "exists",
-                    etas_host::WriteCondition::Match(_) => "match",
-                },
-                condition
-                    .expected_version()
-                    .map_or("", |version| version.as_token())
-            ),
-            MemoryOperation::Delete { key, condition } => {
-                format!(
-                    "delete:{key:?}:condition={}:expected={}",
-                    match condition {
-                        etas_host::WriteCondition::Any => "any",
-                        etas_host::WriteCondition::Missing => "missing",
-                        etas_host::WriteCondition::Exists => "exists",
-                        etas_host::WriteCondition::Match(_) => "match",
-                    },
-                    condition
-                        .expected_version()
-                        .map_or("", |version| version.as_token())
-                )
-            }
-            other => format!("{other:?}"),
-        };
-        format!(
-            "memory:{}:{}:{}",
-            memory.request.store.region.stable_id,
-            memory.request.store.path.join("."),
-            op
-        )
+    pub(crate) fn memory_boundary_key(
+        &self,
+        memory: &PendingMemory,
+    ) -> Result<etas_host::replay::ReplayFingerprint, crate::control::ExecutionFault> {
+        self.replay_fingerprint(&memory.request, memory.request.id, memory.span)
     }
 
     pub(crate) fn memory_conflict_signal(

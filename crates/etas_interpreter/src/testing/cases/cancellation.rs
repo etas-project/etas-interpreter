@@ -401,6 +401,8 @@ fn already_produced_machine_fault_is_not_replaced_by_racing_stop() {
     let scope = etas_host::execution::ExecutionScope::new_owned();
     let options = RunOptions::default();
     let (program, mut run_state) = eval::EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         storage_limits: Default::default(),
         code_definitions: None,
         syntax_limits: Default::default(),

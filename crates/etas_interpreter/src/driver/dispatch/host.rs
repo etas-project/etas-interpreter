@@ -30,7 +30,10 @@ pub(in crate::driver) async fn dispatch(
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
     let kind = host_boundary_kind(&boundary.request);
-    let key = host_boundary_key(&boundary);
+    let key = match host_boundary_key(eval, &boundary) {
+        Ok(key) => key,
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+    };
     let occurrence = crate::orchestration::BoundaryOccurrenceId::HostRequest(
         host_boundary_request_id(&boundary.request),
     );
@@ -43,10 +46,12 @@ pub(in crate::driver) async fn dispatch(
             ));
         }
     };
-    if host_boundary_is_replayable(&boundary.request)
-        && let Some(value) = eval.completed_host_boundary_result(&occurrence, kind, &key)
-    {
-        return Some(eval.resume_host_signal(boundary, value));
+    if let Some(key) = key {
+        match eval.completed_host_boundary_result(&occurrence, kind, &key, boundary.span) {
+            Ok(Some(value)) => return Some(eval.resume_host_signal(boundary, value)),
+            Ok(None) => (),
+            Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        }
     }
     if let Err(error) = authorize_before_boundary(
         eval,
@@ -252,7 +257,7 @@ pub(in crate::driver) async fn dispatch(
     };
     match result {
         Ok(Ok(value)) => {
-            if host_boundary_is_replayable(&boundary.request) {
+            if let Some(key) = key {
                 if let Err(fault) = eval.record_completed_host_boundary(
                     occurrence,
                     kind,
@@ -347,44 +352,30 @@ pub(in crate::driver) fn host_boundary_kind(request: &HostBoundaryRequest) -> &'
     }
 }
 
-pub(in crate::driver) fn host_boundary_is_replayable(request: &HostBoundaryRequest) -> bool {
-    !matches!(
-        request,
-        HostBoundaryRequest::Tcp(_)
-            | HostBoundaryRequest::Stream(_)
-            | HostBoundaryRequest::Tls(_)
-            | HostBoundaryRequest::MemoryWrite(_)
-            | HostBoundaryRequest::SessionHistory(_)
-            | HostBoundaryRequest::SessionContext(_)
+fn host_boundary_key(
+    eval: &EvalContext<'_>,
+    boundary: &PendingHostBoundary,
+) -> Result<Option<etas_host::replay::ReplayFingerprint>, crate::control::ExecutionFault> {
+    let payload = match &boundary.request {
+        HostBoundaryRequest::SessionContext(_)
+        | HostBoundaryRequest::SessionHistory(_)
+        | HostBoundaryRequest::MemoryWrite(_)
+        | HostBoundaryRequest::Tcp(_)
+        | HostBoundaryRequest::Stream(_)
+        | HostBoundaryRequest::Tls(_) => return Ok(None),
+        HostBoundaryRequest::Filesystem(request) => request.trace_payload(),
+        HostBoundaryRequest::Secret(request) => request.trace_payload(),
+        HostBoundaryRequest::Browser(request) => request.trace_payload(),
+    };
+    eval.replay_payload_fingerprint(
+        &payload.with_field(
+            "replay_occurrence",
+            HostValue::UInt(host_boundary_request_id(&boundary.request).0 as u128),
+            etas_host::HostTraceFieldSensitivity::Public,
+        ),
+        boundary.span,
     )
-}
-
-pub(in crate::driver) fn host_boundary_key(boundary: &PendingHostBoundary) -> String {
-    match &boundary.request {
-        HostBoundaryRequest::SessionContext(request) => format!("session:context:{}", request.id.0),
-        HostBoundaryRequest::SessionHistory(request) => {
-            format!("session:history_page:{}", request.id.0)
-        }
-        HostBoundaryRequest::MemoryWrite(request) => format!("memory:request:{}", request.id.0),
-        HostBoundaryRequest::Filesystem(request) => {
-            format!("filesystem:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Tcp(request) => {
-            format!("tcp:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Stream(request) => {
-            format!("stream:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Tls(request) => {
-            format!("tls:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Secret(request) => {
-            format!("secret:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Browser(request) => {
-            format!("browser:{:?}:{:?}", request.operation, boundary.decode)
-        }
-    }
+    .map(Some)
 }
 
 pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(

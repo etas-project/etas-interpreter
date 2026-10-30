@@ -96,6 +96,11 @@ pub fn checkpoint_from_json_with_revisions(
         .validate_arguments(entry_item, &arguments)
         .map_err(InterpreterCodecError::new)?;
     let checkpoint = InterpreterCheckpoint {
+        replay_key_id: required_str(checkpoint, "replay_key_id")?.parse().map_err(
+            |error: etas_host::replay::ReplayKeyError| {
+                InterpreterCodecError::new(error.to_string())
+            },
+        )?,
         retained_code: None,
         storage: serde_json::from_value(required_obj(checkpoint, "storage")?.clone()).map_err(
             |error| {
@@ -175,7 +180,11 @@ pub fn checkpoint_from_json_with_revisions(
                             "occurrence",
                         )?)?,
                         kind: required_str(boundary, "kind")?.to_owned(),
-                        key: required_str(boundary, "key")?.to_owned(),
+                        key: required_str(boundary, "key")?.parse().map_err(
+                            |error: etas_host::replay::ReplayKeyError| {
+                                InterpreterCodecError::new(error.to_string())
+                            },
+                        )?,
                         result: completed_host_boundary_result_from_json(
                             limits,
                             required_obj(boundary, "result")?,
@@ -483,6 +492,7 @@ pub(super) fn checkpoint_json(
     let host_state = checkpoint_host_state_json(&checkpoint.host_state)?;
     let mut artifact = CheckpointDocument::from_value(json!({
         "id": checkpoint.id.0,
+        "replay_key_id": checkpoint.replay_key_id.to_hex(),
         "label": checkpoint.label,
         "compilation": compilation_identity_json(&checkpoint.compilation),
         "code_revision": checkpoint.code_revision,
@@ -518,7 +528,7 @@ pub(super) fn checkpoint_json(
     for boundary in &checkpoint.completed_host_boundaries.completed {
         let mut row = JsonDocument::from(json!({
             "occurrence": boundary_occurrence_json(&boundary.occurrence),
-            "kind":boundary.kind,"key":boundary.key,"result":null,
+            "kind":boundary.kind,"key":boundary.key.to_hex(),"result":null,
         }));
         row["result"] = completed_host_boundary_result_json(&boundary.result)?.into_value();
         artifact["completed_host_boundaries"]
@@ -883,6 +893,7 @@ pub(super) fn model_loop_frame_json(
     budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
     let mut object = CheckpointDocument::from_value(json!({
+        "boundary_request_id": frame.boundary_request_id.0,
         "pending": null,
         "round": frame.round,
         "repair_attempts": frame.repair.attempts,
@@ -892,9 +903,9 @@ pub(super) fn model_loop_frame_json(
         "completed_tool_result": frame.completed_tool_result,
         "current_host_tool": frame.current_host_tool.as_ref().map(|tool| json!({
             "call": model_host_tool_call_json(&tool.call),
-            "boundary_key": tool.boundary_key,
+            "boundary_key": tool.boundary_key.to_hex(),
         })),
-        "boundary_key": frame.boundary_key,
+        "boundary_key": frame.boundary_key.to_hex(),
         "outer_continuation": null,
     }));
     object.value_mut()["pending"] = pending_model_json(&frame.pending, budget)?;
@@ -912,10 +923,15 @@ pub(super) fn model_loop_frame_from_json(
         None | Some(Value::Null) => None,
         Some(tool) => Some(crate::orchestration::HostToolProgressSnapshot {
             call: model_host_tool_call_from_json(required_obj(tool, "call")?)?,
-            boundary_key: required_str(tool, "boundary_key")?.to_owned(),
+            boundary_key: required_str(tool, "boundary_key")?.parse().map_err(
+                |error: etas_host::replay::ReplayKeyError| {
+                    InterpreterCodecError::new(error.to_string())
+                },
+            )?,
         }),
     };
     Ok(crate::orchestration::ModelLoopFrameSnapshot {
+        boundary_request_id: etas_host::HostRequestId(required_u32(value, "boundary_request_id")?),
         pending: pending_model_from_json(limits, required_obj(value, "pending")?, checked)?,
         round: required_usize(value, "round")?,
         repair: crate::orchestration::ModelRepairSnapshot {
@@ -929,7 +945,11 @@ pub(super) fn model_loop_frame_from_json(
             .collect::<Result<Vec<_>, _>>()?,
         completed_tool_result: required_bool(value, "completed_tool_result")?,
         current_host_tool,
-        boundary_key: required_str(value, "boundary_key")?.to_owned(),
+        boundary_key: required_str(value, "boundary_key")?.parse().map_err(
+            |error: etas_host::replay::ReplayKeyError| {
+                InterpreterCodecError::new(error.to_string())
+            },
+        )?,
         outer_continuation: machine::continuation_from_snapshot(
             limits,
             required_obj(value, "outer_continuation")?,
@@ -948,7 +968,7 @@ pub(super) fn source_tool_return_frame_json(
         "tool_name": frame.tool_name,
         "binding": source_tool_binding_json(&frame.binding),
         "args": host_value_json(&frame.args),
-        "boundary_key": frame.boundary_key,
+        "boundary_key": frame.boundary_key.to_hex(),
         "output_schema": frame.output_schema.as_ref().map(machine::host_schema_snapshot),
         "model_loop": null,
     }));
@@ -966,7 +986,11 @@ pub(super) fn source_tool_return_frame_from_json(
         tool_name: required_str(value, "tool_name")?.to_owned(),
         binding: source_tool_binding_from_json(required_obj(value, "binding")?)?,
         args: host_value_from_json(required_obj(value, "args")?)?,
-        boundary_key: required_str(value, "boundary_key")?.to_owned(),
+        boundary_key: required_str(value, "boundary_key")?.parse().map_err(
+            |error: etas_host::replay::ReplayKeyError| {
+                InterpreterCodecError::new(error.to_string())
+            },
+        )?,
         output_schema: value
             .get("output_schema")
             .filter(|value| !value.is_null())

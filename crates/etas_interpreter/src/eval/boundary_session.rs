@@ -2,17 +2,22 @@ use super::host_value::host_to_typed_interp_value;
 use super::*;
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn replayed_session_result(&self, session: &PendingSession) -> Option<InterpValue> {
+    pub(crate) fn replayed_session_result(
+        &self,
+        session: &PendingSession,
+        key: &etas_host::replay::ReplayFingerprint,
+    ) -> Result<Option<InterpValue>, crate::control::ExecutionFault> {
         if !matches!(
             session.request.operation,
             etas_host::SessionOperation::Append { .. }
         ) {
-            return None;
+            return Ok(None);
         }
         self.completed_host_boundary_result(
             &crate::orchestration::BoundaryOccurrenceId::HostRequest(session.request.id),
             "session",
-            &self.session_boundary_key(session),
+            key,
+            session.span,
         )
     }
 
@@ -50,18 +55,11 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(crate) fn session_boundary_key(&self, session: &PendingSession) -> String {
-        match &session.request.operation {
-            etas_host::SessionOperation::Resolve { config } => {
-                format!("session:resolve:{}", config.id)
-            }
-            etas_host::SessionOperation::Append { message } => {
-                format!("session:append:{}:{}", message.session.id, message.id)
-            }
-            etas_host::SessionOperation::Load { session, .. } => {
-                format!("session:load:{}", session.id)
-            }
-        }
+    pub(crate) fn session_boundary_key(
+        &self,
+        session: &PendingSession,
+    ) -> Result<etas_host::replay::ReplayFingerprint, crate::control::ExecutionFault> {
+        self.replay_fingerprint(&session.request, session.request.id, session.span)
     }
 
     pub(crate) fn session_result_signal(

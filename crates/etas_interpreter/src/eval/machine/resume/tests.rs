@@ -19,6 +19,8 @@ fn retry_lookup_does_not_copy_unrelated_payloads_or_each_scanned_frame() {
     let options = RunOptions::default();
     let span = crate::diagnostics::item_span(&checked, checked.entry.unwrap());
     let (program, mut run_state) = EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         storage_limits: Default::default(),
         code_definitions: None,
         syntax_limits: Default::default(),
@@ -255,6 +257,7 @@ fn retry_lookup_only_inspects_model_and_source_tool_outer_continuations() {
     for count in [1000, 2000, 4000] {
         let host = crate::api::HostExecutionContext::default();
         let model = ModelLoopFrame {
+            boundary_request_id: etas_host::HostRequestId(0),
             pending: PendingModel {
                 request: ModelRequest {
                     id: HostRequestId(1),
@@ -282,7 +285,7 @@ fn retry_lookup_only_inspects_model_and_source_tool_outer_continuations() {
             remaining_tool_calls: vec![],
             completed_tool_result: false,
             current_host_tool: None,
-            boundary_key: "boundary".into(),
+            boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
             outer_continuation: Continuation::Return,
         };
         let mut frame = EvalFrame::ModelLoop(Box::new(model));
@@ -311,7 +314,7 @@ fn retry_lookup_only_inspects_model_and_source_tool_outer_continuations() {
                 item: etas_hir::HirItemId(1),
             },
             args: HostValue::String("y".repeat(count * 1024)),
-            boundary_key: "tool-boundary".into(),
+            boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
             output_schema: None,
             model_loop: model,
         });

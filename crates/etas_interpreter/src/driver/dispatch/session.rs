@@ -9,13 +9,18 @@ pub(in crate::driver) async fn dispatch(
     host: &dyn HostServices,
     session: PendingSession,
 ) -> ControlSignal {
-    if let Some(value) = eval.replayed_session_result(&session) {
-        return eval.replay_session_signal(session, value);
+    let key = match eval.session_boundary_key(&session) {
+        Ok(key) => key,
+        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+    };
+    match eval.replayed_session_result(&session, &key) {
+        Ok(Some(value)) => return eval.replay_session_signal(session, value),
+        Ok(None) => (),
+        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
     }
     if let Err(error) = session.request.budget.check_time() {
         return eval.session_host_error_signal(session, error);
     }
-    let key = eval.session_boundary_key(&session);
     let request_id = session.request.id;
     let response = if matches!(
         session.request.operation,

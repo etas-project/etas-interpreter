@@ -27,11 +27,23 @@ impl EvalMachine {
         let outer_continuation =
             std::mem::replace(&mut pending.continuation, Continuation::BlockValue);
         self.push_continuation_frames(outer_continuation);
-        if let Some(value) = ctx.replayed_model_result(&pending) {
+        let key = ctx
+            .model_boundary_key(&pending)
+            .map_err(MachinePoll::Fault)?;
+        if let Some(value) = ctx
+            .completed_host_boundary_result(
+                &crate::orchestration::BoundaryOccurrenceId::HostRequest(pending.request.id),
+                "model",
+                &key,
+                pending.span,
+            )
+            .map_err(MachinePoll::Fault)?
+        {
             return Ok(ControlSignal::Value(value));
         }
         let frame = ModelLoopFrame {
-            boundary_key: ctx.model_boundary_key(&pending),
+            boundary_request_id: pending.request.id,
+            boundary_key: key,
             pending,
             round: 0,
             repair: ModelRepairState::default(),
@@ -203,7 +215,7 @@ impl EvalMachine {
                 Ok(value) => {
                     ctx.record_completed_host_boundary(
                         crate::orchestration::BoundaryOccurrenceId::HostRequest(
-                            frame.pending.request.id,
+                            frame.boundary_request_id,
                         ),
                         "model",
                         frame.boundary_key,
@@ -321,13 +333,22 @@ impl EvalMachine {
                 .find(|binding| binding.name == call.tool)
                 .cloned()
             {
-                let key = source_tool_boundary_key(&binding, &call.args);
+                let key = source_tool_boundary_key(
+                    ctx,
+                    &binding,
+                    &call.args,
+                    frame.pending.request.id,
+                    &call.id,
+                    frame.pending.span,
+                )
+                .map_err(MachinePoll::Fault)?;
                 let occurrence = crate::orchestration::BoundaryOccurrenceId::SourceToolCall {
                     model_request: frame.pending.request.id,
                     call_id: call.id.clone(),
                 };
-                if let Some(replayed) =
-                    ctx.completed_host_boundary_result(&occurrence, "tool", &key)
+                if let Some(replayed) = ctx
+                    .completed_host_boundary_result(&occurrence, "tool", &key, frame.pending.span)
+                    .map_err(MachinePoll::Fault)?
                 {
                     let value = interp_to_host_value(&replayed).map_err(|error| {
                         machine_abort(
@@ -368,12 +389,18 @@ impl EvalMachine {
                 trace: frame.pending.request.trace.clone(),
                 budget: frame.pending.request.budget.clone(),
             };
-            let key = tool_boundary_key(&request);
-            if let Some(value) = ctx.completed_host_boundary_host_result(
-                &crate::orchestration::BoundaryOccurrenceId::HostRequest(request.id),
-                "tool",
-                &key,
-            ) {
+            let key = ctx
+                .replay_fingerprint(&request, request.id, frame.pending.span)
+                .map_err(MachinePoll::Fault)?;
+            if let Some(value) = ctx
+                .completed_host_boundary_host_result(
+                    &crate::orchestration::BoundaryOccurrenceId::HostRequest(request.id),
+                    "tool",
+                    &key,
+                    frame.pending.span,
+                )
+                .map_err(MachinePoll::Fault)?
+            {
                 append_tool_result(&mut frame, call.id, value);
                 continue;
             }
@@ -604,21 +631,33 @@ fn source_tool_policy_subject(binding: &SourceToolBinding) -> PolicySubject {
     }
 }
 
-fn tool_boundary_key(request: &ToolRequest) -> String {
-    format!(
-        "tool:{}:std={:?}:args={:?}",
-        tool_identity(&request.tool),
-        request.tool.std_symbol,
-        request.args
-    )
-}
-
-fn source_tool_boundary_key(binding: &SourceToolBinding, args: &HostValue) -> String {
-    format!(
-        "tool:{}:source_item={:?}:args={args:?}",
-        source_tool_identity(binding),
-        binding.item
-    )
+fn source_tool_boundary_key(
+    ctx: &EvalContext<'_>,
+    binding: &SourceToolBinding,
+    args: &HostValue,
+    model_request: etas_host::HostRequestId,
+    call_id: &str,
+    span: Span,
+) -> Result<etas_host::replay::ReplayFingerprint, ExecutionFault> {
+    use etas_host::{HostTraceFieldSensitivity as Sensitivity, HostTracePayload};
+    let payload = HostTracePayload::new("source_tool", source_tool_identity(binding))
+        .with_field(
+            "model_request",
+            HostValue::UInt(model_request.0 as u128),
+            Sensitivity::Public,
+        )
+        .with_field(
+            "tool_call_id",
+            HostValue::String(call_id.to_owned()),
+            Sensitivity::Public,
+        )
+        .with_field(
+            "item",
+            HostValue::UInt(binding.item.0 as u128),
+            Sensitivity::Public,
+        )
+        .with_field("args", args.clone(), Sensitivity::Sensitive);
+    ctx.replay_payload_fingerprint(&payload, span)
 }
 
 fn tool_identity(tool: &ToolRef) -> &str {

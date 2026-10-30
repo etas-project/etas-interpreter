@@ -144,9 +144,6 @@ impl CallableDefinitionValue {
     ) -> &Arc<etas_frontend::code::service::NativeCodeSyntaxOperations> {
         &self.0.syntax
     }
-    pub(crate) fn id(&self) -> &etas_code::CallableId {
-        &self.0.header.id
-    }
     pub(crate) fn header(&self) -> &CallableHeaderInfo {
         &self.0.header
     }

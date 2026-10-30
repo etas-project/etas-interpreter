@@ -34,6 +34,8 @@ fn run_lambda(
         },
     };
     let (input, mut runtime) = EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         code_definitions: None,
         syntax_limits: Default::default(),
         storage_limits: Default::default(),
