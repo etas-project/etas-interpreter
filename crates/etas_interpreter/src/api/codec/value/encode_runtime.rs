@@ -106,7 +106,14 @@ fn write<'a>(
                 .zip(array(&mut slot["messages"], messages.len()))
             {
                 *slot = json!({"role":value_codec::prompt_role_json(message.role),"text":null,"trust":message.trust.map(value_codec::trust_wrapper_json)});
-                slot["text"] = message.text.json_text();
+                slot["text"] = if message
+                    .trust
+                    .is_some_and(|wrapper| purpose.redacts_wrapper(wrapper))
+                {
+                    json!({"kind":"redacted", "sensitivity":"secret"})
+                } else {
+                    message.text.json_text()
+                };
             }
         }
         InterpValue::Message(message) => write_message(message, slot, child),

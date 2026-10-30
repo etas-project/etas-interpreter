@@ -136,3 +136,32 @@ fn report_redaction_never_materializes_cold_secret_text() {
         "redaction copied the secret first: {cost:?}"
     );
 }
+
+#[test]
+fn reports_redact_secret_prompt_segments_but_keep_public_text() {
+    use crate::value::{PromptMessage, PromptRole};
+    let result = completed(InterpValue::Prompt(
+        vec![
+            PromptMessage {
+                role: PromptRole::User,
+                text: "AUDIT_ONLY_SECRET_PROMPT_TEXT".into(),
+                trust: Some(TrustWrapper::Secret),
+            },
+            PromptMessage {
+                role: PromptRole::Assistant,
+                text: "public response".into(),
+                trust: Some(TrustWrapper::Public),
+            },
+        ]
+        .into(),
+    ));
+    let report = run_report_json("run", &[], "main", &result).unwrap();
+    assert!(!report.to_string().contains("AUDIT_ONLY_SECRET_PROMPT_TEXT"));
+    assert_eq!(report["value"]["messages"][0]["text"]["kind"], "redacted");
+    assert_eq!(report["value"]["messages"][1]["text"], "public response");
+    let original = value_json(result.value().unwrap()).unwrap();
+    assert_eq!(
+        original["messages"][0]["text"],
+        "AUDIT_ONLY_SECRET_PROMPT_TEXT"
+    );
+}
