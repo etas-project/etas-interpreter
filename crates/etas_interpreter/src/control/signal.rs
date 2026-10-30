@@ -371,6 +371,7 @@ pub enum HostBoundaryDecode {
     Unit,
     PathList,
     FilesystemStat,
+    FileReadLimited { max_bytes: usize },
     TcpStream,
     StreamRead { result_type: etas_types::TypeId },
     TlsStream,

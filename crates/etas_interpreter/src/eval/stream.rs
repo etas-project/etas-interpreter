@@ -2,7 +2,6 @@ use std::time::{SystemTime, UNIX_EPOCH};
 
 use etas_core::{AnalysisDiagnosticCode, Span};
 use etas_host::{StreamFailure, StreamOperation, StreamRequest};
-use etas_std::StdActionReducer;
 
 use super::EvalContext;
 use crate::{
@@ -15,17 +14,14 @@ use crate::{
 };
 
 impl EvalContext<'_> {
-    pub(super) fn start_action_reducer(
+    pub(super) fn start_stream_read_reducer(
         &mut self,
-        reducer: StdActionReducer,
         call: CheckedStdIntrinsicCall,
         args: Vec<InterpValue>,
+        limit_parameter: usize,
+        timeout_parameter: usize,
         span: Span,
     ) -> ControlSignal {
-        let StdActionReducer::ReadUntilLimit {
-            limit_parameter,
-            timeout_parameter,
-        } = reducer;
         let prepare = || {
             let limit = args
                 .get(limit_parameter)

@@ -1,3 +1,4 @@
+mod action_reducer;
 mod agent;
 mod aggregate_expr;
 mod assign;
@@ -24,6 +25,7 @@ mod const_expr;
 mod continuation;
 mod expr;
 mod field_access;
+mod file_read_limited;
 mod flow;
 mod handler;
 mod host_enum;
@@ -153,6 +155,8 @@ impl std::ops::DerefMut for EvalContext<'_> {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KnownStdTypes {
+    pub file_read_limit_error: Option<etas_types::TypeId>,
+    pub filesystem_io_error: Option<etas_types::TypeId>,
     pub storage_error: Option<etas_types::TypeId>,
     pub browser_session: Option<etas_types::TypeId>,
     pub io_error: Option<etas_types::TypeId>,
@@ -401,6 +405,8 @@ impl<'a> EvalContext<'a> {
 impl KnownStdTypes {
     pub(crate) fn from_checked(checked: &CheckedProject) -> Self {
         Self {
+            file_read_limit_error: checked.types.known_std_types.file_read_limit_error,
+            filesystem_io_error: checked.types.known_std_types.filesystem_io_error,
             browser_session: resolve_std_type(
                 checked,
                 &["std", "browser", "protocol", "BrowserSession"],

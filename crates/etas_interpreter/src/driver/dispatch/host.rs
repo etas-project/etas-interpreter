@@ -20,6 +20,7 @@ use super::{
 enum HostBoundaryFailure {
     Host(HostError),
     Stream(StreamFailure),
+    FileReadLimit { max_bytes: usize },
 }
 
 pub(in crate::driver) async fn dispatch(
@@ -120,10 +121,18 @@ pub(in crate::driver) async fn dispatch(
         )
         .await
         {
-            Ok(response) => response
-                .result
-                .map(|entry| host_boundary_value_from_filesystem_entry(boundary.decode, entry))
-                .map_err(HostBoundaryFailure::Host),
+            Ok(response) => match (response.result, boundary.decode) {
+                (
+                    Ok(FilesystemEntry::LimitedRead(etas_host::BoundedFileRead::LimitExceeded {
+                        max_bytes,
+                    })),
+                    HostBoundaryDecode::FileReadLimited {
+                        max_bytes: expected,
+                    },
+                ) if max_bytes == expected => Err(HostBoundaryFailure::FileReadLimit { max_bytes }),
+                (Ok(entry), decode) => Ok(host_boundary_value_from_filesystem_entry(decode, entry)),
+                (Err(error), _) => Err(HostBoundaryFailure::Host(error)),
+            },
             Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
         HostBoundaryRequest::Tcp(request) => match HostDispatch::execute(
@@ -266,7 +275,19 @@ pub(in crate::driver) async fn dispatch(
         Err(HostBoundaryFailure::Stream(failure)) => {
             Some(eval.stream_failure_signal(boundary, failure))
         }
+        Err(HostBoundaryFailure::FileReadLimit { max_bytes }) => {
+            Some(eval.raise_file_read_limit(max_bytes, boundary.continuation, boundary.span))
+        }
         Err(HostBoundaryFailure::Host(error)) => {
+            if matches!(
+                &boundary.request,
+                HostBoundaryRequest::Filesystem(etas_host::FilesystemRequest {
+                    operation: FilesystemOperation::ReadLimited { .. },
+                    ..
+                })
+            ) {
+                return Some(eval.filesystem_host_error_signal(boundary, error));
+            }
             if let Some(signal) = eval.network_host_error_signal(boundary.clone(), error.clone()) {
                 return Some(signal);
             }
@@ -371,6 +392,10 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
     entry: FilesystemEntry,
 ) -> Result<InterpValue, String> {
     match (decode, entry) {
+        (
+            HostBoundaryDecode::FileReadLimited { max_bytes },
+            FilesystemEntry::LimitedRead(etas_host::BoundedFileRead::Complete(bytes)),
+        ) if bytes.len() <= max_bytes => Ok(InterpValue::Bytes(bytes.into())),
         (HostBoundaryDecode::Bytes, FilesystemEntry::Bytes(bytes)) => {
             Ok(InterpValue::Bytes(bytes.into()))
         }
@@ -393,9 +418,9 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
                 ),
             ])))
         }
-        (decode, entry) => Err(format!(
-            "filesystem response payload {:?} does not match decode {:?}",
-            entry, decode
+        (decode, _) => Err(format!(
+            "filesystem response payload does not match checked decode {:?}",
+            decode
         )),
     }
 }
@@ -563,7 +588,9 @@ pub(in crate::driver) fn filesystem_policy_subject(
     request: &etas_host::FilesystemRequest,
 ) -> PolicySubject {
     let (operation, action, resource) = match &request.operation {
-        FilesystemOperation::Read { path } => ("read", "Fs.read", format!("{path:?}")),
+        FilesystemOperation::Read { path } | FilesystemOperation::ReadLimited { path, .. } => {
+            ("read", "Fs.read", format!("{path:?}"))
+        }
         FilesystemOperation::Write { path, .. } => ("write", "Fs.write", format!("{path:?}")),
         FilesystemOperation::Delete { path } => {
             ("delete", "HostFilesystem.delete", format!("{path:?}"))

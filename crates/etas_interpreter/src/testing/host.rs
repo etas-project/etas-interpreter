@@ -75,6 +75,8 @@ pub(crate) struct FakeHost {
     tcp_responses: Arc<Mutex<VecDeque<Result<TcpStreamRef, HostError>>>>,
     stream_requests: Arc<Mutex<Vec<StreamRequest>>>,
     stream_responses: Arc<Mutex<VecDeque<Result<StreamPayload, StreamFailure>>>>,
+    filesystem_requests: Arc<Mutex<Vec<FilesystemRequest>>>,
+    filesystem_responses: Arc<Mutex<VecDeque<Result<etas_host::FilesystemEntry, HostError>>>>,
     secret_requests: Arc<Mutex<Vec<SecretRequest>>>,
     secret_responses: Arc<Mutex<VecDeque<Result<etas_host::SecretPayload, HostError>>>>,
     console_error: Arc<Mutex<Option<HostError>>>,
@@ -123,6 +125,8 @@ impl FakeHost {
             tcp_responses: Arc::new(Mutex::new(VecDeque::new())),
             stream_requests: Arc::new(Mutex::new(Vec::new())),
             stream_responses: Arc::new(Mutex::new(VecDeque::new())),
+            filesystem_requests: Arc::new(Mutex::new(Vec::new())),
+            filesystem_responses: Arc::new(Mutex::new(VecDeque::new())),
             secret_requests: Arc::new(Mutex::new(Vec::new())),
             secret_responses: Arc::new(Mutex::new(VecDeque::new())),
             console_error: Arc::new(Mutex::new(None)),
@@ -140,6 +144,17 @@ impl FakeHost {
 
     pub(super) fn approval_call_count(&self) -> usize {
         self.approval_calls.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn seed_filesystem_response(
+        &self,
+        result: Result<etas_host::FilesystemEntry, HostError>,
+    ) {
+        self.filesystem_responses.lock().unwrap().push_back(result);
+    }
+
+    pub(super) fn filesystem_requests(&self) -> Vec<FilesystemRequest> {
+        self.filesystem_requests.lock().unwrap().clone()
     }
 
     pub(super) fn pause_console_completion(&mut self) -> Arc<ConsoleGate> {
@@ -1097,7 +1112,17 @@ impl HostServices for FakeHost {
         _operation: etas_host::execution::OperationContext,
         request: FilesystemRequest,
     ) -> HostFuture<'a, Result<FilesystemResponse, HostError>> {
+        self.filesystem_requests
+            .lock()
+            .unwrap()
+            .push(request.clone());
         Box::pin(async move {
+            if let Some(result) = self.filesystem_responses.lock().unwrap().pop_front() {
+                return Ok(FilesystemResponse {
+                    id: request.id,
+                    result,
+                });
+            }
             Err(HostError::new(
                 HostErrorCode::ProviderUnavailable,
                 "test filesystem response is not configured",
