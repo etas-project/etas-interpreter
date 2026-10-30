@@ -9,6 +9,7 @@ mod boundary;
 mod boundary_approval;
 mod boundary_command;
 mod boundary_console;
+mod boundary_filesystem;
 mod boundary_ledger;
 mod boundary_memory;
 mod boundary_model;

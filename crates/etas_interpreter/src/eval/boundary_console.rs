@@ -95,6 +95,7 @@ fn console_error_value(error: HostError) -> InterpValue {
         | HostErrorCode::ToolUnavailable
         | HostErrorCode::InvalidRequest
         | HostErrorCode::InvalidResponse
+        | HostErrorCode::IoFailure
         | HostErrorCode::SchemaMismatch
         | HostErrorCode::BudgetExceeded
         | HostErrorCode::TimedOut

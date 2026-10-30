@@ -284,14 +284,10 @@ pub(in crate::driver) async fn dispatch(
             Some(eval.raise_file_read_limit(max_bytes, boundary.continuation, boundary.span))
         }
         Err(HostBoundaryFailure::Host(error)) => {
-            if matches!(
-                &boundary.request,
-                HostBoundaryRequest::Filesystem(etas_host::FilesystemRequest {
-                    operation: FilesystemOperation::ReadLimited { .. },
-                    ..
-                })
-            ) {
-                return Some(eval.filesystem_host_error_signal(boundary, error));
+            if matches!(&boundary.request, HostBoundaryRequest::Filesystem(_))
+                && error.code == etas_host::HostErrorCode::IoFailure
+            {
+                return Some(eval.filesystem_io_failure_signal(boundary, error));
             }
             if let Some(signal) = eval.network_host_error_signal(boundary.clone(), error.clone()) {
                 return Some(signal);
