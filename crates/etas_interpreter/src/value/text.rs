@@ -9,10 +9,12 @@ use std::{
 mod chunks;
 mod concat;
 mod ranges;
+mod read;
 pub use chunks::TextChunks;
 use concat::Repr;
 pub(crate) use concat::TextCapacityExceeded;
 pub(crate) use ranges::{TextRangeError, TextRangeProjector};
+pub(crate) use read::hash_text;
 
 /// Immutable aliases share text; consuming operations may reuse a unique buffer.
 #[derive(Clone, Default)]
@@ -171,8 +173,7 @@ impl AsRef<str> for StringValue {
 
 impl PartialEq for StringValue {
     fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len()
-            && (self.is_empty() || self.same_backing(other) || self.as_str() == other.as_str())
+        self.len() == other.len() && self.compare_borrowed(other).is_eq()
     }
 }
 impl Eq for StringValue {}
@@ -183,40 +184,38 @@ impl PartialOrd for StringValue {
 }
 impl Ord for StringValue {
     fn cmp(&self, other: &Self) -> Ordering {
-        if self.same_backing(other) {
-            Ordering::Equal
-        } else {
-            self.as_str().cmp(other.as_str())
-        }
+        self.compare_borrowed(other)
     }
 }
 impl Hash for StringValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Preserve public Rust str hashing. Runtime bucket partitions use the
+        // layout-independent streaming protocol in hash_membership instead.
         self.as_str().hash(state);
     }
 }
 
 impl PartialEq<str> for StringValue {
     fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
+        self.equals_str(other)
     }
 }
 
 impl PartialEq<&str> for StringValue {
     fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
+        self.equals_str(other)
     }
 }
 
 impl PartialEq<String> for StringValue {
     fn eq(&self, other: &String) -> bool {
-        self.as_str() == other
+        self.equals_str(other.as_str())
     }
 }
 
 impl PartialEq<StringValue> for String {
     fn eq(&self, other: &StringValue) -> bool {
-        self.as_str() == other.as_str()
+        other.equals_str(self.as_str())
     }
 }
 
@@ -238,5 +237,7 @@ impl serde::Serialize for StringValue {
     }
 }
 
+#[cfg(test)]
+mod read_tests;
 #[cfg(test)]
 mod tests;
