@@ -90,16 +90,25 @@ pub(super) fn execute_transform(
             from_text_ranges(ranges, source, call.result_type, projector)
         }
         TextTransform::Lowercase | TextTransform::Uppercase => {
-            // Rust's Unicode case conversion includes cross-scalar context.
-            // Keep those semantics instead of mapping chars independently.
-            let output = transform
-                .evaluate(&[source.as_str()])
-                .map_err(AdapterError::Builtin)?;
-            super::abi::output::from_builtin_for_type(
-                output.into_owned(),
-                call.result_type,
-                projector,
-            )
+            use etas_builtin::text::case::{CaseMapping, CaseOutput, map_case};
+            let mapping = if matches!(transform, TextTransform::Lowercase) {
+                CaseMapping::Lowercase
+            } else {
+                CaseMapping::Uppercase
+            };
+            match map_case(source, mapping).map_err(AdapterError::Builtin)? {
+                CaseOutput::Unchanged => from_text_range(
+                    0..source.len(),
+                    &mut crate::value::TextRangeProjector::new(source),
+                    call.result_type,
+                    projector,
+                ),
+                CaseOutput::Changed(output) => super::abi::output::from_builtin_for_type(
+                    etas_builtin::BuiltinValue::String(output),
+                    call.result_type,
+                    projector,
+                ),
+            }
         }
     }
 }
