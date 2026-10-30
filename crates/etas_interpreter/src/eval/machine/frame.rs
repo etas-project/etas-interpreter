@@ -57,11 +57,12 @@ pub(crate) struct ModelRepairState {
 #[derive(Clone, Debug)]
 pub(crate) struct HostToolProgress {
     pub call: ModelToolCall,
-    pub boundary_key: String,
+    pub boundary_key: etas_host::replay::ReplayFingerprint,
 }
 
 #[derive(Clone, Debug)]
 pub(crate) struct ModelLoopFrame {
+    pub boundary_request_id: etas_host::HostRequestId,
     pub pending: PendingModel,
     pub round: usize,
     pub repair: ModelRepairState,
@@ -69,7 +70,7 @@ pub(crate) struct ModelLoopFrame {
     pub remaining_tool_calls: Vec<ModelToolCall>,
     pub completed_tool_result: bool,
     pub current_host_tool: Option<HostToolProgress>,
-    pub boundary_key: String,
+    pub boundary_key: etas_host::replay::ReplayFingerprint,
     pub outer_continuation: Continuation,
 }
 
@@ -79,7 +80,7 @@ pub(crate) struct SourceToolReturnFrame {
     pub tool_name: String,
     pub binding: SourceToolBinding,
     pub args: HostValue,
-    pub boundary_key: String,
+    pub boundary_key: etas_host::replay::ReplayFingerprint,
     pub output_schema: Option<HostSchema>,
     pub model_loop: Box<ModelLoopFrame>,
 }

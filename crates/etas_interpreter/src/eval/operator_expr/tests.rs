@@ -21,6 +21,8 @@ fn array_operator_and_extend_reuse_unique_left_without_copying_shared_right() {
         .unwrap();
     let options = RunOptions::default();
     let (program, mut run_state) = EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         storage_limits: Default::default(),
         code_definitions: None,
         syntax_limits: Default::default(),

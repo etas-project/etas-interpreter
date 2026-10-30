@@ -52,6 +52,7 @@ fn model_pending_and_outer_continuations_share_the_machine_encoding_budget() {
     );
     let span = checked.hir.blocks.iter().next().unwrap().1.span;
     let frame = ModelLoopFrameSnapshot {
+        boundary_request_id: etas_host::HostRequestId(0),
         pending: PendingModelSnapshot {
             request: ModelRequestSnapshot {
                 id: HostRequestId(1),
@@ -77,7 +78,7 @@ fn model_pending_and_outer_continuations_share_the_machine_encoding_budget() {
         remaining_tool_calls: vec![],
         completed_tool_result: false,
         current_host_tool: None,
-        boundary_key: "model".into(),
+        boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
         outer_continuation: ContinuationSnapshot::Return,
     };
     let (_, cost) = measure(|| {

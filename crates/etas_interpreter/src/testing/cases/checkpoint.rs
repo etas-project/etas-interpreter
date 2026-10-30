@@ -833,7 +833,7 @@ flow main() -> string {
                 etas_host::HostRequestId(checkpoint.trace.next_host_request),
             ),
             kind: "approval".to_owned(),
-            key: "req-1".to_owned(),
+            key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
             result: crate::orchestration::CompletedHostBoundaryResult::Runtime(
                 value::InterpValue::Bool(true),
             ),
@@ -864,6 +864,6 @@ flow main() -> string {
     );
     assert_eq!(
         resumed_checkpoint.completed_host_boundaries.completed[0].key,
-        "req-1"
+        etas_host::replay::ReplayFingerprint::from_bytes([1; 32])
     );
 }

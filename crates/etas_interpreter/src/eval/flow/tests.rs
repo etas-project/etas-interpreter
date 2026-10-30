@@ -20,6 +20,10 @@ fn flow_entry_allocation_does_not_scale_with_unrelated_project_locals() {
             .unwrap();
         let options = RunOptions::default();
         let (program, mut run_state) = EvalContextInput {
+            replay_keys: crate::eval::replay::RunReplayKeys::start(
+                &crate::api::RunOptions::default(),
+            )
+            .unwrap(),
             storage_limits: Default::default(),
             code_definitions: None,
             syntax_limits: Default::default(),

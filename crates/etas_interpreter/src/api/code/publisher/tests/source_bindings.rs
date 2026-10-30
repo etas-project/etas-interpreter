@@ -115,6 +115,8 @@ async fn run_source_flow_with_limit(
     options.execution_limits.max_steps =
         max_steps.map(|steps| std::num::NonZeroU64::new(steps).unwrap());
     let (program, mut state) = EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         code_definitions: Some(prepared.definitions.clone()),
         syntax_limits: Default::default(),
         storage_limits: Default::default(),

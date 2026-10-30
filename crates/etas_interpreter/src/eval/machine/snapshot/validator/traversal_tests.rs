@@ -221,6 +221,7 @@ fn checkpoint(
     use crate::orchestration::*;
     let entry = checked.entry.unwrap();
     InterpreterCheckpoint {
+        replay_key_id: etas_host::replay::ReplayKeyId::from_bytes([1; 32]),
         retained_code: None,
         model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),
         code_revision: None,

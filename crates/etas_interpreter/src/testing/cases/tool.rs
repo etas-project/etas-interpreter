@@ -346,12 +346,23 @@ flow main(input: string) -> string {
     assert_eq!(host.model_call_count(), 2);
     assert_eq!(host.tool_requests().len(), 1);
     let checkpoint = result.checkpoints.first().expect("checkpoint snapshot");
+    let model_boundary = checkpoint
+        .completed_host_boundaries
+        .completed
+        .iter()
+        .find(|boundary| boundary.kind == "model")
+        .unwrap();
+    assert_eq!(
+        model_boundary.occurrence,
+        crate::orchestration::BoundaryOccurrenceId::HostRequest(etas_host::HostRequestId(0)),
+        "tool rounds must not replace the model invocation's replay identity"
+    );
     assert!(
         checkpoint
             .completed_host_boundaries
             .completed
             .iter()
-            .any(|boundary| boundary.kind == "tool" && boundary.key.contains("tool:Search"))
+            .any(|boundary| boundary.kind == "tool")
     );
     assert!(
         checkpoint

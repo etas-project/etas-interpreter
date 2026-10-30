@@ -25,6 +25,8 @@ pub(crate) async fn resume_source_inner(
             .validate()
             .map_err(|error| error.message)?;
         validate_code_definitions(project, &options)?;
+        let replay_keys =
+            eval::replay::RunReplayKeys::restore(&options, checkpoint.header.replay_key_id)?;
         let planned = crate::Interpreter.plan(project, options.plan.clone());
         let plan = Arc::new(planned.plan.ok_or_else(|| {
             format!(
@@ -37,6 +39,7 @@ pub(crate) async fn resume_source_inner(
         }
         let host_context = resume_host_context(&checkpoint.header, &options)?;
         let (program, runtime) = eval::EvalContextInput {
+            replay_keys,
             code_definitions: options.code_definitions.clone(),
             syntax_limits: options.syntax_limits,
             storage_limits: options.storage_limits.clone(),

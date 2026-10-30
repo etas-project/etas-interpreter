@@ -10,15 +10,6 @@ use json::{
 mod projection_tests;
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn replayed_model_result(&self, model: &PendingModel) -> Option<InterpValue> {
-        let key = self.model_boundary_key(model);
-        self.completed_host_boundary_result(
-            &crate::orchestration::BoundaryOccurrenceId::HostRequest(model.request.id),
-            "model",
-            &key,
-        )
-    }
-
     pub(crate) fn try_model_result_value(
         &self,
         model: &PendingModel,
@@ -61,18 +52,11 @@ impl<'a> EvalContext<'a> {
             .push(Diagnostic::analysis(error.code, model.span, error.message));
     }
 
-    pub(crate) fn model_boundary_key(&self, model: &PendingModel) -> String {
-        let messages = model
-            .request
-            .messages
-            .iter()
-            .map(|message| format!("{:?}:{:?}", message.role, message.content))
-            .collect::<Vec<_>>()
-            .join("|");
-        format!(
-            "model:{}:{messages}:response_schema={:?}",
-            model.request.model.0, model.request.response_schema
-        )
+    pub(crate) fn model_boundary_key(
+        &self,
+        model: &PendingModel,
+    ) -> Result<etas_host::replay::ReplayFingerprint, crate::control::ExecutionFault> {
+        self.replay_fingerprint(&model.request, model.request.id, model.span)
     }
 
     fn typed_model_result_value(

@@ -226,7 +226,7 @@ impl<'a> SnapshotValidator<'a> {
         }
         let mut completed_occurrences = BTreeSet::new();
         for completed in &checkpoint.completed_host_boundaries.completed {
-            if completed.kind.is_empty() || completed.key.is_empty() {
+            if completed.kind.is_empty() {
                 return Err("checkpoint completed host boundary has an empty identity".into());
             }
             if !completed_occurrences.insert(completed.occurrence.clone()) {
@@ -331,6 +331,11 @@ impl<'a> SnapshotValidator<'a> {
         context: &str,
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
+        if frame.boundary_request_id.0 > frame.pending.request.id.0 {
+            return Err(format!(
+                "{context} model loop request precedes its original boundary occurrence"
+            ));
+        }
         match frame.pending.decode {
             ModelDecodeSnapshot::Typed(ty) => {
                 self.type_id(ty, &format!("{context} model decode type"))?

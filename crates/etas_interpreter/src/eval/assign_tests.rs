@@ -25,6 +25,8 @@ fn member_assignment_rejects_missing_checked_projection_before_mutation() {
         .unwrap();
     let options = RunOptions::default();
     let (program, mut run_state) = EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         storage_limits: Default::default(),
         code_definitions: None,
         syntax_limits: Default::default(),
@@ -83,6 +85,8 @@ fn assignment_commit_reuses_unique_local_and_copies_only_live_aliases() {
     let span = checked.symbols.get(symbol).unwrap().definition_span;
     let options = RunOptions::default();
     let (program, mut run_state) = EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         storage_limits: Default::default(),
         code_definitions: None,
         syntax_limits: Default::default(),
@@ -254,6 +258,8 @@ fn with_assignment_frame(test: impl FnOnce(&mut EvalContext<'_>, &mut Frame, Sym
     let span = checked.symbols.get(symbol).unwrap().definition_span;
     let options = RunOptions::default();
     let (program, mut run_state) = EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&crate::api::RunOptions::default())
+            .unwrap(),
         storage_limits: Default::default(),
         code_definitions: None,
         syntax_limits: Default::default(),

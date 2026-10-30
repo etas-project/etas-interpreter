@@ -14,6 +14,7 @@ mod tests;
 /// One invocation owns this state. Program/revision evaluation scopes borrow it;
 /// changing checked code must not create fresh fuel, grants, IDs, or ledgers.
 pub struct EvalRunState {
+    pub(crate) replay_keys: super::replay::RunReplayKeys,
     pub storage_limits: etas_host::StorageLimits,
     pub execution: etas_host::execution::ExecutionScope,
     pub host_context: HostExecutionContext,
@@ -49,6 +50,7 @@ impl EvalRunState {
         let limits = input.storage_limits;
         let receipt_retention = limits.max_receipt_retention_seconds;
         Self {
+            replay_keys: input.replay_keys,
             storage_limits: limits,
             execution: input.execution,
             host_context: input.host_context,

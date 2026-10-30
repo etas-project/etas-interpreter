@@ -28,13 +28,24 @@ pub(in crate::driver) async fn dispatch(
         eval.diagnostics.push(diagnostic);
         return None;
     }
-    let Some((key, request)) = eval.approval_request_for(&perform) else {
-        eval.diagnostics
-            .push(crate::diagnostics::unhandled_effect_action(&perform));
-        return None;
+    let (key, request) = match eval.approval_request_for(&perform) {
+        Ok(Some(request)) => request,
+        Ok(None) => {
+            eval.diagnostics
+                .push(crate::diagnostics::unhandled_effect_action(&perform));
+            return None;
+        }
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
     };
-    if let Some(value) = eval.replayed_approval_result(&perform, request.id) {
-        return Some(eval.resume_perform_signal(perform, value));
+    match eval.completed_host_boundary_result(
+        &crate::orchestration::BoundaryOccurrenceId::HostRequest(request.id),
+        "approval",
+        &key,
+        perform.span,
+    ) {
+        Ok(Some(value)) => return Some(eval.resume_perform_signal(perform, value)),
+        Ok(None) => (),
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
     }
     let request_id = request.id;
     if let Err(error) = eval.host_budget().check_time() {

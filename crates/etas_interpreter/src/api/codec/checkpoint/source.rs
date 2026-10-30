@@ -12,6 +12,7 @@ pub struct SourceCheckpoint {
 }
 
 pub(crate) struct ResumeHeader {
+    pub replay_key_id: etas_host::replay::ReplayKeyId,
     pub entry: HirItemId,
     pub host: CheckpointHostState,
     pub progress: ExecutionProgressSnapshot,
@@ -47,6 +48,11 @@ impl SourceCheckpoint {
             .map_err(|error| InterpreterCodecError::new(error.to_string()))?;
         let trace = required_obj(checkpoint, "trace")?;
         let header = ResumeHeader {
+            replay_key_id: required_str(checkpoint, "replay_key_id")?.parse().map_err(
+                |error: etas_host::replay::ReplayKeyError| {
+                    InterpreterCodecError::new(error.to_string())
+                },
+            )?,
             entry,
             host,
             progress: execution_progress_from_json(required_obj(

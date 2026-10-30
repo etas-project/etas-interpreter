@@ -136,6 +136,7 @@ impl<'a> EvalContext<'a> {
             None
         };
         let checkpoint = InterpreterCheckpoint {
+            replay_key_id: self.replay_keys.id(),
             retained_code: Some(std::sync::Arc::new(
                 crate::api::code::CheckpointCodePins::new(captured.revisions),
             )),
@@ -195,6 +196,13 @@ impl<'a> EvalContext<'a> {
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 item_span(self.checked, self.entry_item),
                 format!("checkpoint cannot preserve checked execution state: {message}"),
+            )
+        })?;
+        self.replay_keys.retain().map_err(|message| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                item_span(self.checked, self.entry_item),
+                message,
             )
         })?;
         self.next_checkpoint += 1;

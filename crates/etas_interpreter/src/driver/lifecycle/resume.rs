@@ -58,6 +58,7 @@ pub(super) fn resume_host_context(
 
 pub(super) fn header(checkpoint: &InterpreterCheckpoint) -> ResumeHeader {
     ResumeHeader {
+        replay_key_id: checkpoint.replay_key_id,
         entry: checkpoint.entry_item,
         host: checkpoint.host_state.clone(),
         progress: checkpoint.execution_progress,
@@ -97,6 +98,13 @@ pub(super) async fn resume(
             .validate()
             .map_err(|error| error.message)?;
         validate_code_definitions(project, &options)?;
+        let replay_keys = eval::replay::RunReplayKeys::restore(&options, checkpoint.replay_key_id)?;
+        if state
+            .as_ref()
+            .is_some_and(|state| state.replay_keys.id() != checkpoint.replay_key_id)
+        {
+            return Err("checkpoint replay key differs from its resume prelude".into());
+        }
         let planned;
         let plan = if let Some(revision) = prepared {
             diagnostics.extend(revision.plan().diagnostics.iter().cloned());
@@ -158,6 +166,7 @@ pub(super) async fn resume(
             let host_context = resume_host_context(&header, &options)?;
             state = Some(
                 eval::EvalContextInput {
+                    replay_keys,
                     code_definitions: options.code_definitions.clone(),
                     syntax_limits: options.syntax_limits,
                     storage_limits: options.storage_limits,

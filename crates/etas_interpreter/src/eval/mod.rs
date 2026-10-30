@@ -51,6 +51,7 @@ mod perform;
 mod pipeline;
 pub(crate) mod priority_queue;
 mod reflection;
+pub(crate) mod replay;
 mod run_state;
 pub use run_state::EvalRunState;
 mod collection_call;
@@ -171,6 +172,7 @@ pub struct KnownStdTypes {
 }
 
 pub struct EvalContextInput<'a> {
+    pub(crate) replay_keys: replay::RunReplayKeys,
     pub code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     pub syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     pub storage_limits: etas_host::StorageLimits,
@@ -197,6 +199,7 @@ pub struct EvalProgramInput<'a> {
 }
 
 struct EvalRunStateInput {
+    replay_keys: replay::RunReplayKeys,
     storage_limits: etas_host::StorageLimits,
     event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
     execution: etas_host::execution::ExecutionScope,
@@ -210,6 +213,7 @@ struct EvalRunStateInput {
 impl<'a> EvalContextInput<'a> {
     pub fn into_parts(self) -> (EvalProgramInput<'a>, EvalRunState) {
         let Self {
+            replay_keys,
             code_definitions,
             syntax_limits,
             storage_limits,
@@ -235,6 +239,7 @@ impl<'a> EvalContextInput<'a> {
                 entry_args,
             },
             EvalRunState::from_input(EvalRunStateInput {
+                replay_keys,
                 storage_limits,
                 event_observer,
                 execution,

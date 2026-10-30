@@ -26,6 +26,7 @@ pub struct HandlerScopeId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct InterpreterCheckpoint {
+    pub replay_key_id: etas_host::replay::ReplayKeyId,
     /// Session-local immutable code pins. The codec never serializes these owners.
     pub(crate) retained_code: Option<std::sync::Arc<crate::api::code::CheckpointCodePins>>,
     pub id: CheckpointId,
@@ -905,6 +906,7 @@ pub(crate) enum ContinuationSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ModelLoopFrameSnapshot {
+    pub(crate) boundary_request_id: etas_host::HostRequestId,
     pub(crate) pending: PendingModelSnapshot,
     pub(crate) round: usize,
     pub(crate) repair: ModelRepairSnapshot,
@@ -912,7 +914,7 @@ pub(crate) struct ModelLoopFrameSnapshot {
     pub(crate) remaining_tool_calls: Vec<etas_host::ModelToolCall>,
     pub(crate) completed_tool_result: bool,
     pub(crate) current_host_tool: Option<HostToolProgressSnapshot>,
-    pub(crate) boundary_key: String,
+    pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
     pub(crate) outer_continuation: ContinuationSnapshot,
 }
 
@@ -949,7 +951,7 @@ pub(crate) struct ModelRepairSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct HostToolProgressSnapshot {
     pub(crate) call: etas_host::ModelToolCall,
-    pub(crate) boundary_key: String,
+    pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
 }
 
 #[derive(Clone, Debug)]
@@ -958,7 +960,7 @@ pub(crate) struct SourceToolReturnFrameSnapshot {
     pub(crate) tool_name: String,
     pub(crate) binding: SourceToolBindingSnapshot,
     pub(crate) args: etas_host::HostValue,
-    pub(crate) boundary_key: String,
+    pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
     pub(crate) output_schema: Option<etas_host::HostSchema>,
     pub(crate) model_loop: Box<ModelLoopFrameSnapshot>,
 }
@@ -1098,7 +1100,7 @@ pub struct HostBoundaryLedger {
 pub struct CompletedHostBoundary {
     pub occurrence: BoundaryOccurrenceId,
     pub kind: String,
-    pub key: String,
+    pub key: etas_host::replay::ReplayFingerprint,
     pub result: CompletedHostBoundaryResult,
 }
 

@@ -27,6 +27,10 @@ fn perform_suspension_does_not_copy_named_argument_descriptors() {
             .unwrap();
         let options = RunOptions::default();
         let (program, mut run_state) = EvalContextInput {
+            replay_keys: crate::eval::replay::RunReplayKeys::start(
+                &crate::api::RunOptions::default(),
+            )
+            .unwrap(),
             storage_limits: Default::default(),
             code_definitions: None,
             syntax_limits: Default::default(),
@@ -221,6 +225,10 @@ fn abortive_errors_restore_model_policy_but_resumable_actions_keep_the_scope() {
         let mut active = options.model_policy;
         active.model = etas_host::ModelName("active".into());
         let (program, mut run_state) = EvalContextInput {
+            replay_keys: crate::eval::replay::RunReplayKeys::start(
+                &crate::api::RunOptions::default(),
+            )
+            .unwrap(),
             storage_limits: Default::default(),
             code_definitions: None,
             syntax_limits: Default::default(),
