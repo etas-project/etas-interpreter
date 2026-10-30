@@ -51,6 +51,7 @@ mod replay_keys;
 mod retry_call;
 mod return_control;
 mod secret_values;
+mod segmented_concat;
 mod session_abi;
 mod session_commit;
 mod session_history;
