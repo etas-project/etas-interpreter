@@ -62,6 +62,11 @@ impl EvalContext<'_> {
             } => {
                 self.execute_stream_read_default(stream, max_bytes, timeout_ms, proof.output, span)
             }
+            crate::control::DefaultActionBoundary::FileReadLimited {
+                path,
+                max_bytes,
+                span,
+            } => self.execute_file_read_default(path, max_bytes, span),
         };
         self.continue_chain_signal(signal, perform.continuation)
     }

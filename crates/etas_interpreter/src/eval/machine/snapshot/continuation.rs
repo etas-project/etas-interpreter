@@ -31,6 +31,14 @@ impl ContinuationSnapshot {
                     "an in-progress pure key comparison cannot cross a checkpoint boundary".into(),
                 );
             }
+            Continuation::FileReadReduction(state) => Self::FileReadReduction {
+                call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
+                    state.call.clone(),
+                ))?,
+                args: capture_values(&state.args, context)?,
+                limit: state.limit,
+                span: state.span,
+            },
             Continuation::StreamReadReduction(state) => Self::StreamReadReduction {
                 call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
                     state.call.clone(),
@@ -677,6 +685,24 @@ impl ContinuationSnapshot {
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
             Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
+            Self::FileReadReduction {
+                call,
+                args,
+                limit,
+                span,
+            } => {
+                let crate::control::CallTarget::StdIntrinsic(call) =
+                    super::call_target::restore_call_target(call, context)?
+                else {
+                    return Err("bounded file reducer requires a checked standard intrinsic".into());
+                };
+                Continuation::FileReadReduction(Box::new(crate::control::FileReadReduction {
+                    call,
+                    args: restore_values(args, context)?,
+                    limit,
+                    span,
+                }))
+            }
             Self::StreamReadReduction {
                 call,
                 args,

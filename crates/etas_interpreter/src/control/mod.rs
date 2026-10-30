@@ -7,7 +7,9 @@ mod frame;
 mod generics;
 mod signal;
 
-pub use action::{CheckedActionInvocation, DefaultActionBoundary, StreamReadReduction};
+pub use action::{
+    CheckedActionInvocation, DefaultActionBoundary, FileReadReduction, StreamReadReduction,
+};
 pub use call_site::{CallSite, CallSiteKind};
 pub(crate) use call_site::{ComposedInvocation, InvocationPath};
 pub use call_target::CallTarget;

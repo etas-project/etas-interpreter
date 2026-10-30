@@ -190,6 +190,19 @@ pub enum DefaultActionBoundary {
         timeout_ms: Option<u64>,
         span: etas_core::Span,
     },
+    FileReadLimited {
+        path: crate::value::InterpValue,
+        max_bytes: usize,
+        span: etas_core::Span,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub struct FileReadReduction {
+    pub(crate) call: crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+    pub(crate) args: Vec<crate::value::InterpValue>,
+    pub(crate) limit: usize,
+    pub(crate) span: etas_core::Span,
 }
 
 #[derive(Clone, Debug)]

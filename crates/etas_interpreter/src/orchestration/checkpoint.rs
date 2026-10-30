@@ -515,6 +515,12 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
+    FileReadReduction {
+        call: CallTargetSnapshot,
+        args: Vec<ValueSnapshot>,
+        limit: usize,
+        span: Span,
+    },
     ProgramResume {
         id: u32,
     },

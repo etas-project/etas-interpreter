@@ -25,6 +25,7 @@ pub enum Continuation {
     PriorityQueueUpdate(Box<crate::eval::priority_queue::PriorityQueueUpdate>),
     OrderedSearch(Box<crate::eval::ordered_collection::OrderedSearch>),
     StreamReadReduction(Box<super::StreamReadReduction>),
+    FileReadReduction(Box<super::FileReadReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
     ContinueBlock {
         block: HirBlockId,

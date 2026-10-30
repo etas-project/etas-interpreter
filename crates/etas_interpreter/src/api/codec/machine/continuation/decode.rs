@@ -10,6 +10,12 @@ fn continuation_leaf_from_snapshot(
     kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match kind {
+        "file_read_reduction" => ContinuationSnapshot::FileReadReduction {
+            call: call_target_snapshot_from_json(limits, required(value, "call")?)?,
+            args: required_values(limits, value, "args")?,
+            limit: required_usize(value, "limit")?,
+            span: span_from_snapshot(required(value, "span")?)?,
+        },
         "program_resume" => ContinuationSnapshot::ProgramResume {
             id: required_u32(value, "id")?,
         },

@@ -6,6 +6,7 @@ mod call_target;
 mod callable_types;
 mod comparison;
 mod construction;
+mod file_read_reducer;
 mod frame;
 mod program;
 mod reference_presence;
@@ -464,6 +465,9 @@ impl<'a> SnapshotValidator<'a> {
                     .borrow_mut()
                     .push((*id, self.checked.clone()));
                 Ok(())
+            }
+            ContinuationSnapshot::FileReadReduction { .. } => {
+                self.file_read_reduction(continuation, context)
             }
             ContinuationSnapshot::StreamReadReduction { .. } => {
                 self.stream_read_reduction(continuation, context)

@@ -45,6 +45,7 @@ pub enum CommandCallable {
 pub enum FilesystemCallable {
     Path,
     ReadBytes,
+    ReadBytesLimited,
     WriteBytes,
     List,
     Stat,
@@ -282,6 +283,9 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         intrinsic::runtime::COMMAND_RUN => StdCallable::Command(CommandCallable::Run),
         intrinsic::runtime::FS_PATH => StdCallable::Filesystem(FilesystemCallable::Path),
         intrinsic::runtime::FS_READ_BYTES => StdCallable::Filesystem(FilesystemCallable::ReadBytes),
+        intrinsic::runtime::FS_READ_BYTES_LIMITED => {
+            StdCallable::Filesystem(FilesystemCallable::ReadBytesLimited)
+        }
         intrinsic::runtime::FS_WRITE_BYTES => {
             StdCallable::Filesystem(FilesystemCallable::WriteBytes)
         }
