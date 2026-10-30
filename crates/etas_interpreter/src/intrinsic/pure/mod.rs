@@ -24,6 +24,8 @@ mod record_input_tests;
 #[cfg(test)]
 mod record_tests;
 #[cfg(test)]
+mod rope_case_tests;
+#[cfg(test)]
 mod rope_query_tests;
 #[cfg(test)]
 mod rope_transform_tests;
