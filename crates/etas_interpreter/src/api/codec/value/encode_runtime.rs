@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::codec::text::{JsonText, tagged_text};
 use crate::control::{CallTarget, Frame};
 
 mod callable;
@@ -56,7 +57,7 @@ fn write<'a>(
         InterpValue::Unit => *slot = json!({"kind":"unit"}),
         InterpValue::Bool(value) => *slot = json!({"kind":"bool","value":value}),
         InterpValue::Number(value) => *slot = numeric_value_json(*value),
-        InterpValue::String(value) => *slot = json!({"kind":"string","value":value}),
+        InterpValue::String(value) => *slot = tagged_text("string", value),
         InterpValue::Bytes(value) => *slot = json!({"kind":"bytes","value":value}),
         InterpValue::Json(value) => *slot = super::super::json::wrapped(value),
         InterpValue::StdConstant(value) => {
@@ -94,7 +95,8 @@ fn write<'a>(
                 .iter()
                 .zip(array(&mut slot["messages"], messages.len()))
             {
-                *slot = json!({"role":value_codec::prompt_role_json(message.role),"text":message.text,"trust":message.trust.map(value_codec::trust_wrapper_json)});
+                *slot = json!({"role":value_codec::prompt_role_json(message.role),"text":null,"trust":message.trust.map(value_codec::trust_wrapper_json)});
+                slot["text"] = message.text.json_text();
             }
         }
         InterpValue::Message(message) => write_message(message, slot, child),
@@ -217,7 +219,8 @@ fn write<'a>(
             }
         }
         InterpValue::Variant { name, fields } => {
-            *slot = json!({"kind":"variant","name":name,"fields":null});
+            *slot = json!({"kind":"variant","name":null,"fields":null});
+            slot["name"] = name.json_text();
             for (value, slot) in fields.iter().zip(array(&mut slot["fields"], fields.len())) {
                 child(Node::Value(value), slot);
             }
