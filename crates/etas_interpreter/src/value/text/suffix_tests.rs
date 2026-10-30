@@ -12,7 +12,7 @@ fn segmented(prefix: &str, suffix: &str) -> StringValue {
 }
 
 #[test]
-fn unique_concat_appends_segmented_suffix_without_a_payload_copy() {
+fn unique_concat_appends_segmented_suffix_without_an_intermediate_payload_copy() {
     let mut results = Vec::new();
     for count in [1000, 2000, 4000] {
         let prefix = "中😀payload".repeat(count);
