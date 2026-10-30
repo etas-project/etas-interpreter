@@ -41,6 +41,44 @@ pub(super) fn with_prompt_eval(test: impl FnOnce(&EvalContext<'_>, Span)) {
 }
 
 #[test]
+fn prompt_data_cold_text_preserves_aliases_without_a_retained_input_cache() {
+    use etas_builtin::text::input::TextInput;
+    with_prompt_eval(|eval, span| {
+        for count in [1000, 2000, 4000] {
+            let prefix = "中😀\n\"\\\u{0}payload".repeat(count);
+            let source = crate::value::StringValue::from(prefix.as_str());
+            let alias = source.clone();
+            let source = source.concat("tail".into()).unwrap();
+            drop(alias);
+            assert!(source.contiguous().is_none());
+            let value = InterpValue::Record(
+                vec![(
+                    "payload".into(),
+                    InterpValue::Array(vec![InterpValue::String(source.clone())].into()),
+                )]
+                .into(),
+            );
+            let expected = serde_json::json!({"payload": [format!("{prefix}tail")]}).to_string();
+            let ((text, trust), cost) = measure(|| {
+                eval.prompt_channel_content("data", value.clone(), span, true)
+                    .unwrap()
+            });
+            assert_eq!(text, expected);
+            assert_eq!(trust, None);
+            assert!(
+                source.contiguous().is_none(),
+                "n={count}: source was cached"
+            );
+            assert_eq!(source.len(), prefix.len() + 4);
+            eprintln!(
+                "cold Prompt.data n={count}, output={}: {cost:?}",
+                text.len()
+            );
+        }
+    });
+}
+
+#[test]
 fn prompt_data_streams_borrowed_payloads_and_rejects_nested_secrets() {
     with_prompt_eval(|eval, span| {
         for count in [1000, 2000, 4000] {
