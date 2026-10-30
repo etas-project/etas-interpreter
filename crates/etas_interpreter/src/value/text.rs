@@ -56,7 +56,7 @@ impl StringValue {
 
     /// Share an unchanged prefix while the caller's old slot or aliases remain
     /// readable. Assignment still commits only after all RHS evaluation succeeds.
-    pub(crate) fn concat(mut self, suffix: Self) -> Result<Self, TextCapacityExceeded> {
+    pub(crate) fn concat(mut self, mut suffix: Self) -> Result<Self, TextCapacityExceeded> {
         let length = self
             .len()
             .checked_add(suffix.len())
@@ -66,21 +66,29 @@ impl StringValue {
             return Ok(self);
         }
         self.collapse_materialized();
+        suffix.collapse_materialized();
         if let Repr::Flat(text) = &mut self.0
+            && text.capacity() >= length
             && let Some(text) = Rc::get_mut(text)
         {
-            text.push_str(&suffix);
+            for chunk in chunks::TextLeaves::new(&suffix.0) {
+                text.push_str(chunk);
+            }
             return Ok(self);
         }
         if self.is_empty() {
             return Ok(suffix);
         }
-        // One prefix edge per node keeps both materialization and release iterative.
-        let suffix = concat::into_flat(suffix.into_repr());
+        let leaves = self
+            .0
+            .leaves()
+            .checked_add(suffix.0.leaves())
+            .ok_or(TextCapacityExceeded)?;
         Ok(Self(Repr::Concat(Rc::new(concat::Concat {
             prefix: self,
             suffix,
             length,
+            leaves,
             materialized: Default::default(),
         }))))
     }
@@ -239,5 +247,7 @@ impl serde::Serialize for StringValue {
 
 #[cfg(test)]
 mod read_tests;
+#[cfg(test)]
+mod suffix_tests;
 #[cfg(test)]
 mod tests;

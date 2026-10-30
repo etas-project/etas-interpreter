@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 mod crypto;
 mod iteration;
 mod scope;
+mod segmented_concat;
 mod text_reassignment;
 
 struct PreparedExecution {
