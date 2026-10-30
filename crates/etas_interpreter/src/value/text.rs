@@ -1,6 +1,5 @@
 use std::{
     cmp::Ordering,
-    fmt,
     hash::{Hash, Hasher},
     ops::Deref,
     rc::Rc,
@@ -8,6 +7,7 @@ use std::{
 
 mod chunks;
 mod concat;
+mod formatting;
 mod ranges;
 mod read;
 pub use chunks::TextChunks;
@@ -224,24 +224,6 @@ impl PartialEq<String> for StringValue {
 impl PartialEq<StringValue> for String {
     fn eq(&self, other: &StringValue) -> bool {
         other.equals_str(self.as_str())
-    }
-}
-
-impl fmt::Debug for StringValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self.as_str(), f)
-    }
-}
-
-impl fmt::Display for StringValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl serde::Serialize for StringValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
     }
 }
 

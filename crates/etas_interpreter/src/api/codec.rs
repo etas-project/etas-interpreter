@@ -31,6 +31,7 @@ mod json_helpers;
 mod machine;
 mod report;
 mod snapshot;
+mod text;
 mod value;
 
 pub(crate) use checkpoint::ResumeHeader;
