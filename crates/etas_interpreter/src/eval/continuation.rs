@@ -1080,10 +1080,12 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::ProgramResume(_) => ControlSignal::missing_checked_fact(
-                "program continuation must be resumed by its owning evaluation machine",
-                crate::diagnostics::item_span(self.checked, self.entry_item),
-            ),
+            Continuation::ProgramResume(_) | Continuation::SourceToolReturn(_) => {
+                ControlSignal::missing_checked_fact(
+                    "program continuation must be resumed by its owning evaluation machine",
+                    crate::diagnostics::item_span(self.checked, self.entry_item),
+                )
+            }
             Continuation::Return => ControlSignal::Return(value),
             Continuation::Resume => ControlSignal::Resume(value),
             Continuation::Finish => ControlSignal::Finish(value),

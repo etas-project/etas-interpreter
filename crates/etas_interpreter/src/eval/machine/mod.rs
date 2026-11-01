@@ -4,6 +4,7 @@ mod model;
 mod model_repair;
 mod program;
 mod suspension;
+pub use frame::SourceToolContinuation;
 pub use suspension::ProgramContinuation;
 mod resume;
 mod scoped_call;
