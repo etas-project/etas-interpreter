@@ -167,6 +167,21 @@ impl SourceToolBindingSnapshot {
 }
 
 impl SourceToolReturnFrameSnapshot {
+    pub(crate) fn validate_continuation(&self) -> Result<(), String> {
+        if !matches!(
+            self.model_loop.outer_continuation,
+            crate::orchestration::ContinuationSnapshot::BlockValue
+        ) || !matches!(
+            self.model_loop.pending.continuation,
+            crate::orchestration::ContinuationSnapshot::BlockValue
+        ) {
+            return Err(
+                "source tool continuation contains an unexpected nested execution continuation"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     pub(in crate::eval::machine::snapshot) fn capture(
         frame: &SourceToolReturnFrame,
         context: &mut CaptureContext,

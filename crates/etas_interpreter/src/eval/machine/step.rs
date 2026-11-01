@@ -105,10 +105,24 @@ impl EvalMachine {
                             if let Continuation::ProgramResume(continuation) = first {
                                 return self.resume_program_continuation(ctx, continuation, value);
                             }
-                            ctx.apply_continuation_frame(first, value)
+                            if let Continuation::SourceToolReturn(saved) = first {
+                                match self.resume_source_tool_value(ctx, *saved.0, value) {
+                                    Ok(signal) => signal,
+                                    Err(poll) => return poll,
+                                }
+                            } else {
+                                ctx.apply_continuation_frame(first, value)
+                            }
                         }
                         ContinuationInput::Return(value) => {
-                            ctx.propagate_return_frame(value, first)
+                            if let Continuation::SourceToolReturn(saved) = first {
+                                match self.resume_source_tool_value(ctx, *saved.0, value) {
+                                    Ok(signal) => signal,
+                                    Err(poll) => return poll,
+                                }
+                            } else {
+                                ctx.propagate_return_frame(value, first)
+                            }
                         }
                         ContinuationInput::Resume(value) => {
                             ctx.propagate_resume_frame(value, first)
@@ -324,10 +338,9 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
                             local_continuation!(frame, step_span)
                         }
-                        EvalFrame::SourceToolReturn(frame) => {
-                            self.push_frame(EvalFrame::SourceToolReturn(frame));
-                            Continuation::BlockValue
-                        }
+                        EvalFrame::SourceToolReturn(frame) => Continuation::SourceToolReturn(
+                            super::SourceToolContinuation(Box::new(frame)),
+                        ),
                         EvalFrame::ModelLoop(frame) => {
                             return machine_fault(
                                 "perform crossed an incomplete model loop".to_owned(),

@@ -59,6 +59,7 @@ mod session_publication;
 mod sets;
 mod shared_adt;
 mod source_reexports;
+mod source_tool_handlers;
 mod std_callable_values;
 mod std_values;
 mod storage_outcomes;

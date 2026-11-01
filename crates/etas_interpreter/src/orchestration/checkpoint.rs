@@ -516,6 +516,7 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
+    SourceToolReturn(Box<SourceToolReturnFrameSnapshot>),
     FileReadReduction {
         call: CallTargetSnapshot,
         args: Vec<ValueSnapshot>,

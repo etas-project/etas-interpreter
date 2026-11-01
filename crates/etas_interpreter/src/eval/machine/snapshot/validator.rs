@@ -465,6 +465,10 @@ impl<'a> SnapshotValidator<'a> {
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
         match continuation {
+            ContinuationSnapshot::SourceToolReturn(frame) => {
+                frame.validate_continuation()?;
+                self.source_tool_return(frame, context, boundary_scopes)
+            }
             ContinuationSnapshot::ProgramResume { id } => {
                 self.suspension_references
                     .borrow_mut()

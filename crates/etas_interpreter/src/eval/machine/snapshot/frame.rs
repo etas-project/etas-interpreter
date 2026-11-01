@@ -6,6 +6,7 @@ use crate::orchestration::{
 
 #[derive(Default)]
 pub(crate) struct RestoreContext {
+    pub(in crate::eval::machine) current_host: Option<crate::api::HostExecutionContext>,
     pub(in crate::eval::machine) locked_model: Option<etas_host::ModelName>,
     pub(in crate::eval::machine) suspensions: Option<SuspensionRestoreTable>,
     pub(super) revision_program: Option<etas_frontend::CheckedProgram>,

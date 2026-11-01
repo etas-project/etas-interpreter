@@ -52,6 +52,9 @@ impl ContinuationSnapshot {
             Continuation::ProgramResume(pending) => Self::ProgramResume {
                 id: context.suspension(pending)?,
             },
+            Continuation::SourceToolReturn(saved) => Self::SourceToolReturn(Box::new(
+                crate::orchestration::SourceToolReturnFrameSnapshot::capture(&saved.0, context)?,
+            )),
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -685,6 +688,15 @@ impl ContinuationSnapshot {
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
             Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
+            Self::SourceToolReturn(saved) => {
+                let current = context
+                    .current_host
+                    .clone()
+                    .ok_or("source tool continuation has no restore Host context")?;
+                Continuation::SourceToolReturn(crate::eval::machine::SourceToolContinuation(
+                    Box::new(saved.restore(&current, context)?),
+                ))
+            }
             Self::FileReadReduction {
                 call,
                 args,

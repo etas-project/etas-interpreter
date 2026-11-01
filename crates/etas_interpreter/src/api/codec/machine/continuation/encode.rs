@@ -12,8 +12,17 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     continuation: &'a Continuation,
     slot: &'a mut Value,
     pending: &mut Pending<'a>,
-) {
+    budget: &mut crate::api::codec::snapshot::EncodingBudget,
+) -> Result<(), crate::api::codec::InterpreterCodecError> {
     match continuation {
+        Continuation::SourceToolReturn(frame) => {
+            frame
+                .validate_continuation()
+                .map_err(crate::api::codec::InterpreterCodecError::new)?;
+            *slot = json!({ "kind": "source_tool_return", "source_tool": null });
+            slot["source_tool"] =
+                crate::api::codec::checkpoint::source_tool_return_frame_json(frame, budget)?;
+        }
         Continuation::FileReadReduction {
             call,
             args,
@@ -773,4 +782,5 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             }
         }
     }
+    Ok(())
 }

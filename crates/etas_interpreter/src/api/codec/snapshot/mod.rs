@@ -120,7 +120,7 @@ fn encode_with_budget(
             Node::Frame(frame) => call_target::frame(frame, slot, &mut pending),
             Node::CallTarget(target) => call_target::encode(target, slot, &mut pending),
             Node::Continuation(value) => {
-                super::machine::write_continuation(value, slot, &mut pending)
+                super::machine::write_continuation(value, slot, &mut pending, budget)?;
             }
             Node::Values(values) => pending.extend(
                 values

@@ -27,6 +27,7 @@ pub enum Continuation {
     StreamReadReduction(Box<super::StreamReadReduction>),
     FileReadReduction(Box<super::FileReadReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
+    SourceToolReturn(crate::eval::machine::SourceToolContinuation),
     ContinueBlock {
         block: HirBlockId,
         next_stmt_index: usize,

@@ -85,6 +85,9 @@ pub(crate) struct SourceToolReturnFrame {
     pub model_loop: Box<ModelLoopFrame>,
 }
 
+#[derive(Clone, Debug)]
+pub struct SourceToolContinuation(pub(crate) Box<SourceToolReturnFrame>);
+
 #[derive(Debug)]
 pub(crate) enum EvalFrame {
     PureBoundary(Span),
@@ -114,6 +117,7 @@ pub(crate) struct ProgramReturnFrame {
 impl EvalFrame {
     pub(crate) fn from_continuation(continuation: Continuation) -> Self {
         match continuation {
+            Continuation::SourceToolReturn(saved) => Self::SourceToolReturn(*saved.0),
             Continuation::CallBoundary { span, outer } => Self::Call(CallFrame {
                 continuation: outer.into_value(),
                 span,
@@ -184,7 +188,9 @@ impl EvalFrame {
                 frame: frame.frame,
             },
             Self::ModelLoop(frame) => frame.outer_continuation,
-            Self::SourceToolReturn(frame) => frame.model_loop.outer_continuation,
+            Self::SourceToolReturn(frame) => {
+                Continuation::SourceToolReturn(SourceToolContinuation(Box::new(frame)))
+            }
         })
     }
 
