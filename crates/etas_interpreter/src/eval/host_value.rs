@@ -2,6 +2,9 @@ use super::*;
 use crate::value::{ListValue, MapValue, RecordValue, SetValue};
 use etas_types::{PrimitiveType, Type, TypeId};
 
+pub(super) mod number;
+#[cfg(test)]
+mod number_tests;
 mod projection;
 mod record;
 
@@ -115,7 +118,7 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
         return host_value_to_json_interp_value(value).map_err(|error| error.message);
     }
     let value = match value {
-        HostValue::Json(value) => host_json_to_plain_host_value(value)?,
+        HostValue::Json(value) => host_json_to_host_layer(value)?,
         value => value,
     };
     let expected_type = store
@@ -124,6 +127,11 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
     match expected_type {
         Type::Primitive(primitive) => decode_primitive_host_value(value, *primitive),
         Type::IntegerLiteral { .. } => match value {
+            HostValue::Json(etas_host::HostJsonValue::Number(value)) => {
+                number::decode_json(value, PrimitiveType::I32)
+                    .map(InterpValue::Number)
+                    .ok_or_else(|| "JSON number does not fit the checked literal type".to_owned())
+            }
             HostValue::Int(value) => {
                 crate::value::NumericValue::from_signed(value, PrimitiveType::I32)
                     .map(InterpValue::Number)
@@ -428,33 +436,27 @@ pub(crate) fn host_json_support_value_from_serde(
     })
 }
 
-fn host_json_to_plain_host_value(value: etas_host::HostJsonValue) -> Result<HostValue, String> {
+fn host_json_to_host_layer(value: etas_host::HostJsonValue) -> Result<HostValue, String> {
     Ok(match value {
         etas_host::HostJsonValue::Null => HostValue::Unit,
         etas_host::HostJsonValue::Bool(value) => HostValue::Bool(value),
-        etas_host::HostJsonValue::Number(value) if value.fract() == 0.0 => {
-            let integer = value as i128;
-            if integer as f64 != value {
-                return Err("JSON integer is not exactly representable as i128".to_owned());
-            }
-            HostValue::Int(integer)
+        // JSON has one number kind; choose its runtime representation only
+        // after reaching the checked leaf type, including nominal payloads.
+        etas_host::HostJsonValue::Number(value) if value.is_finite() => {
+            HostValue::Json(etas_host::HostJsonValue::Number(value))
         }
-        etas_host::HostJsonValue::Number(value) if value.is_finite() => HostValue::Float(value),
         etas_host::HostJsonValue::Number(_) => {
             return Err("JSON number is not finite".to_owned());
         }
         etas_host::HostJsonValue::String(value) => HostValue::String(value),
-        etas_host::HostJsonValue::Array(values) => HostValue::List(
-            values
-                .into_iter()
-                .map(host_json_to_plain_host_value)
-                .collect::<Result<Vec<_>, String>>()?,
-        ),
+        etas_host::HostJsonValue::Array(values) => {
+            HostValue::List(values.into_iter().map(HostValue::Json).collect())
+        }
         etas_host::HostJsonValue::Object(entries) => HostValue::Record(
             entries
                 .into_iter()
-                .map(|(name, value)| Ok((name, host_json_to_plain_host_value(value)?)))
-                .collect::<Result<Vec<_>, String>>()?,
+                .map(|(name, value)| (name, HostValue::Json(value)))
+                .collect(),
         ),
     })
 }
@@ -487,6 +489,9 @@ fn decode_primitive_host_value(
 ) -> Result<InterpValue, String> {
     let kind = host_value_kind(&value);
     let decoded = match (primitive, value) {
+        (primitive, HostValue::Json(etas_host::HostJsonValue::Number(value))) => {
+            number::decode_json(value, primitive).map(InterpValue::Number)
+        }
         (PrimitiveType::Bool, HostValue::Bool(value)) => Some(InterpValue::Bool(value)),
         (PrimitiveType::String, HostValue::String(value)) => {
             Some(InterpValue::String(value.into()))
@@ -532,7 +537,7 @@ fn decode_primitive_host_value(
         ) if value >= 0 => crate::value::NumericValue::from_unsigned(value as u128, primitive)
             .map(InterpValue::Number),
         (primitive @ (PrimitiveType::F32 | PrimitiveType::F64), HostValue::Float(value)) => {
-            crate::value::NumericValue::from_float(value, primitive).map(InterpValue::Number)
+            number::decode_float(value, primitive).map(InterpValue::Number)
         }
         _ => None,
     };
