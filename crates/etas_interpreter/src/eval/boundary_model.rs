@@ -13,7 +13,9 @@ impl<'a> EvalContext<'a> {
     pub(crate) fn try_model_result_value(
         &self,
         model: &PendingModel,
-        response: ModelResponse,
+        response: etas_host::ModelOutput,
+        id: etas_host::HostRequestId,
+        usage: Option<etas_host::ModelUsage>,
     ) -> Result<InterpValue, ModelResultError> {
         if !response.tool_calls.is_empty() && !matches!(model.decode, ModelDecode::ModelResponse) {
             return Err(ModelResultError::fatal(
@@ -35,7 +37,7 @@ impl<'a> EvalContext<'a> {
                 Ok(InterpValue::String(text.into()))
             }
             ModelDecode::ModelResponse => Ok(InterpValue::ModelResponse(
-                model_response_value_from_host(response),
+                model_response_value_from_host(response, id, usage),
             )),
             ModelDecode::Typed(expected) => {
                 self.typed_model_result_value(model, response, expected)
@@ -62,7 +64,7 @@ impl<'a> EvalContext<'a> {
     fn typed_model_result_value(
         &self,
         model: &PendingModel,
-        response: ModelResponse,
+        response: etas_host::ModelOutput,
         expected: TypeId,
     ) -> Result<InterpValue, ModelResultError> {
         let expected_name = expected_type_name(expected, &self.checked.type_store);
@@ -219,9 +221,13 @@ fn host_value_to_typed_interp_value(
     }
 }
 
-fn model_response_value_from_host(response: ModelResponse) -> crate::value::ModelResponseValue {
+fn model_response_value_from_host(
+    response: etas_host::ModelOutput,
+    id: etas_host::HostRequestId,
+    usage: Option<etas_host::ModelUsage>,
+) -> crate::value::ModelResponseValue {
     crate::value::ModelResponseValue {
-        id: response.id.0,
+        id: id.0,
         message: model_message_value_from_host(response.message),
         tool_calls: response
             .tool_calls
@@ -232,7 +238,7 @@ fn model_response_value_from_host(response: ModelResponse) -> crate::value::Mode
                 args: call.args.into(),
             })
             .collect(),
-        usage: response.usage.map(|usage| crate::value::ModelUsageValue {
+        usage: usage.map(|usage| crate::value::ModelUsageValue {
             input_tokens: usage.input_tokens,
             output_tokens: usage.output_tokens,
         }),
