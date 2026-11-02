@@ -266,13 +266,15 @@ impl FakeHost {
             .expect("model responses lock")
             .push_back(ModelResponse {
                 id: etas_host::HostRequestId(0),
-                message: ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: vec![ModelContent::Text(text.to_owned())],
-                    tool_call_id: None,
+                result: Ok(etas_host::ModelOutput {
+                    message: ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: vec![ModelContent::Text(text.to_owned())],
+                        tool_call_id: None,
+                        tool_calls: Vec::new(),
+                    },
                     tool_calls: Vec::new(),
-                },
-                tool_calls: Vec::new(),
+                }),
                 usage,
             });
     }
@@ -284,19 +286,36 @@ impl FakeHost {
             .push_back(HostError::new(code, message));
     }
 
+    pub(super) fn seed_model_completion_failure(
+        &self,
+        error: HostError,
+        usage: etas_host::ModelUsage,
+    ) {
+        self.model_responses
+            .lock()
+            .unwrap()
+            .push_back(ModelResponse {
+                id: etas_host::HostRequestId(0),
+                result: Err(error),
+                usage: Some(usage),
+            });
+    }
+
     pub(super) fn seed_model_response_value(&self, value: HostValue) {
         self.model_responses
             .lock()
             .expect("model responses lock")
             .push_back(ModelResponse {
                 id: etas_host::HostRequestId(0),
-                message: ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: vec![ModelContent::Value(value)],
-                    tool_call_id: None,
+                result: Ok(etas_host::ModelOutput {
+                    message: ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: vec![ModelContent::Value(value)],
+                        tool_call_id: None,
+                        tool_calls: Vec::new(),
+                    },
                     tool_calls: Vec::new(),
-                },
-                tool_calls: Vec::new(),
+                }),
                 usage: None,
             });
     }
@@ -322,21 +341,23 @@ impl FakeHost {
             .expect("model responses lock")
             .push_back(ModelResponse {
                 id: etas_host::HostRequestId(0),
-                message: ModelMessage {
-                    role: ModelRole::Assistant,
-                    content: Vec::new(),
-                    tool_call_id: None,
+                result: Ok(etas_host::ModelOutput {
+                    message: ModelMessage {
+                        role: ModelRole::Assistant,
+                        content: Vec::new(),
+                        tool_call_id: None,
+                        tool_calls: vec![ModelToolCall {
+                            id: "call-1".to_owned(),
+                            tool: tool.to_owned(),
+                            args: args.clone(),
+                        }],
+                    },
                     tool_calls: vec![ModelToolCall {
                         id: "call-1".to_owned(),
                         tool: tool.to_owned(),
-                        args: args.clone(),
+                        args,
                     }],
-                },
-                tool_calls: vec![ModelToolCall {
-                    id: "call-1".to_owned(),
-                    tool: tool.to_owned(),
-                    args,
-                }],
+                }),
                 usage: Some(etas_host::ModelUsage {
                     input_tokens: 1,
                     output_tokens: 1,

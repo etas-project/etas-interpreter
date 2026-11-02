@@ -181,6 +181,18 @@ impl EvalMachine {
         mut frame: ModelLoopFrame,
         response: ModelResponse,
     ) -> Transition {
+        let ModelResponse { id, usage, result } = response;
+        // Generation failure is terminal, not typed-output repair or transport retry.
+        let response = result.map_err(|error| {
+            machine_abort(
+                format!(
+                    "model generation failed: {}: {}",
+                    error.code.as_str(),
+                    format_host_error(&error)
+                ),
+                frame.pending.span,
+            )
+        })?;
         if response.tool_calls.is_empty()
             || matches!(
                 frame.pending.decode,
@@ -211,7 +223,7 @@ impl EvalMachine {
             }
 
             let response_for_repair = response.clone();
-            match ctx.try_model_result_value(&frame.pending, response) {
+            match ctx.try_model_result_value(&frame.pending, response, id, usage) {
                 Ok(value) => {
                     ctx.record_completed_host_boundary(
                         crate::orchestration::BoundaryOccurrenceId::HostRequest(

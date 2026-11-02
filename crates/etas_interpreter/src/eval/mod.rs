@@ -120,10 +120,9 @@ use etas_host::{
     ApprovalGrant, ApprovalRequest, AuthorityContext, BrowserProtocolOperation,
     BrowserProtocolRequest, ByteStreamRef, CommandRequest, FilesystemOperation, FilesystemRequest,
     HostRequestId, HostValue, MemoryOperation, MemoryRegionRef, MemoryRequest, MemoryResult,
-    ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole, SecretOperation,
-    SecretRequest, StoreRef, StreamOperation, StreamRequest, TcpConnectOperation,
-    TcpConnectRequest, TcpEndpoint, TcpStreamRef, TlsConnectOperation, TlsConnectRequest,
-    TraceContext, WriteCondition,
+    ModelContent, ModelMessage, ModelRequest, ModelRole, SecretOperation, SecretRequest, StoreRef,
+    StreamOperation, StreamRequest, TcpConnectOperation, TcpConnectRequest, TcpEndpoint,
+    TcpStreamRef, TlsConnectOperation, TlsConnectRequest, TraceContext, WriteCondition,
 };
 
 pub struct EvalContext<'a> {

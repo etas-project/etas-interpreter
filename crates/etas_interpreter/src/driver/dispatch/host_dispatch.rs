@@ -304,7 +304,10 @@ impl TraceableHostResponse for ModelResponse {
     }
 
     fn outcome(&self) -> HostOutcome {
-        HostOutcome::Succeeded
+        match &self.result {
+            Ok(_) => HostOutcome::Succeeded,
+            Err(error) => HostOutcome::Failed(error.clone()),
+        }
     }
 }
 
