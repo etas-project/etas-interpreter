@@ -1,12 +1,12 @@
 use std::sync::Arc;
 
-use etas_code::{artifact::CheckedCodeRef, definition::AgentDefinitionRef};
+use etas_code::{artifact::CheckedCodeRef, definition::DefinitionRef};
 use etas_frontend::code::{
     definition::NativeDefinitionStore,
     service::{CandidatePublisher, CheckedCandidateResolver},
 };
 
-use super::{CandidatePublicationError, InterpreterCandidatePublisher, PreparedAgentRevision};
+use super::{CandidatePublicationError, InterpreterCandidatePublisher, PreparedCodeRevision};
 
 #[derive(Debug)]
 pub enum CheckedReferencePublicationError {
@@ -44,8 +44,8 @@ impl InterpreterCandidatePublisher {
         resolver: &dyn CheckedCandidateResolver,
         reference: &CheckedCodeRef,
         definitions: Arc<NativeDefinitionStore>,
-        definition: &AgentDefinitionRef,
-    ) -> Result<Arc<PreparedAgentRevision>, CheckedReferencePublicationError> {
+        definition: &DefinitionRef,
+    ) -> Result<Arc<PreparedCodeRevision>, CheckedReferencePublicationError> {
         use CheckedReferencePublicationError as E;
         let candidate = resolver
             .resolve_checked_candidate(reference)

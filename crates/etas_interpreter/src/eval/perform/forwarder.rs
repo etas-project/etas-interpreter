@@ -13,6 +13,9 @@ impl EvalContext<'_> {
         &mut self,
         mut perform: PendingPerform,
     ) -> ControlSignal {
+        if let Err(fault) = self.observe_residual_attempt(&mut perform) {
+            return ControlSignal::Fault(Box::new(fault));
+        }
         let Some(proof) = &perform.checked_action else {
             return ControlSignal::missing_checked_fact(
                 "default boundary has no checked action invocation",
@@ -43,6 +46,9 @@ impl EvalContext<'_> {
                 perform.span,
             );
         };
+        if let Err(fault) = self.consume_residual_permit(&perform) {
+            return ControlSignal::Fault(Box::new(fault));
+        }
         let signal = match *boundary {
             crate::control::DefaultActionBoundary::Console(pending) => {
                 ControlSignal::Console(pending)
@@ -137,6 +143,7 @@ impl EvalContext<'_> {
             args,
             span,
             continuation: Continuation::BlockValue,
+            residual: None,
         })
     }
     pub(in crate::eval) fn checked_perform_action(
@@ -244,6 +251,7 @@ impl EvalContext<'_> {
             args,
             span,
             continuation: Continuation::BlockValue,
+            residual: None,
         })
     }
 }

@@ -34,12 +34,6 @@ impl<'a> EvalContext<'a> {
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let Some(_application) = self.checked.effects.handle_applications.get(&handle_expr) else {
-            return ControlSignal::missing_checked_fact(
-                "handle execution requires a checked HandleApplicationFact",
-                span,
-            );
-        };
         if let Some(path) = self.external_handler_value_path(handler) {
             let message = format!(
                 "external handler value `{}` has a checked metadata contract but no runtime handler body in metadata-only package mode",
@@ -213,7 +207,10 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
-                ControlSignal::Perform(perform) => {
+                ControlSignal::Perform(mut perform) => {
+                    if let Err(fault) = self.observe_residual_attempt(&mut perform) {
+                        return ControlSignal::Fault(Box::new(fault));
+                    }
                     signal = match self.dispatch_handler(*perform.clone(), &handler_records, frame)
                     {
                         Some(signal) => signal,
@@ -332,7 +329,10 @@ impl<'a> EvalContext<'a> {
                 return signal;
             };
             match signal {
-                ControlSignal::Perform(perform) => {
+                ControlSignal::Perform(mut perform) => {
+                    if let Err(fault) = self.observe_residual_attempt(&mut perform) {
+                        return ControlSignal::Fault(Box::new(fault));
+                    }
                     signal = match self.dispatch_handler(*perform.clone(), &record.handlers, frame)
                     {
                         Some(signal) => signal,
@@ -362,6 +362,11 @@ impl<'a> EvalContext<'a> {
             }
         }
         let handler = matched?;
+        // The arm is the action's dispatch: its committed residual permit is
+        // revalidated and consumed before the arm body runs.
+        if let Err(fault) = self.consume_residual_permit(&perform) {
+            return Some(ControlSignal::Fault(Box::new(fault)));
+        }
         let mut handler_frame = frame.clone();
         let Some(layout) = self.plan.frames.get(handler.scope) else {
             return Some(ControlSignal::missing_checked_fact(
@@ -378,7 +383,14 @@ impl<'a> EvalContext<'a> {
         ) {
             return Some(ControlSignal::Fault(Box::new(fault)));
         }
-        let outer_continuation = perform.continuation;
+        let guard = match self.compile_handler_result_guard(&perform) {
+            Ok(guard) => guard,
+            Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        };
+        let outer_continuation = match guard {
+            Some(guard) => compose_continuation(guard, perform.continuation),
+            None => perform.continuation,
+        };
         let signal = self.execute_block(handler.body, &mut handler_frame);
         Some(match signal {
             ControlSignal::Apply(mut pending) => {
@@ -514,7 +526,10 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
-                ControlSignal::Perform(perform) => {
+                ControlSignal::Perform(mut perform) => {
+                    if let Err(fault) = self.observe_residual_attempt(&mut perform) {
+                        return ControlSignal::Fault(Box::new(fault));
+                    }
                     signal = match self.dispatch_handler(*perform.clone(), &handlers, frame) {
                         Some(signal) => signal,
                         None => {

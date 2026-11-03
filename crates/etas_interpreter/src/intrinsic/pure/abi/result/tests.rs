@@ -7,6 +7,7 @@ fn result_wrapper_walk_restores_nominal_and_trust_order() {
     let mut store = TypeStore::new();
     let boolean = store.intern(Type::Primitive(PrimitiveType::Bool));
     let inner = store.intern(Type::Nominal(etas_types::NominalTypeRef {
+        read_only_erased_view: false,
         name: "Inner".into(),
         params: vec![],
         representation: Some(boolean),
@@ -20,6 +21,7 @@ fn result_wrapper_walk_restores_nominal_and_trust_order() {
         predicate: RefinementId(0),
     });
     let outer = store.intern(Type::Nominal(etas_types::NominalTypeRef {
+        read_only_erased_view: false,
         name: "Outer".into(),
         params: vec![],
         representation: Some(refined),

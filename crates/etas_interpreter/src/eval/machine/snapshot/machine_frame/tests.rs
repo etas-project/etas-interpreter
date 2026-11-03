@@ -110,6 +110,7 @@ fn machine_snapshot_borrows_wide_continuations_without_cloning_runtime_frames() 
                 "block" => EvalFrame::Block(BlockFrame { continuation }),
                 "expr" => EvalFrame::Expr(ExprFrame { continuation }),
                 "call" => EvalFrame::Call(CallFrame {
+                    caller: None,
                     continuation,
                     span: span(),
                 }),
@@ -258,6 +259,7 @@ fn borrowed_machine_capture_rejects_live_handles_without_consuming_runtime_stack
     ));
     let mut machine = EvalMachine::new();
     machine.push_frame(EvalFrame::Call(CallFrame {
+        caller: None,
         continuation,
         span: span(),
     }));

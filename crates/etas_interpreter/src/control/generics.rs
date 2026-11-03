@@ -126,6 +126,16 @@ impl GenericBindings {
         self.types.is_empty() && self.rows.is_empty()
     }
 
+    pub(crate) fn sorted_types(&self) -> Vec<(String, TypeId)> {
+        let mut types = self
+            .types
+            .iter()
+            .map(|(name, ty)| (name.clone(), *ty))
+            .collect::<Vec<_>>();
+        types.sort_unstable();
+        types
+    }
+
     pub(crate) fn sorted_rows(&self) -> Vec<(String, EffectRowRef)> {
         let mut rows = self
             .rows

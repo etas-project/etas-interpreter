@@ -11,6 +11,8 @@ mod frame;
 mod program;
 mod reference_presence;
 mod reference_types;
+mod residual_coverage;
+mod revision;
 mod scoped_callable;
 mod stream_reducer;
 mod suspension;
@@ -42,11 +44,13 @@ use crate::orchestration::{
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
+    execution_revision: Option<&'a crate::api::code::PreparedCodeRevision>,
     revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     frame_definitions:
         std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, frame::FrameValidation>>>,
     frame_owners: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, usize>>>,
     suspension_references: std::rc::Rc<std::cell::RefCell<Vec<(u32, CheckedProject)>>>,
+    residual_references: std::rc::Rc<std::cell::RefCell<ResidualReferences>>,
     validated_call_targets: std::cell::RefCell<call_target::ValidatedCallTargets>,
     reference_presence: std::cell::RefCell<reference_presence::ReferencePresence>,
     callable_specs: std::cell::OnceCell<etas_types::SpecFacts>,
@@ -67,10 +71,12 @@ impl<'a> SnapshotValidator<'a> {
         limits: &'a etas_host::StorageLimits,
     ) -> Self {
         Self {
+            execution_revision: None,
             revisions: None,
             frame_definitions: Default::default(),
             frame_owners: Default::default(),
             suspension_references: Default::default(),
+            residual_references: Default::default(),
             validated_call_targets: Default::default(),
             reference_presence: Default::default(),
             callable_specs: Default::default(),
@@ -88,6 +94,14 @@ impl<'a> SnapshotValidator<'a> {
         revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     ) -> Self {
         self.revisions = revisions;
+        self
+    }
+
+    pub(crate) fn with_execution_revision(
+        mut self,
+        revision: Option<&'a crate::api::code::PreparedCodeRevision>,
+    ) -> Self {
+        self.execution_revision = revision;
         self
     }
 
@@ -164,17 +178,11 @@ impl<'a> SnapshotValidator<'a> {
             ));
         }
         self.item(checkpoint.entry_item, "checkpoint entry item")?;
-        if checkpoint.code_revision.is_some()
-            != self.checked.definition_sources.requires_revision_context()
-        {
-            return Err("checkpoint code revision presence differs from the checked program's revision source".into());
-        }
-        if let Some(revision) = &checkpoint.code_revision {
-            revision.validate()?;
-        }
+        self.validate_root_revision(checkpoint)?;
         self.validate_arguments(checkpoint.entry_item, &checkpoint.args)?;
         let mut boundary_scopes = BTreeSet::new();
         self.validate_machine_with_handler_scopes(&checkpoint.machine, &mut boundary_scopes)?;
+        self.validate_root_residual_coverage(checkpoint)?;
         if checkpoint.machine.total_call_frames()?
             > checkpoint
                 .execution_progress
@@ -276,8 +284,74 @@ impl<'a> SnapshotValidator<'a> {
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
         self.suspension_references.borrow_mut().clear();
+        *self.residual_references.borrow_mut() = ResidualReferences::default();
         self.validate_program_frames(snapshot, boundary_scopes)?;
-        self.validate_suspensions(snapshot, boundary_scopes)
+        self.validate_suspensions(snapshot, boundary_scopes)?;
+        self.validate_residual_references(snapshot)
+    }
+
+    /// Every residual scope and attempt reference must name an entry of the
+    /// checkpoint's bounded residual tables, and every table entry must be
+    /// referenced: a live scope state cannot float without its owner.
+    fn validate_residual_references(&self, snapshot: &MachineSnapshot) -> Result<(), String> {
+        let residual = &snapshot.residual;
+        residual.validate_counters()?;
+        for record in &residual.exits.records {
+            let item = etas_hir::HirItemId(record.item);
+            self.item(item, "checkpoint residual exit history")?;
+            let revision = self
+                .checked
+                .residual_plans()
+                .binding()
+                .and_then(|binding| binding.revision(item))
+                .ok_or("checkpoint residual exit history has no checked revision")?;
+            if revision.key() != record.revision {
+                return Err("checkpoint residual exit history names an unbound revision".into());
+            }
+        }
+        if residual.scopes.len() > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_SCOPES
+            || residual.attempts.len() > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_ATTEMPTS
+        {
+            return Err("checkpoint residual state exceeds resource limits".into());
+        }
+        let references = self.residual_references.borrow();
+        let mut scopes = vec![false; residual.scopes.len()];
+        let mut attempts = vec![false; residual.attempts.len()];
+        for scope in &references.scopes {
+            *scopes
+                .get_mut(*scope as usize)
+                .ok_or("checkpoint references an unknown residual scope")? = true;
+        }
+        for attempt in &references.attempts {
+            *attempts
+                .get_mut(*attempt as usize)
+                .ok_or("checkpoint references an unknown residual attempt")? = true;
+        }
+        for attempt in &residual.attempts {
+            if attempt.scopes.is_empty()
+                || attempt.scopes.len() > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_SCOPES
+            {
+                return Err("checkpoint residual attempt has no bounded observing scopes".into());
+            }
+            for observed in &attempt.scopes {
+                if observed.scope as usize >= residual.scopes.len() {
+                    return Err("checkpoint residual attempt names an unknown scope".into());
+                }
+            }
+        }
+        if scopes.iter().any(|used| !used) || attempts.iter().any(|used| !used) {
+            return Err("checkpoint residual state has an unowned entry".into());
+        }
+        for scope in &residual.scopes {
+            if scope.outcomes.len() > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_ENTRIES
+                || scope.pending.len() > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_ENTRIES
+                || scope.states.len() > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_ENTRIES
+            {
+                return Err("checkpoint residual scope exceeds resource limits".into());
+            }
+            self.item(etas_hir::HirItemId(scope.item), "checkpoint residual scope")?;
+        }
+        Ok(())
     }
 
     fn validate_local_frames(
@@ -294,8 +368,17 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 MachineFrameSnapshot::Block { continuation }
                 | MachineFrameSnapshot::Expr { continuation }
-                | MachineFrameSnapshot::Call { continuation, .. }
                 | MachineFrameSnapshot::Continuation { continuation } => {
+                    self.continuation(continuation, &context, boundary_scopes)?;
+                }
+                MachineFrameSnapshot::Call {
+                    caller,
+                    continuation,
+                    span,
+                } => {
+                    if let Some(caller) = caller {
+                        self.call_origin(caller, *span, &context)?;
+                    }
                     self.continuation(continuation, &context, boundary_scopes)?;
                 }
                 MachineFrameSnapshot::Handler { continuation } => {
@@ -319,6 +402,9 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 MachineFrameSnapshot::SourceToolReturn(frame) => {
                     self.source_tool_return(frame, &context, boundary_scopes)?;
+                }
+                MachineFrameSnapshot::ResidualScope { scope } => {
+                    self.residual_references.borrow_mut().scopes.push(*scope);
                 }
             }
         }
@@ -465,6 +551,17 @@ impl<'a> SnapshotValidator<'a> {
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
         match continuation {
+            ContinuationSnapshot::ResidualScope { scope } => {
+                self.residual_references.borrow_mut().scopes.push(*scope);
+                Ok(())
+            }
+            ContinuationSnapshot::ResidualOutcome { attempt } => {
+                self.residual_references
+                    .borrow_mut()
+                    .attempts
+                    .push(*attempt);
+                Ok(())
+            }
             ContinuationSnapshot::SourceToolReturn(frame) => {
                 frame.validate_continuation()?;
                 self.source_tool_return(frame, context, boundary_scopes)
@@ -818,8 +915,13 @@ impl<'a> SnapshotValidator<'a> {
                 site,
                 span,
             } => self.composed_continuation(remaining, site.as_ref(), *span, context),
+            ContinuationSnapshot::CallBoundary { caller, span, .. } => {
+                if let Some(caller) = caller {
+                    self.call_origin(caller, *span, context)?;
+                }
+                Ok(())
+            }
             ContinuationSnapshot::RestoreModelPolicy { .. }
-            | ContinuationSnapshot::CallBoundary { .. }
             | ContinuationSnapshot::HandlerDispatch { .. }
             | ContinuationSnapshot::ScopedModelPolicy { .. } => Ok(()),
             ContinuationSnapshot::ForLoop {
@@ -1190,6 +1292,11 @@ impl<'a> SnapshotValidator<'a> {
             match arg {
                 HirEffectArg::Type(ty) => self.hir_type(*ty, context)?,
                 HirEffectArg::Path(path) => self.path(path, context)?,
+                HirEffectArg::PatternBinding { .. } => {
+                    return Err(format!(
+                        "{context}: trace pattern binding is not a runtime action selector"
+                    ));
+                }
                 HirEffectArg::Wildcard { .. }
                 | HirEffectArg::String { .. }
                 | HirEffectArg::Int { .. } => {}
@@ -1466,6 +1573,7 @@ flow main() -> unit {
 
     fn empty_locals() -> LocalsSnapshot {
         LocalsSnapshot {
+            residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
@@ -1492,6 +1600,7 @@ flow main() -> unit {
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation { continuation }],
+            residual: Default::default(),
         })
     }
 
@@ -1541,6 +1650,7 @@ flow main() -> unit {
                         },
                     })
                     .collect(),
+                residual: Default::default(),
             };
             let validator = SnapshotValidator::new(
                 &checked,
@@ -1703,4 +1813,11 @@ flow main() -> unit { perform Gate.request() with { Gate.request() => resume; };
             .expect_err("invalid handler scope must fail closed");
         assert!(error.contains("does not match its checked handler arm"));
     }
+}
+
+#[derive(Default)]
+struct ResidualReferences {
+    scopes: Vec<u32>,
+    attempts: Vec<u32>,
+    owners: std::collections::HashMap<u32, (usize, HirItemId, u64)>,
 }

@@ -132,6 +132,8 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                residual_checks: vec![],
+                behavior: None,
                 handler_requests: None,
                 returned_callables: None,
                 default_handler_effects: None,

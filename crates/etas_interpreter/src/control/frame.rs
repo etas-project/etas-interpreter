@@ -15,6 +15,7 @@ pub(crate) use comparison::{FrameComparison, FrameComparisonStep};
 #[derive(Clone, Debug)]
 pub struct Frame {
     snapshot_id: u64,
+    residual_invocation: Option<std::num::NonZeroU64>,
     layout: Arc<SlotLayoutTable>,
     slots: Rc<RefCell<SlotStorage>>,
     restored: Option<Rc<RefCell<RestoredStorage>>>,
@@ -138,6 +139,7 @@ impl Frame {
         let slot_count = layout.slot_count();
         Self {
             snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            residual_invocation: None,
             layout,
             slots: Rc::new(RefCell::new(SlotStorage {
                 values: vec![None; slot_count],
@@ -205,6 +207,7 @@ impl Frame {
         }
         Ok(Self {
             snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
+            residual_invocation: None,
             layout: Arc::new(SlotLayoutTable::default()),
             slots: Rc::new(RefCell::new(SlotStorage {
                 values: Vec::new(),
@@ -231,6 +234,21 @@ impl Frame {
 
     pub(crate) fn snapshot_id(&self) -> u64 {
         self.snapshot_id
+    }
+
+    pub(crate) fn residual_invocation(&self) -> Option<std::num::NonZeroU64> {
+        self.residual_invocation
+    }
+
+    pub(crate) fn bind_residual_invocation(
+        &mut self,
+        invocation: std::num::NonZeroU64,
+    ) -> Result<(), String> {
+        if self.residual_invocation.is_some() {
+            return Err("callable frame already owns a residual scope invocation".into());
+        }
+        self.residual_invocation = Some(invocation);
+        Ok(())
     }
 
     // Frame aliases share slots, restored locals, layout and immutable type bindings.

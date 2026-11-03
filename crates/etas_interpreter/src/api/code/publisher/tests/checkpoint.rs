@@ -104,7 +104,7 @@ flow inspect() -> unit { let definition = ^Worker; return; }
             revision.clone(),
             None,
             &checked,
-            revision.targets.component,
+            revision.targets.agent_component().unwrap(),
         )
         .unwrap();
         let host = crate::testing::FakeHost::new(crate::host::HostServiceAvailability {

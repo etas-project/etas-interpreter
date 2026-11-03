@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use etas_code::{
-    CallableId, DefinitionKey,
+    CallableId, CodeFingerprint, DefinitionKey,
     contract::TraceInclusionWitness,
     descriptor::{
         DescriptorGraph, DeterminismInfo, EffectRowInfoRef, GenericOwner, StaticValueInfo,
@@ -16,11 +16,27 @@ mod serialize;
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CodeMetadataValue(Arc<MetadataData>);
 
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug)]
 struct MetadataData {
     ty: TypeId,
     payload: CodeMetadataPayload,
+    type_identity: Option<CodeFingerprint>,
 }
+
+impl PartialEq for MetadataData {
+    fn eq(&self, other: &Self) -> bool {
+        if self.ty != other.ty {
+            return false;
+        }
+        match (&self.payload, &other.payload) {
+            (CodeMetadataPayload::Type { .. }, CodeMetadataPayload::Type { .. }) => {
+                matches!((self.type_identity, other.type_identity), (Some(a), Some(b)) if a == b)
+            }
+            _ => self.payload == other.payload,
+        }
+    }
+}
+impl Eq for MetadataData {}
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum CodeMetadataPayload {
@@ -62,7 +78,19 @@ impl CodeMetadataValue {
         payload: CodeMetadataPayload,
     ) -> Result<Self, String> {
         Self::validate_payload(known, ty, &payload)?;
-        Ok(Self(Arc::new(MetadataData { ty, payload })))
+        let type_identity = match &payload {
+            CodeMetadataPayload::Type { graph, root } => Some(
+                graph
+                    .type_fingerprint(*root)
+                    .map_err(|error| error.to_string())?,
+            ),
+            _ => None,
+        };
+        Ok(Self(Arc::new(MetadataData {
+            ty,
+            payload,
+            type_identity,
+        })))
     }
 
     pub(crate) fn validate_role(&self, known: &KnownCodeTypes) -> Result<(), String> {
@@ -208,6 +236,96 @@ mod tests {
         assert!(
             CodeMetadataValue::new(&KnownCodeTypes::default(), TypeId(11), payload(0)).is_err()
         );
+    }
+
+    #[test]
+    fn type_descriptor_equality_uses_the_root_not_its_graph_or_local_index() {
+        use etas_code::descriptor::{PrimitiveInfo, TypeInfo};
+        let known = KnownCodeTypes {
+            type_info: Some(TypeId(11)),
+            ..Default::default()
+        };
+        let value = |types, root| {
+            CodeMetadataValue::new(
+                &known,
+                TypeId(11),
+                CodeMetadataPayload::Type {
+                    graph: DescriptorGraph::new(
+                        DescriptorGraphInput {
+                            types,
+                            ..Default::default()
+                        },
+                        Default::default(),
+                    )
+                    .unwrap(),
+                    root: TypeInfoRef(root),
+                },
+            )
+            .unwrap()
+        };
+        let a = value(vec![TypeInfo::Primitive(PrimitiveInfo::Bool)], 0);
+        let b = value(
+            vec![
+                TypeInfo::Primitive(PrimitiveInfo::String),
+                TypeInfo::Primitive(PrimitiveInfo::Bool),
+            ],
+            1,
+        );
+        let c = value(
+            vec![
+                TypeInfo::Primitive(PrimitiveInfo::String),
+                TypeInfo::Primitive(PrimitiveInfo::I32),
+            ],
+            1,
+        );
+        assert_eq!(a, b);
+        assert_ne!(a, c);
+    }
+
+    #[test]
+    fn equal_representations_do_not_merge_nominal_type_descriptors() {
+        use etas_code::{
+            DefinitionKind, PackageKey,
+            descriptor::{PrimitiveInfo, TypeInfo},
+        };
+        let known = KnownCodeTypes {
+            type_info: Some(TypeId(11)),
+            ..Default::default()
+        };
+        let value = |name: &str| {
+            let definition = DefinitionKey::new(
+                PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([7; 32])),
+                vec!["app".into()],
+                vec![name.into()],
+                DefinitionKind::Type,
+            )
+            .unwrap();
+            CodeMetadataValue::new(
+                &known,
+                TypeId(11),
+                CodeMetadataPayload::Type {
+                    graph: DescriptorGraph::new(
+                        DescriptorGraphInput {
+                            types: vec![
+                                TypeInfo::Primitive(PrimitiveInfo::String),
+                                TypeInfo::Nominal {
+                                    definition,
+                                    parameters: vec![],
+                                    representation: Some(TypeInfoRef(0)),
+                                },
+                            ],
+                            ..Default::default()
+                        },
+                        Default::default(),
+                    )
+                    .unwrap(),
+                    root: TypeInfoRef(1),
+                },
+            )
+            .unwrap()
+        };
+        assert_eq!(value("UserId"), value("UserId"));
+        assert_ne!(value("UserId"), value("OrderId"));
     }
 
     #[test]

@@ -73,7 +73,7 @@ impl<'a> EvalContext<'a> {
                 flow.span,
             );
         };
-        let signal = self.execute_block(body, &mut frame);
+        let signal = self.execute_item_body(item, body, &mut frame);
         self.drive_restored_handlers(signal, &mut frame)
     }
 
@@ -181,7 +181,7 @@ impl<'a> EvalContext<'a> {
                 "source tool body block is missing from checked HIR structure facts",
             )));
         };
-        let signal = self.execute_block(body, &mut frame);
+        let signal = self.execute_item_body(item, body, &mut frame);
         let signal = self.drive_restored_handlers(signal, &mut frame);
         match signal {
             ControlSignal::Return(value) => ControlSignal::Value(value),
@@ -240,10 +240,10 @@ impl<'a> EvalContext<'a> {
                         ),
                     ));
                 };
-                super::host_value::host_to_typed_interp_value(
+                super::host_value::decode_checked_host_value(
                     value.clone(),
                     ty,
-                    &self.checked.type_store,
+                    self.checked,
                 )
                 .map_err(|error| {
                     ExecutionFault::new(

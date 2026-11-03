@@ -120,6 +120,7 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
                 frames: vec![crate::orchestration::MachineFrameSnapshot::Continuation {
                     continuation,
                 }],
+                residual: Default::default(),
             };
             validator
                 .validate_machine(&machine(retained.clone()))

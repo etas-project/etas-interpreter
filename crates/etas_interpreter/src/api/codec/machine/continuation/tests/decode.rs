@@ -41,6 +41,7 @@ fn deep_continuation_file_decode_avoids_recursive_descent_and_preserves_wire() {
             for _ in 0..depth {
                 original = match mode {
                     0 => ContinuationSnapshot::CallBoundary {
+                        caller: None,
                         span: crate::testing::synthetic_span(),
                         outer: original.into(),
                     },
@@ -83,6 +84,7 @@ fn deep_wire(depth: usize) -> Value {
     let mut root = ContinuationSnapshot::Return;
     for _ in 0..depth {
         root = ContinuationSnapshot::CallBoundary {
+            caller: None,
             span: crate::testing::synthetic_span(),
             outer: root.into(),
         };
@@ -214,6 +216,7 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
     for i in 0..4000 {
         root = match i % 6 {
             0 => ContinuationSnapshot::CallBoundary {
+                caller: None,
                 span: crate::testing::synthetic_span(),
                 outer: root.into(),
             },
@@ -224,6 +227,7 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
                 handlers: vec![],
                 span,
                 frame: LocalsSnapshot {
+                    residual_invocation: None,
                     effect_row_bindings: Vec::new(),
                     id: i as u64 + 1,
                     locals: Default::default(),
@@ -264,6 +268,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
                 block: HirBlockId(u32::MAX),
                 next_stmt_index: 0,
                 frame: LocalsSnapshot {
+                    residual_invocation: None,
                     effect_row_bindings: Vec::new(),
                     id: 1,
                     locals: Default::default(),
@@ -275,6 +280,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
         };
         for _ in 0..30_000 {
             root = ContinuationSnapshot::CallBoundary {
+                caller: None,
                 span: crate::testing::synthetic_span(),
                 outer: root.into(),
             };
@@ -293,6 +299,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: vec![MachineFrameSnapshot::Continuation { continuation: root }],
+                residual: Default::default(),
             },
             handlers: Default::default(),
             retry_state: Default::default(),

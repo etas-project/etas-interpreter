@@ -26,11 +26,21 @@ pub(in crate::eval) fn agent_field(
         .map_err(|error| error.to_string())?;
     let p = Projector { store, known };
     match field {
-        "annotations" => annotation::annotations(&p, ty, view.annotations()),
-        "specs" => spec::attached(&p, ty, view.signature_descriptors(), view.specs()),
+        "annotations" => annotation::annotations(
+            &p,
+            ty,
+            view.annotations().map_err(|error| error.to_string())?,
+        ),
+        "specs" => spec::attached(
+            &p,
+            ty,
+            view.signature_descriptors(),
+            view.specs().map_err(|error| error.to_string())?,
+        ),
         "tools" => {
             let element = p.array_element(ty)?;
             view.declared_tools()
+                .map_err(|error| error.to_string())?
                 .iter()
                 .map(|tool| p.metadata(element, M::Tool(tool.clone())))
                 .collect::<Result<Vec<_>, _>>()
@@ -105,7 +115,7 @@ pub(in crate::eval) fn agent_field(
 }
 
 fn current_analysis(
-    view: &etas_frontend::code::definition::NativeAgentDefinitionView,
+    view: &etas_frontend::code::definition::NativeDefinitionView,
 ) -> Result<Option<(&DescriptorGraph, &CallableAnalysisInfo)>, String> {
     match view.current_analysis() {
         Ok(analysis) => Ok(Some((
@@ -135,6 +145,8 @@ pub(in crate::eval) fn callable_field(
     };
     match field {
         "id" => p.metadata(ty, M::Callable(header.id.clone())),
+        "revision" => report::revision_info(store, known, ty, &definition.revision()?),
+        "dependencies" => report::dependencies(&p, ty, &definition.dependencies()?),
         "signature" => signature::signature(&p, ty, graph, callable),
         "effects" => behavior::effects(
             &p,

@@ -67,13 +67,9 @@ impl MemoryWriteIntentValue {
             etas_host::memory::MemoryMutation::Put { key, value, .. } => (key, Some(value)),
             etas_host::memory::MemoryMutation::Delete { key, .. } => (key, None),
         };
-        crate::eval::host_to_typed_interp_value(key.clone(), self.key_type, &checked.type_store)?;
+        crate::eval::decode_checked_host_value(key.clone(), self.key_type, checked)?;
         if let Some(value) = value {
-            crate::eval::host_to_typed_interp_value(
-                value.clone(),
-                self.value_type,
-                &checked.type_store,
-            )?;
+            crate::eval::decode_checked_host_value(value.clone(), self.value_type, checked)?;
         }
         Ok(())
     }

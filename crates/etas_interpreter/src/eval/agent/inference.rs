@@ -59,6 +59,7 @@ impl EvalContext<'_> {
             inference: Some(Box::new(self.model_policy.clone())),
             span,
             continuation: Continuation::BlockValue,
+            residual: None,
         };
         let proof = match self.inference_action_invocation(&pending, fact) {
             Ok(proof) => proof,

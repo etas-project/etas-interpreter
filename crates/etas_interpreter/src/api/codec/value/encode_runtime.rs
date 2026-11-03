@@ -49,6 +49,7 @@ fn write<'a>(
             let locals = frames.get(frame)?.sorted();
             let count = locals.len();
             *slot = json!({"id":frame.snapshot_id(),"locals":null,
+                "residual_invocation":frame.residual_invocation(),
                 "effect_row_bindings":frame.generic_bindings().sorted_rows(),
                 "type_bindings":frame.sorted_type_bindings().iter().map(|(name, ty)| json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
             for ((symbol, value), slot) in locals.into_iter().zip(array(&mut slot["locals"], count))

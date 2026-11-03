@@ -233,6 +233,7 @@ impl<'a> EvalContext<'a> {
             }],
             span,
             continuation: Continuation::BlockValue,
+            residual: None,
         })
     }
 }

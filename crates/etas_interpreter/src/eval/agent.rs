@@ -118,7 +118,7 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
-        self.execute_block(body, &mut frame)
+        self.execute_item_body(item, body, &mut frame)
     }
 
     fn record_agent_message_handoffs(&mut self, target: HirItemId, args: &[InterpValue]) {

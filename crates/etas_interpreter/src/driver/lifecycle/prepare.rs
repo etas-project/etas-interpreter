@@ -11,7 +11,7 @@ pub(crate) async fn run_checked_inner(
     project: &CheckedProject,
     entry: EntryPoint,
     args: Vec<InterpValue>,
-    prepared: Option<&std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+    prepared: Option<&std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     host: &dyn HostServices,
     mut options: RunOptions,
     execution: etas_host::execution::ExecutionScope,

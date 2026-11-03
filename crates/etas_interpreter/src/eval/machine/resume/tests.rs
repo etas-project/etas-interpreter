@@ -130,6 +130,7 @@ fn retry_lookup_preserves_chain_order_and_boundary_opacity() {
         (
             chain(
                 Continuation::CallBoundary {
+                    caller: None,
                     span: crate::testing::synthetic_span(),
                     outer: retry(1).into(),
                 },
@@ -228,6 +229,7 @@ fn retry_lookup_preserves_selected_locals_in_each_execution_frame_kind() {
         let frame = match kind {
             0 => EvalFrame::Block(BlockFrame { continuation }),
             1 => EvalFrame::Call(CallFrame {
+                caller: None,
                 continuation,
                 span: Span::empty(etas_core::SourceId(7), etas_core::TextSize::ZERO),
             }),

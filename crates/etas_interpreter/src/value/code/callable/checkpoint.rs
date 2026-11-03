@@ -55,21 +55,16 @@ impl ScopedCallableValue {
                     type_bindings,
                     effect_row_bindings,
                 } => {
-                    bindings.extend(type_bindings.iter().cloned());
-                    bindings.rows.extend(effect_row_bindings.iter().cloned());
+                    merge_checked_bindings(&mut bindings, type_bindings, effect_row_bindings)?;
                     target = inner;
                 }
                 T::Limited { target: inner, .. } => target = inner,
                 T::Lambda { captured, .. } => {
-                    for (name, ty) in &captured.type_bindings {
-                        bindings.entry(name.clone()).or_insert(*ty);
-                    }
-                    for (name, row) in &captured.effect_row_bindings {
-                        bindings
-                            .rows
-                            .entry(name.clone())
-                            .or_insert_with(|| row.clone());
-                    }
+                    merge_checked_bindings(
+                        &mut bindings,
+                        &captured.type_bindings,
+                        &captured.effect_row_bindings,
+                    )?;
                     break;
                 }
                 T::PureIntrinsic {
@@ -129,7 +124,7 @@ impl ScopedCallableValue {
         &self,
         revisions: &mut std::collections::BTreeMap<
             etas_code::RevisionKey,
-            Arc<crate::api::code::PreparedAgentRevision>,
+            Arc<crate::api::code::PreparedCodeRevision>,
         >,
     ) -> Result<ScopedCallableMetadata, String> {
         let native_program = match &self.native.program.revision {
@@ -150,10 +145,19 @@ impl ScopedCallableValue {
                 .action_projection()?
                 .ok_or("checkpoint callable projection has no revision edge")?;
             let to_candidate = Arc::ptr_eq(edge.target(), owner.program());
+            let external = owner
+                .saved_external_type_bridge()
+                .is_some_and(|bridge| edge.uses_bridge(bridge));
+            if !external && !edge.uses_bridge(owner.type_bridge()) {
+                return Err(
+                    "checkpoint callable projection has an unowned checked type bridge".into(),
+                );
+            }
             revisions.insert(owner.revision().key(), owner.clone());
             projections.push(CallableProjectionSnapshot {
                 revision: CheckpointCodeRevision::for_revision(owner),
                 to_candidate,
+                external,
                 from: projection.source().1,
                 to: projection.target().1,
             });
@@ -176,7 +180,7 @@ impl ScopedCallableValue {
         };
         let signature = signature.clone();
         let root = callable_root(&program, &target)?;
-        validate_signature(&program.checked, root, &target, &signature)?;
+        let application = validate_signature(&program.checked, root, &target, &signature)?;
         let plan = program
             .plan
             .select_callable(&program.checked, root)
@@ -185,6 +189,7 @@ impl ScopedCallableValue {
         Ok(Self {
             native: Rc::new(NativeCallable {
                 program,
+                application,
                 target: target.into(),
                 ty,
                 signature,

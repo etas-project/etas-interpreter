@@ -103,6 +103,44 @@ flow main(input: string) -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn generic_flow_dispatches_spec_method_with_checked_type_arguments() {
+    let checked = checked_project(
+        r#"
+module app.main;
+spec Identity<T> { flow id(input: T) -> T; }
+type Token = i32;
+impl Token ~ Identity<Token> {
+  flow id(input: Token) -> Token { return input; }
+}
+flow apply<T ~ Identity<T>>(input: T) -> T {
+  return input::Identity<T>.id();
+}
+flow main() -> bool {
+  return apply(Token(7)) == Token(7);
+}
+"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            vec![],
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await
+        .expect("execution lifecycle infrastructure");
+    assert_eq!(
+        result.value(),
+        Some(&value::InterpValue::Bool(true)),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_agent_call_through_model_host_service() {
     let checked = checked_project(
         r#"

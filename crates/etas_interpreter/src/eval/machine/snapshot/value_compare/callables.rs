@@ -11,6 +11,7 @@ impl PartialEq for LocalsSnapshot {
     fn eq(&self, other: &Self) -> bool {
         if std::rc::Rc::ptr_eq(&self.locals, &other.locals) {
             return self.id == other.id
+                && self.residual_invocation == other.residual_invocation
                 && self.type_bindings == other.type_bindings
                 && self.effect_row_bindings == other.effect_row_bindings;
         }
@@ -26,6 +27,7 @@ pub(super) fn frame<'a>(
     compare_ids: bool,
 ) -> bool {
     if (compare_ids && a.id != b.id)
+        || a.residual_invocation != b.residual_invocation
         || a.type_bindings != b.type_bindings
         || a.effect_row_bindings != b.effect_row_bindings
         || a.locals.len() != b.locals.len()

@@ -19,6 +19,7 @@ pub(crate) enum CheckpointProgramReference {
 pub(crate) struct CallableProjectionSnapshot {
     pub revision: CheckpointCodeRevision,
     pub to_candidate: bool,
+    pub external: bool,
     pub from: TypeId,
     pub to: TypeId,
 }

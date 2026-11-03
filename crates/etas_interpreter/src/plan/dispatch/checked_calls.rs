@@ -88,7 +88,7 @@ impl IntrinsicDispatchTable {
         &self,
         origin: HirExprId,
         identity: StdIntrinsicIdentity,
-        substitutions: &[Vec<(String, etas_types::TypeId)>],
+        substitutions: &[crate::intrinsic::dispatch::IntrinsicSubstitutionStep],
         parameters: &[etas_types::TypeId],
         result: etas_types::TypeId,
         store: &etas_types::TypeStore,
@@ -207,6 +207,7 @@ mod tests {
                         span,
                     },
                 }],
+                residual: Default::default(),
             };
             let actual = validator.validate_machine(&machine);
             assert_eq!(actual.is_ok(), valid, "{actual:?}");

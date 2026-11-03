@@ -100,11 +100,13 @@ fn borrowed_bytes_projection_rejects_invalid_checked_identity_and_payloads() {
     let size = types.primitive(PrimitiveType::USize);
     let boolean = types.primitive(PrimitiveType::Bool);
     let left = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "LeftBytes".into(),
         representation: Some(bytes),
         params: vec![],
     }));
     let right = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "RightBytes".into(),
         representation: Some(bytes),
         params: vec![],

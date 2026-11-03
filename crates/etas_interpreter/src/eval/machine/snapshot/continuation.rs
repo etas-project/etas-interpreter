@@ -20,6 +20,9 @@ impl ContinuationSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match continuation {
+            Continuation::ValidateCompileResult { .. } => {
+                return Err("pending compiler contract evidence must be restored from source in its locked definition environment, not an opaque checkpoint handle".into());
+            }
             Continuation::PriorityQueueUpdate(_) => {
                 return Err(
                     "an in-progress pure priority comparison cannot cross a checkpoint boundary"
@@ -60,6 +63,12 @@ impl ContinuationSnapshot {
             },
             Continuation::ProgramResume(pending) => Self::ProgramResume {
                 id: context.suspension(pending)?,
+            },
+            Continuation::ResidualScope(scope) => Self::ResidualScope {
+                scope: context.residual_scope(scope)?,
+            },
+            Continuation::ResidualOutcome(tag) => Self::ResidualOutcome {
+                attempt: context.residual_attempt(tag)?,
             },
             Continuation::SourceToolReturn(saved) => Self::SourceToolReturn(Box::new(
                 crate::orchestration::SourceToolReturnFrameSnapshot::capture(&saved.0, context)?,
@@ -697,6 +706,12 @@ impl ContinuationSnapshot {
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
             Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
+            Self::ResidualScope { scope } => {
+                Continuation::ResidualScope(context.residual_scope(scope)?)
+            }
+            Self::ResidualOutcome { attempt } => {
+                Continuation::ResidualOutcome(context.residual_attempt(attempt)?)
+            }
             Self::SourceToolReturn(saved) => {
                 let current = context
                     .current_host

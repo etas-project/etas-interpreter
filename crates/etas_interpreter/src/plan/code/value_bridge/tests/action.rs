@@ -1,7 +1,7 @@
 use super::*;
 use crate::{control::CheckedActionInvocation, value::CheckedExecutionProgram};
 
-fn source_invocation(prepared: &Arc<PreparedAgentRevision>) -> CheckedActionInvocation {
+fn source_invocation(prepared: &Arc<PreparedCodeRevision>) -> CheckedActionInvocation {
     prepared.type_bridge().bind_runtime_owner(prepared);
     let checked = prepared.type_bridge().original_program().clone();
     let expr = checked
@@ -37,7 +37,7 @@ fn source_invocation(prepared: &Arc<PreparedAgentRevision>) -> CheckedActionInvo
     .unwrap()
 }
 
-fn revision() -> Arc<PreparedAgentRevision> {
+fn revision() -> Arc<PreparedCodeRevision> {
     prepared_body(
         "type UserId = string; effect Query { action choose(value: UserId) -> UserId; } flow invoke(value: UserId) -> UserId ![Query.choose] { return perform Query.choose(value); }",
         "UserId",

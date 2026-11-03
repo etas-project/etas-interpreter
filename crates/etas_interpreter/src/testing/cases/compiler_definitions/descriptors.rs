@@ -501,6 +501,9 @@ flow main() -> bool {
     let new_method = match draft.methods.get(0) { Some(method) => method, None => { return false; }, };
     return original.methods.len() == 1 && draft.methods.len() == 1
         && old_method.id == new_method.id && old_method.signature == new_method.signature
+        && old_method.revision.key != new_method.revision.key
+        && old_method.revision.content == new_method.revision.content
+        && old_method.dependencies.environment != new_method.dependencies.environment
         && match old_method.body { Some(_) => true, None => false, }
         && match new_method.body { Some(_) => true, None => false, }
         && match old_method.effects.escaping { Some(_) => true, None => false, }

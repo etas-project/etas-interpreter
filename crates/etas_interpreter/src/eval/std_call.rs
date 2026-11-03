@@ -26,7 +26,7 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        self.execute_std_callable_with_type_bindings(
+        self.execute_std_callable_with_generic_bindings(
             kind,
             checked_call,
             call_args,
@@ -35,15 +35,16 @@ impl<'a> EvalContext<'a> {
         )
     }
 
-    pub(super) fn execute_std_callable_with_type_bindings(
+    pub(super) fn execute_std_callable_with_generic_bindings(
         &mut self,
         kind: StdCallable,
         checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
-        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
+        bindings: &crate::control::GenericBindings,
     ) -> ControlSignal {
-        let specialized = match checked_call.specialize(&self.checked.type_store, type_bindings) {
+        let specialized = match checked_call.specialize_generic(&self.checked.type_store, bindings)
+        {
             Ok(call) => call,
             Err(message) => return ControlSignal::missing_checked_fact(message, span),
         };
@@ -64,12 +65,12 @@ impl<'a> EvalContext<'a> {
                 kind,
                 call: specialized,
                 args: call_args,
-                type_bindings: type_bindings.clone(),
+                type_bindings: bindings.types.clone(),
                 span,
             };
             return self.mediate_native_action(proof, args, boundary, span);
         }
-        self.execute_std_default(kind, &specialized, call_args, span, type_bindings)
+        self.execute_std_default(kind, &specialized, call_args, span, &bindings.types)
     }
 
     pub(in crate::eval) fn execute_std_default(
@@ -99,7 +100,7 @@ impl<'a> EvalContext<'a> {
             StdCallable::MemoryIntent(callable) => {
                 self.execute_memory_intent_callable(callable, checked_call, call_args, span)
             }
-            StdCallable::Approval => self.execute_approval_callable(call_args, span),
+            StdCallable::Approval => self.execute_approval_callable(checked_call, call_args, span),
             StdCallable::Checkpoint => self.execute_checkpoint_callable(call_args, span),
             StdCallable::MemoryRegion => {
                 self.execute_memory_region_callable(checked_call.result_type, call_args, span)
@@ -161,6 +162,7 @@ impl<'a> EvalContext<'a> {
 
     fn execute_approval_callable(
         &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -174,8 +176,15 @@ impl<'a> EvalContext<'a> {
             );
         }
         let path = etas_hir::unresolved_path_from_segments(&["Approval"], span);
+        // The approval request is a checked standard action, so residual
+        // scopes and handlers observe the same canonical action identity.
+        let checked_action = crate::control::CheckedActionInvocation::standard(
+            self.checked_execution_program(),
+            checked_call,
+        )
+        .ok();
         ControlSignal::pending_perform(PendingPerform {
-            checked_action: None,
+            checked_action,
             default_boundary: None,
             forwarded_call: None,
             inference: None,
@@ -194,6 +203,7 @@ impl<'a> EvalContext<'a> {
             args: call_args,
             span,
             continuation: Continuation::BlockValue,
+            residual: None,
         })
     }
 

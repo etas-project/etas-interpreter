@@ -83,6 +83,7 @@ pub(in crate::driver) async fn authorize_before_boundary(
         PolicyDecision::Deny { reason } => Err(denied(format!("policy denied request: {reason}"))),
         PolicyDecision::RequireApproval { request } => {
             eval.host_budget().check_time()?;
+            let requested_grants = request.requested_grants.clone();
             let response = HostDispatch::execute_approval(
                 eval,
                 request.clone(),
@@ -92,8 +93,13 @@ pub(in crate::driver) async fn authorize_before_boundary(
             .await?;
             match response.decision {
                 etas_host::ApprovalDecision::Approved { grant } => {
-                    eval.record_approval_grant(grant);
-                    Ok(())
+                    if !requested_grants
+                        .iter()
+                        .all(|requested| grant.grants.contains(requested))
+                    {
+                        return Err(denied("approval did not grant all requested authority"));
+                    }
+                    eval.record_approval_grant(grant)
                 }
                 etas_host::ApprovalDecision::Denied { .. } => {
                     Err(denied("policy approval was denied"))

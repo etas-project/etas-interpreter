@@ -83,6 +83,7 @@ fn callable_restore_cache_crosses_captured_frames_without_merging_distinct_graph
         let lambda = CallTargetSnapshot::Lambda {
             expr: HirExprId(4),
             captured: LocalsSnapshot {
+                residual_invocation: None,
                 effect_row_bindings: Vec::new(),
                 id: 1,
                 locals: std::rc::Rc::new(vec![(
@@ -132,6 +133,7 @@ fn callable_restore_cache_does_not_hide_conflicting_frames_and_releases_failed_g
         let lambda = |value| CallTargetSnapshot::Lambda {
             expr: HirExprId(4),
             captured: LocalsSnapshot {
+                residual_invocation: None,
                 effect_row_bindings: Vec::new(),
                 id: 1,
                 locals: std::rc::Rc::new(vec![(
@@ -199,6 +201,7 @@ fn checked_machine_restore_shares_callables_between_continuations() {
             evaluated_args: vec![],
             span,
             frame: LocalsSnapshot {
+                residual_invocation: None,
                 effect_row_bindings: Vec::new(),
                 id: 1,
                 locals: Default::default(),
@@ -213,6 +216,7 @@ fn checked_machine_restore_shares_callables_between_continuations() {
                     continuation: continuation.clone(),
                 })
                 .collect(),
+            residual: Default::default(),
         };
         let restore = |saved: &MachineSnapshot| {
             EvalMachine::from_snapshot(

@@ -284,6 +284,7 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
                     evaluated_args: vec![],
                     span,
                     frame: LocalsSnapshot {
+                        residual_invocation: None,
                         effect_row_bindings: Vec::new(),
                         id: frame_id,
                         locals: Default::default(),
@@ -291,6 +292,7 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
                     },
                 },
             }],
+            residual: Default::default(),
         };
         let result = SnapshotValidator::new(
             &checked,

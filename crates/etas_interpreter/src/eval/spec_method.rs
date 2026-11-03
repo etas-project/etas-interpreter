@@ -177,6 +177,7 @@ impl<'a> EvalContext<'a> {
                 )
             })?;
         let receiver_ty = self.materialized_type(receiver_ty, frame.generic_bindings(), span)?;
+        let spec_symbol = self.checked_source_spec_symbol(spec_symbol, span)?;
         if !self
             .checked
             .types
@@ -189,33 +190,37 @@ impl<'a> EvalContext<'a> {
                 "spec method selection is missing checked spec signature facts",
             ));
         }
-        let spec_arg_tys = self
-            .checked_spec_arg_types(spec_args, span)?
-            .into_iter()
-            .map(|ty| self.materialized_type(ty, frame.generic_bindings(), span))
-            .collect::<Result<Vec<_>, _>>()?;
-        let mut matches = self
-            .checked
-            .types
-            .spec_impls
-            .iter()
-            .filter(|implementation| {
-                implementation.spec_symbol == spec_symbol
-                    && self.spec_type_ids_match(implementation.self_type, receiver_ty)
-                    && type_arg_lists_match(
-                        &self.checked.type_store,
-                        &implementation.args,
-                        &spec_arg_tys,
-                    )
-            })
-            .filter_map(|implementation| {
+        let spec_arg_tys =
+            self.checked_spec_arg_types(spec_args, frame.generic_bindings(), span)?;
+        let mut matches = Vec::new();
+        for implementation in &self.checked.types.spec_impls {
+            let implementation_spec =
+                self.checked_source_spec_symbol(implementation.spec_symbol, span)?;
+            let same_spec = implementation_spec == spec_symbol
+                || matches!(
+                    (self.checked.types.external_specs.aliases.get(&implementation_spec),
+                     self.checked.types.external_specs.aliases.get(&spec_symbol)),
+                    (Some(left), Some(right)) if left == right
+                );
+            if !same_spec
+                || !implementation_types_match(
+                    &self.checked.type_store,
+                    implementation.self_type,
+                    receiver_ty,
+                    &implementation.args,
+                    &spec_arg_tys,
+                )
+            {
+                continue;
+            }
+            matches.extend(
                 implementation
                     .methods
                     .iter()
-                    .find(|candidate| candidate.name == method)
-                    .map(|candidate| candidate.symbol)
-            })
-            .collect::<Vec<_>>();
+                    .filter(|candidate| candidate.name == method)
+                    .map(|candidate| candidate.symbol),
+            );
+        }
         matches.sort_by_key(|symbol| symbol.0);
         matches.dedup();
         match matches.as_slice() {
@@ -251,9 +256,36 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    fn checked_source_spec_symbol(
+        &self,
+        symbol: SymbolId,
+        span: Span,
+    ) -> Result<SymbolId, ExecutionFault> {
+        let mut current = symbol;
+        let mut visited = std::collections::HashSet::new();
+        while let Some(next) = self
+            .checked
+            .hir
+            .source_import_targets
+            .get(&current)
+            .copied()
+        {
+            if !visited.insert(current) {
+                return Err(ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    "spec method has a cyclic checked import chain",
+                ));
+            }
+            current = next;
+        }
+        Ok(current)
+    }
+
     fn checked_spec_arg_types(
         &self,
         spec_args: &[HirTypeId],
+        bindings: &crate::control::GenericBindings,
         span: Span,
     ) -> Result<Vec<etas_types::TypeId>, ExecutionFault> {
         let mut lowered = Vec::with_capacity(spec_args.len());
@@ -265,35 +297,72 @@ impl<'a> EvalContext<'a> {
                     "spec method type argument is missing checked type facts",
                 ));
             };
-            lowered.push(ty);
+            lowered.push(self.materialized_type(ty, bindings, span)?);
         }
         Ok(lowered)
     }
-
-    fn spec_type_ids_match(&self, left: etas_types::TypeId, right: etas_types::TypeId) -> bool {
-        if left == right {
-            return true;
-        }
-        let mut unifier = etas_types::TypeUnifier::new(&self.checked.type_store);
-        unifier.unify(left, right).is_ok()
-    }
 }
 
-fn type_arg_lists_match(
+fn implementation_types_match(
     store: &etas_types::TypeStore,
+    implementation_self: etas_types::TypeId,
+    receiver: etas_types::TypeId,
     left: &[etas_types::TypeId],
     right: &[etas_types::TypeId],
 ) -> bool {
-    left.len() == right.len()
+    if left.len() != right.len() {
+        return false;
+    }
+    let mut unifier = etas_types::TypeUnifier::new(store);
+    unifier.unify(implementation_self, receiver).is_ok()
         && left
             .iter()
             .copied()
             .zip(right.iter().copied())
-            .all(|(left, right)| {
-                if left == right {
-                    return true;
-                }
-                let mut unifier = etas_types::TypeUnifier::new(store);
-                unifier.unify(left, right).is_ok()
-            })
+            .all(|(left, right)| unifier.unify(left, right).is_ok())
+}
+
+#[cfg(test)]
+mod tests {
+    use super::implementation_types_match;
+    use etas_types::{PrimitiveType, Type, TypeInterner, TypeVarId};
+
+    #[test]
+    fn implementation_receiver_and_spec_args_share_generic_bindings() {
+        let mut types = TypeInterner::default();
+        let parameter = types.intern(Type::Var(TypeVarId(0)));
+        let generic_receiver = types.intern(Type::Array(parameter));
+        let integer = types.primitive(PrimitiveType::I32);
+        let string = types.primitive(PrimitiveType::String);
+        let actual_receiver = types.intern(Type::Array(integer));
+
+        assert!(implementation_types_match(
+            types.store(),
+            generic_receiver,
+            actual_receiver,
+            &[parameter],
+            &[integer]
+        ));
+        assert!(!implementation_types_match(
+            types.store(),
+            generic_receiver,
+            actual_receiver,
+            &[parameter],
+            &[string]
+        ));
+        assert!(!implementation_types_match(
+            types.store(),
+            generic_receiver,
+            actual_receiver,
+            &[parameter, parameter],
+            &[integer, string]
+        ));
+        assert!(!implementation_types_match(
+            types.store(),
+            generic_receiver,
+            actual_receiver,
+            &[parameter],
+            &[]
+        ));
+    }
 }

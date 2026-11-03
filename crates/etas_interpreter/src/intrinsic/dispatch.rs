@@ -15,10 +15,16 @@ pub struct StdIntrinsicIdentity {
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
+pub struct IntrinsicSubstitutionStep {
+    pub types: Vec<(String, TypeId)>,
+    pub rows: Vec<(String, etas_types::EffectRowRef)>,
+}
+
+#[derive(Clone, Debug, PartialEq, Eq)]
 pub struct CheckedStdIntrinsicCall {
     pub identity: StdIntrinsicIdentity,
     pub origin: etas_hir::HirExprId,
-    pub substitutions: Vec<Vec<(String, TypeId)>>,
+    pub substitutions: Vec<IntrinsicSubstitutionStep>,
     pub parameter_types: Vec<TypeId>,
     pub result_type: TypeId,
 }

@@ -103,6 +103,7 @@ fn perform_suspension_does_not_copy_named_argument_descriptors() {
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: vec![crate::orchestration::MachineFrameSnapshot::Continuation { continuation }],
+            residual: Default::default(),
         };
         validator.validate_machine(&machine(alias.clone())).unwrap();
         let mut bad = alias.clone();
@@ -268,6 +269,7 @@ fn abortive_errors_restore_model_policy_but_resumable_actions_keep_the_scope() {
                 previous: Box::new(previous.clone()),
                 inner: Continuation::Return.into(),
             },
+            residual: None,
         });
         let ControlSignal::Perform(pending) = signal else {
             panic!("pending action")

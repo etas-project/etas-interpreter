@@ -33,7 +33,9 @@ mod host_enum;
 mod host_type_environment;
 mod host_value;
 pub(crate) mod workspace_discovery;
-pub(crate) use host_value::{host_to_checked_interp_value, host_to_typed_interp_value};
+pub(crate) use host_value::{
+    decode_checked_host_value, host_to_checked_interp_value, host_to_typed_interp_value,
+};
 pub(crate) mod collection_ordering;
 mod index_access;
 pub(crate) mod limit;
@@ -54,6 +56,7 @@ mod pipeline;
 pub(crate) mod priority_queue;
 mod reflection;
 pub(crate) mod replay;
+pub(crate) mod residual;
 mod run_state;
 pub use run_state::EvalRunState;
 mod collection_call;
@@ -128,7 +131,7 @@ use etas_host::{
 
 pub struct EvalContext<'a> {
     pub(crate) handler_floor: usize,
-    pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+    pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     code_syntax: std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
@@ -358,15 +361,36 @@ impl<'a> EvalContext<'a> {
     }
 
     pub(crate) fn host_authority(&self) -> AuthorityContext {
-        self.host_context.authority.clone()
+        let mut authority = self.host_context.authority.clone();
+        for approval in &authority.approvals {
+            for grant in &approval.grants {
+                if !authority.grants.contains(grant) {
+                    authority.grants.push(grant.clone());
+                }
+            }
+        }
+        authority
     }
 
-    pub(crate) fn record_approval_grant(&mut self, grant: ApprovalGrant) {
-        self.host_context
-            .authority
-            .grants
-            .extend(grant.grants.iter().cloned());
+    pub(crate) fn record_approval_grant(
+        &mut self,
+        grant: ApprovalGrant,
+    ) -> Result<(), etas_host::HostError> {
+        let approvals = &self.host_context.authority.approvals;
+        if approvals.iter().any(|accepted| accepted.id == grant.id) {
+            return Err(etas_host::HostError::new(
+                etas_host::HostErrorCode::InvalidResponse,
+                "approval request identity was already consumed in this run",
+            ));
+        }
+        if approvals.len() >= 4096 {
+            return Err(etas_host::HostError::new(
+                etas_host::HostErrorCode::BudgetExceeded,
+                "run-scoped approval ledger exceeds its entry limit",
+            ));
+        }
         self.host_context.authority.approvals.push(grant);
+        Ok(())
     }
 
     pub(crate) fn host_trace(&self) -> TraceContext {
@@ -544,7 +568,7 @@ fn compose_signal_continuation(signal: ControlSignal, continuation: Continuation
     }
 }
 
-fn path_name(action: &ResolvedActionRef) -> String {
+pub(crate) fn path_name(action: &ResolvedActionRef) -> String {
     action
         .effect
         .path

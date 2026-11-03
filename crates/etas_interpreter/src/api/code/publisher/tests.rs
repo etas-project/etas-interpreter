@@ -15,6 +15,7 @@ mod bridge;
 mod callables;
 mod checkpoint;
 mod checkpoint_nominal;
+mod flows;
 mod native_actions;
 mod origins;
 mod source_bindings;
@@ -94,7 +95,7 @@ async fn prepared_nominal_results_keep_the_checked_revision_type_correspondence(
         "module app; type UserId = string; type Profile = { id: UserId }; agent Worker(value: UserId) -> Profile { return Profile { id = value }; } flow inspect() -> unit { let d = ^Worker; return; }",
     );
     let candidate = compile(frozen.clone(), "return Profile { id = value };");
-    let callable = frozen.contract().header().default_entry.as_ref().unwrap();
+    let callable = frozen.contract().entry().unwrap();
     let scope = etas_code::descriptor::GenericOwner::Method(callable.as_method().unwrap().clone());
     let signature = |program: &CheckedProgram, item| match &program.types.item_signatures[&item] {
         etas_types::ItemSignature::Flow(signature) => signature.clone(),
@@ -171,7 +172,7 @@ async fn inline_revision_call_keeps_its_program_across_a_console_host_suspension
         prepared.clone(),
         None,
         &original,
-        prepared.targets.component,
+        prepared.targets.agent_component().unwrap(),
     )
     .unwrap();
     let host = crate::testing::FakeHost::new(crate::host::HostServiceAvailability {
@@ -212,7 +213,7 @@ async fn inline_revision_rejects_equal_local_ids_from_an_unrelated_checked_progr
         prepared.clone(),
         None,
         &original,
-        prepared.targets.component,
+        prepared.targets.agent_component().unwrap(),
     )
     .unwrap();
     let host = crate::testing::FakeHost::new(Default::default());

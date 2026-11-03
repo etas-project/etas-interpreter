@@ -25,7 +25,7 @@ impl ActionProjection {
         &self,
         revisions: &mut std::collections::BTreeMap<
             etas_code::RevisionKey,
-            Arc<crate::api::code::PreparedAgentRevision>,
+            Arc<crate::api::code::PreparedCodeRevision>,
         >,
     ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
         self.source.checkpoint_origin(revisions)

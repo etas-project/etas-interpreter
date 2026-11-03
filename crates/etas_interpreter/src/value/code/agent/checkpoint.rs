@@ -13,7 +13,7 @@ impl AgentRevisionValue {
 
     pub(crate) fn restore_checkpoint_reference(
         reference: &CheckpointAgentReference,
-        prepared: Arc<PreparedAgentRevision>,
+        prepared: Arc<PreparedCodeRevision>,
         source_revision: Option<Arc<crate::plan::code::RevisionTypeBridge>>,
         program: &CheckedProgram,
     ) -> Result<Self, String> {

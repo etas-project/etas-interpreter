@@ -27,7 +27,7 @@ impl CheckedActionInvocation {
         &self,
         revisions: &mut std::collections::BTreeMap<
             etas_code::RevisionKey,
-            std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
         >,
     ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
         self.validate_origin()?;

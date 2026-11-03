@@ -5,6 +5,7 @@ fn machine(continuation: ContinuationSnapshot) -> MachineSnapshot {
         program_owners: Default::default(),
         suspended_programs: Vec::new(),
         frames: vec![MachineFrameSnapshot::Continuation { continuation }],
+        residual: Default::default(),
     }
 }
 
@@ -100,6 +101,7 @@ fn shared_dag_validation_keeps_duplicate_scopes_and_invalid_leaves_fail_closed()
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
@@ -160,6 +162,7 @@ fn deep_continuation_validation_does_not_overflow_or_copy_snapshot_edges() {
             for _ in 0..depth {
                 root = match mode {
                     0 => ContinuationSnapshot::CallBoundary {
+                        caller: None,
                         span: crate::testing::synthetic_span(),
                         outer: root.into(),
                     },
@@ -205,6 +208,7 @@ fn boundary(scope_id: u32, inner: ContinuationSnapshot) -> ContinuationSnapshot 
         handlers: vec![],
         span: span(),
         frame: LocalsSnapshot {
+            residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
@@ -267,6 +271,7 @@ fn checkpoint(
 fn wrap(mut root: ContinuationSnapshot, depth: usize) -> ContinuationSnapshot {
     for _ in 0..depth {
         root = ContinuationSnapshot::CallBoundary {
+            caller: None,
             span: crate::testing::synthetic_span(),
             outer: root.into(),
         };
@@ -367,6 +372,7 @@ fn deep_validator_preserves_leaf_checks_and_handler_validation_order() {
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),

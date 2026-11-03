@@ -148,7 +148,7 @@ impl<'a> EvalContext<'a> {
                     })?,
             ),
             CallTarget::StdIntrinsic(call) => CallTarget::StdIntrinsic(
-                call.specialize(&self.checked.type_store, frame.type_bindings())
+                call.specialize_generic(&self.checked.type_store, frame.generic_bindings())
                     .map_err(|message| {
                         crate::control::ExecutionFault::new(
                             AnalysisDiagnosticCode::MissingCheckedFact,

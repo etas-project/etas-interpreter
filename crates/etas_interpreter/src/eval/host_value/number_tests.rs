@@ -80,6 +80,7 @@ fn nested_json_numeric_decode_preserves_nominal_identity_and_target_types() {
         ],
     }));
     let nominal = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "app.Measurements".into(),
         params: vec![],
         representation: Some(record),

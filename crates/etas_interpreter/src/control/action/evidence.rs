@@ -1,7 +1,7 @@
 use std::sync::Arc;
 
 use crate::{
-    api::code::PreparedAgentRevision,
+    api::code::PreparedCodeRevision,
     intrinsic::dispatch::CheckedStdIntrinsicCall,
     plan::{checked_action::CheckedActionAbi, code::RevisionProjection},
     value::CheckedExecutionProgram,
@@ -26,7 +26,7 @@ enum EvidenceNode {
     Projected {
         source: ActionEvidence,
         edge: RevisionProjection,
-        owner: Arc<PreparedAgentRevision>,
+        owner: Arc<PreparedCodeRevision>,
     },
 }
 
@@ -51,7 +51,7 @@ impl ActionEvidence {
         &self,
         revisions: &mut std::collections::BTreeMap<
             etas_code::RevisionKey,
-            Arc<PreparedAgentRevision>,
+            Arc<PreparedCodeRevision>,
         >,
     ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
         use crate::orchestration::{

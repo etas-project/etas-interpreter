@@ -4,14 +4,14 @@ use etas_frontend::CheckedProject;
 use etas_hir::HirItemId;
 
 use crate::{
-    api::{RunOptions, code::PreparedAgentRevision},
+    api::{RunOptions, code::PreparedCodeRevision},
     orchestration::{CheckpointCodeRevision, InterpreterCheckpoint},
 };
 
 pub(super) fn bind_options(
     project: &CheckedProject,
     entry: HirItemId,
-    prepared: Option<&Arc<PreparedAgentRevision>>,
+    prepared: Option<&Arc<PreparedCodeRevision>>,
     options: &mut RunOptions,
 ) -> Result<(), String> {
     let Some(revision) = prepared else {
@@ -47,7 +47,7 @@ pub(super) fn bind_options(
 pub(super) fn validate_checkpoint(
     project: &CheckedProject,
     checkpoint: &InterpreterCheckpoint,
-    prepared: Option<&Arc<PreparedAgentRevision>>,
+    prepared: Option<&Arc<PreparedCodeRevision>>,
 ) -> Result<(), String> {
     match (&checkpoint.code_revision, prepared) {
         (None, None) if !project.definition_sources.requires_revision_context() => Ok(()),

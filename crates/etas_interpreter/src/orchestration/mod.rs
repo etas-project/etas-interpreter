@@ -18,6 +18,15 @@ pub use checkpoint::{StorageSnapshot, StorageWriteRecord};
 pub(crate) use snapshot_storage::{SnapshotBox, SnapshotChildren};
 mod identity;
 mod ledger;
+mod residual;
+pub(crate) use residual::{
+    MAX_CHECKPOINT_RESIDUAL_ATTEMPTS, MAX_CHECKPOINT_RESIDUAL_ENTRIES,
+    MAX_CHECKPOINT_RESIDUAL_EXITS, MAX_CHECKPOINT_RESIDUAL_SCOPES, ResidualAttemptSnapshot,
+    ResidualEvidenceSnapshot, ResidualExitKindSnapshot, ResidualExitLogSnapshot,
+    ResidualExitRecordSnapshot, ResidualExitSnapshot, ResidualMachineSnapshot,
+    ResidualObservedScopeSnapshot, ResidualOutcomeSnapshot, ResidualOutcomeStatusSnapshot,
+    ResidualPendingSnapshot, ResidualScopeResultSnapshot, ResidualScopeSnapshot,
+};
 
 pub use checkpoint::{
     ActiveHandlerArmRecord, ActiveHandlerRecord, BoundaryOccurrenceId, CheckpointBudgetSnapshot,
