@@ -26,10 +26,12 @@ impl EvalContext<'_> {
                 let bindings = frame.generic_bindings();
                 let application = scope.applications.iter().find(|application| {
                     application
+                        .checked
                         .type_bindings
                         .iter()
                         .all(|(name, ty)| bindings.types.get(name) == Some(ty))
                         && application
+                            .checked
                             .effect_row_bindings
                             .iter()
                             .all(|(name, row)| bindings.rows.get(name) == Some(row))

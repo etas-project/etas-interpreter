@@ -9,8 +9,8 @@ use crate::diagnostics::item_span;
 use crate::plan::context::{PlanContext, plan_pass};
 
 use super::{
-    PreparedResidualPlans, PreparedResidualScope, PreparedTracePlan, artifacts::*,
-    interpreter_residual_capabilities,
+    PreparedResidualApplication, PreparedResidualPlans, PreparedResidualScope, PreparedTracePlan,
+    artifacts::*, interpreter_residual_capabilities,
 };
 
 /// Binds every validated plan to the checked callable whose invocations
@@ -109,7 +109,7 @@ impl Pass<PlanContext<'_>> for BindResidualSitesPass {
                 return PassResult::failed("residual owner has no checked action footprint");
             };
             let applications = match plans.applications(project, item) {
-                Ok(applications) => applications.into_iter().map(Arc::new).collect::<Vec<_>>(),
+                Ok(applications) => applications,
                 Err(error) => {
                     context.push_missing_fact(
                         span,
@@ -118,6 +118,32 @@ impl Pass<PlanContext<'_>> for BindResidualSitesPass {
                     return PassResult::failed("residual site binding failed");
                 }
             };
+            let mut specialized = Vec::with_capacity(applications.len());
+            for application in applications {
+                let mut scopes = Vec::with_capacity(prepared.len());
+                for plan in &prepared {
+                    match plan.checked.plan().specialize_scope(
+                        plan.scope,
+                        plan.activation,
+                        &application.bindings,
+                        &application.type_descriptors,
+                        crate::control::residual::ResidualStateLimits::default().max_components,
+                    ) {
+                        Ok(scope) => scopes.push(scope),
+                        Err(error) => {
+                            context.push_missing_fact(
+                                span,
+                                &format!("residual application cannot be installed: {error:?}"),
+                            );
+                            return PassResult::failed("residual type specialization failed");
+                        }
+                    }
+                }
+                specialized.push(Arc::new(PreparedResidualApplication {
+                    checked: application,
+                    scopes,
+                }));
+            }
             let mut approval_target = None;
             for effect in summary
                 .requested_actions
@@ -147,7 +173,7 @@ impl Pass<PlanContext<'_>> for BindResidualSitesPass {
                     item,
                     revision: revision.key(),
                     plans: prepared,
-                    applications,
+                    applications: specialized,
                     approval_target,
                 }),
             );

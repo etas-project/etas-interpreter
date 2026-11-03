@@ -60,8 +60,14 @@ pub(crate) struct PreparedResidualScope {
     pub(crate) item: HirItemId,
     pub(crate) revision: RevisionKey,
     pub(crate) plans: Vec<PreparedTracePlan>,
-    pub(crate) applications: Vec<Arc<etas_frontend::CheckedResidualApplication>>,
+    pub(crate) applications: Vec<Arc<PreparedResidualApplication>>,
     pub(crate) approval_target: Option<etas_code::descriptor::EffectTargetInfo>,
+}
+
+#[derive(Debug)]
+pub(crate) struct PreparedResidualApplication {
+    pub(crate) checked: etas_frontend::CheckedResidualApplication,
+    pub(crate) scopes: Vec<etas_code::residual::plan::SpecializedResidualScope>,
 }
 
 impl PreparedResidualScope {
@@ -125,7 +131,7 @@ impl PreparedResidualPlans {
                 parts.push(plan.bound.as_bytes().to_vec());
             }
             for application in &scope.applications {
-                parts.push(application.fingerprint.as_bytes().to_vec());
+                parts.push(application.checked.fingerprint.as_bytes().to_vec());
             }
         }
         CodeFingerprint::of_parts(
