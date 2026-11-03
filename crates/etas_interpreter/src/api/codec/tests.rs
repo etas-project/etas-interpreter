@@ -1896,5 +1896,10 @@ fn checkpoint_codec_rejects_v54_without_checked_standard_constant_identity() {
 fn checkpoint_codec_rejects_v65_without_bounded_directory_continuations() {
     let artifact = json!({ "schema": "etas.cli.interpreter-checkpoint.v65", "checkpoint": {} });
     let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
-    assert!(error.message().contains("unsupported checkpoint artifact schema"), "{error}");
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
 }
