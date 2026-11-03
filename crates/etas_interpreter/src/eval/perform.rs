@@ -89,7 +89,7 @@ impl<'a> EvalContext<'a> {
             residual: None,
         };
         if error_type.is_none() {
-            match self.action_invocation(&pending, expr, frame) {
+            match self.action_invocation(&pending, frame) {
                 Ok(proof) => pending.checked_action = Some(proof),
                 Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
             }
@@ -100,22 +100,9 @@ impl<'a> EvalContext<'a> {
     fn action_invocation(
         &self,
         pending: &PendingPerform,
-        expr: HirExprId,
         frame: &Frame,
     ) -> Result<crate::control::CheckedActionInvocation, String> {
-        let mut bindings = frame.type_bindings().clone();
-        if let Some(fact) = self.checked.types.generic_instantiations.get(&expr) {
-            for (name, ty) in &fact.type_bindings {
-                let ty = etas_types::substitute_named_params_in_store(
-                    &self.checked.type_store,
-                    *ty,
-                    frame.type_bindings(),
-                )
-                .map_err(|error| error.to_string())?;
-                bindings.insert(name.clone(), ty);
-            }
-        }
-        self.action_invocation_with_bindings(pending, &bindings)
+        self.action_invocation_with_bindings(pending, frame.type_bindings())
     }
 
     pub(in crate::eval) fn action_invocation_with_bindings(

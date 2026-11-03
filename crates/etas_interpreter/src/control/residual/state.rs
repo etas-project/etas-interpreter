@@ -58,7 +58,7 @@ impl Default for ResidualStateLimits {
 #[derive(Clone, Debug)]
 pub(crate) struct ResidualScopeActivation {
     pub(crate) scope: Arc<PreparedResidualScope>,
-    pub(crate) application: Arc<etas_frontend::CheckedResidualApplication>,
+    pub(crate) application: Arc<crate::plan::residual::PreparedResidualApplication>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -110,7 +110,7 @@ pub(crate) enum ResidualPreview {
 /// other invocations; its registers, evidence and cursor are its own.
 pub(crate) struct ResidualScopeInstance {
     prepared: Arc<PreparedResidualScope>,
-    application: Arc<etas_frontend::CheckedResidualApplication>,
+    application: Arc<crate::plan::residual::PreparedResidualApplication>,
     program: CheckedProgram,
     invocation: ScopeInvocationId,
     span: etas_core::Span,
@@ -141,7 +141,7 @@ impl std::fmt::Debug for ResidualScopeInstance {
 impl ResidualScopeInstance {
     pub(crate) fn activate(
         prepared: Arc<PreparedResidualScope>,
-        application: Arc<etas_frontend::CheckedResidualApplication>,
+        application: Arc<crate::plan::residual::PreparedResidualApplication>,
         program: CheckedProgram,
         invocation: ScopeInvocationId,
         log: &Rc<ResidualRunLog>,
@@ -155,7 +155,7 @@ impl ResidualScopeInstance {
             .span();
         validate_component_budget(&prepared, limits.max_components)?;
         let mut states = Vec::with_capacity(prepared.plans.len());
-        for plan in &prepared.plans {
+        for (index, plan) in prepared.plans.iter().enumerate() {
             let scope = AlternativeScope {
                 scope: plan.scope,
                 activation: plan.activation,
@@ -165,11 +165,10 @@ impl ResidualScopeInstance {
             states.push(
                 plan.checked
                     .plan()
-                    .initial_scope_with_bindings(
+                    .initial_specialized_scope(
                         scope,
                         limits.max_components,
-                        &application.bindings,
-                        &application.structures,
+                        &application.scopes[index],
                     )
                     .map_err(|error| format!("residual scope cannot be activated: {error:?}"))?,
             );
@@ -229,7 +228,7 @@ impl ResidualScopeInstance {
             },
         )
         .map_err(|error| format!("checkpoint residual action identity is invalid: {error:?}"))?;
-        if !self.application.actions.contains(action) {
+        if !self.application.checked.actions.contains(action) {
             return Err(
                 "checkpoint residual action is absent from the checked scope footprint".into(),
             );
@@ -477,7 +476,7 @@ impl ResidualScopeInstance {
         };
         crate::orchestration::ResidualScopeSnapshot {
             item: self.prepared.item.0,
-            application: self.application.fingerprint,
+            application: self.application.checked.fingerprint,
             revision: self.prepared.revision,
             invocation: *self.invocation.as_bytes(),
             version: self.version,
@@ -545,7 +544,7 @@ impl ResidualScopeInstance {
         let application = prepared
             .applications
             .iter()
-            .find(|application| application.fingerprint == snapshot.application)
+            .find(|application| application.checked.fingerprint == snapshot.application)
             .ok_or("residual checkpoint has no matching checked application")?
             .clone();
         let span = program
@@ -563,7 +562,7 @@ impl ResidualScopeInstance {
         let invocation = ScopeInvocationId::from_bytes(snapshot.invocation);
         let mut states = Vec::with_capacity(prepared.plans.len());
         let mut attempt_cursor = None;
-        for (plan, data) in prepared.plans.iter().zip(&snapshot.states) {
+        for (index, (plan, data)) in prepared.plans.iter().zip(&snapshot.states).enumerate() {
             let scope = AlternativeScope {
                 scope: plan.scope,
                 activation: plan.activation,
@@ -573,12 +572,11 @@ impl ResidualScopeInstance {
             let state = plan
                 .checked
                 .plan()
-                .restore_scope_with_bindings(
+                .restore_specialized_scope(
                     scope,
                     data,
                     limits.max_components,
-                    &application.bindings,
-                    &application.structures,
+                    &application.scopes[index],
                 )
                 .map_err(|error| {
                     format!("residual checkpoint scope state is invalid: {error:?}")

@@ -14,7 +14,7 @@ use etas_code::residual::target::{
 /// Engine identity participating in plan support and installation evidence.
 pub(crate) const RESIDUAL_ENGINE: &str = "etas.interpreter.residual";
 /// Bumped whenever event, evidence, exit or persistence semantics change.
-pub(crate) const RESIDUAL_ENGINE_SEMANTIC_VERSION: u32 = 4;
+pub(crate) const RESIDUAL_ENGINE_SEMANTIC_VERSION: u32 = 5;
 
 /// The interpreter executes trace-alternative components through the shared
 /// kernel: every governed action is previewed before dispatch on all source,

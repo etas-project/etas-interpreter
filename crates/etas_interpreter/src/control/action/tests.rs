@@ -126,10 +126,7 @@ fn source_action_origin_rejects_generic_bindings_that_violate_action_spec_bounds
     let error = CheckedActionInvocation::source(execution.clone(), expr, &bindings).unwrap_err();
     assert!(error.contains("violates a checked spec bound"), "{error}");
     let error = CheckedActionInvocation::source(execution, expr, &HashMap::new()).unwrap_err();
-    assert!(
-        error.contains("missing a bounded generic argument"),
-        "{error}"
-    );
+    assert!(error.contains("generic argument is not closed"), "{error}");
 }
 
 #[test]

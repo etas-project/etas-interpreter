@@ -72,8 +72,26 @@ pub(crate) fn source_action(
             return Err("inference origin disagrees with its checked schema or action".into());
         }
     }
-    let substitute = |ty| {
+    let substitute_caller = |ty| {
         etas_types::substitute_named_params_in_store(&checked.type_store, ty, bindings)
+            .map_err(|error| error.to_string())
+    };
+    let mut action_bindings = bindings.clone();
+    if args.is_some() {
+        if let Some(instantiation) = checked.types.generic_instantiations.get(&expr) {
+            for (name, ty) in &instantiation.type_bindings {
+                let actual = substitute_caller(*ty)?;
+                etas_types::TypeSubstitutionEngine::existing(&checked.type_store, &HashMap::new())
+                    .validate_closed_argument(actual)
+                    .map_err(|error| {
+                        format!("action origin generic argument is not closed: {error}")
+                    })?;
+                action_bindings.insert(name.clone(), actual);
+            }
+        }
+    }
+    let substitute = |ty| {
+        etas_types::substitute_named_params_in_store(&checked.type_store, ty, &action_bindings)
             .map_err(|error| error.to_string())
     };
     let mut obligations = Vec::new();
@@ -81,7 +99,7 @@ pub(crate) fn source_action(
         if param.bounds.is_empty() {
             continue;
         }
-        let actual = bindings
+        let actual = action_bindings
             .get(&param.name)
             .copied()
             .ok_or("action origin is missing a bounded generic argument")?;
@@ -103,7 +121,7 @@ pub(crate) fn source_action(
             &checked.type_store,
             execution.plan.checked_spec_facts(),
             &obligations,
-            bindings,
+            &action_bindings,
         );
         if let Some(failure) = report.failures.first() {
             return Err(format!(
@@ -116,7 +134,7 @@ pub(crate) fn source_action(
     if let etas_effects::Effect::AppliedAction(instance) = &mut effect {
         for arg in &mut instance.args {
             if let etas_types::EffectArgRef::Type(ty) = arg {
-                *ty = substitute(*ty)?;
+                *ty = substitute_caller(*ty)?;
             }
         }
     }
