@@ -43,6 +43,9 @@ pub enum CommandCallable {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum FilesystemCallable {
+    Root,
+    RelativeName,
+    ListLimited,
     Path,
     ReadBytes,
     ReadBytesLimited,
@@ -281,6 +284,13 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         intrinsic::runtime::COMMAND_WITH_CWD => StdCallable::Command(CommandCallable::WithCwd),
         intrinsic::runtime::COMMAND_WITH_STDIN => StdCallable::Command(CommandCallable::WithStdin),
         intrinsic::runtime::COMMAND_RUN => StdCallable::Command(CommandCallable::Run),
+        intrinsic::runtime::FS_ROOT => StdCallable::Filesystem(FilesystemCallable::Root),
+        intrinsic::runtime::FS_RELATIVE_NAME => {
+            StdCallable::Filesystem(FilesystemCallable::RelativeName)
+        }
+        intrinsic::runtime::FS_LIST_LIMITED => {
+            StdCallable::Filesystem(FilesystemCallable::ListLimited)
+        }
         intrinsic::runtime::FS_PATH => StdCallable::Filesystem(FilesystemCallable::Path),
         intrinsic::runtime::FS_READ_BYTES => StdCallable::Filesystem(FilesystemCallable::ReadBytes),
         intrinsic::runtime::FS_READ_BYTES_LIMITED => {

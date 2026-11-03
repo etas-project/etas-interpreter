@@ -31,6 +31,15 @@ impl ContinuationSnapshot {
                     "an in-progress pure key comparison cannot cross a checkpoint boundary".into(),
                 );
             }
+            Continuation::DirectoryListReduction(state) => Self::DirectoryListReduction {
+                call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
+                    state.call.clone(),
+                ))?,
+                args: capture_values(&state.args, context)?,
+                max_entries: state.max_entries,
+                max_bytes: state.max_bytes,
+                span: state.span,
+            },
             Continuation::FileReadReduction(state) => Self::FileReadReduction {
                 call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
                     state.call.clone(),
@@ -695,6 +704,28 @@ impl ContinuationSnapshot {
                     .ok_or("source tool continuation has no restore Host context")?;
                 Continuation::SourceToolReturn(crate::eval::machine::SourceToolContinuation(
                     Box::new(saved.restore(&current, context)?),
+                ))
+            }
+            Self::DirectoryListReduction {
+                call,
+                args,
+                max_entries,
+                max_bytes,
+                span,
+            } => {
+                let crate::control::CallTarget::StdIntrinsic(call) =
+                    super::call_target::restore_call_target(call, context)?
+                else {
+                    return Err("bounded directory reducer requires a checked intrinsic".into());
+                };
+                Continuation::DirectoryListReduction(Box::new(
+                    crate::control::DirectoryListReduction {
+                        call,
+                        args: restore_values(args, context)?,
+                        max_entries,
+                        max_bytes,
+                        span,
+                    },
                 ))
             }
             Self::FileReadReduction {

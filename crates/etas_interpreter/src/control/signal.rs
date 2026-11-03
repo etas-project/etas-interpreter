@@ -364,19 +364,37 @@ pub enum CommandDecode {
 
 #[derive(Clone, Copy, Debug)]
 pub enum HostBoundaryDecode {
-    SessionHistory { result_type: etas_types::TypeId },
-    SessionContext { result_type: etas_types::TypeId },
-    Storage { result_type: etas_types::TypeId },
+    SessionHistory {
+        result_type: etas_types::TypeId,
+    },
+    SessionContext {
+        result_type: etas_types::TypeId,
+    },
+    Storage {
+        result_type: etas_types::TypeId,
+    },
     Bytes,
     Unit,
     PathList,
     FilesystemStat,
-    FileReadLimited { max_bytes: usize },
+    FileReadLimited {
+        max_bytes: usize,
+    },
+    DirectoryListLimited {
+        max_entries: usize,
+        max_bytes: usize,
+    },
     TcpStream,
-    StreamRead { result_type: etas_types::TypeId },
+    StreamRead {
+        result_type: etas_types::TypeId,
+    },
     TlsStream,
-    SecretValue { result_type: etas_types::TypeId },
-    SecretBytes { result_type: etas_types::TypeId },
+    SecretValue {
+        result_type: etas_types::TypeId,
+    },
+    SecretBytes {
+        result_type: etas_types::TypeId,
+    },
     BrowserPayload,
 }
 

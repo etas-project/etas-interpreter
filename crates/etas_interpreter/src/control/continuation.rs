@@ -26,6 +26,7 @@ pub enum Continuation {
     OrderedSearch(Box<crate::eval::ordered_collection::OrderedSearch>),
     StreamReadReduction(Box<super::StreamReadReduction>),
     FileReadReduction(Box<super::FileReadReduction>),
+    DirectoryListReduction(Box<super::DirectoryListReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
     SourceToolReturn(crate::eval::machine::SourceToolContinuation),
     ContinueBlock {

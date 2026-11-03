@@ -29,6 +29,13 @@ fn continuation_leaf_from_snapshot(
                 .map_err(|error| error.to_string())?,
             ))
         }
+        "directory_list_reduction" => ContinuationSnapshot::DirectoryListReduction {
+            call: call_target_snapshot_from_json(limits, required(value, "call")?)?,
+            args: required_values(limits, value, "args")?,
+            max_entries: required_usize(value, "max_entries")?,
+            max_bytes: required_usize(value, "max_bytes")?,
+            span: span_from_snapshot(required(value, "span")?)?,
+        },
         "file_read_reduction" => ContinuationSnapshot::FileReadReduction {
             call: call_target_snapshot_from_json(limits, required(value, "call")?)?,
             args: required_values(limits, value, "args")?,

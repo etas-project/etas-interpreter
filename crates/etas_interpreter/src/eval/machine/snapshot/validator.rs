@@ -1,12 +1,12 @@
 use std::collections::BTreeSet;
 
 mod access;
+mod bounded_filesystem_reducer;
 mod call_site;
 mod call_target;
 mod callable_types;
 mod comparison;
 mod construction;
-mod file_read_reducer;
 mod frame;
 mod program;
 mod reference_presence;
@@ -475,8 +475,9 @@ impl<'a> SnapshotValidator<'a> {
                     .push((*id, self.checked.clone()));
                 Ok(())
             }
-            ContinuationSnapshot::FileReadReduction { .. } => {
-                self.file_read_reduction(continuation, context)
+            ContinuationSnapshot::FileReadReduction { .. }
+            | ContinuationSnapshot::DirectoryListReduction { .. } => {
+                self.bounded_filesystem_reduction(continuation, context)
             }
             ContinuationSnapshot::StreamReadReduction { .. } => {
                 self.stream_read_reduction(continuation, context)

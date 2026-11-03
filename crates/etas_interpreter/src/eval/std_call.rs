@@ -855,7 +855,43 @@ impl<'a> EvalContext<'a> {
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
         let result = match callable {
-            FilesystemCallable::ReadBytesLimited => {
+            FilesystemCallable::Root => {
+                if !call_args.is_empty() {
+                    return ControlSignal::invalid_arguments(
+                        "std.fs.root expects no arguments",
+                        span,
+                    );
+                }
+                return match self
+                    .workspace_path_region(checked_call.result_type, type_bindings, span)
+                    .and_then(|region| {
+                        etas_host::WorkspaceRegionId::new(region).map_err(|error| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                error.message,
+                            )
+                        })
+                    }) {
+                    Ok(region) => ControlSignal::Value(InterpValue::WorkspacePath(
+                        etas_host::WorkspacePathRef::root(region),
+                    )),
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                };
+            }
+            FilesystemCallable::RelativeName => {
+                let [InterpValue::WorkspacePath(path)] = call_args.as_slice() else {
+                    return ControlSignal::invalid_arguments(
+                        "std.fs.relative_name expects WorkspacePath<R>",
+                        span,
+                    );
+                };
+                return match path.relative_name() {
+                    Ok(name) => ControlSignal::Value(InterpValue::String(name.into())),
+                    Err(error) => ControlSignal::missing_checked_fact(error.message, span),
+                };
+            }
+            FilesystemCallable::ReadBytesLimited | FilesystemCallable::ListLimited => {
                 return ControlSignal::missing_checked_fact(
                     "bounded filesystem read requires its checked action reducer",
                     span,
@@ -1417,8 +1453,17 @@ impl<'a> EvalContext<'a> {
                 "std.fs.path checked result is not Result<WorkspacePath<R>, IOError>",
             ));
         };
-        let Some(etas_types::Type::Applied { constructor, args }) =
-            self.checked.type_store.get(*ok)
+        let region = self.workspace_path_region(*ok, type_bindings, span)?;
+        Ok((*err, region))
+    }
+
+    fn workspace_path_region(
+        &self,
+        ty: etas_types::TypeId,
+        type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
+        span: Span,
+    ) -> Result<String, ExecutionFault> {
+        let Some(etas_types::Type::Applied { constructor, args }) = self.checked.type_store.get(ty)
         else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -1426,21 +1471,21 @@ impl<'a> EvalContext<'a> {
                 "std.fs.path checked success type is not WorkspacePath<R>",
             ));
         };
-        let constructor_type = etas_types::TypeId(constructor.0);
-        let constructor_name = match self.checked.type_store.get(constructor_type) {
-            Some(etas_types::Type::Named(named)) => named.name.as_str(),
-            Some(etas_types::Type::Nominal(nominal)) => nominal.name.as_str(),
-            _ => "",
-        };
-        if constructor_name != "std.fs.WorkspacePath" || args.len() != 1 {
+        if self
+            .checked
+            .types
+            .known_std_types
+            .runtime_type(etas_std::RuntimeTypeRole::WorkspacePath)
+            != Some(etas_types::TypeId(constructor.0))
+            || args.len() != 1
+        {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
                 "std.fs.path checked success type has inconsistent WorkspacePath identity",
             ));
         }
-        let region = self.canonical_region_identity(args[0], type_bindings, span)?;
-        Ok((*err, region))
+        self.canonical_region_identity(args[0], type_bindings, span)
     }
 
     fn canonical_region_identity(

@@ -32,6 +32,7 @@ mod handler;
 mod host_enum;
 mod host_type_environment;
 mod host_value;
+pub(crate) mod workspace_discovery;
 pub(crate) use host_value::{host_to_checked_interp_value, host_to_typed_interp_value};
 pub(crate) mod collection_ordering;
 mod index_access;

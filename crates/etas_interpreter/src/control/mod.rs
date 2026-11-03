@@ -8,7 +8,8 @@ mod generics;
 mod signal;
 
 pub use action::{
-    CheckedActionInvocation, DefaultActionBoundary, FileReadReduction, StreamReadReduction,
+    CheckedActionInvocation, DefaultActionBoundary, DirectoryListReduction, FileReadReduction,
+    StreamReadReduction,
 };
 pub use call_site::{CallSite, CallSiteKind};
 pub(crate) use call_site::{ComposedInvocation, InvocationPath};
