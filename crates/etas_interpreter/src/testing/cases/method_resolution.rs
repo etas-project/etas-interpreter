@@ -1,6 +1,52 @@
 use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
+#[tokio::test(flavor = "current_thread")]
+async fn method_chains_execute_inferred_callbacks_and_empty_literal_arguments() {
+    let source = include_str!("../fixtures/method_resolution/contextual_arguments.es")
+        .replace(
+            "module app.main;",
+            "module app.main; import std.io.println; import std.runtime.checkpoint;",
+        )
+        .replace(
+            "return item.read_value();",
+            "println(\"callback\")?; checkpoint(\"callback\"); return item.read_value();",
+        );
+    let checked = checked_project(&source);
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(8)));
+    assert_eq!(host.stdout_text(), "callback\n");
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
+    let checkpoint = checkpoint_from_json(&artifact, &checked).unwrap();
+    let host = FakeHost::new(services);
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &checkpoint, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+    assert_eq!(host.stdout_text(), "");
+}
+
 #[test]
 fn checked_method_plan_preserves_the_callers_same_named_effect_row() {
     let checked = checked_project(include_str!("../fixtures/method_resolution/outer_row.es"));
