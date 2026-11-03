@@ -15,6 +15,16 @@ impl EvalContext<'_> {
         span: Span,
     ) -> ControlSignal {
         match reducer {
+            StdActionReducer::BoundedDirectoryList {
+                entry_limit_parameter,
+                byte_limit_parameter,
+            } => self.start_directory_list_reducer(
+                call,
+                args,
+                entry_limit_parameter,
+                byte_limit_parameter,
+                span,
+            ),
             StdActionReducer::ReadUntilLimit {
                 limit_parameter,
                 timeout_parameter,

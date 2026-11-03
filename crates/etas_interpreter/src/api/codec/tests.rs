@@ -9,7 +9,11 @@ fn checkpoint_codec_rejects_v61_with_restorable_approval_flags() {
             .message()
             .contains("unsupported checkpoint artifact schema")
     );
-    assert!(error.message().contains("v67"));
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
 }
 
 #[test]
@@ -24,7 +28,11 @@ fn checkpoint_codec_rejects_v62_without_invocation_ownership() {
             .message()
             .contains("unsupported checkpoint artifact schema")
     );
-    assert!(error.message().contains("v67"));
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
 }
 
 #[test]
@@ -1889,5 +1897,29 @@ fn checkpoint_codec_rejects_v54_without_checked_standard_constant_identity() {
         error
             .message()
             .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v65_without_bounded_directory_continuations() {
+    let artifact = json!({ "schema": "etas.cli.interpreter-checkpoint.v65", "checkpoint": {} });
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
+    );
+}
+
+#[test]
+fn checkpoint_codec_rejects_v66_before_combined_residual_and_directory_schema() {
+    let artifact = json!({ "schema": "etas.cli.interpreter-checkpoint.v66", "checkpoint": {} });
+    let error = checkpoint_from_json(&artifact, &checked_project()).unwrap_err();
+    assert!(
+        error
+            .message()
+            .contains("unsupported checkpoint artifact schema"),
+        "{error}"
     );
 }

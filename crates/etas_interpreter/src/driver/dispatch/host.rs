@@ -20,7 +20,13 @@ use super::{
 enum HostBoundaryFailure {
     Host(HostError),
     Stream(StreamFailure),
-    FileReadLimit { max_bytes: usize },
+    FileReadLimit {
+        max_bytes: usize,
+    },
+    DirectoryListLimit {
+        max_entries: usize,
+        max_bytes: usize,
+    },
 }
 
 pub(in crate::driver) async fn dispatch(
@@ -127,6 +133,23 @@ pub(in crate::driver) async fn dispatch(
         .await
         {
             Ok(response) => match (response.result, boundary.decode) {
+                (
+                    Ok(FilesystemEntry::LimitedEntries(
+                        etas_host::BoundedDirectoryList::LimitExceeded {
+                            max_entries,
+                            max_bytes,
+                        },
+                    )),
+                    HostBoundaryDecode::DirectoryListLimited {
+                        max_entries: expected_entries,
+                        max_bytes: expected_bytes,
+                    },
+                ) if max_entries == expected_entries && max_bytes == expected_bytes => {
+                    Err(HostBoundaryFailure::DirectoryListLimit {
+                        max_entries,
+                        max_bytes,
+                    })
+                }
                 (
                     Ok(FilesystemEntry::LimitedRead(etas_host::BoundedFileRead::LimitExceeded {
                         max_bytes,
@@ -257,6 +280,32 @@ pub(in crate::driver) async fn dispatch(
     };
     match result {
         Ok(Ok(value)) => {
+            if let HostBoundaryDecode::DirectoryListLimited {
+                max_entries,
+                max_bytes,
+            } = boundary.decode
+            {
+                let valid = match &boundary.request {
+                    HostBoundaryRequest::Filesystem(request) => match &request.operation {
+                        etas_host::FilesystemOperation::ReadDirLimited { path, .. } => {
+                            crate::eval::workspace_discovery::listing_within_bounds(
+                                &value,
+                                path,
+                                max_entries,
+                                max_bytes,
+                            )
+                        }
+                        _ => Err("bounded listing has an inconsistent request operation".into()),
+                    },
+                    _ => Err("bounded listing has an inconsistent boundary kind".into()),
+                };
+                if valid != Ok(true) {
+                    return Some(ControlSignal::missing_checked_fact(
+                        format!("invalid bounded directory response: {valid:?}"),
+                        boundary.span,
+                    ));
+                }
+            }
             if let Some(key) = key {
                 if let Err(fault) = eval.record_completed_host_boundary(
                     occurrence,
@@ -283,6 +332,15 @@ pub(in crate::driver) async fn dispatch(
         Err(HostBoundaryFailure::FileReadLimit { max_bytes }) => {
             Some(eval.raise_file_read_limit(max_bytes, boundary.continuation, boundary.span))
         }
+        Err(HostBoundaryFailure::DirectoryListLimit {
+            max_entries,
+            max_bytes,
+        }) => Some(eval.raise_directory_list_limit(
+            max_entries,
+            max_bytes,
+            boundary.continuation,
+            boundary.span,
+        )),
         Err(HostBoundaryFailure::Host(error)) => {
             if matches!(&boundary.request, HostBoundaryRequest::Filesystem(_))
                 && error.code == etas_host::HostErrorCode::IoFailure
@@ -379,6 +437,29 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
     entry: FilesystemEntry,
 ) -> Result<InterpValue, String> {
     match (decode, entry) {
+        (
+            HostBoundaryDecode::DirectoryListLimited {
+                max_entries,
+                max_bytes,
+            },
+            FilesystemEntry::LimitedEntries(etas_host::BoundedDirectoryList::Complete(entries)),
+        ) => {
+            let mut bytes = 0usize;
+            for entry in &entries {
+                bytes = bytes
+                    .checked_add(entry.relative_name().map_err(|error| error.message)?.len())
+                    .ok_or("directory response size overflow")?;
+            }
+            if entries.len() > max_entries || bytes > max_bytes {
+                return Err("Host directory response exceeded requested limits".into());
+            }
+            Ok(InterpValue::List(ListValue::new(
+                entries
+                    .into_iter()
+                    .map(InterpValue::WorkspacePath)
+                    .collect(),
+            )))
+        }
         (
             HostBoundaryDecode::FileReadLimited { max_bytes },
             FilesystemEntry::LimitedRead(etas_host::BoundedFileRead::Complete(bytes)),
@@ -582,7 +663,10 @@ pub(in crate::driver) fn filesystem_policy_subject(
         FilesystemOperation::Delete { path } => {
             ("delete", "HostFilesystem.delete", format!("{path:?}"))
         }
-        FilesystemOperation::ReadDir { path } => ("list", "Fs.list", format!("{path:?}")),
+        FilesystemOperation::ReadDir { path }
+        | FilesystemOperation::ReadDirLimited { path, .. } => {
+            ("list", "Fs.list", format!("{path:?}"))
+        }
         FilesystemOperation::Stat { path } => ("stat", "Fs.stat", format!("{path:?}")),
         FilesystemOperation::AtomicReplace { path, .. } => {
             ("atomic_replace", "Fs.atomic_replace", format!("{path:?}"))

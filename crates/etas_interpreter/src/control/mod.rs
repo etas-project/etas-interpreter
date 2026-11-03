@@ -9,7 +9,8 @@ pub(crate) mod residual;
 mod signal;
 
 pub use action::{
-    CheckedActionInvocation, DefaultActionBoundary, FileReadReduction, StreamReadReduction,
+    CheckedActionInvocation, DefaultActionBoundary, DirectoryListReduction, FileReadReduction,
+    StreamReadReduction,
 };
 pub(crate) use call_site::{CallOrigin, ComposedInvocation, InvocationPath};
 pub use call_site::{CallSite, CallSiteKind};

@@ -30,6 +30,7 @@ pub enum Continuation {
     OrderedSearch(Box<crate::eval::ordered_collection::OrderedSearch>),
     StreamReadReduction(Box<super::StreamReadReduction>),
     FileReadReduction(Box<super::FileReadReduction>),
+    DirectoryListReduction(Box<super::DirectoryListReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
     /// An invocation's residual scope captured while an effect request is
     /// handled outside it. Restored as its explicit frame on resume.
