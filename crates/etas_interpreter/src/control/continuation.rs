@@ -12,14 +12,6 @@ use crate::{
     value::InterpValue,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq)]
-pub enum StaticMethodKind {
-    Prompt,
-    Message,
-    SessionConfig,
-    Conversation,
-}
-
 #[derive(Clone, Debug)]
 pub enum Continuation {
     ValidateCompileResult {
@@ -177,38 +169,6 @@ pub enum Continuation {
         allow_plain_system_content: bool,
         span: Span,
     },
-    LocalMethodArgs {
-        expr: HirExprId,
-        receiver: InterpValue,
-        method: String,
-        type_args: Vec<etas_hir::HirTypeId>,
-        args: Vec<HirArg>,
-        next_arg_index: usize,
-        evaluated_args: Vec<InterpValue>,
-        span: Span,
-        frame: Frame,
-    },
-    StaticMethodArgs {
-        expr: HirExprId,
-        kind: StaticMethodKind,
-        method: String,
-        type_args: Vec<etas_hir::HirTypeId>,
-        args: Vec<HirArg>,
-        next_arg_index: usize,
-        evaluated_args: Vec<InterpValue>,
-        span: Span,
-        frame: Frame,
-    },
-    SpecMethodReceiver {
-        expr: HirExprId,
-        receiver_expr: HirExprId,
-        spec_symbol: SymbolId,
-        spec_args: Vec<etas_hir::HirTypeId>,
-        method: String,
-        args: Vec<HirArg>,
-        span: Span,
-        frame: Frame,
-    },
     CalleeEval {
         call: HirExprId,
         args: std::sync::Arc<[HirArg]>,
@@ -244,34 +204,6 @@ pub enum Continuation {
         action: ResolvedActionRef,
         type_args: Vec<etas_hir::HirTypeId>,
         args: std::sync::Arc<[HirArg]>,
-        next_arg_index: usize,
-        evaluated_args: Vec<InterpValue>,
-        span: Span,
-        frame: Frame,
-    },
-    MemoryArgs {
-        region_stable_id: String,
-        path: Vec<String>,
-        key_type: etas_types::TypeId,
-        value_type: etas_types::TypeId,
-        result_type: etas_types::TypeId,
-        method: String,
-        args: Vec<HirArg>,
-        next_arg_index: usize,
-        evaluated_args: Vec<InterpValue>,
-        span: Span,
-        frame: Frame,
-    },
-    MemorySelectionLimitArgs {
-        region_stable_id: String,
-        path: Vec<String>,
-        key_type: etas_types::TypeId,
-        value_type: etas_types::TypeId,
-        kind: crate::value::MemorySelectionKind,
-        predicate_type: Option<etas_types::TypeId>,
-        predicate: Option<InterpValue>,
-        limit: Option<u32>,
-        args: Vec<HirArg>,
         next_arg_index: usize,
         evaluated_args: Vec<InterpValue>,
         span: Span,

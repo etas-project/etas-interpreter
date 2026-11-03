@@ -18,16 +18,11 @@ impl<'a> EvalContext<'a> {
         &mut self,
         call: HirExprId,
         callee: HirExprId,
-        type_args: &[etas_hir::HirTypeId],
+        _type_args: &[etas_hir::HirTypeId],
         args: &[HirArg],
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        if let Some(signal) =
-            self.eval_checked_field_method_call(callee, type_args, args, span, frame)
-        {
-            return signal;
-        }
         let Some(descriptors) = self.plan.arguments.get(call) else {
             return ControlSignal::missing_checked_fact(
                 "call is missing its checked argument descriptors",
@@ -118,73 +113,6 @@ impl<'a> EvalContext<'a> {
         )
     }
 
-    fn eval_checked_field_method_call(
-        &mut self,
-        callee: HirExprId,
-        type_args: &[etas_hir::HirTypeId],
-        args: &[HirArg],
-        span: Span,
-        frame: &mut Frame,
-    ) -> Option<ControlSignal> {
-        let HirExpr::Field { base, field, .. } = &self.checked.hir.exprs[callee] else {
-            return self.eval_checked_partial_method_call(callee, type_args, args, span, frame);
-        };
-        if field != "cast" || type_args.is_empty() {
-            return None;
-        }
-        Some(self.eval_method_call(
-            crate::eval::method::MethodDispatch {
-                expr: callee,
-                method: field,
-                type_args,
-                args,
-                span,
-            },
-            *base,
-            frame,
-        ))
-    }
-
-    fn eval_checked_partial_method_call(
-        &mut self,
-        callee: HirExprId,
-        type_args: &[etas_hir::HirTypeId],
-        args: &[HirArg],
-        span: Span,
-        frame: &mut Frame,
-    ) -> Option<ControlSignal> {
-        let HirExpr::Path(path) = &self.checked.hir.exprs[callee] else {
-            return None;
-        };
-        let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
-            return None;
-        };
-        if partial.reason != PartialResolutionReason::MemberRequiresTypeChecking {
-            return None;
-        }
-        let [method] = partial.remaining.as_slice() else {
-            return None;
-        };
-        if method != "cast" || type_args.is_empty() {
-            return None;
-        }
-        let receiver_symbol = partial.resolved_prefix?;
-        let receiver = frame.get(receiver_symbol)?;
-        Some(self.resume_local_method_args(
-            crate::eval::method::LocalMethodArgsState {
-                expr: callee,
-                receiver,
-                method: method.to_owned(),
-                type_args: type_args.to_vec(),
-                args: args.to_vec(),
-                start_arg_index: 0,
-                evaluated_args: Vec::new(),
-                span,
-            },
-            frame,
-        ))
-    }
-
     pub(super) fn resume_call_args(
         &mut self,
         state: CallArgsState,
@@ -238,6 +166,25 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
+        }
+        if let Some(method) = self.plan.dispatch.method(call) {
+            let mut source = evaluated_args.into_iter();
+            let mut ordered = vec![None; method.signature.params.len()];
+            if let etas_types::method::MethodReceiver::Value { slot } = method.receiver {
+                ordered[slot as usize] = source.next();
+            }
+            for slot in &method.argument_slots {
+                ordered[*slot as usize] = source.next();
+            }
+            evaluated_args = match ordered.into_iter().collect::<Option<Vec<_>>>() {
+                Some(values) if source.next().is_none() => values,
+                _ => {
+                    return ControlSignal::missing_checked_fact(
+                        "method argument progress differs from its checked ABI",
+                        span,
+                    );
+                }
+            };
         }
         let site = Some(crate::control::CallSite {
             kind: crate::control::CallSiteKind::Expr { expr: call },

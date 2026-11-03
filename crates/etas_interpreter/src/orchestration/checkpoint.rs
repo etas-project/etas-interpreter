@@ -464,14 +464,6 @@ pub(crate) struct ConversationSnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) enum StaticMethodKindSnapshot {
-    Prompt,
-    Message,
-    SessionConfig,
-    Conversation,
-}
-
-#[derive(Clone, Debug)]
 pub(crate) enum LocalPlaceSegmentSnapshot {
     Field(String),
     Index(usize),
@@ -701,38 +693,6 @@ pub(crate) enum ContinuationSnapshot {
         allow_plain_system_content: bool,
         span: Span,
     },
-    LocalMethodArgs {
-        expr: HirExprId,
-        receiver: ValueSnapshot,
-        method: String,
-        type_args: Vec<HirTypeId>,
-        args: Vec<HirArg>,
-        next_arg_index: usize,
-        evaluated_args: Vec<ValueSnapshot>,
-        span: Span,
-        frame: LocalsSnapshot,
-    },
-    StaticMethodArgs {
-        expr: HirExprId,
-        kind: StaticMethodKindSnapshot,
-        method: String,
-        type_args: Vec<HirTypeId>,
-        args: Vec<HirArg>,
-        next_arg_index: usize,
-        evaluated_args: Vec<ValueSnapshot>,
-        span: Span,
-        frame: LocalsSnapshot,
-    },
-    SpecMethodReceiver {
-        expr: HirExprId,
-        receiver_expr: HirExprId,
-        spec_symbol: SymbolId,
-        spec_args: Vec<HirTypeId>,
-        method: String,
-        args: Vec<HirArg>,
-        span: Span,
-        frame: LocalsSnapshot,
-    },
     CalleeEval {
         call: HirExprId,
         args: std::sync::Arc<[HirArg]>,
@@ -768,34 +728,6 @@ pub(crate) enum ContinuationSnapshot {
         action: ResolvedActionRef,
         type_args: Vec<HirTypeId>,
         args: std::sync::Arc<[HirArg]>,
-        next_arg_index: usize,
-        evaluated_args: Vec<ValueSnapshot>,
-        span: Span,
-        frame: LocalsSnapshot,
-    },
-    MemoryArgs {
-        region_stable_id: String,
-        path: Vec<String>,
-        key_type: TypeId,
-        value_type: TypeId,
-        result_type: etas_types::TypeId,
-        method: String,
-        args: Vec<HirArg>,
-        next_arg_index: usize,
-        evaluated_args: Vec<ValueSnapshot>,
-        span: Span,
-        frame: LocalsSnapshot,
-    },
-    MemorySelectionLimitArgs {
-        region_stable_id: String,
-        path: Vec<String>,
-        key_type: TypeId,
-        value_type: TypeId,
-        kind: MemorySelectionKind,
-        predicate_type: Option<TypeId>,
-        predicate: Option<ValueSnapshot>,
-        limit: Option<u32>,
-        args: Vec<HirArg>,
         next_arg_index: usize,
         evaluated_args: Vec<ValueSnapshot>,
         span: Span,

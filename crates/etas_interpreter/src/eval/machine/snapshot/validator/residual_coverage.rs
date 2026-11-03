@@ -359,9 +359,6 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         | IndexBase { expr, frame, .. }
         | IndexValue { expr, frame, .. }
         | MethodReceiver { expr, frame, .. }
-        | LocalMethodArgs { expr, frame, .. }
-        | StaticMethodArgs { expr, frame, .. }
-        | SpecMethodReceiver { expr, frame, .. }
         | PipelineStageTarget { expr, frame, .. }
         | PerformArgs { expr, frame, .. }
         | PipelineInput { expr, frame, .. }
@@ -383,9 +380,7 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
             handle_expr, frame, ..
         } => (HirNodeRef::Expr(*handle_expr), frame),
         MatchExpr { arms, frame, .. } => (HirNodeRef::Pat(arms.first()?.pat), frame),
-        VariantArgs { args, frame, .. }
-        | MemoryArgs { args, frame, .. }
-        | MemorySelectionLimitArgs { args, frame, .. } => {
+        VariantArgs { args, frame, .. } => {
             let (etas_hir::HirArg::Positional(expr) | etas_hir::HirArg::Named { value: expr, .. }) =
                 args.first()?;
             (HirNodeRef::Expr(*expr), frame)

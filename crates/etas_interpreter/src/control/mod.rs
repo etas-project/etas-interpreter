@@ -22,7 +22,7 @@ mod call_target_tests;
 #[cfg(test)]
 mod continuation_tests;
 
-pub use continuation::{Continuation, ContinuationLink, StaticMethodKind};
+pub use continuation::{Continuation, ContinuationLink};
 pub use fault::ExecutionFault;
 pub use frame::Frame;
 pub(crate) use frame::FrameLocals;

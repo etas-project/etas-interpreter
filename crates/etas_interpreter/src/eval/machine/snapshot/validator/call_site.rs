@@ -2,6 +2,69 @@ use super::*;
 use etas_hir::HirExpr;
 
 impl SnapshotValidator<'_> {
+    pub(super) fn pending_method_target(
+        &self,
+        call: HirExprId,
+        mut target: &CallTargetSnapshot,
+        selected: &etas_types::method::MethodTarget,
+        bindings: &crate::control::GenericBindings,
+    ) -> Result<(), String> {
+        while let CallTargetSnapshot::Limited { target: inner, .. }
+        | CallTargetSnapshot::Specialized { target: inner, .. } = target
+        {
+            target = inner;
+        }
+        use etas_types::method::MethodTarget;
+        let matches = match (selected, target) {
+            (MethodTarget::Source { callable, .. }, CallTargetSnapshot::FlowItem(item)) => {
+                callable == item
+            }
+            (
+                MethodTarget::Standard { .. },
+                CallTargetSnapshot::StdIntrinsic {
+                    origin,
+                    intrinsic,
+                    dispatch,
+                    ..
+                },
+            ) => self.dispatch.std_method(call).is_some_and(|expected| {
+                *origin == call
+                    && *intrinsic == expected.identity.intrinsic
+                    && *dispatch == expected.identity.dispatch
+            }),
+            (
+                MethodTarget::Standard { .. },
+                CallTargetSnapshot::PureIntrinsic {
+                    intrinsic,
+                    parameter_types,
+                    result_type,
+                },
+            ) => {
+                let expected = self
+                    .dispatch
+                    .std_method(call)
+                    .ok_or("checkpoint method has no prepared standard ABI")?;
+                let expected = crate::intrinsic::dispatch::CheckedPureIntrinsicCall {
+                    intrinsic: expected.identity.intrinsic,
+                    parameter_types: expected.parameter_types.clone(),
+                    result_type: expected.result_type,
+                }
+                .specialize(&self.checked.type_store, bindings)?;
+                *intrinsic == expected.intrinsic
+                    && *parameter_types == expected.parameter_types
+                    && *result_type == expected.result_type
+            }
+            (MethodTarget::Agent { .. }, CallTargetSnapshot::AgentRevision(_)) => true,
+            _ => false,
+        };
+        if !matches {
+            return Err(
+                "checkpoint method target differs from its prepared checked selection".into(),
+            );
+        }
+        Ok(())
+    }
+
     pub(super) fn call_origin(
         &self,
         origin: &crate::control::CallOrigin,
@@ -223,7 +286,16 @@ impl SnapshotValidator<'_> {
             .checked_sub(1)
             .ok_or_else(|| format!("{context}: call arguments have no pending expression"))?;
         let receiver = match site {
-            HirExpr::SpecMethodCall { receiver, .. } => Some(*receiver),
+            HirExpr::MethodCall { receiver, .. } | HirExpr::SpecMethodCall { receiver, .. }
+                if self.dispatch.method(*call).is_some_and(|fact| {
+                    matches!(
+                        fact.receiver,
+                        etas_types::method::MethodReceiver::Value { .. }
+                    )
+                }) =>
+            {
+                Some(*receiver)
+            }
             _ => None,
         };
         if evaluated_args.len() != prefix + usize::from(receiver.is_some()) {

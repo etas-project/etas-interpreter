@@ -704,7 +704,7 @@ flow main(ticket: string, input: string) -> Message<string> {
 "#,
     );
 
-    let host = FakeHost::new(HostServiceAvailability::default());
+    let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     let result = Interpreter
         .run_checked(
             &checked,
@@ -903,7 +903,7 @@ flow main(ticket: SessionId, input: string, limit: Limit) -> Message<string> {
 "#,
     );
 
-    let host = FakeHost::new(HostServiceAvailability::default());
+    let host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     let result = Interpreter
         .run_checked(
             &checked,
@@ -1145,7 +1145,10 @@ flow main(ticket: string, input: string) -> string {
 "#,
     );
 
-    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Agentic,
+        HostRequirementKind::DurableMemory,
+    ]));
     host.seed_model_response_text("handoff-ok");
     let result = Interpreter
         .run_checked(

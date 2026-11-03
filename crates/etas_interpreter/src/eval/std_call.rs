@@ -82,6 +82,9 @@ impl<'a> EvalContext<'a> {
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
         match kind {
+            StdCallable::AgentSupport(kind) => {
+                self.execute_agent_support_callable(kind, checked_call, call_args, span)
+            }
             StdCallable::Collection(operation) => {
                 self.execute_collection_intrinsic(operation, checked_call, call_args, span)
             }

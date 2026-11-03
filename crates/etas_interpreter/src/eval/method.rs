@@ -22,33 +22,10 @@ pub(super) struct MethodDispatch<'a> {
     pub span: Span,
 }
 
-pub(super) struct StaticMethodArgsState {
-    pub expr: HirExprId,
-    pub kind: StaticMethodKind,
-    pub method: String,
-    pub type_args: Vec<etas_hir::HirTypeId>,
-    pub args: Vec<HirArg>,
-    pub start_arg_index: usize,
-    pub evaluated_args: Vec<InterpValue>,
-    pub span: Span,
-}
-
-pub(super) struct LocalMethodArgsState {
-    pub expr: HirExprId,
-    pub receiver: InterpValue,
-    pub method: String,
-    pub type_args: Vec<etas_hir::HirTypeId>,
-    pub args: Vec<HirArg>,
-    pub start_arg_index: usize,
-    pub evaluated_args: Vec<InterpValue>,
-    pub span: Span,
-}
-
 mod constructors;
 mod dispatch;
 pub(super) mod helpers;
 mod local;
-mod local_args;
 mod message;
 mod prompt;
 

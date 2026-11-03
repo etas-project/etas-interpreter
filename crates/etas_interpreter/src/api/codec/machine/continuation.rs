@@ -4,9 +4,7 @@ use etas_hir::{
 };
 use serde_json::{Value, json};
 
-use crate::orchestration::{
-    ContinuationSnapshot, RetryAttemptId, RetryAttemptRecord, StaticMethodKindSnapshot,
-};
+use crate::orchestration::{ContinuationSnapshot, RetryAttemptId, RetryAttemptRecord};
 
 use super::{
     call_target::{call_target_snapshot_from_json, call_target_snapshots_from_json},

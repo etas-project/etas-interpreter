@@ -247,51 +247,6 @@ fn continuation_leaf_from_snapshot(
             allow_plain_system_content: required_bool(value, "allow_plain_system_content")?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "local_method_args" => ContinuationSnapshot::LocalMethodArgs {
-            expr: HirExprId(required_u32(value, "expr")?),
-            receiver: crate::api::codec::value::snapshot_from_json_with_limits(
-                limits,
-                required(value, "receiver")?,
-            )
-            .map_err(|error| error.to_string())?,
-            method: required_str(value, "method")?.to_owned(),
-            type_args: required_u32_array(value, "type_args")?
-                .into_iter()
-                .map(HirTypeId)
-                .collect(),
-            args: args_from_snapshot(required(value, "args")?)?,
-            next_arg_index: required_usize(value, "next_arg_index")?,
-            evaluated_args: required_values(limits, value, "evaluated_args")?,
-            span: span_from_snapshot(required(value, "span")?)?,
-            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
-        },
-        "static_method_args" => ContinuationSnapshot::StaticMethodArgs {
-            expr: HirExprId(required_u32(value, "expr")?),
-            kind: static_method_kind_from_snapshot(required(value, "static_kind")?)?,
-            method: required_str(value, "method")?.to_owned(),
-            type_args: required_u32_array(value, "type_args")?
-                .into_iter()
-                .map(HirTypeId)
-                .collect(),
-            args: args_from_snapshot(required(value, "args")?)?,
-            next_arg_index: required_usize(value, "next_arg_index")?,
-            evaluated_args: required_values(limits, value, "evaluated_args")?,
-            span: span_from_snapshot(required(value, "span")?)?,
-            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
-        },
-        "spec_method_receiver" => ContinuationSnapshot::SpecMethodReceiver {
-            expr: HirExprId(required_u32(value, "expr")?),
-            receiver_expr: HirExprId(required_u32(value, "receiver_expr")?),
-            spec_symbol: SymbolId(required_u32(value, "spec_symbol")?),
-            spec_args: required_u32_array(value, "spec_args")?
-                .into_iter()
-                .map(HirTypeId)
-                .collect(),
-            method: required_str(value, "method")?.to_owned(),
-            args: args_from_snapshot(required(value, "args")?)?,
-            span: span_from_snapshot(required(value, "span")?)?,
-            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
-        },
         "callee_eval" => ContinuationSnapshot::CalleeEval {
             call: HirExprId(required_u32(value, "call")?),
             args: args_from_snapshot(required(value, "args")?)?.into(),
@@ -347,37 +302,6 @@ fn continuation_leaf_from_snapshot(
                 frame: locals_from_snapshot(limits, required(value, "frame")?)?,
             }
         }
-        "memory_args" => ContinuationSnapshot::MemoryArgs {
-            result_type: etas_types::TypeId(required_u32(value, "result_type")?),
-            region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
-            path: required_string_array(value, "path")?,
-            key_type: etas_types::TypeId(required_u32(value, "key_type")?),
-            value_type: etas_types::TypeId(required_u32(value, "value_type")?),
-            method: required_str(value, "method")?.to_owned(),
-            args: args_from_snapshot(required(value, "args")?)?,
-            next_arg_index: required_usize(value, "next_arg_index")?,
-            evaluated_args: required_values(limits, value, "evaluated_args")?,
-            span: span_from_snapshot(required(value, "span")?)?,
-            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
-        },
-        "memory_selection_limit_args" => ContinuationSnapshot::MemorySelectionLimitArgs {
-            region_stable_id: required_str(value, "region_stable_id")?.to_owned(),
-            path: required_string_array(value, "path")?,
-            key_type: etas_types::TypeId(required_u32(value, "key_type")?),
-            value_type: etas_types::TypeId(required_u32(value, "value_type")?),
-            kind: crate::value::codec::memory_selection_kind_from_json(required_str(
-                value,
-                "selection_kind",
-            )?)?,
-            predicate_type: optional_u32(value, "predicate_type")?.map(etas_types::TypeId),
-            predicate: optional_value(limits, value, "predicate")?,
-            limit: optional_u32(value, "limit")?,
-            args: args_from_snapshot(required(value, "args")?)?,
-            next_arg_index: required_usize(value, "next_arg_index")?,
-            evaluated_args: required_values(limits, value, "evaluated_args")?,
-            span: span_from_snapshot(required(value, "span")?)?,
-            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
-        },
         "if_expr" => ContinuationSnapshot::IfExpr {
             then_block: HirBlockId(required_u32(value, "then_block")?),
             else_branch: optional_else_branch(value, "else_branch")?,

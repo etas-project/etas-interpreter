@@ -96,32 +96,9 @@ impl<'a> EvalContext<'a> {
         ControlSignal::Value(InterpValue::Message(message))
     }
 
-    pub(in crate::eval) fn eval_message_value_method(
-        &mut self,
-        message: crate::value::MessageValue,
-        method: &str,
-        type_args: &[etas_hir::HirTypeId],
-        args: &[HirArg],
-        span: Span,
-    ) -> ControlSignal {
-        if method != "cast" {
-            return unsupported_method(span, "Message value", method);
-        }
-        if !args.is_empty() {
-            return abort_message_method(span, "Message.cast expects no value arguments");
-        }
-        if type_args.len() != 1 {
-            return abort_message_method(
-                span,
-                "Message.cast requires one checked target type argument",
-            );
-        }
-        self.eval_checked_message_cast(message, type_args, span)
-    }
-
     pub(in crate::eval) fn eval_checked_message_cast(
         &mut self,
-        mut message: crate::value::MessageValue,
+        message: crate::value::MessageValue,
         type_args: &[etas_hir::HirTypeId],
         span: Span,
     ) -> ControlSignal {
@@ -135,6 +112,15 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
+        self.cast_message_payload(message, target, span)
+    }
+
+    pub(in crate::eval) fn cast_message_payload(
+        &self,
+        mut message: crate::value::MessageValue,
+        target: etas_types::TypeId,
+        _span: Span,
+    ) -> ControlSignal {
         let Ok(host_payload) = super::host_value::interp_to_host_value(&message.payload) else {
             return ControlSignal::Value(InterpValue::OptionNone);
         };

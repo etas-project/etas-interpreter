@@ -142,48 +142,25 @@ impl<'a> EvalContext<'a> {
             HirExpr::MethodCall {
                 receiver,
                 method,
-                generic_args,
                 args,
                 span,
                 ..
-            } => {
-                let Some(type_args) = self.checked_type_args_from_generic_args(expr, generic_args)
-                else {
-                    return ControlSignal::missing_checked_fact(
-                        "method generic arguments require checked instantiation facts",
-                        *span,
-                    );
-                };
-                self.eval_method_call(
-                    crate::eval::method::MethodDispatch {
-                        expr,
-                        method,
-                        type_args: &type_args,
-                        args,
-                        span: *span,
-                    },
-                    *receiver,
-                    frame,
-                )
             }
-            HirExpr::SpecMethodCall {
+            | HirExpr::SpecMethodCall {
                 receiver,
-                spec_path,
-                spec_args,
                 method,
                 args,
                 span,
                 ..
-            } => self.eval_spec_method_call(
-                crate::eval::spec_method::SpecMethodCall {
+            } => self.eval_method_call(
+                crate::eval::method::MethodDispatch {
                     expr,
-                    receiver_expr: *receiver,
-                    spec_path,
-                    spec_args,
                     method,
+                    type_args: &[],
                     args,
                     span: *span,
                 },
+                *receiver,
                 frame,
             ),
             HirExpr::Handle {
