@@ -9,7 +9,11 @@ fn checkpoint_codec_rejects_v61_with_restorable_approval_flags() {
             .message()
             .contains("unsupported checkpoint artifact schema")
     );
-    assert!(error.message().contains("v66"));
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
 }
 
 #[test]
@@ -24,7 +28,11 @@ fn checkpoint_codec_rejects_v62_without_invocation_ownership() {
             .message()
             .contains("unsupported checkpoint artifact schema")
     );
-    assert!(error.message().contains("v66"));
+    assert!(
+        error
+            .message()
+            .contains(crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA)
+    );
 }
 
 #[test]
