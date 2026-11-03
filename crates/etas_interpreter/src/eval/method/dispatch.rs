@@ -134,7 +134,11 @@ impl EvalContext<'_> {
                         .map_err(|reason| missing(&reason))?,
                     )
                 } else {
-                    CallTarget::StdIntrinsic(checked.clone())
+                    CallTarget::StdIntrinsic(
+                        checked
+                            .specialize_generic(&self.checked.type_store, frame.generic_bindings())
+                            .map_err(|reason| missing(&reason))?,
+                    )
                 }
             }
             MethodTarget::Agent { .. } => self.checked_agent_method_target(
