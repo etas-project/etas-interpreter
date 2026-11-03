@@ -60,20 +60,13 @@ pub(crate) struct PreparedResidualScope {
     pub(crate) item: HirItemId,
     pub(crate) revision: RevisionKey,
     pub(crate) plans: Vec<PreparedTracePlan>,
-    pub(crate) actions:
-        std::collections::HashMap<etas_code::descriptor::EffectTargetInfo, Vec<CanonicalEffect>>,
+    pub(crate) applications: Vec<Arc<etas_frontend::CheckedResidualApplication>>,
     pub(crate) approval_target: Option<etas_code::descriptor::EffectTargetInfo>,
 }
 
 impl PreparedResidualScope {
     pub(crate) fn is_approval(&self, action: &CanonicalEffect) -> bool {
         self.approval_target.as_ref() == Some(&action.target)
-    }
-
-    pub(crate) fn accepts_action(&self, action: &CanonicalEffect) -> bool {
-        self.actions
-            .get(&action.target)
-            .is_some_and(|labels| labels.contains(action))
     }
 
     pub(crate) fn obligation_ids(&self) -> Vec<etas_code::residual::identity::ObligationId> {
@@ -130,6 +123,9 @@ impl PreparedResidualPlans {
             for plan in &scope.plans {
                 parts.push(plan.checked.plan().hash().fingerprint().as_bytes().to_vec());
                 parts.push(plan.bound.as_bytes().to_vec());
+            }
+            for application in &scope.applications {
+                parts.push(application.fingerprint.as_bytes().to_vec());
             }
         }
         CodeFingerprint::of_parts(

@@ -108,9 +108,17 @@ impl Pass<PlanContext<'_>> for BindResidualSitesPass {
             let Some(summary) = project.effects.item_effects.get(&item) else {
                 return PassResult::failed("residual owner has no checked action footprint");
             };
-            let mut actions = std::collections::HashMap::<_, Vec<_>>::new();
+            let applications = match plans.applications(project, item) {
+                Ok(applications) => applications.into_iter().map(Arc::new).collect::<Vec<_>>(),
+                Err(error) => {
+                    context.push_missing_fact(
+                        span,
+                        &format!("residual application binding failed: {error:?}"),
+                    );
+                    return PassResult::failed("residual site binding failed");
+                }
+            };
             let mut approval_target = None;
-            let mut action_count = 0usize;
             for effect in summary
                 .requested_actions
                 .effects
@@ -120,36 +128,17 @@ impl Pass<PlanContext<'_>> for BindResidualSitesPass {
                 if !effect.is_action() {
                     continue;
                 }
-                let label = match project
-                    .residual_plans()
-                    .canonical_action(project, item, effect)
-                {
-                    Ok(label) => label,
-                    Err(error) => {
-                        context.push_missing_fact(
-                            span,
-                            &format!(
-                                "residual action footprint has no canonical identity: {error:?}"
-                            ),
-                        );
-                        return PassResult::failed("residual site binding failed");
-                    }
-                };
-                let labels = actions.entry(label.target.clone()).or_default();
                 if crate::control::residual::is_standard_approval(&project.effect_registry, effect)
                 {
-                    approval_target = Some(label.target.clone());
-                }
-                if !labels.contains(&label) {
-                    action_count += 1;
-                    if action_count
-                        > crate::control::residual::ResidualStateLimits::default().max_labels
-                    {
-                        return PassResult::failed(
-                            "residual action footprint exceeds the engine label ceiling",
-                        );
-                    }
-                    labels.push(label);
+                    let label = match plans.canonical_action(project, item, effect) {
+                        Ok(label) => label,
+                        Err(error) => {
+                            return PassResult::failed(format!(
+                                "approval action identity: {error:?}"
+                            ));
+                        }
+                    };
+                    approval_target = Some(label.target);
                 }
             }
             scopes.insert(
@@ -158,7 +147,7 @@ impl Pass<PlanContext<'_>> for BindResidualSitesPass {
                     item,
                     revision: revision.key(),
                     plans: prepared,
-                    actions,
+                    applications,
                     approval_target,
                 }),
             );

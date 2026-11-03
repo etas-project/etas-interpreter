@@ -38,6 +38,7 @@ flow main(request: ApprovalRequest) -> unit ![Approval.request, Console.stdout_w
     let log = ResidualRunLog::new(8);
     let scope = ResidualScopeInstance::activate(
         prepared.clone(),
+        prepared.applications[0].clone(),
         checked.clone(),
         ScopeInvocationId::from_bytes(identity(b's', 1)),
         &log,
