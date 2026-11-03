@@ -69,10 +69,40 @@ impl EvalContext<'_> {
         let view = backend
             .resolve(reference)
             .map_err(|error| missing(error.to_string(), span))?;
-        let expected = view
-            .environment()
-            .map_err(|error| missing(error.to_string(), span))?;
-        validate_value(expected, self.checked, value).map_err(|reason| missing(reason, span))
+        match view.environment() {
+            Ok(expected) => validate_value(expected, self.checked, value),
+            Err(_) if view.external_application().is_some() => {
+                validate_external_value(backend, reference, value)
+            }
+            Err(error) => Err(error.to_string()),
+        }
+        .map_err(|reason| missing(reason, span))
+    }
+}
+
+fn validate_external_value(
+    backend: &etas_frontend::code::definition::NativeDefinitionStore,
+    reference: &etas_code::definition::DefinitionRef,
+    value: &InterpValue,
+) -> Result<(), String> {
+    let InterpValue::Callable(target) = value else {
+        return Err("compile handler returned a non-callable value".into());
+    };
+    let mut target = target;
+    loop {
+        match target {
+            CallTarget::Specialized { target: inner, .. } | CallTarget::Limited { target: inner, .. } => target = inner,
+            CallTarget::Scoped(scoped) => {
+                if let Some(prepared) = &scoped.program().revision
+                    && matches!(scoped.target_ref(), CallTarget::FlowItem(item) if *item == prepared.entry().item)
+                    && prepared.matches_external_definition(backend, reference)
+                {
+                    return Ok(());
+                }
+                target = scoped.target_ref();
+            }
+            _ => return Err("compile handler returned a callable without matching external restoration evidence".into()),
+        }
     }
 }
 

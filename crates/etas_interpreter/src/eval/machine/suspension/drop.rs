@@ -40,7 +40,7 @@ fn discard_segment(program: SuspendedProgram, work: &mut Vec<Continuation>) {
             EvalFrame::Expr(frame) => work.push(frame.continuation),
             EvalFrame::Continuation(frame) => work.push(frame.continuation),
             EvalFrame::Handler(frame) => work.extend(frame.inner.into_unique()),
-            EvalFrame::Retry(_) => {}
+            EvalFrame::Retry(_) | EvalFrame::ResidualScope(_) => {}
             EvalFrame::ModelLoop(frame) => {
                 work.push(frame.pending.continuation);
                 work.push(frame.outer_continuation);

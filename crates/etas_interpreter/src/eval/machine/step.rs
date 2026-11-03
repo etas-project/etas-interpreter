@@ -1,7 +1,9 @@
 use etas_core::AnalysisDiagnosticCode;
 
 use crate::{
-    control::{Continuation, ContinuationInput, ControlSignal, ExecutionFault},
+    control::{
+        Continuation, ContinuationInput, ControlSignal, ExecutionFault, residual::ResidualExitKind,
+    },
     eval::EvalContext,
     eval::machine::{
         budget::check_call_budget,
@@ -43,6 +45,8 @@ impl EvalMachine {
         if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
             return poll;
         }
+        let mirror = ctx.residual.mirror.clone();
+        self.join_residual_mirror(&mirror);
         let Some(input) = self.input.take() else {
             return machine_fault(
                 "evaluation machine was polled without a start or resume input".to_owned(),
@@ -127,7 +131,8 @@ impl EvalMachine {
                 ControlSignal::Checkpoint(pending) => {
                     let pending = *pending;
                     self.push_continuation_frames(pending.continuation);
-                    let machine = match self.capture_snapshot(ctx.entry_args) {
+                    let counters = ctx.residual.counters();
+                    let machine = match self.capture_snapshot(ctx.entry_args, counters) {
                         Ok(machine) => machine,
                         Err(message) => {
                             return machine_fault(
@@ -144,6 +149,22 @@ impl EvalMachine {
                 ControlSignal::Block(pending) => {
                     let mut pending = *pending;
                     self.push_continuation_frames(pending.continuation);
+                    if let Some(activation) = pending.residual.take() {
+                        match ctx.activate_residual_scope(*activation, step_span) {
+                            Ok(scope) => {
+                                let invocation = crate::eval::residual::invocation_counter(
+                                    scope.borrow().invocation().as_bytes(),
+                                );
+                                if let Err(reason) = invocation.and_then(|invocation| {
+                                    pending.frame.bind_residual_invocation(invocation)
+                                }) {
+                                    return machine_fault(reason, step_span);
+                                }
+                                self.push_frame(EvalFrame::ResidualScope(scope));
+                            }
+                            Err(fault) => return MachinePoll::Fault(fault),
+                        }
+                    }
                     self.push_frame(EvalFrame::Block(BlockFrame {
                         continuation: Continuation::BlockValue,
                     }));
@@ -198,6 +219,10 @@ impl EvalMachine {
                             };
                             self.push_continuation_frames(continuation);
                             self.push_frame(EvalFrame::Call(CallFrame {
+                                caller: pending
+                                    .site
+                                    .as_ref()
+                                    .map(crate::control::CallOrigin::from_site),
                                 continuation: Continuation::BlockValue,
                                 span: pending.span,
                             }));
@@ -217,6 +242,16 @@ impl EvalMachine {
                     };
                     match frame {
                         EvalFrame::PureBoundary(_) => ControlSignal::Value(value),
+                        EvalFrame::ResidualScope(scope) => {
+                            match ctx.exit_residual_scope(
+                                &scope,
+                                ResidualExitKind::Return,
+                                step_span,
+                            ) {
+                                Ok(()) => ControlSignal::Value(value),
+                                Err(fault) => return MachinePoll::Fault(fault),
+                            }
+                        }
                         EvalFrame::ProgramReturn(frame) => {
                             return self.return_program(ctx, *frame, value);
                         }
@@ -247,6 +282,16 @@ impl EvalMachine {
                     };
                     match frame {
                         EvalFrame::PureBoundary(_) => ControlSignal::Return(value),
+                        EvalFrame::ResidualScope(scope) => {
+                            match ctx.exit_residual_scope(
+                                &scope,
+                                ResidualExitKind::Return,
+                                step_span,
+                            ) {
+                                Ok(()) => ControlSignal::Return(value),
+                                Err(fault) => return MachinePoll::Fault(fault),
+                            }
+                        }
                         EvalFrame::ProgramReturn(frame) => {
                             return self.return_program(ctx, *frame, value);
                         }
@@ -277,6 +322,11 @@ impl EvalMachine {
                     }
                 }
                 ControlSignal::Perform(mut pending) => {
+                    // Observed at first sight, before any frame is popped, so
+                    // every enclosing residual scope previews the attempt.
+                    if let Err(fault) = ctx.observe_residual_attempt(&mut pending) {
+                        return MachinePoll::Fault(fault);
+                    }
                     // Default handling suspends the current stack; it does not exit
                     // unrelated lexical scopes. Typed errors still visit try frames.
                     if pending.error_type.is_none() {
@@ -311,11 +361,25 @@ impl EvalMachine {
                                 span,
                             );
                         }
+                        // A typed error unwinds the scope; an action request
+                        // handled outside it captures the scope instead.
+                        EvalFrame::ResidualScope(scope) if pending.error_type.is_some() => {
+                            if let Err(fault) = ctx.exit_residual_scope(
+                                &scope,
+                                ResidualExitKind::ErrorPropagation,
+                                pending.span,
+                            ) {
+                                return MachinePoll::Fault(fault);
+                            }
+                            Continuation::BlockValue
+                        }
+                        EvalFrame::ResidualScope(scope) => Continuation::ResidualScope(scope),
                         EvalFrame::ProgramReturn(frame) => {
                             return self.unwind_program_error(ctx, *frame, *pending);
                         }
                         EvalFrame::Block(frame) => frame.continuation,
                         EvalFrame::Call(frame) => Continuation::CallBoundary {
+                            caller: frame.caller,
                             span: frame.span,
                             outer: frame.continuation.into(),
                         },
@@ -366,6 +430,16 @@ impl EvalMachine {
                     };
                     match frame {
                         EvalFrame::PureBoundary(_) => ControlSignal::Resume(value),
+                        EvalFrame::ResidualScope(scope) => {
+                            match ctx.exit_residual_scope(
+                                &scope,
+                                ResidualExitKind::NonLocalReturn,
+                                step_span,
+                            ) {
+                                Ok(()) => ControlSignal::Resume(value),
+                                Err(fault) => return MachinePoll::Fault(fault),
+                            }
+                        }
                         EvalFrame::ProgramReturn(frame) => {
                             return machine_fault(
                                 "resume escaped a revision call boundary",
@@ -407,6 +481,16 @@ impl EvalMachine {
                     };
                     match frame {
                         EvalFrame::PureBoundary(_) => ControlSignal::Finish(value),
+                        EvalFrame::ResidualScope(scope) => {
+                            match ctx.exit_residual_scope(
+                                &scope,
+                                ResidualExitKind::HandlerFinish,
+                                step_span,
+                            ) {
+                                Ok(()) => ControlSignal::Finish(value),
+                                Err(fault) => return MachinePoll::Fault(fault),
+                            }
+                        }
                         EvalFrame::ProgramReturn(frame) => {
                             return machine_fault(
                                 "finish escaped a revision call boundary",
@@ -451,6 +535,16 @@ impl EvalMachine {
                     };
                     match frame {
                         EvalFrame::PureBoundary(_) => signal,
+                        EvalFrame::ResidualScope(scope) => {
+                            match ctx.exit_residual_scope(
+                                &scope,
+                                ResidualExitKind::NonLocalReturn,
+                                step_span,
+                            ) {
+                                Ok(()) => signal,
+                                Err(fault) => return MachinePoll::Fault(fault),
+                            }
+                        }
                         EvalFrame::ProgramReturn(frame) => {
                             return machine_fault(
                                 "loop control escaped a revision call boundary",

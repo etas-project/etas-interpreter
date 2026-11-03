@@ -33,6 +33,7 @@ impl<'a> EvalContext<'a> {
             args: vec![stream_error_value(failure)],
             span,
             continuation,
+            residual: None,
         };
         self.propagate_perform_signal(perform)
     }

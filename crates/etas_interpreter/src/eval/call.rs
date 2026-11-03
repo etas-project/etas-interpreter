@@ -239,15 +239,7 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }
-        let site = matches!(
-            target,
-            CallTarget::AgentRevision(_)
-                | CallTarget::Scoped(_)
-                | CallTarget::Composed(_)
-                | CallTarget::Limited { .. }
-                | CallTarget::Specialized { .. }
-        )
-        .then(|| crate::control::CallSite {
+        let site = Some(crate::control::CallSite {
             kind: crate::control::CallSiteKind::Expr { expr: call },
             frame: frame.clone(),
             composition: None,
@@ -301,6 +293,19 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        match self
+            .checked
+            .checked_callable_effects(etas_frontend::CheckedCallableRoot::Lambda(expr))
+        {
+            Ok(summary) if summary.residual_checks.is_empty() => {}
+            Ok(_) => {
+                return ControlSignal::missing_checked_fact(
+                    "callable requires residual checks but no verified residual plan and installation are available",
+                    span,
+                );
+            }
+            Err(error) => return ControlSignal::missing_checked_fact(error.to_string(), span),
+        }
         let Some(HirExpr::Lambda { params, body, .. }) = self.checked.hir.exprs.get(expr) else {
             return ControlSignal::missing_checked_fact(
                 "lambda callable does not point at a lambda expression",
@@ -560,8 +565,15 @@ impl<'a> EvalContext<'a> {
             }
             CallTarget::StdIntrinsic(call) => {
                 match self.plan.dispatch.resolve_std_callable(call.identity) {
-                    Ok(kind) => self.execute_std_callable_with_type_bindings(
-                        kind, &call, call_args, span, &bindings,
+                    Ok(kind) => self.execute_std_callable_with_generic_bindings(
+                        kind,
+                        &call,
+                        call_args,
+                        span,
+                        &crate::control::GenericBindings {
+                            types: bindings,
+                            rows,
+                        },
                     ),
                     Err(message) => ControlSignal::missing_checked_fact(message, span),
                 }

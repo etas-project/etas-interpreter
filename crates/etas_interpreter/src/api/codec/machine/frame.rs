@@ -76,6 +76,7 @@ fn decode_snapshot_frame(
             .map_err(|error| error.to_string())
     })?;
     Ok(LocalsSnapshot {
+        residual_invocation: decoded.residual_invocation,
         id: decoded.id,
         locals: std::rc::Rc::new(decoded.locals),
         type_bindings: decoded.type_bindings,
@@ -100,11 +101,15 @@ fn decode_runtime_frame(
         },
     )?;
     frame.set_snapshot_id(decoded.id)?;
+    if let Some(invocation) = decoded.residual_invocation {
+        frame.bind_residual_invocation(invocation)?;
+    }
     Ok(frame)
 }
 
 struct DecodedLocals<T> {
     id: u64,
+    residual_invocation: Option<std::num::NonZeroU64>,
     locals: Vec<(SymbolId, T)>,
     type_bindings: Vec<(String, etas_types::TypeId)>,
     effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
@@ -119,6 +124,10 @@ fn decode_locals<T>(
     if id == 0 {
         return Err("snapshot frame identity must be nonzero".into());
     }
+    let residual_invocation = <Option<std::num::NonZeroU64> as serde::Deserialize>::deserialize(
+        required(value, "residual_invocation")?,
+    )
+    .map_err(|error| format!("invalid frame residual invocation: {error}"))?;
     let entries = required(value, "locals")?
         .as_array()
         .ok_or_else(|| "machine frame `locals` must be an array".to_owned())?;
@@ -156,6 +165,7 @@ fn decode_locals<T>(
     }
     Ok(DecodedLocals {
         id,
+        residual_invocation,
         locals,
         type_bindings,
         effect_row_bindings: effect_rows_from_snapshot(value)?,

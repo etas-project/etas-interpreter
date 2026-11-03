@@ -49,16 +49,20 @@ fn standard_intrinsic_decode_requires_and_preserves_its_checked_origin() {
 #[test]
 fn standard_intrinsic_substitution_decode_is_bounded_and_rejects_ambiguous_bindings() {
     let limits = etas_host::StorageLimits::default();
-    let base = json!({ "kind": "std_intrinsic", "origin": 1, "intrinsic": etas_std::intrinsic::runtime::STREAM_READ, "dispatch": "host", "parameter_types": [3], "result_type": 4, "substitutions": [[{"name":"SourceStream", "type":5}], [{"name":"S", "type":5}]] });
+    let base = json!({ "kind": "std_intrinsic", "origin": 1, "intrinsic": etas_std::intrinsic::runtime::STREAM_READ, "dispatch": "host", "parameter_types": [3], "result_type": 4, "substitutions": [
+        {"types": [{"name":"SourceStream", "type":5}], "effect_row_bindings": []},
+        {"types": [{"name":"S", "type":5}], "effect_row_bindings": [["E", {"effects": [], "tail": null}]]}
+    ] });
     let runtime = call_target_from_artifact_snapshot(&limits, &base).unwrap();
     assert_eq!(
         codec::value_json(&crate::value::InterpValue::Callable(runtime)).unwrap()["target"],
         base
     );
     for substitutions in [
-        json!([[]]),
-        json!([[{"name":"S", "type":5}, {"name":"S", "type":6}]]),
-        json!([[{"name":"", "type":5}]]),
+        json!([{"types": [], "effect_row_bindings": []}]),
+        json!([{"types": [{"name":"S", "type":5}, {"name":"S", "type":6}], "effect_row_bindings": []}]),
+        json!([{"types": [{"name":"", "type":5}], "effect_row_bindings": []}]),
+        json!([{"types": [], "effect_row_bindings": [["E", {"effects": [], "tail": null}], ["E", {"effects": [], "tail": null}]]}]),
     ] {
         let mut invalid = base.clone();
         invalid["substitutions"] = substitutions;
@@ -394,6 +398,7 @@ fn decoded_deep_targets_still_require_checked_machine_identity() {
                     span,
                 },
             }],
+            residual: Default::default(),
         };
         let validation = validator.validate_machine(&machine);
         assert_eq!(validation.is_ok(), valid, "{validation:?}");

@@ -1,7 +1,8 @@
 use std::collections::HashMap;
 
 use etas_frontend::CheckedProject;
-use etas_types::{Type, TypeId, nominal_representation_parts, substitute_named_params_in_store};
+use etas_types::ty::{applied_representation_in_store, canonical_parameters_for_application};
+use etas_types::{Type, TypeId, TypeSubstitutionEngine};
 
 use super::RevisionValueFailure as Failure;
 
@@ -44,11 +45,9 @@ impl CheckedValueTypes {
         if let Some(representation) = self.representations.get(&ty) {
             return Ok(*representation);
         }
-        let (representation, bindings) = nominal_representation_parts(&program.type_store, ty)
+        let representation = applied_representation_in_store(&program.type_store, ty)
+            .map_err(|reason| Failure::UnmaterializedType(reason.to_string()))?
             .ok_or(Failure::MissingRepresentation)?;
-        let representation =
-            substitute_named_params_in_store(&program.type_store, representation, &bindings)
-                .map_err(|reason| Failure::UnmaterializedType(reason.to_string()))?;
         self.representations.insert(ty, representation);
         Ok(representation)
     }
@@ -85,11 +84,16 @@ impl CheckedValueTypes {
                 .cloned()
                 .zip(args.iter().copied())
                 .collect();
+            let canonical =
+                canonical_parameters_for_application(&program.type_store, constructor, args)
+                    .map_err(|reason| Failure::UnmaterializedType(reason.to_string()))?;
             let fields = variant
                 .fields
                 .iter()
                 .map(|ty| {
-                    substitute_named_params_in_store(&program.type_store, *ty, &bindings)
+                    TypeSubstitutionEngine::existing(&program.type_store, &bindings)
+                        .with_canonical_parameters(&canonical)
+                        .substitute(*ty)
                         .map_err(|reason| Failure::UnmaterializedType(reason.to_string()))
                 })
                 .collect::<Result<_, _>>()?;

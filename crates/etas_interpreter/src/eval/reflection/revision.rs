@@ -5,17 +5,19 @@ impl EvalContext<'_> {
         &self,
         expr: HirExprId,
         ty: etas_types::TypeId,
+        signature: etas_types::TypeId,
         value: &crate::value::ScopedCallableValue,
+        lexical: Option<&etas_frontend::CheckedCallableApplication>,
     ) -> Result<InterpValue, RuntimeReflectionError> {
         let Some(etas_types::CheckedReflectionFact {
-            target: etas_types::CheckedReflectionTarget::CallableValue { signature, .. },
+            target: etas_types::CheckedReflectionTarget::CallableValue { .. },
             ..
         }) = self.checked.types.reflections.get(&expr)
         else {
             return Err("flow revision reflection has no checked callable binding".into());
         };
         if !std::sync::Arc::ptr_eq(self.checked, value.presented_program())
-            || value.presented_type() != *signature
+            || value.presented_type() != signature
         {
             return Err(
                 "flow revision reflection differs from its checked caller interface".into(),
@@ -42,14 +44,14 @@ impl EvalContext<'_> {
                 value.target_ref(),
                 value.native_signature(),
             )?;
-            return self.reflect_native_application(expr, ty, &application);
+            return self.reflect_native_application_in_context(expr, ty, &application, lexical);
         }
         let crate::control::CallTarget::FlowItem(item) = value.target_ref() else {
             return Err("scoped flow reflection requires an ordinary-flow declaration".into());
         };
         let (backend, original) = match value.program().revision.as_ref() {
             Some(prepared) if *item == prepared.entry().item => {
-                return self.reflect_compiled_flow_entry(expr, ty, prepared);
+                return self.reflect_compiled_flow_entry(expr, ty, prepared, None);
             }
             Some(prepared) => (
                 prepared.frozen_bindings.source(),
@@ -96,11 +98,12 @@ impl EvalContext<'_> {
         ))
     }
 
-    fn reflect_compiled_flow_entry(
+    pub(super) fn reflect_compiled_flow_entry(
         &self,
         expr: HirExprId,
         ty: etas_types::TypeId,
         prepared: &std::sync::Arc<crate::api::code::PreparedCodeRevision>,
+        application: Option<&etas_frontend::CheckedCallableApplication>,
     ) -> Result<InterpValue, RuntimeReflectionError> {
         if prepared.identity().kind() != etas_code::DefinitionKind::Flow {
             return Err(
@@ -116,9 +119,11 @@ impl EvalContext<'_> {
             .catalog()
             .item_owner(&prepared.targets.default)
             .ok_or("flow revision has no canonical declaration in the caller catalog")?;
-        let header = backend.catalog().callable_value_reflection(expr, source)?;
-        if header.id != prepared.targets.default {
-            return Err("flow revision reflection differs from its canonical target".into());
+        if let Some(application) = application {
+            if source != prepared.entry().item || application.owner() != source {
+                return Err("compiled flow application differs from its canonical target".into());
+            }
+            self.validate_revision_application(prepared, application)?;
         }
         let reflected = prepared
             .reflection
@@ -133,11 +138,23 @@ impl EvalContext<'_> {
         {
             return Err("compiled flow definition lease differs from its frozen contract".into());
         }
-        let graph = backend
-            .catalog()
-            .callable_descriptors(&header.id)
-            .ok_or("flow revision reflection has no checked signature graph")?
-            .clone();
+        let header = if application.is_some() {
+            let contract = environment.contract();
+            contract
+                .entry()
+                .and_then(|id| contract.callable(id))
+                .ok_or("compiled flow has no frozen callable header")?
+                .clone()
+        } else {
+            backend
+                .catalog()
+                .callable_value_reflection(expr, source)?
+                .clone()
+        };
+        if header.id != prepared.targets.default {
+            return Err("flow revision reflection differs from its canonical target".into());
+        }
+        let graph = view.signature_descriptors().clone();
         let definition = CallableDefinitionValue::with_abi(
             ty,
             header.clone(),

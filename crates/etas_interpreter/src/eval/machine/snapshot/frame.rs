@@ -16,6 +16,13 @@ pub(crate) struct RestoreContext {
     active: std::collections::HashSet<u64>,
     pub(super) caches: ProgramRestoreCaches,
     parked_caches: std::collections::HashMap<usize, ProgramRestoreCaches>,
+    pub(in crate::eval::machine) residual: Option<std::rc::Rc<RestoredResidualState>>,
+}
+
+/// Residual scopes and attempts restored before any frame references them.
+pub(in crate::eval::machine) struct RestoredResidualState {
+    pub(in crate::eval::machine) scopes: Vec<crate::control::residual::SharedResidualScope>,
+    pub(in crate::eval::machine) attempts: Vec<crate::control::residual::ResidualAttemptTag>,
 }
 
 pub(in crate::eval::machine) type SuspensionRestoreTable = std::rc::Rc<
@@ -111,6 +118,32 @@ impl RestoreContext {
         )?;
         Ok(value)
     }
+    pub(super) fn residual_scope(
+        &self,
+        id: u32,
+    ) -> Result<crate::control::residual::SharedResidualScope, String> {
+        self.residual
+            .as_ref()
+            .ok_or("residual scope reference has no restored residual state")?
+            .scopes
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(|| "residual scope reference was not restored".into())
+    }
+
+    pub(super) fn residual_attempt(
+        &self,
+        id: u32,
+    ) -> Result<crate::control::residual::ResidualAttemptTag, String> {
+        self.residual
+            .as_ref()
+            .ok_or("residual attempt reference has no restored residual state")?
+            .attempts
+            .get(id as usize)
+            .cloned()
+            .ok_or_else(|| "residual attempt reference was not restored".into())
+    }
+
     pub(super) fn suspension(
         &self,
         id: u32,
@@ -230,13 +263,16 @@ impl RestoreContext {
             .cloned()
             .map(|(symbol, value)| Ok((symbol, value.restore_with(self)?)))
             .collect::<Result<Vec<_>, String>>()?;
-        let frame = Frame::from_snapshot_with_generic_bindings(
+        let mut frame = Frame::from_snapshot_with_generic_bindings(
             locals,
             crate::control::GenericBindings {
                 types: snapshot.type_bindings.iter().cloned().collect(),
                 rows: snapshot.effect_row_bindings.iter().cloned().collect(),
             },
         )?;
+        if let Some(invocation) = snapshot.residual_invocation {
+            frame.bind_residual_invocation(invocation)?;
+        }
         self.active.remove(&snapshot.id);
         self.frames.insert(snapshot.id, (snapshot, frame));
         Ok(())

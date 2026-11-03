@@ -19,13 +19,21 @@ impl MachineFrameSnapshot {
             Self::ProgramReturn(_) => {
                 return Err("program boundary was not consumed by scoped restore".into());
             }
+            Self::ResidualScope { scope } => {
+                EvalFrame::ResidualScope(context.residual_scope(scope)?)
+            }
             Self::Block { continuation } => EvalFrame::Block(BlockFrame {
                 continuation: continuation.restore_with(context)?,
             }),
             Self::Expr { continuation } => EvalFrame::Expr(ExprFrame {
                 continuation: continuation.restore_with(context)?,
             }),
-            Self::Call { continuation, span } => EvalFrame::Call(CallFrame {
+            Self::Call {
+                caller,
+                continuation,
+                span,
+            } => EvalFrame::Call(CallFrame {
+                caller,
                 continuation: continuation.restore_with(context)?,
                 span,
             }),
@@ -77,6 +85,7 @@ impl MachineFrameSnapshot {
                 continuation: context.continuation(&frame.continuation)?,
             },
             EvalFrame::Call(frame) => Self::Call {
+                caller: frame.caller,
                 continuation: context.continuation(&frame.continuation)?,
                 span: frame.span,
             },
@@ -109,6 +118,9 @@ impl MachineFrameSnapshot {
             EvalFrame::SourceToolReturn(frame) => {
                 Self::SourceToolReturn(SourceToolReturnFrameSnapshot::capture(frame, context)?)
             }
+            EvalFrame::ResidualScope(scope) => Self::ResidualScope {
+                scope: context.residual_scope(scope)?,
+            },
         })
     }
 }

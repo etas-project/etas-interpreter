@@ -45,7 +45,7 @@ pub(super) enum DecodedTarget<F, T> {
     },
     StdIntrinsic {
         origin: HirExprId,
-        substitutions: Vec<Vec<(String, TypeId)>>,
+        substitutions: Vec<crate::intrinsic::dispatch::IntrinsicSubstitutionStep>,
         intrinsic: StdIntrinsicId,
         dispatch: IntrinsicDispatch,
         parameter_types: Vec<TypeId>,

@@ -204,6 +204,7 @@ impl EvalContext<'_> {
                         args: vec![value],
                         span: perform.span,
                         continuation: perform.continuation,
+                        residual: None,
                     }),
                     Err(reason) => ControlSignal::missing_checked_fact(reason, perform.span),
                 }

@@ -315,6 +315,7 @@ impl<'a> EvalContext<'a> {
             }],
             span: memory.span,
             continuation: memory.continuation,
+            residual: None,
         };
         self.propagate_perform_signal(perform)
     }

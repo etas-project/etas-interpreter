@@ -47,6 +47,12 @@ impl ContinuationSnapshot {
             Continuation::ProgramResume(pending) => Self::ProgramResume {
                 id: context.suspension(pending)?,
             },
+            Continuation::ResidualScope(scope) => Self::ResidualScope {
+                scope: context.residual_scope(scope)?,
+            },
+            Continuation::ResidualOutcome(tag) => Self::ResidualOutcome {
+                attempt: context.residual_attempt(tag)?,
+            },
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -679,6 +685,12 @@ impl ContinuationSnapshot {
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
             Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
+            Self::ResidualScope { scope } => {
+                Continuation::ResidualScope(context.residual_scope(scope)?)
+            }
+            Self::ResidualOutcome { attempt } => {
+                Continuation::ResidualOutcome(context.residual_attempt(attempt)?)
+            }
             Self::StreamReadReduction {
                 call,
                 args,

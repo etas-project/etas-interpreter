@@ -7,10 +7,9 @@ use etas_frontend::{
     code::service::{CandidatePublisher, CheckedCandidate},
 };
 
-use crate::{
-    Interpreter,
-    api::{EntryPoint, InterpreterPlan, PlanOptions},
-};
+#[cfg(test)]
+use crate::Interpreter;
+use crate::api::{EntryPoint, InterpreterPlan};
 
 mod checked_reference;
 mod plans;
@@ -26,6 +25,7 @@ pub struct PreparedCodeRevision {
     source_entries: plans::RevisionEntryPlans,
     candidate_entries: plans::RevisionEntryPlans,
     type_bridge: Arc<crate::plan::code::RevisionTypeBridge>,
+    external_type_bridge: Option<Arc<crate::plan::code::RevisionTypeBridge>>,
     pub(crate) targets: crate::plan::code::RevisionTargets,
     pub(crate) definitions: Arc<super::PreparedCodeDefinitions>,
     pub(crate) source_definitions: Arc<super::PreparedCodeDefinitions>,
@@ -50,6 +50,14 @@ impl std::fmt::Debug for PreparedCodeRevision {
 }
 
 impl PreparedCodeRevision {
+    pub(crate) fn matches_external_definition(
+        &self,
+        store: &etas_frontend::code::definition::NativeDefinitionStore,
+        definition: &etas_code::definition::DefinitionRef,
+    ) -> bool {
+        self.candidate
+            .matches_external_definition(store, definition)
+    }
     pub(crate) fn retain_service_lease(
         &mut self,
         lease: etas_code::artifact::CheckedCodeRef,
@@ -72,13 +80,29 @@ impl PreparedCodeRevision {
         let definition = backend
             .reflect_checked(input, &self.candidate, Default::default())
             .map_err(|error| error.to_string())?;
+        let source_backend = if self.candidate.matches_external_definition(&backend, input) {
+            self.external_type_bridge = Some(Arc::new(
+                crate::plan::code::RevisionTypeBridge::from_external_application(
+                    &self.candidate,
+                    &backend,
+                    input,
+                    self.definitions.definitions().catalog(),
+                )
+                .map_err(|error| error.to_string())?,
+            ));
+            backend
+                .restored_source_store(input, &self.candidate, Default::default())
+                .map_err(|error| error.to_string())?
+        } else {
+            backend.clone()
+        };
         self.frozen_bindings = etas_frontend::code::definition::FrozenReflectionBindings::build(
-            backend.clone(),
+            source_backend.clone(),
             &self.candidate,
             self.definitions.definitions().catalog(),
         )
         .map_err(|error| error.to_string())?;
-        self.source_definitions = Arc::new(super::PreparedCodeDefinitions::new(backend.clone()));
+        self.source_definitions = Arc::new(super::PreparedCodeDefinitions::new(source_backend));
         self.definitions = Arc::new(super::PreparedCodeDefinitions::new(Arc::new(
             etas_frontend::code::definition::NativeDefinitionStore::new(
                 self.definitions.definitions().catalog().clone(),
@@ -94,6 +118,46 @@ impl PreparedCodeRevision {
     }
     pub fn identity(&self) -> &DefinitionKey {
         self.candidate.identity()
+    }
+    pub(crate) fn external_type_bridge(
+        &self,
+        caller: &CheckedProgram,
+        expected: etas_types::TypeId,
+    ) -> Result<Option<&Arc<crate::plan::code::RevisionTypeBridge>>, String> {
+        let Some(bridge) = &self.external_type_bridge else {
+            return Ok(None);
+        };
+        let reflected = self
+            .reflection
+            .as_ref()
+            .ok_or("external bridge has no source definition")?;
+        let view = reflected
+            .backend
+            .resolve(&reflected.definition)
+            .map_err(|error| error.to_string())?;
+        let application = view
+            .external_application()
+            .ok_or("external bridge has no checked application")?;
+        if !Arc::ptr_eq(caller, application.program()) {
+            return Err("external bridge belongs to a different checked caller".into());
+        }
+        let Some(etas_types::Type::Function(flow)) = caller.type_store.get(expected) else {
+            return Err("external bridge expected type is not callable".into());
+        };
+        let signature = application.signature();
+        if flow.input != signature.params
+            || flow.output != signature.output
+            || flow.effects != signature.effects
+        {
+            return Err("external bridge differs from the checked applied signature".into());
+        }
+        Ok(Some(bridge))
+    }
+
+    pub(crate) fn saved_external_type_bridge(
+        &self,
+    ) -> Option<&Arc<crate::plan::code::RevisionTypeBridge>> {
+        self.external_type_bridge.as_ref()
     }
     pub(crate) fn frozen_environment(
         &self,
@@ -257,7 +321,13 @@ impl CandidatePublisher for InterpreterCandidatePublisher {
                 Default::default(),
             ),
         )));
-        let planned = Interpreter.plan(candidate.program(), PlanOptions);
+        // The candidate's residual plans execute only through the binding to
+        // its frozen-contract revision created when it was emitted.
+        let planned = crate::plan::build_plan_with_residual_binding(
+            candidate.program(),
+            candidate.program().entry,
+            candidate.residual_binding(),
+        );
         if planned
             .diagnostics
             .iter()
@@ -309,6 +379,7 @@ impl CandidatePublisher for InterpreterCandidatePublisher {
             source_entries,
             candidate_entries,
             type_bridge: Arc::new(type_bridge),
+            external_type_bridge: None,
             targets,
             definitions,
             source_definitions,

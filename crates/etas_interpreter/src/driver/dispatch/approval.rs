@@ -34,6 +34,8 @@ pub(in crate::driver) async fn dispatch(
         return None;
     };
     if let Some(value) = eval.replayed_approval_result(&perform, request.id) {
+        // Reuse completion history without redispatching the external request.
+        // The old result is not an approval grant for this new invocation.
         return Some(eval.resume_perform_signal(perform, value));
     }
     let request_id = request.id;
@@ -52,10 +54,14 @@ pub(in crate::driver) async fn dispatch(
     .await
     {
         Ok(response) => {
-            let value = match response.decision {
-                etas_host::ApprovalDecision::Approved { .. } => InterpValue::Bool(true),
-                etas_host::ApprovalDecision::Denied { .. } => InterpValue::Bool(false),
-            };
+            let approved = matches!(
+                response.decision,
+                etas_host::ApprovalDecision::Approved { .. }
+            );
+            let value = InterpValue::Bool(approved);
+            if let Some(tag) = &perform.residual {
+                tag.record_trusted_approval(approved);
+            }
             if let Err(fault) = eval.record_completed_host_boundary(
                 crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                 "approval",

@@ -184,6 +184,7 @@ impl EvalContext<'_> {
             args: vec![value],
             span,
             continuation,
+            residual: None,
         })
     }
 }

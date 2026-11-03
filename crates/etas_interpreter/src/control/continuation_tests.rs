@@ -24,6 +24,7 @@ fn worker(key: &str) -> bool {
 fn chain(depth: usize, mode: usize) -> Continuation {
     (0..depth).fold(Continuation::Return, |node, _| match mode {
         0 => Continuation::CallBoundary {
+            caller: None,
             span: crate::testing::synthetic_span(),
             outer: node.into(),
         },

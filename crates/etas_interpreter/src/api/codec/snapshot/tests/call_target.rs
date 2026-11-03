@@ -17,6 +17,7 @@ fn effect_row_bindings_roundtrip_in_callable_wrappers_and_captured_frames() {
         target: CallTargetSnapshot::Lambda {
             expr: HirExprId(3),
             captured: LocalsSnapshot {
+                residual_invocation: None,
                 id: 71,
                 locals: Rc::new(vec![]),
                 type_bindings: vec![],
@@ -107,6 +108,7 @@ fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() 
 #[test]
 fn shared_call_target_snapshot_encoding_does_not_change_after_copy_on_write() {
     let frame = LocalsSnapshot {
+        residual_invocation: None,
         effect_row_bindings: Vec::new(),
         id: 1,
         locals: Rc::new(vec![(SymbolId(1), ValueSnapshot::String("saved".into()))]),
@@ -157,6 +159,7 @@ fn iterative_call_target_decode_roundtrips_deep_bindings_limits_and_frames_on_wi
     let mut target = CallTargetSnapshot::Lambda {
         expr: HirExprId(7),
         captured: LocalsSnapshot {
+            residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 19,
             locals: Rc::new(vec![(SymbolId(9), ValueSnapshot::String("saved".into()))]),

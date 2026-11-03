@@ -25,6 +25,7 @@ mod value_restore;
 
 pub(super) use capture_context::CaptureContext;
 pub(crate) use frame::RestoreContext;
+pub(in crate::eval::machine) use frame::RestoredResidualState;
 pub(in crate::eval::machine) use frame::SuspensionRestoreTable;
 pub(crate) use model::{capture_model_policy, restore_model_policy};
 pub(crate) use validator::SnapshotValidator;
@@ -35,6 +36,15 @@ pub(crate) struct SnapshotRestoreResources<'a> {
     pub revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
     pub root: Option<CheckpointRoot>,
     pub ordering: Option<ordering::OrderedRestoreChecks>,
+    /// Freshly prepared residual plans of the root program, required whenever
+    /// the checkpoint carries live residual state.
+    pub residual: Option<ResidualRestoreInput>,
+}
+
+pub(crate) struct ResidualRestoreInput {
+    pub prepared: std::sync::Arc<crate::plan::residual::PreparedResidualPlans>,
+    pub log: std::rc::Rc<crate::control::residual::ResidualRunLog>,
+    pub limits: crate::control::residual::ResidualStateLimits,
 }
 
 #[derive(Clone)]

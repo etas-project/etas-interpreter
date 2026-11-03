@@ -138,7 +138,8 @@ fn capture_parent(
                 inner: child,
             }
         }
-        Continuation::CallBoundary { span, .. } => ContinuationSnapshot::CallBoundary {
+        Continuation::CallBoundary { caller, span, .. } => ContinuationSnapshot::CallBoundary {
+            caller: *caller,
             span: *span,
             outer: child,
         },

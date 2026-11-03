@@ -39,6 +39,10 @@ pub(in crate::eval::machine) struct CaptureContext {
     frames: HashMap<FrameIdentity, LocalsSnapshot>,
     first_active: Option<*const ()>,
     active_frames: HashSet<*const ()>,
+    residual_scope_ids: HashMap<*const (), u32>,
+    residual_scopes: Vec<crate::control::residual::SharedResidualScope>,
+    residual_attempt_ids: HashMap<*const (), u32>,
+    residual_attempts: Vec<crate::control::residual::ResidualAttemptTag>,
 }
 
 impl CaptureContext {
@@ -80,6 +84,87 @@ impl CaptureContext {
             Some(id) => Ok(crate::orchestration::ActionInvocationSnapshot::FromSuspension { id }),
             None => projection.checkpoint_origin(&mut self.revisions),
         }
+    }
+
+    /// Registers a live scope once per capture, preserving shared identity.
+    pub(in crate::eval::machine) fn residual_scope(
+        &mut self,
+        scope: &crate::control::residual::SharedResidualScope,
+    ) -> Result<u32, String> {
+        let identity = Rc::as_ptr(scope).cast::<()>();
+        if let Some(id) = self.residual_scope_ids.get(&identity) {
+            return Ok(*id);
+        }
+        let id = u32::try_from(self.residual_scopes.len())
+            .ok()
+            .filter(|id| (*id as usize) < crate::orchestration::MAX_CHECKPOINT_RESIDUAL_SCOPES)
+            .ok_or("too many residual scopes in checkpoint")?;
+        self.residual_scope_ids.insert(identity, id);
+        self.residual_scopes.push(scope.clone());
+        Ok(id)
+    }
+
+    /// Registers an in-flight attempt and every scope that observed it.
+    pub(in crate::eval::machine) fn residual_attempt(
+        &mut self,
+        tag: &crate::control::residual::ResidualAttemptTag,
+    ) -> Result<u32, String> {
+        let identity = tag.identity();
+        if let Some(id) = self.residual_attempt_ids.get(&identity) {
+            return Ok(*id);
+        }
+        for scope in tag.observing_scopes() {
+            self.residual_scope(scope)?;
+        }
+        let id = u32::try_from(self.residual_attempts.len())
+            .ok()
+            .filter(|id| (*id as usize) < crate::orchestration::MAX_CHECKPOINT_RESIDUAL_ATTEMPTS)
+            .ok_or("too many residual attempts in checkpoint")?;
+        self.residual_attempt_ids.insert(identity, id);
+        self.residual_attempts.push(tag.clone());
+        Ok(id)
+    }
+
+    /// Captures every registered residual scope and attempt together with
+    /// the run counters, after all frames and continuations were captured.
+    pub(in crate::eval::machine) fn capture_residual(
+        &self,
+        root: Option<&etas_frontend::CheckedProgram>,
+        counters: (u64, u64, u64),
+    ) -> Result<crate::orchestration::ResidualMachineSnapshot, String> {
+        let mut scopes = Vec::with_capacity(self.residual_scopes.len());
+        for scope in &self.residual_scopes {
+            let scope = scope
+                .try_borrow()
+                .map_err(|_| "residual scope is busy during checkpoint capture".to_owned())?;
+            if !root.is_some_and(|root| std::sync::Arc::ptr_eq(root, scope.program())) {
+                return Err(
+                    "residual scope of a compiled revision cannot cross a checkpoint boundary"
+                        .into(),
+                );
+            }
+            scopes.push(scope.snapshot());
+        }
+        let attempts = self
+            .residual_attempts
+            .iter()
+            .map(|tag| {
+                tag.snapshot(|scope| {
+                    self.residual_scope_ids
+                        .get(&Rc::as_ptr(scope).cast::<()>())
+                        .copied()
+                        .ok_or_else(|| "residual attempt scope was not captured".to_owned())
+                })
+            })
+            .collect::<Result<_, _>>()?;
+        Ok(crate::orchestration::ResidualMachineSnapshot {
+            next_cursor: counters.0,
+            next_attempt: counters.1,
+            next_invocation: counters.2,
+            scopes,
+            attempts,
+            exits: Default::default(),
+        })
     }
 
     pub(in crate::eval::machine) fn capture_suspensions(
@@ -175,6 +260,7 @@ impl CaptureContext {
         let result = frame
             .try_map_locals(|value| self.value(value))
             .map(|locals| LocalsSnapshot {
+                residual_invocation: frame.residual_invocation(),
                 id: frame.snapshot_id(),
                 locals: Rc::new(locals),
                 type_bindings: frame.sorted_type_bindings(),

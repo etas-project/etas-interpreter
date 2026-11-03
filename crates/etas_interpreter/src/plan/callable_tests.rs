@@ -21,6 +21,154 @@ fn plan(program: &CheckedProgram) -> InterpreterPlan {
     result.plan.unwrap()
 }
 
+fn residual_reference() -> etas_code::residual::identity::ResidualObligationRef {
+    let obligation = etas_code::residual::identity::ObligationId::from_canonical_fingerprint(
+        etas_code::CodeFingerprint::from_bytes([1; 32]),
+    );
+    etas_code::residual::identity::ResidualObligationRef::new(obligation, Default::default())
+        .unwrap()
+}
+
+fn add_residual_check(program: &mut CheckedProgram, name: &str) {
+    let item = program
+        .hir
+        .items
+        .iter()
+        .find_map(|(id, item)| {
+            matches!(item, etas_hir::HirItem::Flow(flow)
+                if program.symbols.get(flow.symbol).is_some_and(|symbol| symbol.name == name))
+            .then_some(id)
+        })
+        .unwrap();
+    let program = Arc::make_mut(program);
+    let effects = Arc::make_mut(&mut program.effects);
+    effects
+        .item_effects
+        .get_mut(&item)
+        .unwrap()
+        .residual_checks
+        .insert(residual_reference());
+}
+
+#[test]
+fn entry_plan_rejects_reachable_residual_checks_without_installation() {
+    for name in ["main", "helper"] {
+        let mut program = crate::testing::project::checked_project(
+            "module app.main; flow helper() -> unit { return; } flow main() -> unit { helper(); }",
+        );
+        add_residual_check(&mut program, name);
+        let result = super::build_plan(&program, PlanOptions);
+        assert!(result.plan.is_none());
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains(
+                    "requires residual checks but no verified residual plan and installation"
+                )),
+            "{:?}",
+            result.diagnostics
+        );
+    }
+}
+
+#[test]
+fn entry_plan_does_not_reject_unreachable_residual_checks() {
+    let mut program = crate::testing::project::checked_project(
+        "module app.main; flow unused() -> unit { return; } flow main() -> unit { return; }",
+    );
+    add_residual_check(&mut program, "unused");
+    let _ = plan(&program);
+}
+
+#[test]
+fn lambda_plan_rejects_residual_checks_without_installation() {
+    let mut program = crate::testing::project::checked_project(
+        "module app.main; flow factory() -> () -> unit ![] { return () => { return; }; } flow main() -> unit { return; }",
+    );
+    let expr = lambda(&program);
+    Arc::make_mut(&mut Arc::make_mut(&mut program).effects)
+        .latent_effects
+        .get_mut(&expr)
+        .unwrap()
+        .summary
+        .residual_checks
+        .insert(residual_reference());
+    let source = plan(&program);
+    let errors = source
+        .select_callable(&program, CheckedCallableRoot::Lambda(expr))
+        .unwrap_err();
+    assert!(
+        errors.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("requires residual checks but no verified residual plan and installation")),
+        "{errors:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn indirect_lambda_call_rejects_uninstalled_residual_checks() {
+    use crate::{Interpreter, api::RunOptions, testing::FakeHost};
+
+    let original = crate::testing::project::checked_project(
+        "module app.main; import std.io.println; flow main() -> i32 { let f = () => { println(\"body\")?; return 42; }; return f(); }",
+    );
+    let expr = lambda(&original);
+    for variant in 0..3 {
+        let mut program = original.clone();
+        let effects = Arc::make_mut(&mut Arc::make_mut(&mut program).effects);
+        match variant {
+            1 => {
+                effects
+                    .latent_effects
+                    .get_mut(&expr)
+                    .unwrap()
+                    .summary
+                    .residual_checks
+                    .insert(residual_reference());
+            }
+            2 => {
+                effects.latent_effects.remove(&expr);
+            }
+            _ => {}
+        }
+        let host = FakeHost::new(HostServiceAvailability::with_host(
+            etas_effects::HostRequirementKind::Console,
+        ));
+        let entry = program.entry.unwrap();
+        let result = Interpreter
+            .run_checked(
+                &program,
+                crate::api::EntryPoint { item: entry },
+                vec![],
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        if variant == 0 {
+            assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+            assert_eq!(host.stdout_text(), "body\n");
+            assert!(result.value().is_some());
+        } else {
+            assert!(result.value().is_none());
+            assert_eq!(host.stdout_text(), "");
+            assert!(
+                result
+                    .diagnostics
+                    .iter()
+                    .any(|diagnostic| diagnostic.message.contains(if variant == 1 {
+                        "requires residual checks but no verified residual plan and installation"
+                    } else {
+                        "MissingLambdaAnalysis"
+                    })),
+                "{:?}",
+                result.diagnostics
+            );
+        }
+    }
+}
+
 fn run_lambda(
     program: &CheckedProgram,
     plan: &InterpreterPlan,

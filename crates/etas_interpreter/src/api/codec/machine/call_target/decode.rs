@@ -249,7 +249,8 @@ fn decode_leaf<T: TargetValue>(
 fn substitutions(
     limits: &etas_host::StorageLimits,
     value: &Value,
-) -> Result<Vec<Vec<(String, etas_types::TypeId)>>, String> {
+) -> Result<Vec<crate::intrinsic::dispatch::IntrinsicSubstitutionStep>, String> {
+    super::revision::bounded_json(limits, value)?;
     let steps = value
         .as_array()
         .ok_or("intrinsic substitutions must be an array")?;
@@ -260,18 +261,19 @@ fn substitutions(
     }
     let mut output = Vec::with_capacity(steps.len());
     for step in steps {
-        let step = step
+        let types = required(step, "types")?
             .as_array()
             .ok_or("intrinsic substitution bindings must be an array")?;
         nodes = nodes
-            .checked_add(step.len())
+            .checked_add(types.len())
             .ok_or("intrinsic substitutions exceed node budget")?;
-        if step.is_empty() || nodes > limits.max_nodes {
+        let rows = super::super::frame::effect_rows_from_snapshot(step)?;
+        if (types.is_empty() && rows.is_empty()) || nodes > limits.max_nodes {
             return Err("intrinsic substitution is empty or exceeds node budget".into());
         }
         let mut names = std::collections::HashSet::new();
-        let mut bindings = Vec::with_capacity(step.len());
-        for binding in step {
+        let mut bindings = Vec::with_capacity(types.len());
+        for binding in types {
             let name = required_str(binding, "name")?;
             bytes = bytes
                 .checked_add(name.len())
@@ -286,7 +288,10 @@ fn substitutions(
                 etas_types::TypeId(required_u32(binding, "type")?),
             ));
         }
-        output.push(bindings);
+        output.push(crate::intrinsic::dispatch::IntrinsicSubstitutionStep {
+            types: bindings,
+            rows,
+        });
     }
     Ok(output)
 }

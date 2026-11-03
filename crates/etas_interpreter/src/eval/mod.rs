@@ -51,6 +51,7 @@ mod perform;
 mod pipeline;
 pub(crate) mod priority_queue;
 mod reflection;
+pub(crate) mod residual;
 mod run_state;
 pub use run_state::EvalRunState;
 mod collection_call;
@@ -350,15 +351,36 @@ impl<'a> EvalContext<'a> {
     }
 
     pub(crate) fn host_authority(&self) -> AuthorityContext {
-        self.host_context.authority.clone()
+        let mut authority = self.host_context.authority.clone();
+        for approval in &authority.approvals {
+            for grant in &approval.grants {
+                if !authority.grants.contains(grant) {
+                    authority.grants.push(grant.clone());
+                }
+            }
+        }
+        authority
     }
 
-    pub(crate) fn record_approval_grant(&mut self, grant: ApprovalGrant) {
-        self.host_context
-            .authority
-            .grants
-            .extend(grant.grants.iter().cloned());
+    pub(crate) fn record_approval_grant(
+        &mut self,
+        grant: ApprovalGrant,
+    ) -> Result<(), etas_host::HostError> {
+        let approvals = &self.host_context.authority.approvals;
+        if approvals.iter().any(|accepted| accepted.id == grant.id) {
+            return Err(etas_host::HostError::new(
+                etas_host::HostErrorCode::InvalidResponse,
+                "approval request identity was already consumed in this run",
+            ));
+        }
+        if approvals.len() >= 4096 {
+            return Err(etas_host::HostError::new(
+                etas_host::HostErrorCode::BudgetExceeded,
+                "run-scoped approval ledger exceeds its entry limit",
+            ));
+        }
         self.host_context.authority.approvals.push(grant);
+        Ok(())
     }
 
     pub(crate) fn host_trace(&self) -> TraceContext {
@@ -534,7 +556,7 @@ fn compose_signal_continuation(signal: ControlSignal, continuation: Continuation
     }
 }
 
-fn path_name(action: &ResolvedActionRef) -> String {
+pub(crate) fn path_name(action: &ResolvedActionRef) -> String {
     action
         .effect
         .path

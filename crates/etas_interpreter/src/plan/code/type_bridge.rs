@@ -71,29 +71,7 @@ impl RevisionTypeBridge {
         original: &DefinitionCatalog,
         compiled: &DefinitionCatalog,
     ) -> Result<Self, RevisionTypeBridgeError> {
-        let forward = correspond(original, compiled)?;
-        let backward = correspond(compiled, original)?;
-        let runtime_types = runtime::RuntimeTypeBridge::new(original, compiled)?;
-        let actions = actions::ActionBridge::new(original, compiled, &runtime_types)?;
-        let bridge = Self {
-            runtime_owner: Default::default(),
-            original: original.checked_program().clone(),
-            candidate: compiled.checked_program().clone(),
-            forward,
-            backward,
-            original_callables: original
-                .native_callables()
-                .map(|(id, item)| (id.clone(), item))
-                .collect(),
-            candidate_callables: compiled
-                .native_callables()
-                .map(|(id, item)| (id.clone(), item))
-                .collect(),
-            original_agents: agent_items(original)?,
-            candidate_agents: agent_items(compiled)?,
-            runtime_types,
-            actions,
-        };
+        let bridge = Self::catalog_correspondence(original, compiled)?;
         if candidate.identity().kind() == etas_code::DefinitionKind::Agent {
             let component = |catalog: &DefinitionCatalog| {
                 catalog
@@ -161,6 +139,66 @@ impl RevisionTypeBridge {
             }
         }
         Ok(bridge)
+    }
+
+    pub(crate) fn from_external_application(
+        candidate: &CheckedCandidate,
+        definitions: &etas_frontend::code::definition::NativeDefinitionStore,
+        definition: &etas_code::definition::DefinitionRef,
+        compiled: &DefinitionCatalog,
+    ) -> Result<Self, RevisionTypeBridgeError> {
+        if !candidate.matches_external_definition(definitions, definition)
+            || !std::sync::Arc::ptr_eq(compiled.checked_program(), candidate.program())
+        {
+            return Err(RevisionTypeBridgeError::InconsistentDefinition(
+                candidate.identity().clone(),
+            ));
+        }
+        let view = definitions
+            .resolve(definition)
+            .map_err(|error| RevisionTypeBridgeError::InvalidRuntimeInterface(error.to_string()))?;
+        let application = view.external_application().ok_or_else(|| {
+            RevisionTypeBridgeError::InconsistentDefinition(candidate.identity().clone())
+        })?;
+        if !std::sync::Arc::ptr_eq(
+            application.program(),
+            definitions.catalog().checked_program(),
+        ) || application.callable().as_declaration() != Some(candidate.identity())
+        {
+            return Err(RevisionTypeBridgeError::InconsistentDefinition(
+                candidate.identity().clone(),
+            ));
+        }
+        Self::catalog_correspondence(definitions.catalog(), compiled)
+    }
+
+    fn catalog_correspondence(
+        original: &DefinitionCatalog,
+        compiled: &DefinitionCatalog,
+    ) -> Result<Self, RevisionTypeBridgeError> {
+        let forward = correspond(original, compiled)?;
+        let backward = correspond(compiled, original)?;
+        let runtime_types = runtime::RuntimeTypeBridge::new(original, compiled)?;
+        let actions = actions::ActionBridge::new(original, compiled, &runtime_types)?;
+        Ok(Self {
+            runtime_owner: Default::default(),
+            original: original.checked_program().clone(),
+            candidate: compiled.checked_program().clone(),
+            forward,
+            backward,
+            original_callables: original
+                .native_callables()
+                .map(|(id, item)| (id.clone(), item))
+                .collect(),
+            candidate_callables: compiled
+                .native_callables()
+                .map(|(id, item)| (id.clone(), item))
+                .collect(),
+            original_agents: agent_items(original)?,
+            candidate_agents: agent_items(compiled)?,
+            runtime_types,
+            actions,
+        })
     }
 
     pub fn original_program(&self) -> &CheckedProgram {

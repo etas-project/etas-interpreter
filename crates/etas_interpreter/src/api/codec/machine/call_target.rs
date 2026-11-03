@@ -9,15 +9,15 @@ pub(super) use decode::call_target_snapshots_from_json;
 pub(crate) use decode::{call_target_from_artifact_snapshot, call_target_snapshot_from_json};
 
 pub(in crate::api::codec) fn intrinsic_substitutions_snapshot(
-    steps: &[Vec<(String, etas_types::TypeId)>],
+    steps: &[crate::intrinsic::dispatch::IntrinsicSubstitutionStep],
 ) -> Value {
     json!(
         steps
             .iter()
-            .map(|step| step
-                .iter()
-                .map(|(name, ty)| json!({"name": name, "type": ty.0}))
-                .collect::<Vec<_>>())
+            .map(|step| json!({
+                "types": step.types.iter().map(|(name, ty)| json!({"name": name, "type": ty.0})).collect::<Vec<_>>(),
+                "effect_row_bindings": step.rows,
+            }))
             .collect::<Vec<_>>()
     )
 }

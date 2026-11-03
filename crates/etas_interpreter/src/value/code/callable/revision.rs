@@ -14,6 +14,11 @@ impl ScopedCallableValue {
             return Err("compiled flow requires its checked ordinary callable result ABI".into());
         }
         let original = prepared.type_bridge().original_program();
+        let external_bridge = if caller_revision.is_none() && !Arc::ptr_eq(original, caller) {
+            prepared.external_type_bridge(caller, expected)?.cloned()
+        } else {
+            None
+        };
         let original_type = match caller_revision {
             Some(source) => {
                 if !Arc::ptr_eq(original, source.type_bridge().original_program()) {
@@ -27,15 +32,34 @@ impl ScopedCallableValue {
                     .map_err(|error| error.to_string())?
             }
             None if Arc::ptr_eq(original, caller) => expected,
+            None if external_bridge.is_some() => expected,
             None => {
                 return Err("compiled flow belongs to a different checked source program".into());
             }
         };
-        let native_type = prepared
-            .type_bridge()
-            .runtime_to_candidate(original, original_type)
+        let output_bridge = external_bridge
+            .as_ref()
+            .unwrap_or_else(|| prepared.type_bridge());
+        let bridge_source = if external_bridge.is_some() {
+            caller
+        } else {
+            original
+        };
+        let native_type = output_bridge
+            .runtime_to_candidate(bridge_source, original_type)
             .map_err(|error| error.to_string())?;
+        if output_bridge
+            .runtime_to_original(prepared.program(), native_type)
+            .map_err(|error| error.to_string())?
+            != original_type
+        {
+            return Err(
+                "compiled flow interface does not round-trip through checked type correspondence"
+                    .into(),
+            );
+        }
         prepared.type_bridge().bind_runtime_owner(&prepared);
+        output_bridge.bind_runtime_owner(&prepared);
         let execution = CheckedExecutionProgram {
             checked: prepared.program().clone(),
             plan: prepared.plan().clone(),
@@ -98,8 +122,11 @@ impl ScopedCallableValue {
             };
         }
         let native = InterpValue::Callable(target);
-        let (mut ty, mut value) = RevisionProjection::Original(prepared.type_bridge().clone())
-            .value(native_type, native, &execution)?;
+        let (mut ty, mut value) = RevisionProjection::Original(output_bridge.clone()).value(
+            native_type,
+            native,
+            &execution,
+        )?;
         if let Some(source) = caller_revision {
             (ty, value) = RevisionProjection::Candidate(source.type_bridge().clone())
                 .value(ty, value, &execution)?;

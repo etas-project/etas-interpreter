@@ -5,11 +5,12 @@ mod continuation;
 mod fault;
 mod frame;
 mod generics;
+pub(crate) mod residual;
 mod signal;
 
 pub use action::{CheckedActionInvocation, DefaultActionBoundary, StreamReadReduction};
+pub(crate) use call_site::{CallOrigin, ComposedInvocation, InvocationPath};
 pub use call_site::{CallSite, CallSiteKind};
-pub(crate) use call_site::{ComposedInvocation, InvocationPath};
 pub use call_target::CallTarget;
 pub(crate) use call_target::{CallTargetChildren, CallTargetLink};
 

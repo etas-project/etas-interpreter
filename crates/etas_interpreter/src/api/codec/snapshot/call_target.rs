@@ -5,6 +5,7 @@ use serde_json::{Value, json};
 
 pub(super) fn frame<'a>(frame: &'a LocalsSnapshot, slot: &'a mut Value, pending: &mut Pending<'a>) {
     *slot = json!({"id":frame.id, "locals":null,
+        "residual_invocation": frame.residual_invocation,
         "effect_row_bindings": frame.effect_row_bindings,
         "type_bindings":frame.type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
     for ((symbol, value), entry) in frame

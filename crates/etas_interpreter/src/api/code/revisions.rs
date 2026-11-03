@@ -46,7 +46,12 @@ impl PreparedRevisionSet {
     }
 
     pub fn insert(&mut self, revision: Arc<PreparedCodeRevision>) -> Result<(), String> {
-        if !Arc::ptr_eq(&self.source, revision.type_bridge().original_program()) {
+        if !Arc::ptr_eq(&self.source, revision.type_bridge().original_program())
+            && !revision.saved_external_type_bridge().is_some_and(|bridge| {
+                Arc::ptr_eq(&self.source, bridge.original_program())
+                    && Arc::ptr_eq(revision.program(), bridge.candidate_program())
+            })
+        {
             return Err("restored revision belongs to a different checked source universe".into());
         }
         let identity = CheckpointCodeRevision::for_revision(&revision);
@@ -79,6 +84,9 @@ impl PreparedRevisionSet {
             );
         }
         revision.type_bridge().bind_runtime_owner(revision);
+        if let Some(bridge) = revision.saved_external_type_bridge() {
+            bridge.bind_runtime_owner(revision);
+        }
         Ok(revision)
     }
 
@@ -172,10 +180,17 @@ impl PreparedRevisionSet {
         let mut result = Vec::with_capacity(metadata.projections.len());
         for saved in &metadata.projections {
             let revision = self.checked_revision(&saved.revision)?;
-            let edge = if saved.to_candidate {
-                RevisionProjection::Candidate(revision.type_bridge().clone())
+            let bridge = if saved.external {
+                revision
+                    .saved_external_type_bridge()
+                    .ok_or("checkpoint requires missing external type bridge")?
             } else {
-                RevisionProjection::Original(revision.type_bridge().clone())
+                revision.type_bridge()
+            };
+            let edge = if saved.to_candidate {
+                RevisionProjection::Candidate(bridge.clone())
+            } else {
+                RevisionProjection::Original(bridge.clone())
             };
             if !Arc::ptr_eq(&program, edge.source()) || saved.from != ty {
                 return Err(

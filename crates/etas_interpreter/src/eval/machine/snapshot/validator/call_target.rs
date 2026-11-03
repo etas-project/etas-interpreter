@@ -253,7 +253,7 @@ impl SnapshotValidator<'_> {
                 let nodes = substitutions
                     .iter()
                     .try_fold(substitutions.len(), |count, step| {
-                        count.checked_add(step.len())
+                        count.checked_add(step.types.len())
                     })
                     .ok_or_else(|| {
                         format!("{context}: intrinsic substitutions exceed node budget")
@@ -265,7 +265,7 @@ impl SnapshotValidator<'_> {
                 }
                 let bytes = substitutions
                     .iter()
-                    .flatten()
+                    .flat_map(|step| &step.types)
                     .try_fold(0usize, |count, (name, _)| count.checked_add(name.len()))
                     .ok_or_else(|| {
                         format!("{context}: intrinsic substitutions exceed byte budget")
@@ -274,6 +274,9 @@ impl SnapshotValidator<'_> {
                     return Err(format!(
                         "{context}: intrinsic substitutions exceed byte budget"
                     ));
+                }
+                for step in substitutions {
+                    self.effect_row_bindings(&step.rows, context)?;
                 }
                 self.dispatch
                     .validate_std_call_template(

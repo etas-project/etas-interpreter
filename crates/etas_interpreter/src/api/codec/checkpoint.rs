@@ -691,7 +691,12 @@ fn machine_json_with_budget(
             .map_err(InterpreterCodecError::new)?;
     }
     budget.register_suspensions(machine.suspended_programs.len());
-    let mut object = CheckpointDocument::from_value(json!({"frames":[], "suspended_programs":[]}));
+    let mut object = CheckpointDocument::from_value(
+        json!({"frames":[], "suspended_programs":[], "residual": null}),
+    );
+    object.value_mut()["residual"] = serde_json::to_value(&machine.residual).map_err(|error| {
+        InterpreterCodecError::new(format!("residual monitor state cannot be encoded: {error}"))
+    })?;
     for (index, frame) in machine.frames.iter().enumerate() {
         let mut frame = machine_frame_json(frame, budget)?;
         frame["program_owner"] = json!(machine.program_owner(index));
@@ -724,10 +729,15 @@ fn machine_frame_json(
         MachineFrameSnapshot::Expr { continuation } => {
             (json!({"kind":"expr","continuation":null}), continuation)
         }
-        MachineFrameSnapshot::Call { continuation, span } => (
-            json!({"kind":"call","span":span_json(*span),"continuation":null}),
+        MachineFrameSnapshot::Call {
+            caller,
             continuation,
-        ),
+            span,
+        } => {
+            let frame =
+                json!({"kind":"call","span":span_json(*span),"continuation":null,"caller":caller});
+            (frame, continuation)
+        }
         MachineFrameSnapshot::Continuation { continuation } => (
             json!({"kind":"continuation","continuation":null}),
             continuation,
@@ -747,6 +757,9 @@ fn machine_frame_json(
             let mut object = json!({"kind":"source_tool_return","source_tool":null});
             object["source_tool"] = source_tool_return_frame_json(frame, budget)?;
             return Ok(object);
+        }
+        MachineFrameSnapshot::ResidualScope { scope } => {
+            return Ok(json!({"kind":"residual_scope","scope":scope}));
         }
     };
     object["continuation"] = snapshot::continuation_json_with_budget(continuation, budget)?;
@@ -770,10 +783,48 @@ fn machine_from_json_with_revisions(
         .iter()
         .map(|node| suspension::decode(limits, node, revisions))
         .collect::<Result<_, _>>()?;
+    machine.residual = residual_snapshot_from_json(limits, value)?;
     machine
         .suspension_order()
         .map_err(InterpreterCodecError::new)?;
     Ok(machine)
+}
+
+/// Decodes the residual section with explicit size bounds. The decoded data
+/// stays untrusted until restored through freshly prepared plans.
+fn residual_snapshot_from_json(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<crate::orchestration::ResidualMachineSnapshot, InterpreterCodecError> {
+    let residual = value.get("residual").ok_or_else(|| {
+        InterpreterCodecError::new("checkpoint machine is missing residual state")
+    })?;
+    let count = |key: &str| {
+        residual
+            .get(key)
+            .and_then(Value::as_array)
+            .map_or(0, Vec::len)
+    };
+    let exits = residual
+        .get("exits")
+        .and_then(|exits| exits.get("records"))
+        .and_then(Value::as_array)
+        .map_or(0, Vec::len);
+    if exits > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_EXITS
+        || count("scopes") > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_SCOPES
+        || count("attempts") > crate::orchestration::MAX_CHECKPOINT_RESIDUAL_ATTEMPTS
+        || count("scopes")
+            .saturating_add(count("attempts"))
+            .saturating_add(exits)
+            > limits.max_nodes
+    {
+        return Err(InterpreterCodecError::new(
+            "checkpoint residual state exceeds resource limits",
+        ));
+    }
+    serde_json::from_value(residual.clone()).map_err(|error| {
+        InterpreterCodecError::new(format!("checkpoint residual state is invalid: {error}"))
+    })
 }
 
 fn machine_frames_from_json(
@@ -830,6 +881,11 @@ fn machine_frames_from_json(
                     )?;
                     return Ok(MachineFrameSnapshot::SourceToolReturn(frame));
                 }
+                "residual_scope" => {
+                    return Ok(MachineFrameSnapshot::ResidualScope {
+                        scope: required_u32(frame, "scope")?,
+                    });
+                }
                 _ => {}
             }
             let continuation = machine::continuation_from_snapshot(
@@ -856,6 +912,10 @@ fn machine_frames_from_json(
                 "block" => Ok(MachineFrameSnapshot::Block { continuation }),
                 "expr" => Ok(MachineFrameSnapshot::Expr { continuation }),
                 "call" => Ok(MachineFrameSnapshot::Call {
+                    caller: serde::Deserialize::deserialize(required_obj(frame, "caller")?)
+                        .map_err(|error| {
+                            InterpreterCodecError::new(format!("invalid call origin: {error}"))
+                        })?,
                     continuation,
                     span: span_from_json(required_obj(frame, "span")?)?,
                 }),
@@ -871,6 +931,7 @@ fn machine_frames_from_json(
     Ok(MachineSnapshot {
         frames,
         suspended_programs: Vec::new(),
+        residual: Default::default(),
         program_owners: program_owners.map_or(
             crate::orchestration::FrameProgramOwners::Root,
             crate::orchestration::FrameProgramOwners::Scoped,

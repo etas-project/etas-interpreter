@@ -61,6 +61,11 @@ impl EncodingBudget {
                 effect_row_bindings,
                 ..
             }) => self.effect_rows(effect_row_bindings)?,
+            Node::CallTarget(CallTargetSnapshot::StdIntrinsic { substitutions, .. }) => {
+                for step in substitutions {
+                    self.effect_rows(&step.rows)?;
+                }
+            }
             _ => {}
         }
         let (children, inline_nodes) = match node {
@@ -165,7 +170,7 @@ impl EncodingBudget {
                         .len()
                         .checked_add(substitutions.len())
                         .ok_or_else(exhausted)?,
-                    |count, step| count.checked_add(step.len()).ok_or_else(exhausted),
+                    |count, step| count.checked_add(step.types.len()).ok_or_else(exhausted),
                 )?;
                 (0, nodes)
             }
@@ -232,7 +237,7 @@ impl EncodingBudget {
                 }
             }
             Node::CallTarget(CallTargetSnapshot::StdIntrinsic { substitutions, .. }) => {
-                for (name, _) in substitutions.iter().flatten() {
+                for (name, _) in substitutions.iter().flat_map(|step| &step.types) {
                     self.charge_bytes(name.len())?;
                 }
             }

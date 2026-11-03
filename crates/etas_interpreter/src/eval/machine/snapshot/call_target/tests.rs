@@ -59,8 +59,18 @@ fn deep_call_target_capture_is_stack_safe_and_allocates_only_snapshot_and_fronti
                 cost.count <= nodes + 32,
                 "intermediate graph allocation: {cost:?}"
             );
+            let owner_bytes = 2 * std::mem::size_of::<usize>()
+                + if mode < 2 {
+                    0
+                } else {
+                    std::mem::size_of::<Vec<CallTargetSnapshot>>()
+                };
+            // Output nodes plus their Rc owners are retained data, not frontier copies.
             assert!(
-                cost.bytes <= depth * 320 + 4096,
+                cost.bytes
+                    <= nodes * std::mem::size_of::<CallTargetSnapshot>()
+                        + depth * (128 + owner_bytes)
+                        + 4096,
                 "unbounded frontier or intermediate nodes: {cost:?}"
             );
             let mut cursor = &saved;

@@ -151,6 +151,8 @@ pub struct PendingBlock {
     pub next_stmt_index: usize,
     pub frame: crate::control::Frame,
     pub continuation: Continuation,
+    /// A callable body whose invocation activates an installed residual scope.
+    pub(crate) residual: Option<Box<super::residual::ResidualScopeActivation>>,
 }
 
 #[derive(Clone, Debug)]
@@ -204,6 +206,9 @@ pub struct PendingPerform {
     pub args: Vec<InterpValue>,
     pub span: Span,
     pub continuation: Continuation,
+    /// Set once the action was observed by every enclosing residual scope;
+    /// it is the action's single-dispatch permit.
+    pub(crate) residual: Option<super::residual::ResidualAttemptTag>,
 }
 
 impl PendingPerform {
@@ -233,6 +238,7 @@ impl PendingPerform {
             args: vec![payload],
             span,
             continuation,
+            residual: None,
         }
     }
 }

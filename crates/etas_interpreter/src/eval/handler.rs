@@ -207,7 +207,10 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
-                ControlSignal::Perform(perform) => {
+                ControlSignal::Perform(mut perform) => {
+                    if let Err(fault) = self.observe_residual_attempt(&mut perform) {
+                        return ControlSignal::Fault(Box::new(fault));
+                    }
                     signal = match self.dispatch_handler(*perform.clone(), &handler_records, frame)
                     {
                         Some(signal) => signal,
@@ -323,7 +326,10 @@ impl<'a> EvalContext<'a> {
                 return signal;
             };
             match signal {
-                ControlSignal::Perform(perform) => {
+                ControlSignal::Perform(mut perform) => {
+                    if let Err(fault) = self.observe_residual_attempt(&mut perform) {
+                        return ControlSignal::Fault(Box::new(fault));
+                    }
                     signal = match self.dispatch_handler(*perform.clone(), &record.handlers, frame)
                     {
                         Some(signal) => signal,
@@ -353,6 +359,11 @@ impl<'a> EvalContext<'a> {
             }
         }
         let handler = matched?;
+        // The arm is the action's dispatch: its committed residual permit is
+        // revalidated and consumed before the arm body runs.
+        if let Err(fault) = self.consume_residual_permit(&perform) {
+            return Some(ControlSignal::Fault(Box::new(fault)));
+        }
         let mut handler_frame = frame.clone();
         let Some(layout) = self.plan.frames.get(handler.scope) else {
             return Some(ControlSignal::missing_checked_fact(
@@ -512,7 +523,10 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
-                ControlSignal::Perform(perform) => {
+                ControlSignal::Perform(mut perform) => {
+                    if let Err(fault) = self.observe_residual_attempt(&mut perform) {
+                        return ControlSignal::Fault(Box::new(fault));
+                    }
                     signal = match self.dispatch_handler(*perform.clone(), &handlers, frame) {
                         Some(signal) => signal,
                         None => {

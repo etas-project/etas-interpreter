@@ -80,6 +80,7 @@ fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
                 for _ in 0..depth {
                     snapshot = match mode {
                         0 => ContinuationSnapshot::CallBoundary {
+                            caller: None,
                             span: crate::testing::synthetic_span(),
                             outer: snapshot.into(),
                         },
@@ -141,6 +142,7 @@ fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
 
 fn frame(id: u64) -> LocalsSnapshot {
     LocalsSnapshot {
+        residual_invocation: None,
         effect_row_bindings: Vec::new(),
         id,
         locals: std::rc::Rc::new(vec![(
@@ -162,6 +164,7 @@ fn restored_shared_links_preserve_frames_and_validate_every_parent() {
     }
     .into();
     let first = ContinuationSnapshot::CallBoundary {
+        caller: None,
         span: crate::testing::synthetic_span(),
         outer: shared.clone(),
     };
@@ -196,6 +199,7 @@ fn restored_shared_links_preserve_frames_and_validate_every_parent() {
     assert!(error.contains("conflicting definitions"), "{error}");
 
     let fresh = ContinuationSnapshot::CallBoundary {
+        caller: None,
         span: crate::testing::synthetic_span(),
         outer: shared,
     }
@@ -268,6 +272,7 @@ fn mixed_restore_preserves_metadata_frame_aliases_and_retained_definitions() {
         for i in 0..depth {
             snapshot = match i % 5 {
                 0 => ContinuationSnapshot::CallBoundary {
+                    caller: None,
                     span: crate::testing::synthetic_span(),
                     outer: snapshot.into(),
                 },
@@ -384,6 +389,7 @@ fn restore_rejects_late_invalid_frames_and_releases_completed_deep_branches() {
             for i in 0..30_000 {
                 inner = match i % 6 {
                     0 => ContinuationSnapshot::CallBoundary {
+                        caller: None,
                         span: crate::testing::synthetic_span(),
                         outer: inner.into(),
                     },

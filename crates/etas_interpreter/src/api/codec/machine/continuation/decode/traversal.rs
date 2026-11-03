@@ -5,7 +5,7 @@ use crate::orchestration::{
 
 enum PendingParent<'a> {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
-    CallBoundary(etas_core::Span),
+    CallBoundary(etas_core::Span, Option<crate::control::CallOrigin>),
     HandlerDispatch,
     HandleBoundary {
         scope_id: HandlerScopeId,
@@ -32,9 +32,12 @@ pub(crate) fn continuation_from_snapshot(
                 continue;
             }
             "call_boundary" => {
-                pending.push(PendingParent::CallBoundary(span_from_snapshot(required(
-                    value, "span",
-                )?)?));
+                let caller = serde::Deserialize::deserialize(required(value, "caller")?)
+                    .map_err(|error| format!("invalid call origin: {error}"))?;
+                pending.push(PendingParent::CallBoundary(
+                    span_from_snapshot(required(value, "span")?)?,
+                    caller,
+                ));
                 value = required(value, "outer")?;
                 continue;
             }
@@ -72,10 +75,13 @@ pub(crate) fn continuation_from_snapshot(
                         inner: node.into(),
                     }
                 }
-                Some(PendingParent::CallBoundary(span)) => ContinuationSnapshot::CallBoundary {
-                    span,
-                    outer: node.into(),
-                },
+                Some(PendingParent::CallBoundary(span, caller)) => {
+                    ContinuationSnapshot::CallBoundary {
+                        caller,
+                        span,
+                        outer: node.into(),
+                    }
+                }
                 Some(PendingParent::HandlerDispatch) => {
                     ContinuationSnapshot::HandlerDispatch { outer: node.into() }
                 }

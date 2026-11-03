@@ -206,6 +206,7 @@ fn checked_source_view(
     enum SourceView {
         Agent(etas_hir::HirExprId, Option<etas_hir::HirItemId>),
         Flow(etas_hir::HirExprId, Option<etas_hir::HirItemId>),
+        ExternalApplication(etas_hir::HirExprId),
     }
     let mut views = Vec::new();
     for (expr, fact) in &checked.types.reflections {
@@ -245,7 +246,15 @@ fn checked_source_view(
                     if header.id == saved.source.revision.definition
                         && header.id.as_declaration() == Some(&saved.source.target))
                 {
-                    views.push(SourceView::Flow(*expr, None));
+                    if matches!(
+                        fact.target,
+                        etas_types::CheckedReflectionTarget::ExternalCallable { .. }
+                    ) && checked.types.generic_instantiations.contains_key(expr)
+                    {
+                        views.push(SourceView::ExternalApplication(*expr));
+                    } else {
+                        views.push(SourceView::Flow(*expr, None));
+                    }
                 }
             }
             etas_types::CheckedReflectionTarget::CallableValue { .. }
@@ -267,11 +276,46 @@ fn checked_source_view(
     views.sort();
     for view in views {
         checkpoint()?;
+        if let SourceView::ExternalApplication(expr) = view {
+            let (owner, _) = checked
+                .reflection_site(expr)
+                .ok_or_else(|| invalid("external reflection has no checked lexical owner"))?;
+            let applications = checked
+                .checked_callable_applications_controlled(owner, control)
+                .map_err(|error| match error {
+                    etas_frontend::CallableApplicationError::Interrupted(interruption) => {
+                        interrupted(interruption)
+                    }
+                    error => invalid(error.to_string()),
+                })?;
+            for application in std::iter::once(None).chain(applications.iter().map(Some)) {
+                checkpoint()?;
+                let reflected = match definitions.reflect_external_callable_application(expr, application, Default::default()) {
+                    Ok(reflected) => reflected,
+                    Err(etas_frontend::code::definition::NativeDefinitionError::CandidateInputMismatch) => continue,
+                    Err(error) => return Err(invalid(error.to_string())),
+                };
+                let view = definitions
+                    .resolve(&reflected)
+                    .map_err(|error| invalid(error.to_string()))?;
+                if view.identity() == &saved.source.target
+                    && view.revision().inputs().environment == saved.source.revision.environment
+                    && view.revision().inputs().contract == saved.source.revision.contract
+                    && view.revision().inputs().compilation == saved.source.revision.compilation
+                {
+                    return Ok(reflected);
+                }
+            }
+            continue;
+        }
         let reflected = match view {
             SourceView::Agent(expr, Some(item)) => definitions.reflect_agent_value(expr, item),
             SourceView::Agent(expr, None) => definitions.reflect_agent(expr),
             SourceView::Flow(expr, Some(item)) => definitions.reflect_flow_value(expr, item),
             SourceView::Flow(expr, None) => definitions.reflect_flow(expr),
+            SourceView::ExternalApplication(_) => {
+                Err(etas_frontend::code::definition::NativeDefinitionError::CandidateInputMismatch)
+            }
         }
         .map_err(|error| invalid(error.to_string()))?;
         let view = definitions

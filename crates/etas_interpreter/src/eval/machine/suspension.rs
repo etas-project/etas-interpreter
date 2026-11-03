@@ -187,7 +187,7 @@ impl EvalMachine {
         let mut work = vec![pending];
         for frame in self.frames() {
             match frame {
-                EvalFrame::PureBoundary(_) => (),
+                EvalFrame::PureBoundary(_) | EvalFrame::ResidualScope(_) => (),
                 EvalFrame::Handler(frame) => {
                     if found.insert(frame.scope_id, &frame.frame).is_some() {
                         return Err("handler scope has multiple lexical frame owners".into());
@@ -287,6 +287,7 @@ impl EvalMachine {
         let parent_span = boundary.span;
         let resuming_program = boundary.parent_program.clone();
         let mut frames = self.stack.split_off(index);
+        self.resync_residual_mirror();
         let EvalFrame::ProgramReturn(boundary) = &mut frames[0] else {
             unreachable!()
         };
@@ -310,7 +311,7 @@ impl EvalMachine {
             },
             span,
         });
-        let relocated = match relocated_perform(
+        let mut relocated = match relocated_perform(
             projection.target().clone(),
             parent_span,
             args,
@@ -319,6 +320,9 @@ impl EvalMachine {
             Ok(pending) => pending,
             Err(reason) => return fail(reason),
         };
+        // The relocated request is the same semantic attempt: it keeps the
+        // permit committed by every scope that observed it.
+        relocated.residual = pending.residual.take();
         self.push_continuation_frames(outer);
         self.program_scope = parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_perform(
@@ -387,6 +391,7 @@ impl EvalMachine {
         ctx.retry_stack.append(&mut saved.retries);
         ctx.model_policy = saved.model_policy;
         self.stack.append(&mut saved.frames);
+        self.resync_residual_mirror();
         saved.depth.calls = 0;
         self.program_scope = Some(saved.scope);
         self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
@@ -439,5 +444,6 @@ fn relocated_perform(
         args,
         span,
         continuation,
+        residual: None,
     })
 }

@@ -90,6 +90,7 @@ fn context<'a>(
     table: &crate::eval::machine::snapshot::SuspensionRestoreTable,
     locked_model: &Option<etas_host::ModelName>,
     ordering: Option<&crate::eval::machine::snapshot::ordering::OrderedRestoreChecks>,
+    residual: &Option<Rc<crate::eval::machine::snapshot::RestoredResidualState>>,
 ) -> &'a mut crate::eval::machine::snapshot::RestoreContext {
     let context = contexts
         .entry(Arc::as_ptr(&program.checked) as usize)
@@ -101,6 +102,7 @@ fn context<'a>(
             context.suspensions = Some(table.clone());
             context.locked_model = locked_model.clone();
             context.ordering = ordering.cloned();
+            context.residual = residual.clone();
             context
         });
     context.execution_program = Some(program.clone());
@@ -110,6 +112,7 @@ fn context<'a>(
 pub(in crate::eval::machine) struct RestoreOptions<'a> {
     pub locked_model: &'a Option<etas_host::ModelName>,
     pub ordering: Option<&'a crate::eval::machine::snapshot::ordering::OrderedRestoreChecks>,
+    pub residual: &'a Option<Rc<crate::eval::machine::snapshot::RestoredResidualState>>,
 }
 
 pub(in crate::eval::machine) fn restore_graph(
@@ -124,13 +127,22 @@ pub(in crate::eval::machine) fn restore_graph(
     let RestoreOptions {
         locked_model,
         ordering,
+        residual,
     } = options;
     use crate::eval::machine::{frame::ProgramReturnFrame, scoped_call::ProgramCall};
     for index in snapshot.suspension_order()? {
         let saved = &snapshot.suspended_programs[index];
         let parent = revisions.execution_snapshot(&saved.parent)?;
-        let call = context(contexts, &parent, revisions, table, locked_model, ordering)
-            .restore_call_target(saved.boundary.call.clone())?;
+        let call = context(
+            contexts,
+            &parent,
+            revisions,
+            table,
+            locked_model,
+            ordering,
+            residual,
+        )
+        .restore_call_target(saved.boundary.call.clone())?;
         let call = ProgramCall::restore_target(call, &parent.checked)?;
         let program = call.destination()?;
         let proof = match &saved.action {
@@ -158,6 +170,7 @@ pub(in crate::eval::machine) fn restore_graph(
                 table,
                 locked_model,
                 ordering,
+                residual,
             ))?),
             parent: saved.parent_scoped.then(|| ProgramScope {
                 program: parent.clone(),
@@ -172,7 +185,15 @@ pub(in crate::eval::machine) fn restore_graph(
             span: saved.boundary.span,
             retry_depth: saved.boundary.retry_depth,
         })));
-        let native_context = context(contexts, &program, revisions, table, locked_model, ordering);
+        let native_context = context(
+            contexts,
+            &program,
+            revisions,
+            table,
+            locked_model,
+            ordering,
+            residual,
+        );
         for frame in saved.frames.iter().cloned() {
             frames.push(frame.restore_local(current, native_context)?);
         }

@@ -190,6 +190,8 @@ pub struct MachineSnapshot {
     pub(crate) frames: Vec<MachineFrameSnapshot>,
     pub(crate) program_owners: FrameProgramOwners,
     pub(crate) suspended_programs: Vec<super::SuspendedProgramSnapshot>,
+    /// Live residual monitor state referenced by frames and continuations.
+    pub(crate) residual: super::ResidualMachineSnapshot,
 }
 
 #[derive(Clone, Debug, Default)]
@@ -209,6 +211,7 @@ impl MachineSnapshot {
                 frames,
                 program_owners: FrameProgramOwners::Root,
                 suspended_programs: Vec::new(),
+                residual: Default::default(),
             };
         }
         let mut owner = 0;
@@ -226,6 +229,7 @@ impl MachineSnapshot {
             frames,
             program_owners: FrameProgramOwners::Scoped(program_owners),
             suspended_programs: Vec::new(),
+            residual: Default::default(),
         }
     }
 
@@ -281,7 +285,7 @@ pub(crate) enum CallTargetSnapshot {
     },
     StdIntrinsic {
         origin: HirExprId,
-        substitutions: Vec<Vec<(String, etas_types::TypeId)>>,
+        substitutions: Vec<crate::intrinsic::dispatch::IntrinsicSubstitutionStep>,
         intrinsic: etas_std::StdIntrinsicId,
         dispatch: etas_std::IntrinsicDispatch,
         parameter_types: Vec<etas_types::TypeId>,
@@ -302,6 +306,8 @@ pub(crate) enum CallTargetSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
     pub(crate) id: u64,
+    /// Identity of this invocation's scope, not reusable authorization.
+    pub(crate) residual_invocation: Option<std::num::NonZeroU64>,
     // Owned checkpoint data, never a live Frame backing. Sharing only avoids
     // copying an already captured definition during validation and restoration.
     pub(crate) locals: std::rc::Rc<Vec<(SymbolId, ValueSnapshot)>>,
@@ -526,6 +532,14 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 pub(crate) enum ContinuationSnapshot {
     ProgramResume {
         id: u32,
+    },
+    /// A captured residual scope; index into the checkpoint's residual scopes.
+    ResidualScope {
+        scope: u32,
+    },
+    /// An action outcome correlation; index into the residual attempts.
+    ResidualOutcome {
+        attempt: u32,
     },
     StreamReadReduction {
         call: CallTargetSnapshot,
@@ -827,6 +841,7 @@ pub(crate) enum ContinuationSnapshot {
         inner: ContinuationSnapshotLink,
     },
     CallBoundary {
+        caller: Option<crate::control::CallOrigin>,
         span: Span,
         outer: ContinuationSnapshotLink,
     },
@@ -973,6 +988,7 @@ pub(crate) enum MachineFrameSnapshot {
         continuation: ContinuationSnapshot,
     },
     Call {
+        caller: Option<crate::control::CallOrigin>,
         continuation: ContinuationSnapshot,
         span: Span,
     },
@@ -987,6 +1003,10 @@ pub(crate) enum MachineFrameSnapshot {
     },
     ModelLoop(Box<ModelLoopFrameSnapshot>),
     SourceToolReturn(SourceToolReturnFrameSnapshot),
+    /// Index into `MachineSnapshot::residual.scopes`.
+    ResidualScope {
+        scope: u32,
+    },
 }
 
 impl MachineFrameSnapshot {
@@ -1007,6 +1027,7 @@ impl MachineFrameSnapshot {
                 Some(&frame.model_loop.pending.continuation),
                 Some(&frame.model_loop.outer_continuation),
             ],
+            Self::ResidualScope { .. } => [None, None],
         }
     }
 }

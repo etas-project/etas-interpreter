@@ -85,6 +85,23 @@ impl<'a> EvalContext<'a> {
         let checked = &root.program.checked;
         let plan = &root.program.plan;
         let entry = plan.entry.item;
+        let residual_fault = |message: String| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                item_span(self.checked, self.entry_item),
+                message,
+            )
+        };
+        captured.machine.residual.exits = self
+            .residual
+            .log
+            .snapshot(&plan.residual)
+            .map_err(residual_fault)?;
+        captured
+            .machine
+            .residual
+            .validate_counters()
+            .map_err(residual_fault)?;
         let id = CheckpointId(self.next_checkpoint);
         let compilation =
             crate::orchestration::CheckpointCompilationIdentity::for_project(checked, entry)

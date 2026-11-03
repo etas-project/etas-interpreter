@@ -13,6 +13,7 @@ mod globals;
 mod pipeline;
 pub(crate) mod readiness;
 mod records;
+pub(crate) mod residual;
 mod resources;
 mod slots;
 mod types;
@@ -26,7 +27,7 @@ pub use globals::GlobalTable;
 pub use pipeline::build_plan;
 #[cfg(test)]
 pub(crate) use pipeline::build_plan_for_entry;
-pub(crate) use pipeline::prepare_program;
+pub(crate) use pipeline::{build_plan_with_residual_binding, prepare_program};
 pub use readiness::HostRequirementTable;
 pub(crate) use records::FieldAccessSite;
 pub use records::RecordLayoutTable;

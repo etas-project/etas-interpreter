@@ -14,6 +14,7 @@ pub(crate) struct BlockFrame {
 
 #[derive(Clone, Debug)]
 pub(crate) struct CallFrame {
+    pub caller: Option<crate::control::CallOrigin>,
     pub continuation: Continuation,
     pub span: Span,
 }
@@ -96,6 +97,10 @@ pub(crate) enum EvalFrame {
     ModelLoop(Box<ModelLoopFrame>),
     Retry(RetryFrame),
     SourceToolReturn(SourceToolReturnFrame),
+    /// The residual scope of one callable invocation. Leaving it on any path
+    /// visits the scope-exit protocol; an effect request handled outside it
+    /// captures it into the request's continuation instead.
+    ResidualScope(crate::control::residual::SharedResidualScope),
 }
 
 #[derive(Debug)]
@@ -113,7 +118,12 @@ pub(crate) struct ProgramReturnFrame {
 impl EvalFrame {
     pub(crate) fn from_continuation(continuation: Continuation) -> Self {
         match continuation {
-            Continuation::CallBoundary { span, outer } => Self::Call(CallFrame {
+            Continuation::CallBoundary {
+                caller,
+                span,
+                outer,
+            } => Self::Call(CallFrame {
+                caller,
                 continuation: outer.into_value(),
                 span,
             }),
@@ -147,6 +157,7 @@ impl EvalFrame {
                 next_stmt_index,
                 frame,
             }),
+            Continuation::ResidualScope(scope) => Self::ResidualScope(scope),
             continuation => Self::Continuation(ContinuationFrame { continuation }),
         }
     }
@@ -184,6 +195,7 @@ impl EvalFrame {
             },
             Self::ModelLoop(frame) => frame.outer_continuation,
             Self::SourceToolReturn(frame) => frame.model_loop.outer_continuation,
+            Self::ResidualScope(scope) => Continuation::ResidualScope(scope),
         })
     }
 
@@ -195,7 +207,7 @@ impl EvalFrame {
             Self::Call(frame) => &frame.continuation,
             Self::Continuation(frame) => &frame.continuation,
             Self::Expr(frame) => &frame.continuation,
-            Self::Handler(_) => return None,
+            Self::Handler(_) | Self::ResidualScope(_) => return None,
             Self::Retry(frame) => {
                 return Some(Continuation::RetryAttempt {
                     retry: frame.retry.clone(),

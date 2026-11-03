@@ -39,7 +39,9 @@ impl EvalContext<'_> {
                 span,
             );
         };
-        if let etas_types::CheckedReflectionTarget::CallableValue { binding, .. } = fact.target {
+        if let etas_types::CheckedReflectionTarget::CallableValue { binding, signature } =
+            fact.target
+        {
             let value = match frame.get(binding) {
                 Some(value) => value,
                 None => match self.eval_global_symbol(binding, span) {
@@ -47,7 +49,30 @@ impl EvalContext<'_> {
                     Err(fault) => return ControlSignal::Fault(Box::new(fault)),
                 },
             };
-            return match self.reflect_callable_binding(expr, fact.descriptor_type, value) {
+            let descriptor_type = match self.materialized_type(
+                fact.descriptor_type,
+                frame.generic_bindings(),
+                span,
+            ) {
+                Ok(ty) => ty,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            let signature = match self.materialized_type(signature, frame.generic_bindings(), span)
+            {
+                Ok(ty) => ty,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            let lexical = match self.reflection_lexical_application(expr, frame) {
+                Ok(lexical) => lexical,
+                Err(error) => return error.into_signal(span),
+            };
+            return match self.reflect_callable_binding(
+                expr,
+                descriptor_type,
+                signature,
+                value,
+                lexical.as_ref(),
+            ) {
                 Ok(value) => self
                     .code_operation_boundary(span)
                     .unwrap_or(ControlSignal::Value(value)),
@@ -63,6 +88,121 @@ impl EvalContext<'_> {
                 },
             };
             return match self.reflect_agent_binding(expr, fact.descriptor_type, value) {
+                Ok(value) => self
+                    .code_operation_boundary(span)
+                    .unwrap_or(ControlSignal::Value(value)),
+                Err(error) => error.into_signal(span),
+            };
+        }
+        if self
+            .checked
+            .types
+            .generic_instantiations
+            .contains_key(&expr)
+            && matches!(
+                fact.target,
+                etas_types::CheckedReflectionTarget::Callable { .. }
+                    | etas_types::CheckedReflectionTarget::ExternalCallable { .. }
+            )
+        {
+            let descriptor_type = match self.materialized_type(
+                fact.descriptor_type,
+                frame.generic_bindings(),
+                span,
+            ) {
+                Ok(ty) => ty,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            let lexical = match self.reflection_lexical_application(expr, frame) {
+                Ok(lexical) => lexical,
+                Err(error) => return error.into_signal(span),
+            };
+            let external = match prepared
+                .definitions()
+                .catalog()
+                .is_external_callable_reflection(expr)
+            {
+                Ok(external) => external,
+                Err(error) => return ControlSignal::missing_checked_fact(error.to_string(), span),
+            };
+            if external {
+                return match self.reflect_external_application(
+                    expr,
+                    descriptor_type,
+                    lexical.as_ref(),
+                ) {
+                    Ok(value) => self
+                        .code_operation_boundary(span)
+                        .unwrap_or(ControlSignal::Value(value)),
+                    Err(error) => error.into_signal(span),
+                };
+            }
+            let Some(etas_hir::HirExpr::Reflect(reflection)) = self.checked.hir.exprs.get(expr)
+            else {
+                return ControlSignal::missing_checked_fact("reflection source is missing", span);
+            };
+            let etas_hir::HirReflectTarget::Path(path) = &reflection.target else {
+                return ControlSignal::missing_checked_fact(
+                    "generic flow reflection is not a path",
+                    span,
+                );
+            };
+            let etas_hir::ResolveResult::Resolved(symbol) = path.resolution else {
+                return ControlSignal::missing_checked_fact(
+                    "generic flow reflection is unresolved",
+                    span,
+                );
+            };
+            let value = match self.eval_global_symbol(symbol, span) {
+                Ok(value) => value,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            let InterpValue::Callable(target) = value else {
+                return ControlSignal::missing_checked_fact(
+                    "generic reflection target is not a callable",
+                    span,
+                );
+            };
+            let target = match self.specialize_call_target_for_call(expr, target, frame, span) {
+                Ok(target) => target,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            let Some(etas_types::Type::Applied { args, .. }) =
+                self.checked.type_store.get(descriptor_type)
+            else {
+                return ControlSignal::missing_checked_fact(
+                    "generic reflection descriptor is not applied",
+                    span,
+                );
+            };
+            let [signature] = args.as_slice() else {
+                return ControlSignal::missing_checked_fact(
+                    "generic reflection descriptor has invalid arity",
+                    span,
+                );
+            };
+            let Some(etas_types::Type::Function(signature)) =
+                self.checked.type_store.get(*signature)
+            else {
+                return ControlSignal::missing_checked_fact(
+                    "generic reflection has no callable interface",
+                    span,
+                );
+            };
+            let application = match crate::value::ScopedCallableValue::checked_flow_application(
+                self.checked,
+                &target,
+                signature,
+            ) {
+                Ok(application) => application,
+                Err(error) => return ControlSignal::missing_checked_fact(error, span),
+            };
+            return match self.reflect_native_application_in_context(
+                expr,
+                descriptor_type,
+                &application,
+                lexical.as_ref(),
+            ) {
                 Ok(value) => self
                     .code_operation_boundary(span)
                     .unwrap_or(ControlSignal::Value(value)),

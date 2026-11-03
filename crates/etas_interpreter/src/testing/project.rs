@@ -81,3 +81,50 @@ pub(super) fn checked_project_sources_with_environment(
     );
     output.checked.expect("project should be checked")
 }
+
+/// Checks `text` with a stable package source identity and this interpreter's
+/// residual capabilities as the selected execution target.
+pub(crate) fn residual_project_output(text: &str) -> etas_frontend::ProjectOutput {
+    Frontend.check_project(residual_project_input(text))
+}
+
+pub(crate) fn residual_project_input(text: &str) -> ProjectInput {
+    let package = etas_code::PackageKey::from_name_and_version("app", "1.0.0")
+        .expect("valid package identity");
+    let mut environment = ProjectEnvironmentInput {
+        local_source_package: Some(package),
+        ..Default::default()
+    };
+    environment
+        .stable_source_keys
+        .push(etas_frontend::ProjectStableSourceKeyInput {
+            source: SourceId(0),
+            key: etas_code::StableSourceKey::new(
+                etas_code::StableSourceOrigin::Package(package),
+                &["src".into(), "app".into(), "main.es".into()],
+            )
+            .expect("valid stable source key"),
+        });
+    let options = ProjectCompileOptions {
+        residual_target: crate::interpreter_residual_capabilities(),
+        ..Default::default()
+    };
+    ProjectInput {
+        project_root: PathBuf::from("/workspace/demo"),
+        source_root: Some(PathBuf::from("/workspace/demo/src")),
+        options,
+        environment,
+        sources: vec![SourceInput {
+            id: SourceId(0),
+            path: Some(PathBuf::from("/workspace/demo/src/app/main.es")),
+            text: text.to_owned(),
+            kind: SourceKind::SourceProjectFile,
+        }],
+        entry: ProjectEntry {
+            module: Some(ModulePath {
+                segments: vec!["app".to_owned(), "main".to_owned()],
+            }),
+            flow: "main".to_owned(),
+        },
+    }
+}

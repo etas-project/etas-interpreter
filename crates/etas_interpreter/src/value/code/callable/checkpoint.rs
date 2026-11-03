@@ -154,10 +154,19 @@ impl ScopedCallableValue {
                 .action_projection()?
                 .ok_or("checkpoint callable projection has no revision edge")?;
             let to_candidate = Arc::ptr_eq(edge.target(), owner.program());
+            let external = owner
+                .saved_external_type_bridge()
+                .is_some_and(|bridge| edge.uses_bridge(bridge));
+            if !external && !edge.uses_bridge(owner.type_bridge()) {
+                return Err(
+                    "checkpoint callable projection has an unowned checked type bridge".into(),
+                );
+            }
             revisions.insert(owner.revision().key(), owner.clone());
             projections.push(CallableProjectionSnapshot {
                 revision: CheckpointCodeRevision::for_revision(owner),
                 to_candidate,
+                external,
                 from: projection.source().1,
                 to: projection.target().1,
             });

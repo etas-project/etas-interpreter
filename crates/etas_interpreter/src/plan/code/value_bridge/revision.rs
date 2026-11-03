@@ -12,6 +12,11 @@ pub(crate) enum RevisionProjection {
 }
 
 impl RevisionProjection {
+    pub(crate) fn uses_bridge(&self, expected: &Arc<RevisionTypeBridge>) -> bool {
+        match self {
+            Self::Candidate(bridge) | Self::Original(bridge) => Arc::ptr_eq(bridge, expected),
+        }
+    }
     pub(crate) fn runtime_owner(&self) -> Option<Arc<crate::api::code::PreparedCodeRevision>> {
         match self {
             Self::Candidate(bridge) | Self::Original(bridge) => bridge.runtime_owner(),

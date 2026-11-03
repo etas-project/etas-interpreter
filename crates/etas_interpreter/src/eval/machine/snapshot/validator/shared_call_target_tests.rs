@@ -64,6 +64,7 @@ fn shared_callable_validation_visits_one_graph_across_separate_roots() {
 fn failed_frame_validation_is_not_cached_as_success() {
     with_validator(|validator, _| {
         let invalid = LocalsSnapshot {
+            residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
@@ -219,6 +220,7 @@ fn checked_machine_validation_reuses_callable_graph_but_rejects_late_tampering()
                 evaluated_args: vec![],
                 span,
                 frame: LocalsSnapshot {
+                    residual_invocation: None,
                     effect_row_bindings: Vec::new(),
                     id: 1,
                     locals: Default::default(),
@@ -233,6 +235,7 @@ fn checked_machine_validation_reuses_callable_graph_but_rejects_late_tampering()
                         continuation: continuation.clone(),
                     })
                     .collect(),
+                residual: Default::default(),
             };
             call_target::VISITS.set(0);
             validator.validate_machine(&machine).unwrap();

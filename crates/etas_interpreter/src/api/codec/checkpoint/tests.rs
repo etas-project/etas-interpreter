@@ -5,6 +5,7 @@ fn deep_continuation(depth: usize) -> ContinuationSnapshot {
     let mut continuation = ContinuationSnapshot::Return;
     for _ in 0..depth {
         continuation = ContinuationSnapshot::CallBoundary {
+            caller: None,
             span: crate::testing::synthetic_span(),
             outer: continuation.into(),
         };
@@ -25,6 +26,7 @@ fn machine_encoding_budget_is_shared_across_frames_and_releases_completed_frames
                 continuation: ContinuationSnapshot::Return,
             },
         ],
+        residual: Default::default(),
     };
     let (_, cost) = measure(|| {
         let error = machine_json_with_budget(&machine, &mut snapshot::EncodingBudget::new(30_001))

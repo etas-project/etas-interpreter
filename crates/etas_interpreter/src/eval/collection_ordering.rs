@@ -77,7 +77,7 @@ pub(crate) fn validate_pure_summary(summary: &etas_effects::EffectSummary) -> Re
             .iter()
             .all(|requirement| matches!(requirement, etas_effects::RequirementFact::Limit(_)))
         && summary.trace_spec_obligations.iter().next().is_none()
-        && summary.residual_checks.checks.is_empty()
+        && summary.residual_checks.is_empty()
         && summary.determinism == etas_effects::Determinism::Deterministic
         && summary.support == etas_effects::InterpreterSupport::LocalOnly
     {

@@ -420,6 +420,44 @@ flow main() -> unit ![Console, Error<IOError>]
         "later policy evaluations must see approval grants accepted earlier: {requests:#?}"
     );
     assert_eq!(host.stdout_text(), "first\nsecond\n");
+    let old_authority = requests[1].authority.clone();
+    assert!(!old_authority.approvals.is_empty());
+    let next_host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    next_host.seed_policy_decision(PolicyDecision::Deny {
+        reason: "this run has no approval".into(),
+    });
+    let next = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &next_host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: old_authority,
+                    ..Default::default()
+                },
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(next.value().is_none());
+    assert_eq!(next_host.console_call_count(), 0);
+    assert_eq!(
+        next_host.approval_call_count(),
+        0,
+        "the engine must not automatically replay approval"
+    );
+    let requests = next_host.policy_requests();
+    assert_eq!(requests.len(), 1);
+    assert!(requests[0].authority.approvals.is_empty());
+    assert!(!requests[0].authority.grants.contains(&approved_grant));
 }
 
 #[tokio::test(flavor = "current_thread")]
