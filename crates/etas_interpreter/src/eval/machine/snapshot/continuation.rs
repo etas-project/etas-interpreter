@@ -34,6 +34,14 @@ impl ContinuationSnapshot {
                     "an in-progress pure key comparison cannot cross a checkpoint boundary".into(),
                 );
             }
+            Continuation::FileReadReduction(state) => Self::FileReadReduction {
+                call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
+                    state.call.clone(),
+                ))?,
+                args: capture_values(&state.args, context)?,
+                limit: state.limit,
+                span: state.span,
+            },
             Continuation::StreamReadReduction(state) => Self::StreamReadReduction {
                 call: context.call_target(&crate::control::CallTarget::StdIntrinsic(
                     state.call.clone(),
@@ -53,6 +61,9 @@ impl ContinuationSnapshot {
             Continuation::ResidualOutcome(tag) => Self::ResidualOutcome {
                 attempt: context.residual_attempt(tag)?,
             },
+            Continuation::SourceToolReturn(saved) => Self::SourceToolReturn(Box::new(
+                crate::orchestration::SourceToolReturnFrameSnapshot::capture(&saved.0, context)?,
+            )),
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -670,6 +681,7 @@ impl ContinuationSnapshot {
             Continuation::RestoreModelPolicy { .. }
             | Continuation::CallBoundary { .. }
             | Continuation::HandlerDispatch { .. }
+            | Continuation::ReenterHandler { .. }
             | Continuation::HandleBoundary { .. }
             | Continuation::ScopedModelPolicy { .. }
             | Continuation::Chain { .. } => {
@@ -690,6 +702,33 @@ impl ContinuationSnapshot {
             }
             Self::ResidualOutcome { attempt } => {
                 Continuation::ResidualOutcome(context.residual_attempt(attempt)?)
+            }
+            Self::SourceToolReturn(saved) => {
+                let current = context
+                    .current_host
+                    .clone()
+                    .ok_or("source tool continuation has no restore Host context")?;
+                Continuation::SourceToolReturn(crate::eval::machine::SourceToolContinuation(
+                    Box::new(saved.restore(&current, context)?),
+                ))
+            }
+            Self::FileReadReduction {
+                call,
+                args,
+                limit,
+                span,
+            } => {
+                let crate::control::CallTarget::StdIntrinsic(call) =
+                    super::call_target::restore_call_target(call, context)?
+                else {
+                    return Err("bounded file reducer requires a checked standard intrinsic".into());
+                };
+                Continuation::FileReadReduction(Box::new(crate::control::FileReadReduction {
+                    call,
+                    args: restore_values(args, context)?,
+                    limit,
+                    span,
+                }))
             }
             Self::StreamReadReduction {
                 call,
@@ -1323,6 +1362,7 @@ impl ContinuationSnapshot {
             Self::RestoreModelPolicy { .. }
             | Self::CallBoundary { .. }
             | Self::HandlerDispatch { .. }
+            | Self::ReenterHandler { .. }
             | Self::HandleBoundary { .. }
             | Self::ScopedModelPolicy { .. }
             | Self::Chain { .. } => {

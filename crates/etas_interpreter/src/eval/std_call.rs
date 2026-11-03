@@ -865,6 +865,12 @@ impl<'a> EvalContext<'a> {
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
         let result = match callable {
+            FilesystemCallable::ReadBytesLimited => {
+                return ControlSignal::missing_checked_fact(
+                    "bounded filesystem read requires its checked action reducer",
+                    span,
+                );
+            }
             FilesystemCallable::Path => {
                 return self.execute_workspace_path_constructor(
                     checked_call.result_type,
@@ -1333,7 +1339,7 @@ impl<'a> EvalContext<'a> {
         ControlSignal::invalid_arguments(message, span)
     }
 
-    fn workspace_path(
+    pub(super) fn workspace_path(
         &self,
         value: &InterpValue,
         span: Span,

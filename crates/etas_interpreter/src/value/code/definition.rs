@@ -186,14 +186,14 @@ impl CallableDefinitionValue {
         snapshot: etas_frontend::code::definition::NativeMethodSnapshot,
     ) -> Result<Self, String> {
         let canonical = &snapshot.coordinates.revision.definition;
-        let matches = self.id() == canonical
-            || self
-                .id()
+        let id = &self.0.header.id;
+        let matches = id == canonical
+            || id
                 .as_method()
                 .and_then(|selected| selected.implementation().selected_spec())
                 .and_then(|spec| canonical.as_method()?.select_spec(spec.clone()).ok())
-                .is_some_and(|method| &etas_code::CallableId::method(method) == self.id());
-        if self.0.definition.is_some() || self.id().as_method().is_none() || !matches {
+                .is_some_and(|method| &etas_code::CallableId::method(method) == id);
+        if self.0.definition.is_some() || id.as_method().is_none() || !matches {
             return Err(
                 "read-only method coordinates do not match the checked callable identity".into(),
             );
@@ -243,9 +243,6 @@ impl CallableDefinitionValue {
         &self,
     ) -> &Arc<etas_frontend::code::service::NativeCodeSyntaxOperations> {
         &self.0.syntax
-    }
-    pub(crate) fn id(&self) -> &etas_code::CallableId {
-        &self.0.header.id
     }
     pub(crate) fn header(&self) -> &CallableHeaderInfo {
         &self.0.header

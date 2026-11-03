@@ -1,6 +1,5 @@
 use std::{
     cmp::Ordering,
-    fmt,
     hash::{Hash, Hasher},
     ops::Deref,
     rc::Rc,
@@ -8,11 +7,14 @@ use std::{
 
 mod chunks;
 mod concat;
+mod formatting;
 mod ranges;
+mod read;
 pub use chunks::TextChunks;
 use concat::Repr;
 pub(crate) use concat::TextCapacityExceeded;
 pub(crate) use ranges::{TextRangeError, TextRangeProjector};
+pub(crate) use read::hash_text;
 
 /// Immutable aliases share text; consuming operations may reuse a unique buffer.
 #[derive(Clone, Default)]
@@ -54,7 +56,7 @@ impl StringValue {
 
     /// Share an unchanged prefix while the caller's old slot or aliases remain
     /// readable. Assignment still commits only after all RHS evaluation succeeds.
-    pub(crate) fn concat(mut self, suffix: Self) -> Result<Self, TextCapacityExceeded> {
+    pub(crate) fn concat(mut self, mut suffix: Self) -> Result<Self, TextCapacityExceeded> {
         let length = self
             .len()
             .checked_add(suffix.len())
@@ -64,23 +66,58 @@ impl StringValue {
             return Ok(self);
         }
         self.collapse_materialized();
-        if let Repr::Flat(text) = &mut self.0
-            && let Some(text) = Rc::get_mut(text)
-        {
-            text.push_str(&suffix);
+        suffix.collapse_materialized();
+        if self.append_if_spare(&suffix, "", length) {
             return Ok(self);
         }
         if self.is_empty() {
             return Ok(suffix);
         }
-        // One prefix edge per node keeps both materialization and release iterative.
-        let suffix = concat::into_flat(suffix.into_repr());
+        let leaves = self
+            .0
+            .leaves()
+            .checked_add(suffix.0.leaves())
+            .ok_or(TextCapacityExceeded)?;
         Ok(Self(Repr::Concat(Rc::new(concat::Concat {
             prefix: self,
             suffix,
             length,
+            leaves,
             materialized: Default::default(),
         }))))
+    }
+
+    pub(crate) fn concat_separated(
+        mut self,
+        mut suffix: Self,
+        separator: &str,
+    ) -> Result<Self, TextCapacityExceeded> {
+        let length = self
+            .len()
+            .checked_add(separator.len())
+            .and_then(|length| length.checked_add(suffix.len()))
+            .filter(|length| *length <= isize::MAX as usize)
+            .ok_or(TextCapacityExceeded)?;
+        self.collapse_materialized();
+        suffix.collapse_materialized();
+        if self.append_if_spare(&suffix, separator, length) {
+            return Ok(self);
+        }
+        self.concat(separator.into())?.concat(suffix)
+    }
+
+    fn append_if_spare(&mut self, suffix: &Self, separator: &str, length: usize) -> bool {
+        if let Repr::Flat(text) = &mut self.0
+            && text.capacity() >= length
+            && let Some(text) = Rc::get_mut(text)
+        {
+            text.push_str(separator);
+            for chunk in chunks::TextLeaves::new(&suffix.0) {
+                text.push_str(chunk);
+            }
+            return true;
+        }
+        false
     }
 
     fn collapse_materialized(&mut self) {
@@ -171,8 +208,7 @@ impl AsRef<str> for StringValue {
 
 impl PartialEq for StringValue {
     fn eq(&self, other: &Self) -> bool {
-        self.len() == other.len()
-            && (self.is_empty() || self.same_backing(other) || self.as_str() == other.as_str())
+        self.len() == other.len() && self.compare_borrowed(other).is_eq()
     }
 }
 impl Eq for StringValue {}
@@ -183,60 +219,44 @@ impl PartialOrd for StringValue {
 }
 impl Ord for StringValue {
     fn cmp(&self, other: &Self) -> Ordering {
-        if self.same_backing(other) {
-            Ordering::Equal
-        } else {
-            self.as_str().cmp(other.as_str())
-        }
+        self.compare_borrowed(other)
     }
 }
 impl Hash for StringValue {
     fn hash<H: Hasher>(&self, state: &mut H) {
+        // Preserve public Rust str hashing. Runtime bucket partitions use the
+        // layout-independent streaming protocol in hash_membership instead.
         self.as_str().hash(state);
     }
 }
 
 impl PartialEq<str> for StringValue {
     fn eq(&self, other: &str) -> bool {
-        self.as_str() == other
+        self.equals_str(other)
     }
 }
 
 impl PartialEq<&str> for StringValue {
     fn eq(&self, other: &&str) -> bool {
-        self.as_str() == *other
+        self.equals_str(other)
     }
 }
 
 impl PartialEq<String> for StringValue {
     fn eq(&self, other: &String) -> bool {
-        self.as_str() == other
+        self.equals_str(other.as_str())
     }
 }
 
 impl PartialEq<StringValue> for String {
     fn eq(&self, other: &StringValue) -> bool {
-        self.as_str() == other.as_str()
+        other.equals_str(self.as_str())
     }
 }
 
-impl fmt::Debug for StringValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        fmt::Debug::fmt(self.as_str(), f)
-    }
-}
-
-impl fmt::Display for StringValue {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        f.write_str(self.as_str())
-    }
-}
-
-impl serde::Serialize for StringValue {
-    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
-        serializer.serialize_str(self.as_str())
-    }
-}
-
+#[cfg(test)]
+mod read_tests;
+#[cfg(test)]
+mod suffix_tests;
 #[cfg(test)]
 mod tests;

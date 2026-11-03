@@ -29,6 +29,7 @@ pub enum Continuation {
     PriorityQueueUpdate(Box<crate::eval::priority_queue::PriorityQueueUpdate>),
     OrderedSearch(Box<crate::eval::ordered_collection::OrderedSearch>),
     StreamReadReduction(Box<super::StreamReadReduction>),
+    FileReadReduction(Box<super::FileReadReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
     /// An invocation's residual scope captured while an effect request is
     /// handled outside it. Restored as its explicit frame on resume.
@@ -36,6 +37,7 @@ pub enum Continuation {
     /// Correlates a governed action's completed outcome with the scopes that
     /// observed it, then continues with the outcome value.
     ResidualOutcome(super::residual::ResidualAttemptTag),
+    SourceToolReturn(crate::eval::machine::SourceToolContinuation),
     ContinueBlock {
         block: HirBlockId,
         next_stmt_index: usize,
@@ -380,6 +382,9 @@ pub enum Continuation {
     HandlerDispatch {
         outer: ContinuationLink,
     },
+    ReenterHandler {
+        boundary: ContinuationLink,
+    },
     HandleBoundary {
         scope_id: HandlerScopeId,
         inner: ContinuationLink,
@@ -438,9 +443,9 @@ impl Continuation {
                     count += usize::from(*boundary_scope == scope_id);
                     pending.push(inner);
                 }
-                Self::RestoreModelPolicy { inner, .. } | Self::ScopedModelPolicy { inner, .. } => {
-                    pending.push(inner)
-                }
+                Self::RestoreModelPolicy { inner, .. }
+                | Self::ReenterHandler { boundary: inner }
+                | Self::ScopedModelPolicy { inner, .. } => pending.push(inner),
                 Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer } => {
                     pending.push(outer);
                 }

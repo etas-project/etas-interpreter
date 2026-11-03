@@ -528,6 +528,63 @@ flow main() -> bool {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn completed_approval_checkpoint_does_not_persist_sensitive_reason_in_ledger() {
+    use crate::api::codec::{
+        CheckpointFileLimits, checkpoint_artifact_json, checkpoint_file_to_bytes,
+    };
+
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+effect Approval { action request(reason: string) -> bool; }
+flow ask() -> bool {
+    return perform Approval.request("sensitive-approval-marker-192748");
+}
+flow main() -> bool {
+    let approved = ask();
+    checkpoint("after-approval");
+    return approved;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Approval,
+        HostRequirementKind::Checkpoint,
+    ]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.approval_call_count(), 1);
+    let saved = &result.checkpoints[0];
+    assert_eq!(saved.completed_host_boundaries.completed.len(), 1);
+    let ledger_contains_reason = saved.completed_host_boundaries.completed[0]
+        .key
+        .to_string()
+        .contains("sensitive-approval-marker-192748");
+    let artifact = checkpoint_artifact_json(&["main.es".into()], "main", saved).unwrap();
+    let bytes = checkpoint_file_to_bytes(artifact, CheckpointFileLimits::default()).unwrap();
+    let artifact_contains_reason = String::from_utf8(bytes)
+        .unwrap()
+        .contains("sensitive-approval-marker-192748");
+    assert!(
+        !ledger_contains_reason && !artifact_contains_reason,
+        "sensitive approval reason persisted: ledger={ledger_contains_reason}, artifact={artifact_contains_reason}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_approval_host_boundary_and_records_ledger() {
     let checked = checked_project(
         r#"

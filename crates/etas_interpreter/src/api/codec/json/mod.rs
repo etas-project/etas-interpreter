@@ -27,7 +27,7 @@ pub(super) fn write<'a, T: JsonSource>(
         JsonView::Null => *slot = json!({"kind":"null"}),
         JsonView::Bool(value) => *slot = json!({"kind":"bool","value":value}),
         JsonView::NumberBits(value) => *slot = json!({"kind":"number_bits","value":value}),
-        JsonView::String(value) => *slot = json!({"kind":"string","value":value}),
+        JsonView::String(value) => *slot = super::text::tagged_text("string", value),
         JsonView::Array(values) => {
             *slot = json!({"kind":"array","values":null});
             for (value, slot) in values.iter().zip(array(&mut slot["values"], values.len())) {

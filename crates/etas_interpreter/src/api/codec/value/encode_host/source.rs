@@ -1,4 +1,5 @@
 use crate::api::codec::json::view::JsonSource;
+use crate::api::codec::text::{JsonText, tagged_text};
 use crate::value::{HostJsonSupportValue, HostSupportValue};
 use etas_host::{HostJsonValue, HostValue};
 use serde_json::{Value, json};
@@ -8,17 +9,19 @@ pub(in crate::api::codec) enum HostView<'a, T: HostSource> {
     List(&'a [T]),
     Map(&'a [(T, T)]),
     Record(&'a [(String, T)]),
-    Variant { name: &'a str, fields: &'a [T] },
+    Variant { name: &'a T::Text, fields: &'a [T] },
     Json(&'a T::Json),
 }
 
 pub(in crate::api::codec) trait HostSource: Sized {
     type Json: JsonSource;
+    type Text: JsonText + ?Sized;
     fn view(&self) -> HostView<'_, Self>;
 }
 
 impl HostSource for HostValue {
     type Json = HostJsonValue;
+    type Text = str;
     fn view(&self) -> HostView<'_, Self> {
         HostView::Leaf(match self {
             Self::Unit => json!({"kind":"unit"}),
@@ -26,7 +29,7 @@ impl HostSource for HostValue {
             Self::Int(value) => json!({"kind":"int","value":value.to_string()}),
             Self::UInt(value) => json!({"kind":"uint","value":value.to_string()}),
             Self::Float(value) => json!({"kind":"float_bits","value":value.to_bits()}),
-            Self::String(value) => json!({"kind":"string","value":value}),
+            Self::String(value) => tagged_text("string", value.as_str()),
             Self::Bytes(value) => json!({"kind":"bytes","value":value}),
             Self::List(values) => return HostView::List(values),
             Self::Map(entries) => return HostView::Map(entries),
@@ -39,14 +42,15 @@ impl HostSource for HostValue {
 
 impl HostSource for HostSupportValue {
     type Json = HostJsonSupportValue;
+    type Text = crate::value::StringValue;
     fn view(&self) -> HostView<'_, Self> {
         HostView::Leaf(match self {
             Self::Unit => json!({"kind":"unit"}),
             Self::Bool(value) => json!({"kind":"bool","value":value}),
-            Self::Int(value) => json!({"kind":"int","value":value}),
-            Self::UInt(value) => json!({"kind":"uint","value":value}),
+            Self::Int(value) => tagged_text("int", value),
+            Self::UInt(value) => tagged_text("uint", value),
             Self::FloatBits(value) => json!({"kind":"float_bits","value":value}),
-            Self::String(value) => json!({"kind":"string","value":value}),
+            Self::String(value) => tagged_text("string", value),
             Self::Bytes(value) => json!({"kind":"bytes","value":value}),
             Self::List(values) => return HostView::List(values),
             Self::Map(entries) => return HostView::Map(entries),

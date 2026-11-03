@@ -1,3 +1,4 @@
+use etas_builtin::text::input::TextInput;
 use etas_host::value::projection::{
     HostJsonProjection, HostJsonVisitor, HostScalar, HostValueProjection, HostValueVisitor,
 };
@@ -26,7 +27,10 @@ impl HostValueProjection for BorrowedValue<'_> {
             InterpValue::Number(v) => super::numeric_to_host_value(*v)
                 .ok_or_else(|| projection_error("non-finite numeric value is not host-encodable"))?
                 .project(visitor),
-            InterpValue::String(v) => visitor.scalar(HostScalar::String(v)),
+            InterpValue::String(v) => match v.contiguous() {
+                Some(text) => visitor.scalar(HostScalar::String(text)),
+                None => visitor.text(v.len(), v.chunks()),
+            },
             InterpValue::Bytes(v) => visitor.scalar(HostScalar::Bytes(v)),
             InterpValue::Json(v) => visitor.json(&BorrowedJson(v)),
             InterpValue::StdConstant(value) => {
@@ -89,7 +93,10 @@ impl HostJsonProjection for BorrowedJson<'_> {
             HostJsonSupportValue::Null => visitor.null(),
             HostJsonSupportValue::Bool(v) => visitor.boolean(*v),
             HostJsonSupportValue::NumberBits(v) => visitor.number(f64::from_bits(*v)),
-            HostJsonSupportValue::String(v) => visitor.string(v),
+            HostJsonSupportValue::String(v) => match v.contiguous() {
+                Some(text) => visitor.string(text),
+                None => visitor.text(v.len(), v.chunks()),
+            },
             HostJsonSupportValue::Array(v) => visitor.array(v.iter().map(BorrowedJson)),
             HostJsonSupportValue::Object(v) => {
                 visitor.object(v.iter().map(|(k, v)| (k.as_str(), BorrowedJson(v))))

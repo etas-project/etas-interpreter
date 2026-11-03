@@ -12,8 +12,26 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     continuation: &'a Continuation,
     slot: &'a mut Value,
     pending: &mut Pending<'a>,
-) {
+    budget: &mut crate::api::codec::snapshot::EncodingBudget,
+) -> Result<(), crate::api::codec::InterpreterCodecError> {
     match continuation {
+        Continuation::SourceToolReturn(frame) => {
+            frame
+                .validate_continuation()
+                .map_err(crate::api::codec::InterpreterCodecError::new)?;
+            *slot = json!({ "kind": "source_tool_return", "source_tool": null });
+            slot["source_tool"] =
+                crate::api::codec::checkpoint::source_tool_return_frame_json(frame, budget)?;
+        }
+        Continuation::FileReadReduction {
+            call,
+            args,
+            limit,
+            span,
+        } => object! { slot, pending;
+            "kind": json!("file_read_reduction"), "call": Node::CallTarget(call),
+            "args": Node::Values(args), "limit": json!(limit), "span": json!(span_snapshot(*span)),
+        },
         Continuation::ProgramResume { id } => object! { slot, pending;
             "kind": json!("program_resume"), "id": json!(id),
         },
@@ -714,6 +732,10 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
+        Continuation::ReenterHandler { boundary } => object! { slot, pending;
+            "kind": json!("reenter_handler"),
+            "boundary": Node::Continuation(boundary),
+        },
         Continuation::HandlerDispatch { outer } => {
             object! { slot, pending;
             "kind": json!("handler_dispatch"),
@@ -771,4 +793,5 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             }
         }
     }
+    Ok(())
 }

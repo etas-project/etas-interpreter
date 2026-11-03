@@ -6,6 +6,7 @@ mod call_target;
 mod callable_types;
 mod comparison;
 mod construction;
+mod file_read_reducer;
 mod frame;
 mod program;
 mod reference_presence;
@@ -233,7 +234,7 @@ impl<'a> SnapshotValidator<'a> {
         }
         let mut completed_occurrences = BTreeSet::new();
         for completed in &checkpoint.completed_host_boundaries.completed {
-            if completed.kind.is_empty() || completed.key.is_empty() {
+            if completed.kind.is_empty() {
                 return Err("checkpoint completed host boundary has an empty identity".into());
             }
             if !completed_occurrences.insert(completed.occurrence.clone()) {
@@ -416,6 +417,11 @@ impl<'a> SnapshotValidator<'a> {
         context: &str,
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
+        if frame.boundary_request_id.0 > frame.pending.request.id.0 {
+            return Err(format!(
+                "{context} model loop request precedes its original boundary occurrence"
+            ));
+        }
         match frame.pending.decode {
             ModelDecodeSnapshot::Typed(ty) => {
                 self.type_id(ty, &format!("{context} model decode type"))?
@@ -556,11 +562,18 @@ impl<'a> SnapshotValidator<'a> {
                     .push(*attempt);
                 Ok(())
             }
+            ContinuationSnapshot::SourceToolReturn(frame) => {
+                frame.validate_continuation()?;
+                self.source_tool_return(frame, context, boundary_scopes)
+            }
             ContinuationSnapshot::ProgramResume { id } => {
                 self.suspension_references
                     .borrow_mut()
                     .push((*id, self.checked.clone()));
                 Ok(())
+            }
+            ContinuationSnapshot::FileReadReduction { .. } => {
+                self.file_read_reduction(continuation, context)
             }
             ContinuationSnapshot::StreamReadReduction { .. } => {
                 self.stream_read_reduction(continuation, context)
@@ -969,7 +982,18 @@ impl<'a> SnapshotValidator<'a> {
                 self.index_at_most(*next_index, remaining_keys.len(), context)?;
                 self.snapshot_values(remaining_keys)
             }
+            ContinuationSnapshot::ReenterHandler { boundary } => {
+                if !matches!(&**boundary, ContinuationSnapshot::HandleBoundary { .. }) {
+                    return Err(format!(
+                        "{context} handler reentry does not contain a handler boundary"
+                    ));
+                }
+                Ok(())
+            }
             ContinuationSnapshot::HandleBoundary { scope_id, .. } => {
+                if scope_id.0 == u32::MAX {
+                    return Err(format!("{context} handler scope identity is exhausted"));
+                }
                 if !boundary_scopes.insert(*scope_id) {
                     return Err(format!(
                         "{context} contains duplicate handle boundary scope {}",
@@ -1008,6 +1032,9 @@ impl<'a> SnapshotValidator<'a> {
         let mut query_seeds = Vec::new();
         for value in root.walk() {
             match value {
+                ValueSnapshot::Tuple(values) if values.is_empty() => {
+                    return Err("empty tuple must use the canonical unit value encoding".into());
+                }
                 ValueSnapshot::PriorityQueue {
                     comparator: Some(comparator),
                     ..

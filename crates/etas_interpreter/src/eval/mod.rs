@@ -1,3 +1,4 @@
+mod action_reducer;
 mod agent;
 mod aggregate_expr;
 mod assign;
@@ -8,6 +9,7 @@ mod boundary;
 mod boundary_approval;
 mod boundary_command;
 mod boundary_console;
+mod boundary_filesystem;
 mod boundary_ledger;
 mod boundary_memory;
 mod boundary_model;
@@ -24,6 +26,7 @@ mod const_expr;
 mod continuation;
 mod expr;
 mod field_access;
+mod file_read_limited;
 mod flow;
 mod handler;
 mod host_enum;
@@ -51,6 +54,7 @@ mod perform;
 mod pipeline;
 pub(crate) mod priority_queue;
 mod reflection;
+pub(crate) mod replay;
 pub(crate) mod residual;
 mod run_state;
 pub use run_state::EvalRunState;
@@ -119,10 +123,9 @@ use etas_host::{
     ApprovalGrant, ApprovalRequest, AuthorityContext, BrowserProtocolOperation,
     BrowserProtocolRequest, ByteStreamRef, CommandRequest, FilesystemOperation, FilesystemRequest,
     HostRequestId, HostValue, MemoryOperation, MemoryRegionRef, MemoryRequest, MemoryResult,
-    ModelContent, ModelMessage, ModelRequest, ModelResponse, ModelRole, SecretOperation,
-    SecretRequest, StoreRef, StreamOperation, StreamRequest, TcpConnectOperation,
-    TcpConnectRequest, TcpEndpoint, TcpStreamRef, TlsConnectOperation, TlsConnectRequest,
-    TraceContext, WriteCondition,
+    ModelContent, ModelMessage, ModelRequest, ModelRole, SecretOperation, SecretRequest, StoreRef,
+    StreamOperation, StreamRequest, TcpConnectOperation, TcpConnectRequest, TcpEndpoint,
+    TcpStreamRef, TlsConnectOperation, TlsConnectRequest, TraceContext, WriteCondition,
 };
 
 pub struct EvalContext<'a> {
@@ -156,6 +159,8 @@ impl std::ops::DerefMut for EvalContext<'_> {
 
 #[derive(Clone, Copy, Debug, Default)]
 pub struct KnownStdTypes {
+    pub file_read_limit_error: Option<etas_types::TypeId>,
+    pub filesystem_io_error: Option<etas_types::TypeId>,
     pub storage_error: Option<etas_types::TypeId>,
     pub browser_session: Option<etas_types::TypeId>,
     pub io_error: Option<etas_types::TypeId>,
@@ -170,6 +175,7 @@ pub struct KnownStdTypes {
 }
 
 pub struct EvalContextInput<'a> {
+    pub(crate) replay_keys: replay::RunReplayKeys,
     pub code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     pub syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     pub storage_limits: etas_host::StorageLimits,
@@ -196,6 +202,7 @@ pub struct EvalProgramInput<'a> {
 }
 
 struct EvalRunStateInput {
+    replay_keys: replay::RunReplayKeys,
     storage_limits: etas_host::StorageLimits,
     event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
     execution: etas_host::execution::ExecutionScope,
@@ -209,6 +216,7 @@ struct EvalRunStateInput {
 impl<'a> EvalContextInput<'a> {
     pub fn into_parts(self) -> (EvalProgramInput<'a>, EvalRunState) {
         let Self {
+            replay_keys,
             code_definitions,
             syntax_limits,
             storage_limits,
@@ -234,6 +242,7 @@ impl<'a> EvalContextInput<'a> {
                 entry_args,
             },
             EvalRunState::from_input(EvalRunStateInput {
+                replay_keys,
                 storage_limits,
                 event_observer,
                 execution,
@@ -425,6 +434,8 @@ impl<'a> EvalContext<'a> {
 impl KnownStdTypes {
     pub(crate) fn from_checked(checked: &CheckedProject) -> Self {
         Self {
+            file_read_limit_error: checked.types.known_std_types.file_read_limit_error,
+            filesystem_io_error: checked.types.known_std_types.filesystem_io_error,
             browser_session: resolve_std_type(
                 checked,
                 &["std", "browser", "protocol", "BrowserSession"],

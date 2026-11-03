@@ -418,6 +418,7 @@ impl<'a> EvalContext<'a> {
             }
             Continuation::OrderedSearch(state) => self.continue_ordered_search(*state, value),
             Continuation::StreamReadReduction(state) => self.continue_stream_read(*state, value),
+            Continuation::FileReadReduction(state) => self.continue_file_read(*state, value),
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -1062,6 +1063,7 @@ impl<'a> EvalContext<'a> {
             Continuation::HandlerDispatch { outer } => {
                 self.apply_continuation(outer.into_value(), value)
             }
+            Continuation::ReenterHandler { boundary } => self.reenter_handler(boundary, value),
             Continuation::HandleBoundary {
                 scope_id,
                 inner,
@@ -1114,10 +1116,12 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::ProgramResume(_) => ControlSignal::missing_checked_fact(
-                "program continuation must be resumed by its owning evaluation machine",
-                crate::diagnostics::item_span(self.checked, self.entry_item),
-            ),
+            Continuation::ProgramResume(_) | Continuation::SourceToolReturn(_) => {
+                ControlSignal::missing_checked_fact(
+                    "program continuation must be resumed by its owning evaluation machine",
+                    crate::diagnostics::item_span(self.checked, self.entry_item),
+                )
+            }
             Continuation::ResidualScope(scope) => {
                 let span = crate::diagnostics::item_span(self.checked, self.entry_item);
                 match self.exit_residual_scope(

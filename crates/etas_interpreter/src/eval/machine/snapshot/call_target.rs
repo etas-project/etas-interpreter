@@ -30,7 +30,6 @@ fn capture_leaf(
             return Err("scoped callable must use its capture builder".into());
         }
         CallTarget::ToolItem(item) => CallTargetSnapshot::ToolItem(*item),
-        CallTarget::SpecImplMethod(symbol) => CallTargetSnapshot::SpecImplMethod(*symbol),
         CallTarget::Lambda { expr, captured } => CallTargetSnapshot::Lambda {
             expr: *expr,
             captured: context.frame(captured)?,
@@ -67,7 +66,6 @@ fn restore_leaf(
             CallTarget::AgentRevision(context.agent_reference(&reference)?)
         }
         CallTargetSnapshot::ToolItem(item) => CallTarget::ToolItem(item),
-        CallTargetSnapshot::SpecImplMethod(symbol) => CallTarget::SpecImplMethod(symbol),
         CallTargetSnapshot::Lambda { expr, captured } => CallTarget::Lambda {
             expr,
             captured: super::frame::restore_frame(captured, context)?,

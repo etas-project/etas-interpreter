@@ -2,15 +2,6 @@ use super::*;
 use etas_host::CommandOutput;
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn replayed_command_result(&self, command: &PendingCommand) -> Option<InterpValue> {
-        let key = self.command_boundary_key(command);
-        self.completed_host_boundary_result(
-            &crate::orchestration::BoundaryOccurrenceId::HostRequest(command.request.id),
-            "command",
-            &key,
-        )
-    }
-
     pub(crate) fn command_result_value(
         &mut self,
         command: &PendingCommand,
@@ -25,17 +16,10 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    pub(crate) fn command_boundary_key(&self, command: &PendingCommand) -> String {
-        format!(
-            "command:argv={:?}:env={:?}:cwd={:?}:stdin={:?}",
-            command.request.argv,
-            command.request.env,
-            command
-                .request
-                .cwd
-                .as_ref()
-                .map(|cwd| cwd.relative.display().to_string()),
-            command.request.stdin
-        )
+    pub(crate) fn command_boundary_key(
+        &self,
+        command: &PendingCommand,
+    ) -> Result<etas_host::replay::ReplayFingerprint, crate::control::ExecutionFault> {
+        self.replay_fingerprint(&command.request, command.request.id, command.span)
     }
 }

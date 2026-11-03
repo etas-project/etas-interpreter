@@ -55,6 +55,7 @@ impl<'a> EvalContext<'a> {
                 self.match_unit_pattern(pat, value, span)
             }
             HirPat::Tuple { elems, .. } => match pattern_projection_value(value) {
+                InterpValue::Unit => Ok(elems.is_empty()),
                 InterpValue::Tuple(values) if values.len() == elems.len() => {
                     for (pat, value) in elems.iter().zip(values.iter()) {
                         if !self.match_pattern(*pat, value, frame, span)? {

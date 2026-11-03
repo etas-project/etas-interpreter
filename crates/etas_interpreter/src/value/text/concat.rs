@@ -1,6 +1,6 @@
 use std::{cell::OnceCell, rc::Rc};
 
-use super::StringValue;
+use super::{StringValue, chunks::TextLeaves};
 
 #[derive(Clone, Default)]
 pub(super) enum Repr {
@@ -12,8 +12,9 @@ pub(super) enum Repr {
 
 pub(super) struct Concat {
     pub prefix: StringValue,
-    pub suffix: Rc<String>,
+    pub suffix: StringValue,
     pub length: usize,
+    pub leaves: usize,
     pub materialized: OnceCell<Rc<String>>,
 }
 
@@ -21,6 +22,13 @@ pub(super) struct Concat {
 pub(crate) struct TextCapacityExceeded;
 
 impl Repr {
+    pub fn leaves(&self) -> usize {
+        match self {
+            Self::Empty | Self::Flat(_) => 1,
+            Self::Concat(node) => node.leaves,
+        }
+    }
+
     pub fn len(&self) -> usize {
         match self {
             Self::Empty => 0,
@@ -46,74 +54,66 @@ impl Concat {
     }
 
     fn render(&self, capacity: usize) -> String {
-        let mut suffixes = vec![self.suffix.as_str()];
-        let mut prefix = &self.prefix.0;
-        let first = loop {
-            match prefix {
-                Repr::Empty => break "",
-                Repr::Flat(text) => break text.as_str(),
-                Repr::Concat(node) => {
-                    if let Some(text) = node.materialized.get() {
-                        break text.as_str();
-                    }
-                    suffixes.push(node.suffix.as_str());
-                    prefix = &node.prefix.0;
-                }
-            }
-        };
         let mut output = String::with_capacity(capacity);
-        output.push_str(first);
-        for suffix in suffixes.into_iter().rev() {
-            output.push_str(suffix);
-        }
+        self.append_to(&mut output);
         output
     }
-}
 
-pub(super) fn into_flat(repr: Repr) -> Rc<String> {
-    match repr {
-        Repr::Empty => Rc::new(String::new()),
-        Repr::Flat(text) => text,
-        Repr::Concat(node) => node.flat().clone(),
+    fn append_to(&self, output: &mut String) {
+        if let Some(text) = self.materialized.get() {
+            output.push_str(text);
+            return;
+        }
+        for chunk in TextLeaves::new(&self.prefix.0).chain(TextLeaves::new(&self.suffix.0)) {
+            output.push_str(chunk);
+        }
     }
 }
 
 /// Reuse a uniquely owned first buffer; shared prefixes are copied directly to
 /// the final output capacity, never through a growing sequence of prefixes.
-pub(super) fn into_string(mut repr: Repr, length: usize) -> String {
-    let mut suffixes = Vec::new();
-    let mut output = loop {
-        match repr {
-            Repr::Empty => break String::new(),
-            Repr::Flat(text) => break owned_flat(text, length),
-            Repr::Concat(node) => match Rc::try_unwrap(node) {
-                Ok(node) => {
-                    let Concat {
-                        prefix,
-                        suffix,
-                        materialized,
-                        ..
-                    } = node;
-                    if let Some(text) = materialized.into_inner() {
-                        break owned_flat(text, length);
-                    }
-                    suffixes.push(suffix);
-                    repr = prefix.into_repr();
-                }
-                Err(node) => {
-                    break match node.materialized.get() {
-                        Some(text) => owned_flat(text.clone(), length),
-                        None => node.render(length),
-                    };
-                }
-            },
-        }
+pub(super) fn into_string(repr: Repr, length: usize) -> String {
+    let mut node = match repr {
+        Repr::Empty => return String::new(),
+        Repr::Flat(text) => return owned_flat(text, length),
+        Repr::Concat(node) => node,
+    };
+    if let Some(unique) = Rc::get_mut(&mut node)
+        && let Some(text) = unique.materialized.get_mut().and_then(Rc::get_mut)
+    {
+        let output = std::mem::take(text);
+        release(Repr::Concat(node));
+        return output;
+    }
+    let mut output = if node.materialized.get().is_none() {
+        Rc::get_mut(&mut node)
+            .and_then(|node| take_unique_prefix(&mut node.prefix.0))
+            .unwrap_or_default()
+    } else {
+        String::new()
     };
     output.reserve(length - output.len());
-    for suffix in suffixes.into_iter().rev() {
-        output.push_str(&suffix);
-    }
+    node.append_to(&mut output);
+    release(Repr::Concat(node));
     output
+}
+
+fn take_unique_prefix(mut repr: &mut Repr) -> Option<String> {
+    // This tree is private to the consuming conversion. Stop at any alias or
+    // cached subtree so moving a leaf cannot invalidate an observable value.
+    loop {
+        match repr {
+            Repr::Empty => return None,
+            Repr::Flat(text) => return Rc::get_mut(text).map(std::mem::take),
+            Repr::Concat(node) => {
+                let node = Rc::get_mut(node)?;
+                if node.materialized.get().is_some() {
+                    return None;
+                }
+                repr = &mut node.prefix.0;
+            }
+        }
+    }
 }
 
 fn owned_flat(text: Rc<String>, capacity: usize) -> String {
@@ -127,13 +127,30 @@ fn owned_flat(text: Rc<String>, capacity: usize) -> String {
     }
 }
 
-/// Each concatenation has one prefix edge. Detach it before dropping the node
-/// so ordinary value/snapshot release never recurses down a long append chain.
+/// Detach both children before dropping a unique node. Only branching subtrees
+/// need a worklist; left- and right-deep chains release without scratch space.
 pub(super) fn release(mut repr: Repr) {
-    while let Repr::Concat(node) = repr {
-        match Rc::try_unwrap(node) {
-            Ok(mut node) => repr = std::mem::take(&mut node.prefix.0),
-            Err(_) => break,
+    let mut pending = Vec::new();
+    loop {
+        if let Repr::Concat(node) = repr
+            && let Ok(mut node) = Rc::try_unwrap(node)
+        {
+            let prefix = std::mem::take(&mut node.prefix.0);
+            let suffix = std::mem::take(&mut node.suffix.0);
+            match (prefix, suffix) {
+                (prefix @ Repr::Concat(_), suffix @ Repr::Concat(_)) => {
+                    pending.push(suffix);
+                    repr = prefix;
+                    continue;
+                }
+                (child @ Repr::Concat(_), _) | (_, child @ Repr::Concat(_)) => {
+                    repr = child;
+                    continue;
+                }
+                _ => {}
+            }
         }
+        let Some(next) = pending.pop() else { break };
+        repr = next;
     }
 }

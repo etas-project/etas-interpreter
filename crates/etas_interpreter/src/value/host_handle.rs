@@ -82,19 +82,6 @@ impl HostHandleValue {
         }
     }
 
-    pub(crate) fn boundary_key(&self) -> String {
-        match &self.payload {
-            HostHandlePayload::TcpStream(stream) => {
-                format!("tcp_stream:{}", stream.handle().identity_fingerprint())
-            }
-            HostHandlePayload::TlsStream(stream) => {
-                format!("tls_stream:{}", stream.handle().identity_fingerprint())
-            }
-            HostHandlePayload::SecretValue(reference) => format!("secret_value:{}", reference.id()),
-            HostHandlePayload::BrowserSession(id) => format!("browser_session:{id}"),
-        }
-    }
-
     pub(crate) fn byte_stream_ref(&self) -> Option<ByteStreamRef> {
         match &self.payload {
             HostHandlePayload::TcpStream(stream) => Some(stream.as_byte_stream()),

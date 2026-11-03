@@ -23,7 +23,7 @@ fn shared_single_message_text_keeps_backing_and_snapshot_isolation() {
         let InterpValue::Prompt(prompt) = value else {
             unreachable!()
         };
-        let (mut text, cost) = measure(|| prompt.into_text());
+        let (mut text, cost) = measure(|| prompt.into_text().unwrap());
         assert_eq!(cost.count, 0, "n={count}: {cost:?}");
         assert_eq!(cost.bytes, 0, "n={count}: {cost:?}");
         assert_eq!(text.as_ptr(), pointer);
@@ -138,18 +138,18 @@ fn owned_and_shared_prompt_text_keep_identical_separator_semantics() {
         let expected = parts.join("\n");
         let prompt: PromptValue = parts.iter().map(|text| message(*text)).collect();
         let alias = prompt.clone();
-        assert_eq!(prompt.into_text(), expected);
+        assert_eq!(prompt.into_text().unwrap(), expected);
         assert_eq!(alias.len(), parts.len());
         for (message, expected) in alias.iter().zip(&parts) {
             assert_eq!(&message.text, *expected);
         }
-        assert_eq!(alias.into_text(), expected);
+        assert_eq!(alias.into_text().unwrap(), expected);
     }
     let mut text = String::with_capacity(128);
     text.push_str("first");
     let original = text.as_ptr();
     let prompt = PromptValue::new(vec![message(text), message("second")]);
-    let (text, allocations) = measure(|| prompt.into_text());
+    let (text, allocations) = measure(|| prompt.into_text().unwrap());
     assert_eq!(text, "first\nsecond");
     assert_eq!(text.as_ptr(), original);
     assert_eq!(

@@ -768,21 +768,37 @@ flow main(ticket: string, input: string) -> Message<string> {
 
 #[tokio::test(flavor = "current_thread")]
 async fn resume_checkpoint_replays_completed_session_append_without_rewriting_history() {
+    replay_session_append(false).await;
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resume_checkpoint_rejects_session_replay_when_message_envelope_changed() {
+    replay_session_append(true).await;
+}
+
+async fn replay_session_append(before_message: bool) {
+    let checkpoint = "checkpoint(\"before-session\");";
+    let message = "let message = Message.new(input);";
+    let before = if before_message {
+        format!("{checkpoint}\n{message}")
+    } else {
+        format!("{message}\n{checkpoint}")
+    };
     let checked = checked_project(
-        r#"
+        &r#"
 module app.main;
 import std.agent.message.Message;
 import std.runtime.{checkpoint};
 
 flow main(ticket: string, input: string) -> Message<string> {
-  checkpoint("before-session");
-  let message = Message.new(input);
+  BEFORE_SESSION
   let session = SessionConfig.continue_or_new(ticket);
   let scoped = Message.with_session(message, session);
   checkpoint("after-session");
   return scoped;
 }
-"#,
+"#
+        .replace("BEFORE_SESSION", &before),
     );
 
     let first_host = FakeHost::new(availability(&[
@@ -836,6 +852,23 @@ flow main(ticket: string, input: string) -> Message<string> {
         .await
         .expect("execution lifecycle infrastructure");
 
+    if before_message {
+        assert!(resumed.value().is_none());
+        assert!(
+            resumed
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("fingerprint does not match")),
+            "{:?}",
+            resumed.diagnostics
+        );
+        assert_eq!(
+            replay_host.session_call_count(),
+            1,
+            "mismatched append must not reach the host"
+        );
+        return;
+    }
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
     assert_eq!(replay_host.session_call_count(), 1);
     let Some(value::InterpValue::Message(message)) = resumed.value().cloned() else {

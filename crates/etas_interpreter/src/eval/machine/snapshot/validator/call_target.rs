@@ -182,7 +182,6 @@ impl SnapshotValidator<'_> {
             CallTargetSnapshot::FlowItem(item)
             | CallTargetSnapshot::AgentItem(item)
             | CallTargetSnapshot::ToolItem(item) => self.item(*item, context),
-            CallTargetSnapshot::SpecImplMethod(symbol) => self.symbol(*symbol, context),
             CallTargetSnapshot::EnumVariant(symbol) => {
                 self.symbol(*symbol, context)?;
                 if self.dispatch.enum_constructor(*symbol).is_some()

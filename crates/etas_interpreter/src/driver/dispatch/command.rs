@@ -16,8 +16,19 @@ pub(in crate::driver) async fn dispatch(
     command: PendingCommand,
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
-    if let Some(value) = eval.replayed_command_result(&command) {
-        return Some(eval.resume_command_signal(command, value));
+    let key = match eval.command_boundary_key(&command) {
+        Ok(key) => key,
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+    };
+    match eval.completed_host_boundary_result(
+        &crate::orchestration::BoundaryOccurrenceId::HostRequest(command.request.id),
+        "command",
+        &key,
+        command.span,
+    ) {
+        Ok(Some(value)) => return Some(eval.resume_command_signal(command, value)),
+        Ok(None) => (),
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
     }
     if let Err(error) = command.request.budget.check_time() {
         return retry_or_report(
@@ -28,7 +39,6 @@ pub(in crate::driver) async fn dispatch(
             format!("command host boundary failed: {}", error.message),
         );
     }
-    let key = eval.command_boundary_key(&command);
     let request_id = command.request.id;
     let trace_subject = policy_subject(&command.request);
     if !evaluate_before_boundary(

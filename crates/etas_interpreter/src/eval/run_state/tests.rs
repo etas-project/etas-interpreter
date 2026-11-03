@@ -26,6 +26,7 @@ fn initialize<'a>(
     consumed_steps: u64,
 ) -> (EvalProgramInput<'a>, EvalRunState) {
     EvalContextInput {
+        replay_keys: crate::eval::replay::RunReplayKeys::start(&options).unwrap(),
         code_definitions: options.code_definitions,
         syntax_limits: options.syntax_limits,
         checked,
@@ -82,6 +83,7 @@ fn program_scopes_share_fuel_grants_digest_budget_and_cancellation() {
     let scope = state.execution.clone();
     let trace = state.host_context.trace.clone();
     let digest = state.host_trace_digest_key.clone().unwrap();
+    let replay_key_id = state.replay_keys.id();
     {
         let mut ctx = EvalContext::new(input, &mut state);
         let span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
@@ -116,6 +118,7 @@ fn program_scopes_share_fuel_grants_digest_budget_and_cancellation() {
         );
         assert_eq!(ctx.host_context.trace, trace);
         assert_eq!(ctx.host_trace_digest_key().unwrap(), &digest);
+        assert_eq!(ctx.replay_keys.id(), replay_key_id);
         ctx.consume_execution_step(span).unwrap();
         assert!(
             ctx.consume_execution_step(span)

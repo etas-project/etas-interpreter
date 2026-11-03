@@ -30,14 +30,6 @@ impl SnapshotValidator<'_> {
                 CallTargetSnapshot::StdIntrinsic { origin, .. } => {
                     CheckedCallableRoot::StdReference(*origin)
                 }
-                CallTargetSnapshot::SpecImplMethod(symbol) => {
-                    let Some(etas_hir::SymbolDef::Item { item }) =
-                        checked.symbols.get(*symbol).map(|symbol| &symbol.def)
-                    else {
-                        return Err("checkpoint priority method has no checked item".into());
-                    };
-                    CheckedCallableRoot::Item(*item)
-                }
                 CallTargetSnapshot::Specialized { target, .. }
                 | CallTargetSnapshot::Limited { target, .. } => {
                     if target.shared_identity().is_none_or(|key| {

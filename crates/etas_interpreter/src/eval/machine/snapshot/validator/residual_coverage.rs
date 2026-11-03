@@ -198,9 +198,14 @@ impl Coverage<'_, '_> {
                     pending.push(Task::Restore(scope));
                     pending.push(Task::Link(outer));
                 }
+                ContinuationSnapshot::SourceToolReturn(saved) => {
+                    pending.push(Task::Node(&saved.model_loop.pending.continuation));
+                    pending.push(Task::Node(&saved.model_loop.outer_continuation));
+                }
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. }
                 | ContinuationSnapshot::HandleBoundary { inner, .. }
+                | ContinuationSnapshot::ReenterHandler { boundary: inner }
                 | ContinuationSnapshot::CallBoundary { outer: inner, .. } => {
                     pending.push(Task::Link(inner));
                 }
@@ -370,6 +375,9 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
             site: Some(site), ..
         } => (call_site_node(site.kind), &site.frame),
         ProgramResume { .. }
+        | SourceToolReturn(_)
+        | ReenterHandler { .. }
+        | FileReadReduction { .. }
         | ResidualScope { .. }
         | ResidualOutcome { .. }
         | StreamReadReduction { .. }

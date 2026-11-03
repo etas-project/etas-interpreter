@@ -183,7 +183,7 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
             values.len(),
         ),
         InterpValue::Variant { name, fields } => sequence(
-            SequenceKind::Variant(name.to_string()),
+            SequenceKind::Variant(name.clone().into_string()),
             SequenceSource::Fields(fields.clone()),
             fields.len(),
         ),

@@ -1,4 +1,5 @@
 use super::*;
+use crate::api::codec::text::{JsonText, tagged_text};
 use crate::control::{CallTarget, Frame};
 
 mod callable;
@@ -11,13 +12,18 @@ enum Node<'a> {
     Frame(&'a Frame),
 }
 
-pub(super) fn encode(value: &InterpValue) -> Result<JsonDocument, InterpreterCodecError> {
-    let graph = frames::FrameGraph::discover(value)?;
+pub(super) fn encode(
+    value: &InterpValue,
+    purpose: ValuePurpose,
+) -> Result<JsonDocument, InterpreterCodecError> {
+    let graph = frames::FrameGraph::discover(value, purpose)?;
     let frames = graph.borrow()?;
     let mut output = CheckpointDocument::from_value(Value::Null);
     let mut pending = vec![(Node::Value(value), output.value_mut())];
     while let Some((node, slot)) = pending.pop() {
-        write(node, slot, &frames, |node, slot| pending.push((node, slot)))?;
+        write(node, slot, &frames, purpose, |node, slot| {
+            pending.push((node, slot))
+        })?;
     }
     Ok(output)
 }
@@ -26,6 +32,7 @@ fn write<'a>(
     node: Node<'a>,
     slot: &'a mut Value,
     frames: &'a frames::BorrowedFrames<'_>,
+    purpose: ValuePurpose,
     mut child: impl FnMut(Node<'a>, &'a mut Value),
 ) -> Result<(), InterpreterCodecError> {
     let value = match node {
@@ -53,11 +60,15 @@ fn write<'a>(
             return Ok(());
         }
     };
+    if purpose.redacts(value) {
+        *slot = json!({"kind":"redacted", "sensitivity":"secret"});
+        return Ok(());
+    }
     match value {
         InterpValue::Unit => *slot = json!({"kind":"unit"}),
         InterpValue::Bool(value) => *slot = json!({"kind":"bool","value":value}),
         InterpValue::Number(value) => *slot = numeric_value_json(*value),
-        InterpValue::String(value) => *slot = json!({"kind":"string","value":value}),
+        InterpValue::String(value) => *slot = tagged_text("string", value),
         InterpValue::Bytes(value) => *slot = json!({"kind":"bytes","value":value}),
         InterpValue::Json(value) => *slot = super::super::json::wrapped(value),
         InterpValue::StdConstant(value) => {
@@ -95,7 +106,15 @@ fn write<'a>(
                 .iter()
                 .zip(array(&mut slot["messages"], messages.len()))
             {
-                *slot = json!({"role":value_codec::prompt_role_json(message.role),"text":message.text,"trust":message.trust.map(value_codec::trust_wrapper_json)});
+                *slot = json!({"role":value_codec::prompt_role_json(message.role),"text":null,"trust":message.trust.map(value_codec::trust_wrapper_json)});
+                slot["text"] = if message
+                    .trust
+                    .is_some_and(|wrapper| purpose.redacts_wrapper(wrapper))
+                {
+                    json!({"kind":"redacted", "sensitivity":"secret"})
+                } else {
+                    message.text.json_text()
+                };
             }
         }
         InterpValue::Message(message) => write_message(message, slot, child),
@@ -218,7 +237,8 @@ fn write<'a>(
             }
         }
         InterpValue::Variant { name, fields } => {
-            *slot = json!({"kind":"variant","name":name,"fields":null});
+            *slot = json!({"kind":"variant","name":null,"fields":null});
+            slot["name"] = name.json_text();
             for (value, slot) in fields.iter().zip(array(&mut slot["fields"], fields.len())) {
                 child(Node::Value(value), slot);
             }

@@ -31,7 +31,6 @@ pub(super) enum DecodedTarget<F, T> {
     FlowItem(HirItemId),
     AgentItem(HirItemId),
     ToolItem(HirItemId),
-    SpecImplMethod(SymbolId),
     EnumVariant(SymbolId),
     NominalConstructor(TypeId),
     Lambda {
@@ -93,7 +92,6 @@ impl TargetValue for CallTargetSnapshot {
             DecodedTarget::FlowItem(value) => Self::FlowItem(value),
             DecodedTarget::AgentItem(value) => Self::AgentItem(value),
             DecodedTarget::ToolItem(value) => Self::ToolItem(value),
-            DecodedTarget::SpecImplMethod(value) => Self::SpecImplMethod(value),
             DecodedTarget::EnumVariant(value) => Self::EnumVariant(value),
             DecodedTarget::NominalConstructor(value) => Self::NominalConstructor(value),
             DecodedTarget::Composed(value) => Self::Composed(value.into()),
@@ -165,7 +163,6 @@ impl TargetValue for CallTarget {
             DecodedTarget::FlowItem(value) => Self::FlowItem(value),
             DecodedTarget::AgentItem(value) => Self::AgentItem(value),
             DecodedTarget::ToolItem(value) => Self::ToolItem(value),
-            DecodedTarget::SpecImplMethod(value) => Self::SpecImplMethod(value),
             DecodedTarget::EnumVariant(value) => Self::EnumVariant(value),
             DecodedTarget::NominalConstructor(value) => Self::NominalConstructor(value),
             DecodedTarget::Composed(value) => Self::Composed(value.into()),

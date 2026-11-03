@@ -1,12 +1,12 @@
 use crate::{
     orchestration::ValueSnapshot,
-    value::{InterpValue, NumericValue},
+    value::{InterpValue, NumericValue, StringValue},
 };
 use std::cmp::Ordering;
 
 enum Key<'a> {
     Number(NumericValue),
-    String(&'a str),
+    String(&'a StringValue),
     Bool(bool),
 }
 

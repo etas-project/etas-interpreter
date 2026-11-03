@@ -16,13 +16,23 @@ pub(in crate::driver) async fn dispatch(
     host: &dyn HostServices,
     console: PendingConsole,
 ) -> Option<ControlSignal> {
-    if let Some(value) = eval.replayed_console_result(&console) {
-        return Some(eval.resume_console_signal(console, value));
+    let key = match eval.console_boundary_key(&console) {
+        Ok(key) => key,
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+    };
+    match eval.completed_host_boundary_result(
+        &crate::orchestration::BoundaryOccurrenceId::HostRequest(console.request.id),
+        "console",
+        &key,
+        console.span,
+    ) {
+        Ok(Some(value)) => return Some(eval.resume_console_signal(console, value)),
+        Ok(None) => (),
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
     }
     if let Err(error) = console.request.budget.check_time() {
         return Some(eval.console_host_error_signal(console, error));
     }
-    let key = eval.console_boundary_key(&console);
     let request_id = console.request.id;
     let trace_subject = policy_subject(&console.request);
     if !evaluate_before_boundary(

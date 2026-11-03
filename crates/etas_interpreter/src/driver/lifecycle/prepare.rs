@@ -61,7 +61,7 @@ pub(crate) async fn run_checked_inner(
         plan
     } else {
         let plan_span = profile.span("interpreter.plan", "interpreter");
-        plan_result = crate::Interpreter.plan(project, options.plan);
+        plan_result = crate::Interpreter.plan(project, options.plan.clone());
         plan_span.finish_ok();
         diagnostics.extend(plan_result.diagnostics.iter().cloned());
         let Some(plan) = &plan_result.plan else {
@@ -126,8 +126,26 @@ pub(crate) async fn run_checked_inner(
             checkpoints,
         };
     }
+    let replay_keys = match eval::replay::RunReplayKeys::start(&options) {
+        Ok(keys) => keys,
+        Err(message) => {
+            diagnostics.push(diagnostics::invalid_arguments(
+                item_span(project, entry.item),
+                message,
+            ));
+            return BodyResult {
+                outcome: RunOutcome::Failed(RunFailure::PreparationRejected {
+                    origin: item_span(project, entry.item),
+                }),
+                diagnostics,
+                events,
+                checkpoints,
+            };
+        }
+    };
     let prepare_span = profile.span("interpreter.prepare", "interpreter");
     let (program, mut run_state) = eval::EvalContextInput {
+        replay_keys,
         code_definitions: options.code_definitions.clone(),
         syntax_limits: options.syntax_limits,
         storage_limits: options.storage_limits,

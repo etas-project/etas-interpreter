@@ -211,16 +211,16 @@ impl<'a> EvalContext<'a> {
             HirBinaryOp::EqEq => Ok(InterpValue::Bool(left == right)),
             HirBinaryOp::BangEq => Ok(InterpValue::Bool(left != right)),
             HirBinaryOp::Lt => {
-                self.eval_numeric_comparison_value(left, right, span, |ordering| ordering.is_lt())
+                self.eval_ordering_value(left, right, span, |ordering| ordering.is_lt())
             }
             HirBinaryOp::LtEq => {
-                self.eval_numeric_comparison_value(left, right, span, |ordering| ordering.is_le())
+                self.eval_ordering_value(left, right, span, |ordering| ordering.is_le())
             }
             HirBinaryOp::Gt => {
-                self.eval_numeric_comparison_value(left, right, span, |ordering| ordering.is_gt())
+                self.eval_ordering_value(left, right, span, |ordering| ordering.is_gt())
             }
             HirBinaryOp::GtEq => {
-                self.eval_numeric_comparison_value(left, right, span, |ordering| ordering.is_ge())
+                self.eval_ordering_value(left, right, span, |ordering| ordering.is_ge())
             }
             HirBinaryOp::Add => self.eval_add_value(left, right, span),
             HirBinaryOp::Sub => self.eval_numeric_arithmetic_value(
@@ -274,7 +274,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn eval_numeric_comparison_value(
+    fn eval_ordering_value(
         &self,
         lhs: InterpValue,
         rhs: InterpValue,
@@ -282,6 +282,9 @@ impl<'a> EvalContext<'a> {
         cmp: impl FnOnce(std::cmp::Ordering) -> bool,
     ) -> Result<InterpValue, ExecutionFault> {
         match (lhs, rhs) {
+            (InterpValue::String(lhs), InterpValue::String(rhs)) => {
+                Ok(InterpValue::Bool(cmp(lhs.cmp(&rhs))))
+            }
             (InterpValue::Number(lhs), InterpValue::Number(rhs)) => lhs
                 .partial_cmp_same(rhs)
                 .map(|ordering| InterpValue::Bool(ordering.is_some_and(cmp)))
@@ -290,7 +293,7 @@ impl<'a> EvalContext<'a> {
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
                 format!(
-                    "numeric comparison expects matching numeric values, got {:?} and {:?}",
+                    "ordering expects matching numeric or string values, got {:?} and {:?}",
                     lhs, rhs
                 ),
             )),

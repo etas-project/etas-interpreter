@@ -1,3 +1,4 @@
+use crate::api::codec::text::JsonText;
 use crate::api::codec::{CheckpointDocument, json as json_codec};
 use serde_json::{Value, json};
 
@@ -47,7 +48,8 @@ pub(in crate::api::codec) fn write<'a, T: HostSource>(
             }
         }
         HostView::Variant { name, fields } => {
-            *slot = json!({"kind":"variant","name":name,"fields":null});
+            *slot = json!({"kind":"variant","name":null,"fields":null});
+            slot["name"] = name.json_text();
             for (value, slot) in fields.iter().zip(array(&mut slot["fields"], fields.len())) {
                 child(Node::Host(value), slot);
             }

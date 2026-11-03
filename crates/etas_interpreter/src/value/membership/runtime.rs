@@ -75,7 +75,7 @@ impl StructuralPartition for InterpValue {
                 return None;
             }
             Self::String(value) => {
-                value.hash(state);
+                value.hash_membership(state);
                 return None;
             }
             Self::Bytes(value) => {
@@ -108,7 +108,7 @@ impl StructuralPartition for InterpValue {
                 Storage::Fields(values.clone())
             }
             Self::Variant { name, fields } => {
-                name.hash(state);
+                name.hash_membership(state);
                 fields.len().hash(state);
                 Storage::Fields(fields.clone())
             }

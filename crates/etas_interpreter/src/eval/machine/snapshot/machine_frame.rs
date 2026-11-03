@@ -14,6 +14,7 @@ impl MachineFrameSnapshot {
         current: &crate::api::HostExecutionContext,
         context: &mut super::RestoreContext,
     ) -> Result<EvalFrame, String> {
+        context.current_host = Some(current.clone());
         use crate::eval::machine::frame::*;
         Ok(match self {
             Self::ProgramReturn(_) => {

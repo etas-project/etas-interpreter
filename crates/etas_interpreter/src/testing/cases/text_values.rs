@@ -5,6 +5,88 @@ use crate::api::codec::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn stopping_a_host_suspended_assignment_preserves_its_old_binding_and_checkpoint() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+effect Append { action suffix() -> string; }
+flow main() -> bool {
+    var text = "old";
+    let alias = text;
+    handle { text = text + perform Append.suffix(); } with {
+        Append.suffix() => {
+            checkpoint("assignment-before-host");
+            println("RHS waiting");
+            if text != alias { abort("assignment was committed before RHS completed"); }
+            resume "new";
+        }
+    };
+    return text == "oldnew" && alias == "old";
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let mut host = FakeHost::new(services);
+    let gate = host.pause_console_completion();
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+    let control = invocation.control();
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            gate.started.notified().await;
+            control
+                .stop(etas_host::execution::CancellationReason::Requested)
+                .unwrap();
+            gate.release.add_permits(1);
+        })
+    })
+    .await
+    .expect("Host completion must remain pollable during assignment cancellation");
+    let result = result.unwrap();
+    assert!(matches!(
+        result.outcome,
+        crate::api::RunOutcome::Cancelled(_)
+    ));
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(result.value().is_none());
+    assert_eq!(host.console_call_count(), 1);
+    assert_eq!(result.checkpoints.len(), 1);
+    let saved = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&[], "main", saved).unwrap();
+    let bytes =
+        checkpoint_file_to_bytes(artifact.clone(), CheckpointFileLimits::default()).unwrap();
+    let decoded = checkpoint_file_from_bytes(&bytes, CheckpointFileLimits::default()).unwrap();
+    let restored = checkpoint_from_json(&decoded, &checked).unwrap();
+    for checkpoint in [saved, &restored] {
+        let host = FakeHost::new(services);
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), Some(&InterpValue::Bool(true)));
+        assert_eq!(host.stdout_text(), "RHS waiting\n");
+        assert_eq!(host.console_call_count(), 1);
+        assert_eq!(
+            checkpoint_artifact_json(&[], "main", checkpoint).unwrap(),
+            artifact
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn text_reassignment_keeps_old_values_across_host_error_handler_and_resume() {
     let checked = checked_project(
         r#"

@@ -52,7 +52,7 @@ impl StructuralPartition for ValueSnapshot {
                 return None;
             }
             Self::String(value) => {
-                value.hash(state);
+                value.hash_membership(state);
                 return None;
             }
             Self::Bytes(value) => {
@@ -101,7 +101,7 @@ impl StructuralPartition for ValueSnapshot {
                 Storage::Sequence(values)
             }
             Self::Variant { name, fields } => {
-                name.hash(state);
+                crate::value::hash_text(name.as_str(), state);
                 fields.len().hash(state);
                 Storage::Sequence(fields)
             }

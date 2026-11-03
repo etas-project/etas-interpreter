@@ -23,7 +23,15 @@ pub(in crate::driver) async fn dispatch(
     memory: PendingMemory,
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
-    if let Some(value) = eval.replayed_memory_result(&memory) {
+    let key = match eval.memory_boundary_key(&memory) {
+        Ok(key) => key,
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+    };
+    let replayed = match eval.replayed_memory_result(&memory, &key) {
+        Ok(value) => value,
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+    };
+    if let Some(value) = replayed {
         if !validate_replayed_memory_version(eval, host, &memory, &value).await {
             return None;
         }
@@ -38,7 +46,6 @@ pub(in crate::driver) async fn dispatch(
             format!("memory host boundary failed: {}", error.message),
         );
     }
-    let key = eval.memory_boundary_key(&memory);
     let request_id = memory.request.id;
     if !evaluate_before_boundary(
         eval,

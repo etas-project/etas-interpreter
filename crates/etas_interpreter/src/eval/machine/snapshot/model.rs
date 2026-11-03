@@ -54,6 +54,7 @@ impl ModelLoopFrameSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(Self {
+            boundary_request_id: frame.boundary_request_id,
             pending: PendingModelSnapshot::capture(&frame.pending, context)?,
             round: frame.round,
             repair: ModelRepairSnapshot {
@@ -66,10 +67,10 @@ impl ModelLoopFrameSnapshot {
             current_host_tool: frame.current_host_tool.as_ref().map(|progress| {
                 HostToolProgressSnapshot {
                     call: progress.call.clone(),
-                    boundary_key: progress.boundary_key.clone(),
+                    boundary_key: progress.boundary_key,
                 }
             }),
-            boundary_key: frame.boundary_key.clone(),
+            boundary_key: frame.boundary_key,
             outer_continuation: context.continuation(&frame.outer_continuation)?,
         })
     }
@@ -80,6 +81,7 @@ impl ModelLoopFrameSnapshot {
         context: &mut RestoreContext,
     ) -> Result<ModelLoopFrame, String> {
         Ok(ModelLoopFrame {
+            boundary_request_id: self.boundary_request_id,
             pending: self.pending.restore(current, context)?,
             round: self.round,
             repair: ModelRepairState {
@@ -165,6 +167,21 @@ impl SourceToolBindingSnapshot {
 }
 
 impl SourceToolReturnFrameSnapshot {
+    pub(crate) fn validate_continuation(&self) -> Result<(), String> {
+        if !matches!(
+            self.model_loop.outer_continuation,
+            crate::orchestration::ContinuationSnapshot::BlockValue
+        ) || !matches!(
+            self.model_loop.pending.continuation,
+            crate::orchestration::ContinuationSnapshot::BlockValue
+        ) {
+            return Err(
+                "source tool continuation contains an unexpected nested execution continuation"
+                    .into(),
+            );
+        }
+        Ok(())
+    }
     pub(in crate::eval::machine::snapshot) fn capture(
         frame: &SourceToolReturnFrame,
         context: &mut CaptureContext,
@@ -174,7 +191,7 @@ impl SourceToolReturnFrameSnapshot {
             tool_name: frame.tool_name.clone(),
             binding: SourceToolBindingSnapshot::capture(&frame.binding),
             args: frame.args.clone(),
-            boundary_key: frame.boundary_key.clone(),
+            boundary_key: frame.boundary_key,
             output_schema: frame.output_schema.clone(),
             model_loop: Box::new(ModelLoopFrameSnapshot::capture(&frame.model_loop, context)?),
         })

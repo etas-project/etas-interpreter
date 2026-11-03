@@ -2,6 +2,8 @@ use super::*;
 use crate::api::RunOutcome;
 use etas_host::execution::ExecutionScope;
 
+mod privacy;
+
 fn completed(value: InterpValue) -> RunResult {
     let scope = ExecutionScope::new_owned();
     scope.finish_body(true).unwrap();
@@ -53,7 +55,7 @@ fn report_ownership_and_output_are_stack_safe_for_deep_values() {
     let text = format!("{report}");
     assert_eq!(text.matches("option_some").count(), 60_000);
     assert!(text.contains("deep-message"));
-    assert!(text.contains("etas.cli.interpreter-report.v1"));
+    assert!(text.contains("etas.cli.interpreter-report.v2"));
     assert!(text.ends_with('}'));
 }
 

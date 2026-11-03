@@ -19,6 +19,7 @@ use crate::{
 fn model_frame(width: usize) -> ModelLoopFrame {
     let host = HostExecutionContext::default();
     ModelLoopFrame {
+        boundary_request_id: etas_host::HostRequestId(0),
         pending: PendingModel {
             request: ModelRequest {
                 id: HostRequestId(7),
@@ -60,7 +61,7 @@ fn model_frame(width: usize) -> ModelLoopFrame {
         }],
         completed_tool_result: true,
         current_host_tool: None,
-        boundary_key: "boundary".into(),
+        boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
         outer_continuation: Continuation::Finish,
     }
 }
@@ -120,7 +121,7 @@ fn model_and_source_tool_capture_share_pending_outer_and_machine_locals() {
                     item: HirItemId(3),
                 },
                 args: HostValue::String("input".into()),
-                boundary_key: "tool".into(),
+                boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
                 output_schema: None,
                 model_loop: Box::new(model),
             })
@@ -199,7 +200,7 @@ fn machine_snapshot_copies_source_tool_arguments_only_into_durable_output() {
                     .map(|_| HostValue::String("x".repeat(1024)))
                     .collect(),
             ),
-            boundary_key: "tool-boundary".into(),
+            boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
             output_schema: None,
             model_loop: Box::new(model_frame(1)),
         };

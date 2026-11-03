@@ -1,62 +1,30 @@
-use super::host_value::boundary_key_fragment;
 use super::*;
+use crate::control::ExecutionFault;
+use etas_host::replay::ReplayFingerprint;
 
-impl<'a> EvalContext<'a> {
-    pub(crate) fn replayed_approval_result(
-        &self,
-        perform: &PendingPerform,
-        request_id: HostRequestId,
-    ) -> Option<InterpValue> {
-        let key = self.approval_boundary_key(perform)?;
-        self.completed_host_boundary_result(
-            &crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
-            "approval",
-            &key,
-        )
-    }
-
+impl EvalContext<'_> {
     pub(crate) fn approval_request_for(
         &mut self,
         perform: &PendingPerform,
-    ) -> Option<(String, ApprovalRequest)> {
-        let key = self.approval_boundary_key(perform)?;
-        let reason = perform
-            .args
-            .first()
-            .and_then(|value| match value {
-                InterpValue::String(text) => Some(text.to_string()),
-                _ => None,
-            })
-            .unwrap_or_else(|| "approval".to_owned());
-        let id = HostRequestId(self.next_host_request);
-        self.next_host_request += 1;
-        Some(ApprovalRequest {
-            id,
-            reason,
+    ) -> Result<Option<(ReplayFingerprint, ApprovalRequest)>, ExecutionFault> {
+        if path_name(&perform.action) != "Approval" || perform.action.action != "request" {
+            return Ok(None);
+        }
+        let [InterpValue::String(reason)] = perform.args.as_slice() else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                perform.span,
+                "checked approval request requires exactly one string reason",
+            ));
+        };
+        let request = ApprovalRequest {
+            id: HostRequestId(self.next_host_request),
+            reason: reason.to_string(),
             requested_grants: Vec::new(),
             trace: self.host_trace(),
-        })
-        .map(|request| (key, request))
-    }
-
-    fn approval_boundary_key(&self, perform: &PendingPerform) -> Option<String> {
-        if path_name(&perform.action) != "Approval" || perform.action.action != "request" {
-            return None;
-        }
-        let args = perform
-            .args
-            .iter()
-            .map(boundary_key_fragment)
-            .collect::<Vec<_>>()
-            .join("|");
-        Some(format!(
-            "approval:{}:{}:{}",
-            perform
-                .expr
-                .map(|expr| expr.0.to_string())
-                .unwrap_or_else(|| "host".to_owned()),
-            path_name(&perform.action),
-            args
-        ))
+        };
+        let key = self.replay_fingerprint(&request, request.id, perform.span)?;
+        self.next_host_request += 1;
+        Ok(Some((key, request)))
     }
 }

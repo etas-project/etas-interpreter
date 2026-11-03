@@ -113,7 +113,7 @@ pub(super) fn target<'c>(a: &T, b: &T, context: &'c Context) -> Comparison<Curso
         (T::FlowItem(a), T::FlowItem(b))
         | (T::AgentItem(a), T::AgentItem(b))
         | (T::ToolItem(a), T::ToolItem(b)) => return Comparison::Ready(a == b),
-        (T::SpecImplMethod(a), T::SpecImplMethod(b)) | (T::EnumVariant(a), T::EnumVariant(b)) => {
+        (T::EnumVariant(a), T::EnumVariant(b)) => {
             return Comparison::Ready(a == b);
         }
         (T::AgentRevision(a), T::AgentRevision(b)) => return Comparison::Ready(a == b),

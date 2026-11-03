@@ -220,7 +220,8 @@ impl EvalMachine {
                     work.push(inner);
                 }
                 Continuation::CallBoundary { outer, .. }
-                | Continuation::HandlerDispatch { outer } => work.push(outer),
+                | Continuation::HandlerDispatch { outer }
+                | Continuation::ReenterHandler { boundary: outer } => work.push(outer),
                 Continuation::RestoreModelPolicy { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. } => work.push(inner),
                 Continuation::Chain { inner, outer } => {

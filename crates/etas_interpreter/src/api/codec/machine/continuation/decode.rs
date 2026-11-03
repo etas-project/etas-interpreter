@@ -10,6 +10,31 @@ fn continuation_leaf_from_snapshot(
     kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match kind {
+        "source_tool_return" => {
+            let source = required(value, "source_tool")?;
+            let model = required(source, "model_loop")?;
+            // Native model state is a leaf: execution continuations stay in the machine/chain.
+            for child in [
+                required(model, "outer_continuation")?,
+                required(required(model, "pending")?, "continuation")?,
+            ] {
+                if required_str(child, "kind")? != "block_value" {
+                    return Err("source tool continuation contains an unexpected nested execution continuation".into());
+                }
+            }
+            ContinuationSnapshot::SourceToolReturn(Box::new(
+                crate::api::codec::checkpoint::source_tool_return_frame_from_json(
+                    limits, source, checked,
+                )
+                .map_err(|error| error.to_string())?,
+            ))
+        }
+        "file_read_reduction" => ContinuationSnapshot::FileReadReduction {
+            call: call_target_snapshot_from_json(limits, required(value, "call")?)?,
+            args: required_values(limits, value, "args")?,
+            limit: required_usize(value, "limit")?,
+            span: span_from_snapshot(required(value, "span")?)?,
+        },
         "program_resume" => ContinuationSnapshot::ProgramResume {
             id: required_u32(value, "id")?,
         },
@@ -467,6 +492,7 @@ fn continuation_leaf_from_snapshot(
         "restore_model_policy"
         | "handle_boundary"
         | "handler_dispatch"
+        | "reenter_handler"
         | "scoped_model_policy"
         | "call_boundary"
         | "chain" => {

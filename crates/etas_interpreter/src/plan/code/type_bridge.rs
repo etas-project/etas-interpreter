@@ -178,7 +178,8 @@ impl RevisionTypeBridge {
     ) -> Result<Self, RevisionTypeBridgeError> {
         let forward = correspond(original, compiled)?;
         let backward = correspond(compiled, original)?;
-        let runtime_types = runtime::RuntimeTypeBridge::new(original, compiled)?;
+        let runtime_types =
+            runtime::RuntimeTypeBridge::new(original, compiled, &forward, &backward)?;
         let actions = actions::ActionBridge::new(original, compiled, &runtime_types)?;
         Ok(Self {
             runtime_owner: Default::default(),

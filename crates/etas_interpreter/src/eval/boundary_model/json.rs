@@ -166,7 +166,7 @@ fn json_to_primitive(value: JsonRef<'_>, primitive: PrimitiveType) -> Option<Int
         | PrimitiveType::USize) => unsigned_integer(value, primitive),
         primitive @ (PrimitiveType::F32 | PrimitiveType::F64) => value
             .as_f64()
-            .and_then(|value| crate::value::NumericValue::from_float(value, primitive))
+            .and_then(|value| super::super::host_value::number::decode_float(value, primitive))
             .map(InterpValue::Number),
         PrimitiveType::Never => None,
     }

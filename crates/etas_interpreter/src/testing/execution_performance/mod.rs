@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 mod crypto;
 mod iteration;
 mod scope;
+mod segmented_concat;
 mod text_reassignment;
 
 struct PreparedExecution {
@@ -46,6 +47,10 @@ impl PreparedExecution {
         let options = RunOptions::default();
         let execution = etas_host::execution::ExecutionScope::new_owned();
         let (program, mut run_state) = EvalContextInput {
+            replay_keys: crate::eval::replay::RunReplayKeys::start(
+                &crate::api::RunOptions::default(),
+            )
+            .unwrap(),
             code_definitions: options.code_definitions.clone(),
             syntax_limits: options.syntax_limits,
             checked: &self.checked,

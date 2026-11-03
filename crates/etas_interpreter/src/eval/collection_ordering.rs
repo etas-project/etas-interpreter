@@ -50,14 +50,6 @@ pub(crate) fn validate_comparator(
                 }
                 continue;
             }
-            CallTarget::SpecImplMethod(symbol) => {
-                let Some(SymbolDef::Item { item }) =
-                    checked.symbols.get(symbol).map(|symbol| &symbol.def)
-                else {
-                    return Err("collection comparison method has no checked item".into());
-                };
-                etas_frontend::CheckedCallableRoot::Item(*item)
-            }
             _ => return Err("collection comparison requires a checked pure flow".into()),
         };
         let summary = checked

@@ -1,4 +1,5 @@
 use super::{Node, Pending, array};
+use crate::api::codec::text::{JsonText, tagged_text};
 use crate::api::codec::{self, value::*, value_codec};
 use crate::orchestration::{MessageSnapshot, ValueSnapshot};
 use serde_json::{Value, json};
@@ -46,7 +47,8 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
             sequence(values, &mut slot["values"], pending);
         }
         V::Variant { name, fields } => {
-            *slot = json!({"kind":"variant", "name":name, "fields":null});
+            *slot = json!({"kind":"variant", "name":null, "fields":null});
+            slot["name"] = name.json_text();
             sequence(fields, &mut slot["fields"], pending);
         }
         V::PriorityQueue {
@@ -200,10 +202,16 @@ fn leaf(value: &ValueSnapshot) -> Value {
         V::OptionNone => json!({"kind":"option_none"}),
         V::Bool(value) => json!({"kind":"bool","value":value}),
         V::Number(value) => numeric_value_json(*value),
-        V::String(value) => json!({"kind":"string","value":value}),
+        V::String(value) => tagged_text("string", value),
         V::Bytes(value) => json!({"kind":"bytes","value":value}),
         V::Prompt(messages) => {
-            json!({"kind":"prompt", "messages":messages.iter().map(|message| json!({"role":value_codec::prompt_role_json(message.role),"text":message.text,"trust":message.trust.map(value_codec::trust_wrapper_json)})).collect::<Vec<_>>()})
+            let mut value = json!({"kind":"prompt", "messages":null});
+            value["messages"] = Value::Array(messages.iter().map(|message| {
+                let mut entry = json!({"role":value_codec::prompt_role_json(message.role),"text":null,"trust":message.trust.map(value_codec::trust_wrapper_json)});
+                entry["text"] = message.text.json_text();
+                entry
+            }).collect());
+            value
         }
         V::Provenance(value) => json!({"kind":"provenance","value":provenance_json(value)}),
         V::Command {

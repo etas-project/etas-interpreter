@@ -418,6 +418,7 @@ impl<'a> EvalContext<'a> {
                     value => Ok(value),
                 }
             }
+            HirExpr::Tuple { elems, .. } if elems.is_empty() => Ok(InterpValue::Unit),
             HirExpr::Tuple { elems, .. } => Ok(InterpValue::Tuple(
                 elems
                     .iter()

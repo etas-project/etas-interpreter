@@ -484,6 +484,7 @@ impl<'a> EvalContext<'a> {
             }
         }
         ControlSignal::Value(match kind {
+            AggregateKind::Tuple if values.is_empty() => InterpValue::Unit,
             AggregateKind::Tuple => InterpValue::Tuple(values.into()),
             AggregateKind::Array => InterpValue::Array(ArrayValue::new(values)),
             AggregateKind::List => InterpValue::List(values.into()),

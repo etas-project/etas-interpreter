@@ -20,6 +20,7 @@ use super::{
 enum HostBoundaryFailure {
     Host(HostError),
     Stream(StreamFailure),
+    FileReadLimit { max_bytes: usize },
 }
 
 pub(in crate::driver) async fn dispatch(
@@ -29,7 +30,10 @@ pub(in crate::driver) async fn dispatch(
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
     let kind = host_boundary_kind(&boundary.request);
-    let key = host_boundary_key(&boundary);
+    let key = match host_boundary_key(eval, &boundary) {
+        Ok(key) => key,
+        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+    };
     let occurrence = crate::orchestration::BoundaryOccurrenceId::HostRequest(
         host_boundary_request_id(&boundary.request),
     );
@@ -42,10 +46,12 @@ pub(in crate::driver) async fn dispatch(
             ));
         }
     };
-    if host_boundary_is_replayable(&boundary.request)
-        && let Some(value) = eval.completed_host_boundary_result(&occurrence, kind, &key)
-    {
-        return Some(eval.resume_host_signal(boundary, value));
+    if let Some(key) = key {
+        match eval.completed_host_boundary_result(&occurrence, kind, &key, boundary.span) {
+            Ok(Some(value)) => return Some(eval.resume_host_signal(boundary, value)),
+            Ok(None) => (),
+            Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        }
     }
     if let Err(error) = authorize_before_boundary(
         eval,
@@ -120,10 +126,18 @@ pub(in crate::driver) async fn dispatch(
         )
         .await
         {
-            Ok(response) => response
-                .result
-                .map(|entry| host_boundary_value_from_filesystem_entry(boundary.decode, entry))
-                .map_err(HostBoundaryFailure::Host),
+            Ok(response) => match (response.result, boundary.decode) {
+                (
+                    Ok(FilesystemEntry::LimitedRead(etas_host::BoundedFileRead::LimitExceeded {
+                        max_bytes,
+                    })),
+                    HostBoundaryDecode::FileReadLimited {
+                        max_bytes: expected,
+                    },
+                ) if max_bytes == expected => Err(HostBoundaryFailure::FileReadLimit { max_bytes }),
+                (Ok(entry), decode) => Ok(host_boundary_value_from_filesystem_entry(decode, entry)),
+                (Err(error), _) => Err(HostBoundaryFailure::Host(error)),
+            },
             Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
         HostBoundaryRequest::Tcp(request) => match HostDispatch::execute(
@@ -243,7 +257,7 @@ pub(in crate::driver) async fn dispatch(
     };
     match result {
         Ok(Ok(value)) => {
-            if host_boundary_is_replayable(&boundary.request) {
+            if let Some(key) = key {
                 if let Err(fault) = eval.record_completed_host_boundary(
                     occurrence,
                     kind,
@@ -266,7 +280,15 @@ pub(in crate::driver) async fn dispatch(
         Err(HostBoundaryFailure::Stream(failure)) => {
             Some(eval.stream_failure_signal(boundary, failure))
         }
+        Err(HostBoundaryFailure::FileReadLimit { max_bytes }) => {
+            Some(eval.raise_file_read_limit(max_bytes, boundary.continuation, boundary.span))
+        }
         Err(HostBoundaryFailure::Host(error)) => {
+            if matches!(&boundary.request, HostBoundaryRequest::Filesystem(_))
+                && error.code == etas_host::HostErrorCode::IoFailure
+            {
+                return Some(eval.filesystem_io_failure_signal(boundary, error));
+            }
             if let Some(signal) = eval.network_host_error_signal(boundary.clone(), error.clone()) {
                 return Some(signal);
             }
@@ -326,44 +348,30 @@ pub(in crate::driver) fn host_boundary_kind(request: &HostBoundaryRequest) -> &'
     }
 }
 
-pub(in crate::driver) fn host_boundary_is_replayable(request: &HostBoundaryRequest) -> bool {
-    !matches!(
-        request,
-        HostBoundaryRequest::Tcp(_)
-            | HostBoundaryRequest::Stream(_)
-            | HostBoundaryRequest::Tls(_)
-            | HostBoundaryRequest::MemoryWrite(_)
-            | HostBoundaryRequest::SessionHistory(_)
-            | HostBoundaryRequest::SessionContext(_)
+fn host_boundary_key(
+    eval: &EvalContext<'_>,
+    boundary: &PendingHostBoundary,
+) -> Result<Option<etas_host::replay::ReplayFingerprint>, crate::control::ExecutionFault> {
+    let payload = match &boundary.request {
+        HostBoundaryRequest::SessionContext(_)
+        | HostBoundaryRequest::SessionHistory(_)
+        | HostBoundaryRequest::MemoryWrite(_)
+        | HostBoundaryRequest::Tcp(_)
+        | HostBoundaryRequest::Stream(_)
+        | HostBoundaryRequest::Tls(_) => return Ok(None),
+        HostBoundaryRequest::Filesystem(request) => request.trace_payload(),
+        HostBoundaryRequest::Secret(request) => request.trace_payload(),
+        HostBoundaryRequest::Browser(request) => request.trace_payload(),
+    };
+    eval.replay_payload_fingerprint(
+        &payload.with_field(
+            "replay_occurrence",
+            HostValue::UInt(host_boundary_request_id(&boundary.request).0 as u128),
+            etas_host::HostTraceFieldSensitivity::Public,
+        ),
+        boundary.span,
     )
-}
-
-pub(in crate::driver) fn host_boundary_key(boundary: &PendingHostBoundary) -> String {
-    match &boundary.request {
-        HostBoundaryRequest::SessionContext(request) => format!("session:context:{}", request.id.0),
-        HostBoundaryRequest::SessionHistory(request) => {
-            format!("session:history_page:{}", request.id.0)
-        }
-        HostBoundaryRequest::MemoryWrite(request) => format!("memory:request:{}", request.id.0),
-        HostBoundaryRequest::Filesystem(request) => {
-            format!("filesystem:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Tcp(request) => {
-            format!("tcp:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Stream(request) => {
-            format!("stream:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Tls(request) => {
-            format!("tls:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Secret(request) => {
-            format!("secret:{:?}:{:?}", request.operation, boundary.decode)
-        }
-        HostBoundaryRequest::Browser(request) => {
-            format!("browser:{:?}:{:?}", request.operation, boundary.decode)
-        }
-    }
+    .map(Some)
 }
 
 pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
@@ -371,6 +379,10 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
     entry: FilesystemEntry,
 ) -> Result<InterpValue, String> {
     match (decode, entry) {
+        (
+            HostBoundaryDecode::FileReadLimited { max_bytes },
+            FilesystemEntry::LimitedRead(etas_host::BoundedFileRead::Complete(bytes)),
+        ) if bytes.len() <= max_bytes => Ok(InterpValue::Bytes(bytes.into())),
         (HostBoundaryDecode::Bytes, FilesystemEntry::Bytes(bytes)) => {
             Ok(InterpValue::Bytes(bytes.into()))
         }
@@ -393,9 +405,9 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
                 ),
             ])))
         }
-        (decode, entry) => Err(format!(
-            "filesystem response payload {:?} does not match decode {:?}",
-            entry, decode
+        (decode, _) => Err(format!(
+            "filesystem response payload does not match checked decode {:?}",
+            decode
         )),
     }
 }
@@ -563,7 +575,9 @@ pub(in crate::driver) fn filesystem_policy_subject(
     request: &etas_host::FilesystemRequest,
 ) -> PolicySubject {
     let (operation, action, resource) = match &request.operation {
-        FilesystemOperation::Read { path } => ("read", "Fs.read", format!("{path:?}")),
+        FilesystemOperation::Read { path } | FilesystemOperation::ReadLimited { path, .. } => {
+            ("read", "Fs.read", format!("{path:?}"))
+        }
         FilesystemOperation::Write { path, .. } => ("write", "Fs.write", format!("{path:?}")),
         FilesystemOperation::Delete { path } => {
             ("delete", "HostFilesystem.delete", format!("{path:?}"))

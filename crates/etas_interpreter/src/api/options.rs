@@ -71,8 +71,9 @@ impl Default for ExecutionLimits {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug)]
 pub struct RunOptions {
+    pub replay_key_provider: std::sync::Arc<dyn etas_host::replay::ReplayKeyProvider>,
     pub code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     /// Native code used to rebind restored values; this grants no Host authority.
     pub checkpoint_revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
@@ -85,6 +86,25 @@ pub struct RunOptions {
     pub model_policy: ModelExecutionPolicy,
     pub current_session: Option<String>,
     pub profile: ProfileHandle,
+}
+
+impl Default for RunOptions {
+    fn default() -> Self {
+        Self {
+            replay_key_provider: etas_host::replay::default_replay_key_provider(),
+            code_definitions: None,
+            checkpoint_revisions: None,
+            syntax_limits: Default::default(),
+            storage_limits: Default::default(),
+            event_observer: None,
+            plan: Default::default(),
+            execution_limits: Default::default(),
+            host_context: Default::default(),
+            model_policy: Default::default(),
+            current_session: None,
+            profile: Default::default(),
+        }
+    }
 }
 
 #[derive(Clone, Debug, PartialEq)]
