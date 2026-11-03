@@ -1,6 +1,40 @@
 use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
+#[test]
+fn checked_method_plan_preserves_the_callers_same_named_effect_row() {
+    let checked = checked_project(include_str!("../fixtures/method_resolution/outer_row.es"));
+    let plan = Interpreter.plan(&checked, crate::api::PlanOptions);
+    assert!(plan.diagnostics.is_empty(), "{:?}", plan.diagnostics);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn spec_method_named_arguments_follow_the_declaration_through_checked_witnesses() {
+    let source = include_str!("../fixtures/method_resolution/named_bound.es");
+    for copies in [0, 256] {
+        let source = source.replace(
+            "value.add(amount = 5)",
+            &format!("value{}.add(amount = 5)", ".copy()".repeat(copies)),
+        );
+        let checked = checked_project(&source);
+        let host = FakeHost::new(availability(&[]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                Vec::new(),
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.value(), Some(&InterpValue::i32(22)));
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn checked_method_chains_evaluate_receivers_and_named_arguments_once_in_source_order() {
     let source = include_str!("../fixtures/method_resolution/ordered_chain.es");
