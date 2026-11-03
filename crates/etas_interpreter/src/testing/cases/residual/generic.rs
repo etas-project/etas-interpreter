@@ -89,9 +89,13 @@ flow main() -> i32 ![] {
     assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
     assert_eq!(result.value(), Some(&value::InterpValue::i32(2)));
     assert_eq!(result.checkpoints.len(), 2);
-    let saved = crate::api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let saved =
+        crate::api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
     let checkpoint = crate::api::codec::checkpoint_from_json(&saved, &checked).unwrap();
-    let resumed = Interpreter.resume_checkpoint(&checked, &checkpoint, &host, RunOptions::default()).await.unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &checkpoint, &host, RunOptions::default())
+        .await
+        .unwrap();
     assert!(resumed.diagnostics.is_empty(), "{:#?}", resumed.diagnostics);
     assert_eq!(resumed.value(), Some(&value::InterpValue::i32(2)));
 }
