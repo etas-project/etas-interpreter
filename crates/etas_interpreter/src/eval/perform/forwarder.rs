@@ -73,6 +73,12 @@ impl EvalContext<'_> {
                 max_bytes,
                 span,
             } => self.execute_file_read_default(path, max_bytes, span),
+            crate::control::DefaultActionBoundary::DirectoryListLimited {
+                path,
+                max_entries,
+                max_bytes,
+                span,
+            } => self.execute_directory_list_default(path, max_entries, max_bytes, span),
         };
         self.continue_chain_signal(signal, perform.continuation)
     }

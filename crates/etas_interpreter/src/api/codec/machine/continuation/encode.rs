@@ -23,6 +23,16 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             slot["source_tool"] =
                 crate::api::codec::checkpoint::source_tool_return_frame_json(frame, budget)?;
         }
+        Continuation::DirectoryListReduction {
+            call,
+            args,
+            max_entries,
+            max_bytes,
+            span,
+        } => object! { slot, pending;
+            "kind": json!("directory_list_reduction"), "call": Node::CallTarget(call), "args": Node::Values(args),
+            "max_entries": json!(max_entries), "max_bytes": json!(max_bytes), "span": json!(span_snapshot(*span)),
+        },
         Continuation::FileReadReduction {
             call,
             args,

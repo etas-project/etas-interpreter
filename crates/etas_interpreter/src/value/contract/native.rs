@@ -109,7 +109,7 @@ pub(super) fn validate<'a>(
             Ok(())
         }
         Value::Runtime(R::WorkspacePath(path)) => {
-            etas_host::sandbox::workspace::normalize_relative(&path.relative)
+            etas_host::WorkspacePathRef::new(path.region.clone(), &path.relative)
                 .map_err(|error| error.message)?;
             workspace_path(context, expected, path.region.as_str())
         }

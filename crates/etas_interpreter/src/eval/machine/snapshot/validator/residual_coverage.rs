@@ -397,6 +397,7 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         | SourceToolReturn(_)
         | ReenterHandler { .. }
         | FileReadReduction { .. }
+        | DirectoryListReduction { .. }
         | ResidualScope { .. }
         | ResidualOutcome { .. }
         | StreamReadReduction { .. }

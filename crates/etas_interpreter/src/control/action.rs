@@ -195,6 +195,12 @@ pub enum DefaultActionBoundary {
         max_bytes: usize,
         span: etas_core::Span,
     },
+    DirectoryListLimited {
+        path: crate::value::InterpValue,
+        max_entries: usize,
+        max_bytes: usize,
+        span: etas_core::Span,
+    },
 }
 
 #[derive(Clone, Debug)]
@@ -202,6 +208,15 @@ pub struct FileReadReduction {
     pub(crate) call: crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
     pub(crate) args: Vec<crate::value::InterpValue>,
     pub(crate) limit: usize,
+    pub(crate) span: etas_core::Span,
+}
+
+#[derive(Clone, Debug)]
+pub struct DirectoryListReduction {
+    pub(crate) call: crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+    pub(crate) args: Vec<crate::value::InterpValue>,
+    pub(crate) max_entries: usize,
+    pub(crate) max_bytes: usize,
     pub(crate) span: etas_core::Span,
 }
 
