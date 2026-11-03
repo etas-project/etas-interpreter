@@ -21,11 +21,33 @@ impl EvalContext<'_> {
         body: HirBlockId,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let residual = self.plan.residual.scope(item).map(|scope| {
-            Box::new(ResidualScopeActivation {
-                scope: scope.clone(),
-            })
-        });
+        let residual = match self.plan.residual.scope(item) {
+            Some(scope) => {
+                let bindings = frame.generic_bindings();
+                let application = scope.applications.iter().find(|application| {
+                    application
+                        .type_bindings
+                        .iter()
+                        .all(|(name, ty)| bindings.types.get(name) == Some(ty))
+                        && application
+                            .effect_row_bindings
+                            .iter()
+                            .all(|(name, row)| bindings.rows.get(name) == Some(row))
+                });
+                let Some(application) = application else {
+                    return ControlSignal::fault(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        self.checked.hir.items.get(item).unwrap().span(),
+                        "residual scope has no checked generic application",
+                    );
+                };
+                Some(Box::new(ResidualScopeActivation {
+                    scope: scope.clone(),
+                    application: application.clone(),
+                }))
+            }
+            None => None,
+        };
         ControlSignal::pending_block(PendingBlock {
             block: body,
             next_stmt_index: 0,
@@ -73,6 +95,7 @@ impl EvalContext<'_> {
         let log = self.runtime.residual.log.clone();
         let instance = ResidualScopeInstance::activate(
             activation.scope,
+            activation.application,
             self.checked.clone(),
             invocation,
             &log,

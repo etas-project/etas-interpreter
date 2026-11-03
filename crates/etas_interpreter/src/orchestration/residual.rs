@@ -153,6 +153,7 @@ fn validate_counter_identity(id: &[u8; 16], kind: u8, maximum: u64) -> Result<()
 #[serde(deny_unknown_fields)]
 pub(crate) struct ResidualScopeSnapshot {
     pub(crate) item: u32,
+    pub(crate) application: etas_code::CodeFingerprint,
     pub(crate) revision: RevisionKey,
     pub(crate) invocation: [u8; 16],
     pub(crate) version: u64,

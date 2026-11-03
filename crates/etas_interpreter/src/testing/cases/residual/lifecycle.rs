@@ -31,6 +31,11 @@ fn instance(
     std::rc::Rc::new(std::cell::RefCell::new(
         crate::control::residual::ResidualScopeInstance::activate(
             plan.residual.scope(checked.entry.unwrap()).unwrap().clone(),
+            plan.residual
+                .scope(checked.entry.unwrap())
+                .unwrap()
+                .applications[0]
+                .clone(),
             checked.clone(),
             etas_code::residual::monitor::ScopeInvocationId::from_bytes(identity),
             log,
@@ -309,7 +314,7 @@ fn aggregate_component_ceiling_applies_across_all_plans_of_one_scope() {
         item: prepared.item,
         revision: prepared.revision,
         plans: vec![duplicate(), duplicate()],
-        actions: prepared.actions.clone(),
+        applications: prepared.applications.clone(),
     });
     let limits = ResidualStateLimits {
         max_components: 1,
@@ -317,7 +322,8 @@ fn aggregate_component_ceiling_applies_across_all_plans_of_one_scope() {
     };
     let log = ResidualRunLog::new(8);
     let result = ResidualScopeInstance::activate(
-        prepared,
+        prepared.clone(),
+        prepared.applications[0].clone(),
         checked,
         etas_code::residual::monitor::ScopeInvocationId::from_bytes([1; 16]),
         &log,

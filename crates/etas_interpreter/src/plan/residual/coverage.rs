@@ -1,6 +1,5 @@
 use std::collections::BTreeSet;
 
-use etas_effects::Effect;
 use etas_frontend::CheckedCallableRoot;
 use etas_utils::{ArtifactSet, Pass, PassContext, PassManager, PassResult};
 
@@ -118,27 +117,15 @@ impl Pass<PlanContext<'_>> for VerifyResidualCoveragePass {
                 continue;
             }
             installed_all.extend(installed);
-            for effect in summary
-                .requested_actions
-                .effects
-                .iter()
-                .chain(summary.default_actions.effects.iter())
-            {
-                if !matches!(effect, Effect::Action(_) | Effect::AppliedAction(_)) {
-                    continue;
-                }
-                if let Err(error) = project
-                    .residual_plans()
-                    .canonical_action(project, item, effect)
-                {
-                    context.push_missing_fact(
-                        span,
-                        &format!("governed action has no residual monitor label: {error:?}"),
-                    );
-                }
-            }
         }
-        if !required_all.is_subset(&installed_all) {
+        let required_all = required_all.into_iter().cloned().collect();
+        if !project.residual_plans().supports_references(&required_all)
+            || required_all.iter().any(|reference| {
+                !installed_all
+                    .iter()
+                    .any(|installed| installed.obligation() == reference.obligation())
+            })
+        {
             context.push_missing_fact(
                 entry_span,
                 &format!(
