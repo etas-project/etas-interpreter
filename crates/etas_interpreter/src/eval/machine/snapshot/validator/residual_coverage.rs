@@ -245,6 +245,25 @@ impl Coverage<'_, '_> {
                 "checkpoint frame does not own its required residual scope invocation".into(),
             );
         }
+        let selected = self.residual.scopes[index as usize].application;
+        let checked = self.validator.checked;
+        let applications = checked
+            .residual_plans()
+            .applications(checked, item)
+            .map_err(|error| format!("checkpoint residual application is invalid: {error:?}"))?;
+        if !applications.iter().any(|application| {
+            application.fingerprint == selected
+                && application
+                    .type_bindings
+                    .iter()
+                    .all(|binding| frame.type_bindings.contains(binding))
+                && application
+                    .effect_row_bindings
+                    .iter()
+                    .all(|binding| frame.effect_row_bindings.contains(binding))
+        }) {
+            return Err("checkpoint frame has different residual generic bindings".into());
+        }
         let owner = (
             std::sync::Arc::as_ptr(self.validator.checked) as usize,
             item,

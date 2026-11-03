@@ -3,6 +3,7 @@ use super::super::*;
 mod approval;
 mod checkpoint;
 mod compiled;
+mod generic;
 mod lifecycle;
 mod outcomes;
 

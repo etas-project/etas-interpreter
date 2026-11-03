@@ -58,6 +58,7 @@ impl Default for ResidualStateLimits {
 #[derive(Clone, Debug)]
 pub(crate) struct ResidualScopeActivation {
     pub(crate) scope: Arc<PreparedResidualScope>,
+    pub(crate) application: Arc<etas_frontend::CheckedResidualApplication>,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -109,6 +110,7 @@ pub(crate) enum ResidualPreview {
 /// other invocations; its registers, evidence and cursor are its own.
 pub(crate) struct ResidualScopeInstance {
     prepared: Arc<PreparedResidualScope>,
+    application: Arc<etas_frontend::CheckedResidualApplication>,
     program: CheckedProgram,
     invocation: ScopeInvocationId,
     span: etas_core::Span,
@@ -139,6 +141,7 @@ impl std::fmt::Debug for ResidualScopeInstance {
 impl ResidualScopeInstance {
     pub(crate) fn activate(
         prepared: Arc<PreparedResidualScope>,
+        application: Arc<etas_frontend::CheckedResidualApplication>,
         program: CheckedProgram,
         invocation: ScopeInvocationId,
         log: &Rc<ResidualRunLog>,
@@ -162,12 +165,18 @@ impl ResidualScopeInstance {
             states.push(
                 plan.checked
                     .plan()
-                    .initial_scope(scope, limits.max_components)
+                    .initial_scope_with_bindings(
+                        scope,
+                        limits.max_components,
+                        &application.bindings,
+                        &application.structures,
+                    )
                     .map_err(|error| format!("residual scope cannot be activated: {error:?}"))?,
             );
         }
         Ok(Self {
             prepared,
+            application,
             program,
             invocation,
             span,
@@ -220,7 +229,7 @@ impl ResidualScopeInstance {
             },
         )
         .map_err(|error| format!("checkpoint residual action identity is invalid: {error:?}"))?;
-        if !self.prepared.accepts_action(action) {
+        if !self.application.actions.contains(action) {
             return Err(
                 "checkpoint residual action is absent from the checked scope footprint".into(),
             );
@@ -468,6 +477,7 @@ impl ResidualScopeInstance {
         };
         crate::orchestration::ResidualScopeSnapshot {
             item: self.prepared.item.0,
+            application: self.application.fingerprint,
             revision: self.prepared.revision,
             invocation: *self.invocation.as_bytes(),
             version: self.version,
@@ -532,6 +542,12 @@ impl ResidualScopeInstance {
         if snapshot.states.len() != prepared.plans.len() {
             return Err("residual checkpoint scope does not cover every installed plan".into());
         }
+        let application = prepared
+            .applications
+            .iter()
+            .find(|application| application.fingerprint == snapshot.application)
+            .ok_or("residual checkpoint has no matching checked application")?
+            .clone();
         let span = program
             .hir
             .items
@@ -557,7 +573,13 @@ impl ResidualScopeInstance {
             let state = plan
                 .checked
                 .plan()
-                .restore_scope(scope, data, limits.max_components)
+                .restore_scope_with_bindings(
+                    scope,
+                    data,
+                    limits.max_components,
+                    &application.bindings,
+                    &application.structures,
+                )
                 .map_err(|error| {
                     format!("residual checkpoint scope state is invalid: {error:?}")
                 })?;
@@ -566,6 +588,7 @@ impl ResidualScopeInstance {
         }
         let mut instance = Self {
             prepared,
+            application,
             program,
             invocation,
             span,
