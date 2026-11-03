@@ -37,6 +37,7 @@ impl EvalContext<'_> {
         span: Span,
     ) -> ControlSignal {
         self.propagate_perform_signal(PendingPerform {
+            residual: None,
             checked_action: None,
             default_boundary: None,
             forwarded_call: None,

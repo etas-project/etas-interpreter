@@ -97,6 +97,7 @@ fn borrowed_model_json_matches_the_previous_typed_boundary() {
         name: "T".into(),
     }));
     let generic = store.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Payload".into(),
         params: vec!["T".into()],
         representation: Some(parameter),

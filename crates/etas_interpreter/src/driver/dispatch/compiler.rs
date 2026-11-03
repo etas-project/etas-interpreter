@@ -166,7 +166,7 @@ fn prepare_response(
 
 pub(in crate::driver) struct PreparedCompilerReply {
     pub response: etas_host::compiler::CompilerResponse,
-    pub prepared: Option<std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+    pub prepared: Option<std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
 }
 impl etas_host::execution::OperationResponse for PreparedCompilerReply {
     fn external_outcome(&self) -> etas_host::execution::ExternalOutcome {

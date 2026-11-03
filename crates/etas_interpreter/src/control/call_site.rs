@@ -15,6 +15,23 @@ pub struct CallSite {
     pub(crate) composition: Option<ComposedInvocation>,
 }
 
+/// Retained caller location; it carries no locals or executable authority.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CallOrigin {
+    pub kind: CallSiteKind,
+    pub residual_invocation: Option<std::num::NonZeroU64>,
+}
+
+impl CallOrigin {
+    pub(crate) fn from_site(site: &CallSite) -> Self {
+        Self {
+            kind: site.kind,
+            residual_invocation: site.frame.residual_invocation(),
+        }
+    }
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct ComposedInvocation {
     pub root: super::CallTargetLink,

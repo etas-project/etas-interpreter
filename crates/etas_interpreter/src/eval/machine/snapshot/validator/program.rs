@@ -46,6 +46,11 @@ impl SnapshotValidator<'_> {
             .first()
             .map_or(snapshot.frames.len(), |b| b.index + 1);
         self.validate_local_frames(&snapshot.frames[..root_end], scopes)?;
+        self.validate_residual_frame_coverage(
+            &snapshot.frames[..root_end],
+            &snapshot.residual,
+            None,
+        )?;
         for (position, boundary) in boundaries.iter().enumerate() {
             if boundary.floor != scopes.len() {
                 return Err(
@@ -66,7 +71,13 @@ impl SnapshotValidator<'_> {
             validator.frame_owners = self.frame_owners.clone();
             validator.frame_definitions = self.frame_definitions.clone();
             validator.suspension_references = self.suspension_references.clone();
+            validator.residual_references = self.residual_references.clone();
             validator.validate_local_frames(&snapshot.frames[boundary.index + 1..end], scopes)?;
+            validator.validate_residual_frame_coverage(
+                &snapshot.frames[boundary.index + 1..end],
+                &snapshot.residual,
+                None,
+            )?;
         }
         Ok(())
     }

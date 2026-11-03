@@ -99,12 +99,18 @@ impl SnapshotValidator<'_> {
             validator.frame_definitions = self.frame_definitions.clone();
             validator.frame_owners = self.frame_owners.clone();
             validator.suspension_references = self.suspension_references.clone();
+            validator.residual_references = self.residual_references.clone();
             let mut local_scopes = BTreeSet::new();
             validator.validate_local_frames(&node.frames, &mut local_scopes)?;
             validator.continuation(
                 &node.continuation,
                 "suspended program continuation",
                 &mut local_scopes,
+            )?;
+            validator.validate_residual_frame_coverage(
+                &node.frames,
+                &snapshot.residual,
+                Some(&node.continuation),
             )?;
             let active = validator.handlers(&node.handlers)?;
             let mut unwind = Vec::new();

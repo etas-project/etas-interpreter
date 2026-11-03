@@ -153,6 +153,7 @@ mod tests {
             }],
         }));
         let nominal = types.intern(Type::Nominal(etas_types::NominalTypeRef {
+            read_only_erased_view: false,
             name: "test.Report".into(),
             params: Vec::new(),
             representation: Some(record),

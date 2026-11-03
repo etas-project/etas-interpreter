@@ -65,6 +65,10 @@ pub(crate) struct EvalMachine {
     pub(super) stack: Vec<EvalFrame>,
     pub(super) active_call_depth: std::rc::Rc<std::cell::Cell<u32>>,
     pub(super) input: Option<MachineInput>,
+    /// Shared with the run's evaluator; mirrors residual scope and revision
+    /// boundary frames after every stack mutation.
+    pub(super) residual_mirror:
+        std::rc::Rc<std::cell::RefCell<crate::eval::residual::ResidualMirror>>,
 }
 
 #[derive(Clone, Debug)]
@@ -85,6 +89,16 @@ impl EvalMachine {
     }
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn for_entry(
+        program: crate::value::CheckedExecutionProgram,
+        args: Vec<InterpValue>,
+    ) -> Self {
+        Self {
+            checkpoint_root: Some(super::snapshot::CheckpointRoot { program, args }),
+            ..Self::default()
+        }
     }
 
     #[cfg(test)]
@@ -110,6 +124,7 @@ impl EvalMachine {
                 revisions: None,
                 root: None,
                 ordering: None,
+                residual: None,
             },
         )
     }
@@ -129,6 +144,8 @@ impl EvalMachine {
             .validate_machine(snapshot)?;
         let mut contexts = std::collections::HashMap::new();
         let mut machine = Self::new();
+        let residual =
+            restore_residual_state(&snapshot.residual, checked, resources.residual.as_ref())?;
         let suspensions = if snapshot.suspended_programs.is_empty() {
             None
         } else {
@@ -146,6 +163,7 @@ impl EvalMachine {
                 super::suspension::checkpoint::RestoreOptions {
                     locked_model: &resources.locked_model,
                     ordering: resources.ordering.as_ref(),
+                    residual: &residual,
                 },
             )?;
             Some(table)
@@ -165,6 +183,7 @@ impl EvalMachine {
                 context.suspensions = suspensions.clone();
                 context.locked_model = resources.locked_model.clone();
                 context.ordering = resources.ordering.clone();
+                context.residual = residual.clone();
                 context
             });
             context.execution_program = scope
@@ -218,12 +237,14 @@ impl EvalMachine {
 
     #[cfg(test)]
     pub(crate) fn snapshot(&self) -> Result<MachineSnapshot, String> {
-        self.capture_snapshot(&[]).map(|snapshot| snapshot.machine)
+        self.capture_snapshot(&[], (0, 0, 0))
+            .map(|snapshot| snapshot.machine)
     }
 
     pub(crate) fn capture_snapshot(
         &self,
         args: &[InterpValue],
+        residual_counters: (u64, u64, u64),
     ) -> Result<super::snapshot::CapturedMachineSnapshot, String> {
         let mut context = super::snapshot::CaptureContext::default();
         let args = self
@@ -252,6 +273,16 @@ impl EvalMachine {
         let suspended_programs = context.capture_suspensions()?;
         let mut machine = MachineSnapshot::capture(frames);
         machine.suspended_programs = suspended_programs;
+        machine.residual = context.capture_residual(
+            self.checkpoint_root
+                .as_ref()
+                .map(|root| &root.program.checked)
+                .or(self
+                    .program_scope
+                    .as_ref()
+                    .map(|scope| &scope.program.checked)),
+            residual_counters,
+        )?;
         Ok(super::snapshot::CapturedMachineSnapshot {
             root: self.checkpoint_root.clone(),
             args,
@@ -269,6 +300,9 @@ impl EvalMachine {
                     .expect("machine call depth cannot exceed u32::MAX"),
             );
         }
+        if let Some(entry) = residual_mirror_entry(&frame) {
+            self.residual_mirror.borrow_mut().push(entry);
+        }
         self.stack.push(frame);
     }
 
@@ -282,7 +316,35 @@ impl EvalMachine {
                     .expect("machine call-depth counter must match the frame stack"),
             );
         }
+        if matches!(
+            frame,
+            EvalFrame::ResidualScope(_) | EvalFrame::ProgramReturn(_)
+        ) {
+            self.residual_mirror.borrow_mut().pop();
+        }
         Some(frame)
+    }
+
+    /// Rebuilds the residual mirror from the explicit stack after a bulk
+    /// stack mutation or when the machine joins a run's shared mirror.
+    pub(super) fn resync_residual_mirror(&mut self) {
+        let mut mirror = self.residual_mirror.borrow_mut();
+        mirror.clear();
+        for frame in &self.stack {
+            if let Some(entry) = residual_mirror_entry(frame) {
+                mirror.push(entry);
+            }
+        }
+    }
+
+    pub(super) fn join_residual_mirror(
+        &mut self,
+        mirror: &std::rc::Rc<std::cell::RefCell<crate::eval::residual::ResidualMirror>>,
+    ) {
+        if !std::rc::Rc::ptr_eq(&self.residual_mirror, mirror) {
+            self.residual_mirror = mirror.clone();
+            self.resync_residual_mirror();
+        }
     }
 
     pub(super) fn truncate_to(&mut self, len: usize) {
@@ -298,6 +360,7 @@ impl EvalMachine {
                 .expect("machine call-depth counter must match the frame stack"),
         );
         self.stack.truncate(len);
+        self.resync_residual_mirror();
     }
 
     pub(super) fn restore_frames(&mut self, frames: Vec<EvalFrame>) {
@@ -316,6 +379,7 @@ impl EvalMachine {
                 .expect("restored call frames cannot exceed u32::MAX"),
         );
         self.stack = frames;
+        self.resync_residual_mirror();
     }
 
     pub(super) fn frames(&self) -> &[EvalFrame] {
@@ -325,4 +389,80 @@ impl EvalMachine {
     pub(super) fn active_call_depth(&self) -> u32 {
         self.active_call_depth.get()
     }
+}
+
+fn residual_mirror_entry(frame: &EvalFrame) -> Option<crate::eval::residual::ResidualMirrorEntry> {
+    use crate::eval::residual::{ResidualBoundary, ResidualMirrorEntry};
+    match frame {
+        EvalFrame::ResidualScope(scope) => Some(ResidualMirrorEntry::Scope(scope.clone())),
+        EvalFrame::ProgramReturn(boundary) => Some(ResidualMirrorEntry::Boundary(
+            boundary
+                .call
+                .action_projections()
+                .map(|projections| ResidualBoundary {
+                    projections,
+                    parent: boundary.parent_program.clone(),
+                }),
+        )),
+        _ => None,
+    }
+}
+
+/// Restores every checkpointed residual scope and attempt through the freshly
+/// prepared plans of `checked`, before any frame that references them.
+fn restore_residual_state(
+    snapshot: &crate::orchestration::ResidualMachineSnapshot,
+    checked: &etas_frontend::CheckedProject,
+    input: Option<&super::snapshot::ResidualRestoreInput>,
+) -> Result<Option<std::rc::Rc<super::snapshot::RestoredResidualState>>, String> {
+    use crate::control::residual::{ResidualAttemptTag, ResidualScopeInstance};
+    if snapshot.is_empty() {
+        return Ok(None);
+    }
+    let input = input.ok_or("checkpoint carries residual monitor state but no prepared plans")?;
+    input
+        .log
+        .restore_history(&snapshot.exits, &input.prepared, checked)?;
+    let mut scopes = Vec::with_capacity(snapshot.scopes.len());
+    let mut highest_cursor = 0u64;
+    let mut invocations = std::collections::BTreeSet::new();
+    for scope in &snapshot.scopes {
+        input
+            .log
+            .check_activation_capacity(input.limits.max_active_scopes)?;
+        let prepared = input
+            .prepared
+            .scope(etas_hir::HirItemId(scope.item))
+            .ok_or("checkpoint residual scope has no installed plan in the recompiled program")?
+            .clone();
+        if !invocations.insert(scope.invocation) {
+            return Err("checkpoint residual scopes share an invocation identity".into());
+        }
+        let instance = ResidualScopeInstance::restore(
+            scope,
+            prepared,
+            checked.clone(),
+            &input.log,
+            input.limits,
+        )?;
+        highest_cursor = highest_cursor.max(instance.cursor_floor());
+        let scope = std::rc::Rc::new(std::cell::RefCell::new(instance));
+        input.log.register(&scope, input.limits.max_active_scopes)?;
+        scopes.push(scope);
+    }
+    let mut attempts = Vec::with_capacity(snapshot.attempts.len());
+    let mut attempt_ids = std::collections::BTreeSet::new();
+    for attempt in &snapshot.attempts {
+        if !attempt_ids.insert(attempt.id) {
+            return Err("checkpoint residual attempts share an identity".into());
+        }
+        highest_cursor = highest_cursor.max(attempt.cursor);
+        attempts.push(ResidualAttemptTag::restore(attempt, &scopes)?);
+    }
+    if snapshot.next_cursor < highest_cursor {
+        return Err("checkpoint residual cursor would reuse a recorded event".into());
+    }
+    Ok(Some(std::rc::Rc::new(
+        super::snapshot::RestoredResidualState { scopes, attempts },
+    )))
 }

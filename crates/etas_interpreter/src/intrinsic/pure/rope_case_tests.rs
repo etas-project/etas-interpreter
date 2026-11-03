@@ -180,11 +180,13 @@ fn case_mapping_preserves_checked_nominal_trust_and_invalid_result_rejection() {
     let string = types.primitive(PrimitiveType::String);
     let boolean = types.primitive(PrimitiveType::Bool);
     let left = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "LeftText".into(),
         representation: Some(string),
         params: vec![],
     }));
     let right = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "RightText".into(),
         representation: Some(string),
         params: vec![],

@@ -242,7 +242,9 @@ impl<'a> EvalContext<'a> {
             values.push(receiver);
             values.extend(evaluated_args);
             if call.identity.dispatch == etas_std::IntrinsicDispatch::PureKernel {
-                let call = match call.specialize(&self.checked.type_store, frame.type_bindings()) {
+                let call = match call
+                    .specialize_generic(&self.checked.type_store, frame.generic_bindings())
+                {
                     Ok(call) => call,
                     Err(error) => return ControlSignal::missing_checked_fact(error, span),
                 };
@@ -263,12 +265,12 @@ impl<'a> EvalContext<'a> {
                 Ok(callable) => callable,
                 Err(error) => return ControlSignal::missing_checked_fact(error, span),
             };
-            return self.execute_std_callable_with_type_bindings(
+            return self.execute_std_callable_with_generic_bindings(
                 callable,
                 &call,
                 values,
                 span,
-                frame.type_bindings(),
+                frame.generic_bindings(),
             );
         }
         self.eval_local_method_with_values(

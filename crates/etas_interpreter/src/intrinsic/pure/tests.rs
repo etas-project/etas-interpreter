@@ -196,6 +196,7 @@ fn result_and_option_constructors_preserve_nominal_payloads() {
         }],
     }));
     let payload_type = interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Payload".to_owned(),
         params: Vec::new(),
         representation: Some(payload_representation),
@@ -352,6 +353,7 @@ fn pure_builtin_arguments_project_nominal_representations_recursively() {
         ],
     }));
     let header_type = interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "HttpHeader".to_owned(),
         params: Vec::new(),
         representation: Some(header_representation),
@@ -382,6 +384,7 @@ fn pure_builtin_arguments_project_nominal_representations_recursively() {
         ],
     }));
     let request_type = interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "HttpWireRequest".to_owned(),
         params: Vec::new(),
         representation: Some(request_representation),
@@ -468,6 +471,7 @@ fn pure_builtin_result_restores_nested_nominal_identity() {
         ],
     }));
     let header_type = interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "HttpHeader".to_owned(),
         params: Vec::new(),
         representation: Some(header_representation),
@@ -494,6 +498,7 @@ fn pure_builtin_result_restores_nested_nominal_identity() {
         ],
     }));
     let response_type = interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "HttpWireResponseHead".to_owned(),
         params: Vec::new(),
         representation: Some(response_representation),

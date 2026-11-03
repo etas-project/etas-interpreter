@@ -1,6 +1,6 @@
 use super::*;
-use crate::api::code::{PreparedRevisionSet, SavedAgentRevision};
-use etas_code::definition::{AgentDefinitionRef, SourceBundleLimits};
+use crate::api::code::{PreparedRevisionSet, SavedCodeRevision};
+use etas_code::definition::{DefinitionRef, SourceBundleLimits};
 use etas_frontend::code::definition::{NativeDefinitionStore, StaticReflectionView};
 use etas_host::{
     HostError, HostErrorCode,
@@ -158,7 +158,7 @@ pub(crate) async fn resume_source_inner(
     }
 }
 
-struct RestoredDraft(AgentDefinitionRef);
+struct RestoredDraft(DefinitionRef);
 impl OperationResponse for RestoredDraft {
     fn external_outcome(&self) -> ExternalOutcome {
         ExternalOutcome::Confirmed
@@ -168,9 +168,9 @@ impl OperationResponse for RestoredDraft {
 async fn restore_draft(
     eval: &mut eval::EvalContext<'_>,
     definitions: Arc<NativeDefinitionStore>,
-    saved: SavedAgentRevision,
+    saved: SavedCodeRevision,
     origin: etas_core::Span,
-) -> Result<AgentDefinitionRef, HostError> {
+) -> Result<DefinitionRef, HostError> {
     let control = eval
         .code_syntax_control(origin)
         .map_err(|error| HostError::new(HostErrorCode::InvalidRequest, error.message))?;
@@ -180,7 +180,7 @@ async fn restore_draft(
     let result = registration
         .context()
         .run_blocking(budget, move |_| {
-            let expected = checked_source_view(&definitions, &saved)?;
+            let expected = checked_source_view(&definitions, &saved, &control)?;
             definitions
                 .restore_source_draft_controlled(
                     &expected,
@@ -189,7 +189,7 @@ async fn restore_draft(
                     &control,
                 )
                 .map(RestoredDraft)
-                .map_err(|error| HostError::new(HostErrorCode::InvalidRequest, error.to_string()))
+                .map_err(source_restore_error)
         })
         .await;
     registration.complete(ExternalOutcome::Confirmed, vec![])?;
@@ -198,12 +198,22 @@ async fn restore_draft(
 
 fn checked_source_view(
     definitions: &NativeDefinitionStore,
-    saved: &SavedAgentRevision,
-) -> Result<AgentDefinitionRef, HostError> {
+    saved: &SavedCodeRevision,
+    control: &dyn etas_utils::PipelineExecutionControl,
+) -> Result<DefinitionRef, HostError> {
+    let checkpoint = || control.checkpoint().map_err(interrupted);
+    checkpoint()?;
     let catalog = definitions.catalog();
     let checked = catalog.checked_program();
+    #[derive(PartialEq, Eq, PartialOrd, Ord)]
+    enum SourceView {
+        Agent(etas_hir::HirExprId, Option<etas_hir::HirItemId>),
+        Flow(etas_hir::HirExprId, Option<etas_hir::HirItemId>),
+        ExternalApplication(etas_hir::HirExprId),
+    }
     let mut views = Vec::new();
     for (expr, fact) in &checked.types.reflections {
+        checkpoint()?;
         match fact.target {
             etas_types::CheckedReflectionTarget::Agent { .. } => {
                 let header = catalog
@@ -211,7 +221,7 @@ fn checked_source_view(
                     .map_err(|error| invalid(error.to_string()))?;
                 if matches!(header, StaticReflectionView::Agent(header) if header.identity == saved.source.target)
                 {
-                    views.push((*expr, None));
+                    views.push(SourceView::Agent(*expr, None));
                 }
             }
             etas_types::CheckedReflectionTarget::AgentValue {
@@ -224,7 +234,42 @@ fn checked_source_view(
                         && catalog.native_agent_default(*item)
                             == Some(&saved.source.revision.definition)
                     {
-                        views.push((*expr, Some(*item)));
+                        views.push(SourceView::Agent(*expr, Some(*item)));
+                    }
+                }
+            }
+            etas_types::CheckedReflectionTarget::Callable { .. }
+            | etas_types::CheckedReflectionTarget::ExternalCallable { .. }
+                if saved.source.target.kind() == etas_code::DefinitionKind::Flow =>
+            {
+                let view = catalog
+                    .static_reflection(*expr)
+                    .map_err(|error| invalid(error.to_string()))?;
+                if matches!(view, StaticReflectionView::Callable(header)
+                    if header.id == saved.source.revision.definition
+                        && header.id.as_declaration() == Some(&saved.source.target))
+                {
+                    if matches!(
+                        fact.target,
+                        etas_types::CheckedReflectionTarget::ExternalCallable { .. }
+                    ) && checked.types.generic_instantiations.contains_key(expr)
+                    {
+                        views.push(SourceView::ExternalApplication(*expr));
+                    } else {
+                        views.push(SourceView::Flow(*expr, None));
+                    }
+                }
+            }
+            etas_types::CheckedReflectionTarget::CallableValue { .. }
+                if saved.source.target.kind() == etas_code::DefinitionKind::Flow =>
+            {
+                if let Some(item) = catalog.item_owner(&saved.source.revision.definition) {
+                    match catalog.compatible_callable_value_reflection(*expr, item) {
+                        Ok(Some(header)) if header.id.as_declaration() == Some(&saved.source.target) => {
+                            views.push(SourceView::Flow(*expr, Some(item)));
+                        }
+                        Ok(_) | Err(etas_frontend::code::descriptor::ProjectionError::InaccessibleDefinition) => {}
+                        Err(error) => return Err(invalid(error.to_string())),
                     }
                 }
             }
@@ -232,10 +277,48 @@ fn checked_source_view(
         }
     }
     views.sort();
-    for (expr, item) in views {
-        let reflected = match item {
-            Some(item) => definitions.reflect_agent_value(expr, item),
-            None => definitions.reflect_agent(expr),
+    for view in views {
+        checkpoint()?;
+        if let SourceView::ExternalApplication(expr) = view {
+            let (owner, _) = checked
+                .reflection_site(expr)
+                .ok_or_else(|| invalid("external reflection has no checked lexical owner"))?;
+            let applications = checked
+                .checked_callable_applications_controlled(owner, control)
+                .map_err(|error| match error {
+                    etas_frontend::CallableApplicationError::Interrupted(interruption) => {
+                        interrupted(interruption)
+                    }
+                    error => invalid(error.to_string()),
+                })?;
+            for application in std::iter::once(None).chain(applications.iter().map(Some)) {
+                checkpoint()?;
+                let reflected = match definitions.reflect_external_callable_application(expr, application, Default::default()) {
+                    Ok(reflected) => reflected,
+                    Err(etas_frontend::code::definition::NativeDefinitionError::CandidateInputMismatch) => continue,
+                    Err(error) => return Err(invalid(error.to_string())),
+                };
+                let view = definitions
+                    .resolve(&reflected)
+                    .map_err(|error| invalid(error.to_string()))?;
+                if view.identity() == &saved.source.target
+                    && view.revision().inputs().environment == saved.source.revision.environment
+                    && view.revision().inputs().contract == saved.source.revision.contract
+                    && view.revision().inputs().compilation == saved.source.revision.compilation
+                {
+                    return Ok(reflected);
+                }
+            }
+            continue;
+        }
+        let reflected = match view {
+            SourceView::Agent(expr, Some(item)) => definitions.reflect_agent_value(expr, item),
+            SourceView::Agent(expr, None) => definitions.reflect_agent(expr),
+            SourceView::Flow(expr, Some(item)) => definitions.reflect_flow_value(expr, item),
+            SourceView::Flow(expr, None) => definitions.reflect_flow(expr),
+            SourceView::ExternalApplication(_) => {
+                Err(etas_frontend::code::definition::NativeDefinitionError::CandidateInputMismatch)
+            }
         }
         .map_err(|error| invalid(error.to_string()))?;
         let view = definitions
@@ -249,6 +332,51 @@ fn checked_source_view(
             return Ok(reflected);
         }
     }
+    if saved.source.target.kind() == etas_code::DefinitionKind::Flow
+        && let Some(item) = catalog.item_owner(&saved.source.revision.definition)
+    {
+        let applications = checked
+            .checked_callable_applications_controlled(item, control)
+            .map_err(|error| match error {
+                etas_frontend::CallableApplicationError::Interrupted(interruption) => {
+                    interrupted(interruption)
+                }
+                error => invalid(error.to_string()),
+            })?;
+        let mut expressions = checked
+            .types
+            .reflections
+            .iter()
+            .filter_map(|(expr, fact)| {
+                matches!(
+                    fact.target,
+                    etas_types::CheckedReflectionTarget::CallableValue { .. }
+                )
+                .then_some(*expr)
+            })
+            .collect::<Vec<_>>();
+        expressions.sort();
+        for expr in expressions {
+            for application in &applications {
+                checkpoint()?;
+                let reflected = match definitions.reflect_callable_application(expr, application, Default::default()) {
+                    Ok(reflected) => reflected,
+                    Err(etas_frontend::code::definition::NativeDefinitionError::CandidateInputMismatch) => continue,
+                    Err(error) => return Err(invalid(error.to_string())),
+                };
+                let view = definitions
+                    .resolve(&reflected)
+                    .map_err(|error| invalid(error.to_string()))?;
+                if view.identity() == &saved.source.target
+                    && view.revision().inputs().environment == saved.source.revision.environment
+                    && view.revision().inputs().contract == saved.source.revision.contract
+                    && view.revision().inputs().compilation == saved.source.revision.compilation
+                {
+                    return Ok(reflected);
+                }
+            }
+        }
+    }
     Err(invalid(
         "saved source has no matching current checked reflection view",
     ))
@@ -256,4 +384,75 @@ fn checked_source_view(
 
 fn invalid(message: impl Into<String>) -> HostError {
     HostError::new(HostErrorCode::InvalidRequest, message)
+}
+
+fn source_restore_error(
+    error: etas_frontend::code::definition::NativeDefinitionError,
+) -> HostError {
+    use etas_code::{definition::DefinitionOperationError, syntax::SyntaxOperationError};
+    use etas_frontend::code::{definition::NativeDefinitionError, descriptor::ProjectionError};
+    match error {
+        NativeDefinitionError::Operation(DefinitionOperationError::Syntax(
+            SyntaxOperationError::Interrupted(interruption),
+        ))
+        | NativeDefinitionError::Projection(ProjectionError::Syntax(
+            SyntaxOperationError::Interrupted(interruption),
+        )) => interrupted(interruption),
+        error => invalid(error.to_string()),
+    }
+}
+
+fn interrupted(interruption: etas_utils::PipelineInterruption) -> HostError {
+    let code = match interruption.kind {
+        etas_utils::PipelineInterruptionKind::Cancelled => HostErrorCode::Cancelled,
+        etas_utils::PipelineInterruptionKind::ResourceLimit => HostErrorCode::BudgetExceeded,
+        _ => HostErrorCode::ProviderUnavailable,
+    };
+    HostError::new(code, interruption.reason)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use etas_code::{definition::DefinitionOperationError, syntax::SyntaxOperationError};
+    use etas_frontend::code::{definition::NativeDefinitionError, descriptor::ProjectionError};
+    use etas_utils::{PipelineInterruption, PipelineInterruptionKind};
+
+    #[test]
+    fn restore_preserves_interruption_kind_from_operations_and_projections() {
+        for (kind, expected) in [
+            (
+                PipelineInterruptionKind::Cancelled,
+                HostErrorCode::Cancelled,
+            ),
+            (
+                PipelineInterruptionKind::ResourceLimit,
+                HostErrorCode::BudgetExceeded,
+            ),
+            (
+                PipelineInterruptionKind::Unavailable,
+                HostErrorCode::ProviderUnavailable,
+            ),
+        ] {
+            for projection in [false, true] {
+                let interruption = PipelineInterruption {
+                    kind,
+                    reason: "stopped".into(),
+                };
+                let syntax = SyntaxOperationError::Interrupted(interruption);
+                let error = if projection {
+                    NativeDefinitionError::Projection(ProjectionError::Syntax(syntax))
+                } else {
+                    NativeDefinitionError::Operation(DefinitionOperationError::Syntax(syntax))
+                };
+                let actual = source_restore_error(error);
+                assert_eq!(actual.code, expected);
+                assert_eq!(actual.message, "stopped");
+            }
+        }
+        assert_eq!(
+            source_restore_error(NativeDefinitionError::MissingBodySource).code,
+            HostErrorCode::InvalidRequest
+        );
+    }
 }

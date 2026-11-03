@@ -22,7 +22,7 @@ fn sibling_revisions_compose_checked_nominal_argument_and_result_bridges() {
         .to_candidate(
             first.type_bridge().original_program(),
             &GenericOwner::Declaration(second.identity().clone()),
-            second.targets.component,
+            second.targets.agent_component().unwrap(),
         )
         .unwrap();
     let value = AgentRevisionValue::new_in_program(
@@ -115,12 +115,15 @@ fn identical_descriptors_do_not_authorize_a_bridge_between_unrelated_programs() 
         ))
         .unwrap();
     assert_eq!(first.identity(), second.identity());
-    assert_eq!(first.targets.component, second.targets.component);
+    assert_eq!(
+        first.targets.agent_component().unwrap(),
+        second.targets.agent_component().unwrap()
+    );
     let result = AgentRevisionValue::new_in_program(
         second.clone(),
         Some(first.clone()),
         first.program(),
-        first.targets.component,
+        first.targets.agent_component().unwrap(),
     );
     assert!(
         result

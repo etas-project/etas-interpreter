@@ -74,6 +74,7 @@ fn captured_frame_encoding_removes_runtime_graph_materialization() {
     let mut previous = None;
     for count in [1000, 2000, 4000] {
         let captured = LocalsSnapshot {
+            residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 77,
             locals: Rc::new(vec![(
@@ -111,7 +112,7 @@ fn captured_frame_encoding_removes_runtime_graph_materialization() {
                 })
                 .collect::<Vec<_>>();
             // Bounded former frame -> runtime JSON -> parent serialization path.
-            let captured = json!({"id":frame.snapshot_id(),"locals":locals,"effect_row_bindings":frame.generic_bindings().sorted_rows(),"type_bindings":[]});
+            let captured = json!({"id":frame.snapshot_id(),"residual_invocation":frame.residual_invocation(),"locals":locals,"effect_row_bindings":frame.generic_bindings().sorted_rows(),"type_bindings":[]});
             json!({"kind":"lambda","expr":3,"captured":captured})
         });
         assert_eq!(actual, expected);

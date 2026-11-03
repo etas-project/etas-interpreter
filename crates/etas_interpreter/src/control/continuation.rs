@@ -22,11 +22,21 @@ pub enum StaticMethodKind {
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    ValidateCompileResult {
+        definition: Box<InterpValue>,
+        span: Span,
+    },
     PriorityQueueUpdate(Box<crate::eval::priority_queue::PriorityQueueUpdate>),
     OrderedSearch(Box<crate::eval::ordered_collection::OrderedSearch>),
     StreamReadReduction(Box<super::StreamReadReduction>),
     FileReadReduction(Box<super::FileReadReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
+    /// An invocation's residual scope captured while an effect request is
+    /// handled outside it. Restored as its explicit frame on resume.
+    ResidualScope(super::residual::SharedResidualScope),
+    /// Correlates a governed action's completed outcome with the scopes that
+    /// observed it, then continues with the outcome value.
+    ResidualOutcome(super::residual::ResidualAttemptTag),
     SourceToolReturn(crate::eval::machine::SourceToolContinuation),
     ContinueBlock {
         block: HirBlockId,
@@ -321,6 +331,7 @@ pub enum Continuation {
         inner: ContinuationLink,
     },
     CallBoundary {
+        caller: Option<super::CallOrigin>,
         span: Span,
         outer: ContinuationLink,
     },
@@ -446,5 +457,28 @@ impl Continuation {
             }
         }
         count
+    }
+
+    /// Residual scopes captured in this continuation, innermost first. A
+    /// suspended revision segment is not entered: its scopes belong to the
+    /// child program and are inactive while the segment is suspended.
+    pub(crate) fn residual_scopes(&self, found: &mut Vec<super::residual::SharedResidualScope>) {
+        let mut pending = vec![self];
+        while let Some(continuation) = pending.pop() {
+            match continuation {
+                Self::ResidualScope(scope) => found.push(scope.clone()),
+                Self::HandleBoundary { inner, .. }
+                | Self::RestoreModelPolicy { inner, .. }
+                | Self::ScopedModelPolicy { inner, .. } => pending.push(inner),
+                Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer } => {
+                    pending.push(outer);
+                }
+                Self::Chain { inner, outer } => {
+                    pending.push(outer);
+                    pending.push(inner);
+                }
+                _ => {}
+            }
+        }
     }
 }

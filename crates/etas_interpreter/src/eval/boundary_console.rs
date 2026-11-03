@@ -55,6 +55,7 @@ impl<'a> EvalContext<'a> {
             args: vec![console_error_value(error)],
             span: console.span,
             continuation: console.continuation,
+            residual: None,
         };
         self.propagate_perform_signal(perform)
     }

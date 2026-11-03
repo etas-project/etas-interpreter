@@ -96,6 +96,7 @@ fn error_type_name(project: &CheckedProject, error: TypeId) -> String {
     match project.type_store.get(error) {
         Some(Type::Named(named)) => named.name.clone(),
         Some(Type::Enum(named)) => named.name.clone(),
+        Some(Type::Nominal(nominal)) => nominal.name.clone(),
         Some(other) => format!("{other:?}"),
         None => format!("TypeId({})", error.0),
     }

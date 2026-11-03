@@ -125,7 +125,8 @@ pub(super) fn interface(
             let root = plan.dispatch.std_callable_root(call)?;
             let mut bindings = bindings.clone();
             for step in &call.substitutions {
-                bindings.extend(step.iter().cloned());
+                bindings.types.extend(step.types.iter().cloned());
+                bindings.rows.extend(step.rows.iter().cloned());
             }
             (
                 root,

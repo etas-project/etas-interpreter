@@ -2,6 +2,37 @@ use super::*;
 use etas_hir::HirExpr;
 
 impl SnapshotValidator<'_> {
+    pub(super) fn call_origin(
+        &self,
+        origin: &crate::control::CallOrigin,
+        span: etas_core::Span,
+        context: &str,
+    ) -> Result<(), String> {
+        use crate::control::CallSiteKind;
+        let (CallSiteKind::Expr { expr }
+        | CallSiteKind::Pipeline { expr }
+        | CallSiteKind::PipelineStage { expr, .. }) = origin.kind;
+        self.expr(expr, context)?;
+        let source = &self.checked.hir.exprs[expr];
+        let valid = match (origin.kind, source) {
+            (
+                CallSiteKind::Expr { .. },
+                HirExpr::Call { .. } | HirExpr::MethodCall { .. } | HirExpr::SpecMethodCall { .. },
+            ) => true,
+            (CallSiteKind::Pipeline { .. }, HirExpr::Pipeline { .. }) => true,
+            (CallSiteKind::PipelineStage { index, .. }, HirExpr::Pipeline { stages, .. }) => {
+                index < stages.len()
+            }
+            _ => false,
+        };
+        if !valid || source.span(&self.checked.hir.blocks) != span {
+            return Err(format!(
+                "{context} caller does not match its checked call location"
+            ));
+        }
+        Ok(())
+    }
+
     pub(super) fn invocation_site(
         &self,
         site: &crate::orchestration::CallSiteSnapshot,

@@ -55,6 +55,22 @@ pub(crate) fn standard_action(
                 returns_never: signature.returns_never,
             }
         }
+        StdCallable::Approval => {
+            let action = checked
+                .effect_registry
+                .action_by_name("Approval.request")
+                .ok_or("standard approval has no checked Approval.request action")?;
+            let signature = checked
+                .effect_registry
+                .action_signature(&action)
+                .ok_or("standard approval action has no checked registry signature")?;
+            CheckedActionAbi {
+                effect: Effect::Action(action),
+                parameters: call.parameter_types.clone(),
+                output: call.result_type,
+                returns_never: signature.returns_never,
+            }
+        }
         StdCallable::ForwardAction => {
             let target = execution.plan.dispatch.forwarded_action(call.identity)?;
             CheckedActionAbi {

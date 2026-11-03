@@ -62,7 +62,9 @@ pub async fn execute_entry(
     signal: ControlSignal,
     host: &dyn HostServices,
 ) -> EvaluationOutcome {
-    drive_eval_signal(eval, signal, host, EvalMachine::new()).await
+    let machine =
+        EvalMachine::for_entry(eval.checked_execution_program(), eval.entry_args.to_vec());
+    drive_eval_signal(eval, signal, host, machine).await
 }
 
 pub async fn execute_entry_from_snapshot(
@@ -100,6 +102,11 @@ pub async fn execute_entry_from_snapshot(
                 args: eval.entry_args.to_vec(),
             }),
             ordering: Some(ordering.clone()),
+            residual: Some(crate::eval::machine::snapshot::ResidualRestoreInput {
+                prepared: eval.plan.residual.clone(),
+                log: eval.residual.log.clone(),
+                limits: eval.residual.limits,
+            }),
         },
     ) {
         Ok(machine) => machine,
@@ -110,17 +117,25 @@ pub async fn execute_entry_from_snapshot(
                 span,
                 format!("checkpoint machine stack is invalid: {message}"),
             ));
-            return evaluation_failure(eval);
+            let outcome = evaluation_failure(eval);
+            return super::residual_exit::finish(eval, None, outcome);
         }
     };
+    let residual = &checkpoint.machine.residual;
+    eval.residual.restore_counters((
+        residual.next_cursor,
+        residual.next_attempt,
+        residual.next_invocation,
+    ));
     if let Err(message) = eval.seed_resume_counters(&checkpoint.trace) {
         let span = crate::diagnostics::item_span(eval.checked, eval.entry_item);
         eval.diagnostics
             .push(crate::diagnostics::missing_checked_fact(span, message));
-        return evaluation_failure(eval);
+        let outcome = evaluation_failure(eval);
+        return super::residual_exit::finish(eval, Some(machine), outcome);
     }
     if let Err(outcome) = super::restore_ordering::validate(eval, host, &ordering).await {
-        return outcome;
+        return super::residual_exit::finish(eval, Some(machine), outcome);
     }
     let signal = eval.execute_from_checkpoint_signal(checkpoint);
     drive_eval_signal(eval, signal, host, machine).await
@@ -148,16 +163,17 @@ async fn drive_eval_signal(
             };
             if !readiness.is_empty() {
                 scoped.diagnostics.extend(readiness);
-                return evaluation_failure(&mut scoped);
+                ScopeOutcome::Finished(evaluation_failure(&mut scoped))
+            } else {
+                drive_scope(
+                    &mut scoped,
+                    &mut signal,
+                    host,
+                    &mut machine,
+                    &mut machine_has_input,
+                )
+                .await
             }
-            drive_scope(
-                &mut scoped,
-                &mut signal,
-                host,
-                &mut machine,
-                &mut machine_has_input,
-            )
-            .await
         } else {
             drive_scope(
                 eval,
@@ -169,7 +185,7 @@ async fn drive_eval_signal(
             .await
         };
         if let ScopeOutcome::Finished(outcome) = result {
-            return outcome;
+            return super::residual_exit::finish(eval, Some(machine), outcome);
         }
     }
 }
@@ -240,6 +256,14 @@ async fn drive_scope(
                 continue;
             }
             PendingBoundary::Perform(perform) => {
+                // The committed residual permit is revalidated and consumed
+                // immediately before the governed default dispatch.
+                if let Err(fault) = eval.consume_residual_permit(&perform) {
+                    eval.diagnostics.push(fault.clone().into_diagnostic());
+                    return ScopeOutcome::Finished(EvaluationOutcome::Failed(
+                        crate::api::RunFailure::ExecutionFault(fault),
+                    ));
+                }
                 if let Some(signal) = eval.default_agent_inference(&perform) {
                     signal
                 } else {

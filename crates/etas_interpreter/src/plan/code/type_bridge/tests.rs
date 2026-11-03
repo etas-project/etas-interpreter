@@ -58,27 +58,7 @@ fn owner(package: PackageKey, name: &str) -> GenericOwner {
 }
 
 fn bridge(original: &DefinitionCatalog, candidate: &DefinitionCatalog) -> RevisionTypeBridge {
-    let runtime_types = runtime::RuntimeTypeBridge::new(original, candidate).unwrap();
-    let actions = actions::ActionBridge::new(original, candidate, &runtime_types).unwrap();
-    RevisionTypeBridge {
-        runtime_owner: Default::default(),
-        original: original.checked_program().clone(),
-        candidate: candidate.checked_program().clone(),
-        forward: correspond(original, candidate).unwrap(),
-        backward: correspond(candidate, original).unwrap(),
-        original_callables: original
-            .native_callables()
-            .map(|(id, item)| (id.clone(), item))
-            .collect(),
-        candidate_callables: candidate
-            .native_callables()
-            .map(|(id, item)| (id.clone(), item))
-            .collect(),
-        original_agents: agent_items(original).unwrap(),
-        candidate_agents: agent_items(candidate).unwrap(),
-        runtime_types,
-        actions,
-    }
+    RevisionTypeBridge::catalog_correspondence(original, candidate).unwrap()
 }
 
 const FIRST: &str = "module app; type A = string; type B = string; agent Worker(value: A) -> B { return B(\"b\"); } flow inspect() -> unit { let definition = ^Worker; return; }";

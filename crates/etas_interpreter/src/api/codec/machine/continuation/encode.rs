@@ -35,6 +35,12 @@ pub(in crate::api::codec) fn write_continuation<'a>(
         Continuation::ProgramResume { id } => object! { slot, pending;
             "kind": json!("program_resume"), "id": json!(id),
         },
+        Continuation::ResidualScope { scope } => object! { slot, pending;
+            "kind": json!("residual_scope"), "scope": json!(scope),
+        },
+        Continuation::ResidualOutcome { attempt } => object! { slot, pending;
+            "kind": json!("residual_outcome"), "attempt": json!(attempt),
+        },
         Continuation::StreamReadReduction {
             call,
             args,
@@ -753,9 +759,14 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "inner": Node::Continuation(inner),
             }
         }
-        Continuation::CallBoundary { span, outer } => {
+        Continuation::CallBoundary {
+            caller,
+            span,
+            outer,
+        } => {
             object! { slot, pending;
             "kind": json!("call_boundary"),
+                "caller": json!(caller),
                 "span": json!(span_snapshot(*span)),
                 "outer": Node::Continuation(outer),
             }

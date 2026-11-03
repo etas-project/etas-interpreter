@@ -20,6 +20,7 @@ fn shared_capture_preserves_parent_identity_and_freezes_live_frames() {
     }
     .into();
     let first = Continuation::CallBoundary {
+        caller: None,
         span: crate::testing::synthetic_span(),
         outer: leaf.clone(),
     };
@@ -228,6 +229,7 @@ fn deep_continuation_capture_uses_explicit_traversal_without_stack_overflow() {
             for _ in 0..depth {
                 node = match mode {
                     0 => Continuation::CallBoundary {
+                        caller: None,
                         span: crate::testing::synthetic_span(),
                         outer: node.into(),
                     },
@@ -288,6 +290,7 @@ fn machine_capture_preserves_its_deep_runtime_continuation_stack() {
         let mut root = Continuation::Return;
         for _ in 0..depth {
             root = Continuation::CallBoundary {
+                caller: None,
                 span: crate::testing::synthetic_span(),
                 outer: root.into(),
             };
@@ -300,7 +303,10 @@ fn machine_capture_preserves_its_deep_runtime_continuation_stack() {
         runtime.0 = Some(machine.pop_frame().unwrap().into_continuation().unwrap());
         assert_eq!(frame_count, 1);
         let snapshot = result.unwrap();
-        let MachineFrameSnapshot::Call { continuation, span } = &snapshot.frames[0] else {
+        let MachineFrameSnapshot::Call {
+            continuation, span, ..
+        } = &snapshot.frames[0]
+        else {
             panic!("wrong machine frame kind")
         };
         assert_eq!(*span, crate::testing::synthetic_span());
@@ -327,6 +333,7 @@ fn mixed_capture_preserves_wrapper_metadata_and_detaches_live_frames() {
     for i in 0..depth {
         node = match i % 5 {
             0 => Continuation::CallBoundary {
+                caller: None,
                 span: crate::testing::synthetic_span(),
                 outer: node.into(),
             },
@@ -412,6 +419,7 @@ fn capture_rejects_late_live_handles_and_releases_completed_deep_subtrees() {
         let mut inner = Continuation::Return;
         for _ in 0..30_000 {
             inner = Continuation::CallBoundary {
+                caller: None,
                 span: crate::testing::synthetic_span(),
                 outer: inner.into(),
             };

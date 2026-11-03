@@ -14,11 +14,11 @@ pub(crate) enum InvocationInput<'a> {
     Run {
         entry: EntryPoint,
         args: Vec<InterpValue>,
-        prepared: Option<&'a std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+        prepared: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     },
     Resume {
         checkpoint: &'a InterpreterCheckpoint,
-        prepared: Option<&'a std::sync::Arc<crate::api::code::PreparedAgentRevision>>,
+        prepared: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     },
     ResumeSource(&'a crate::api::codec::SourceCheckpoint),
 }
@@ -52,7 +52,7 @@ impl<'a> RunInvocation<'a> {
         )
     }
     pub(crate) fn prepared(
-        revision: &'a std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+        revision: &'a std::sync::Arc<crate::api::code::PreparedCodeRevision>,
         args: Vec<InterpValue>,
         host: &'a dyn HostServices,
         options: RunOptions,
@@ -85,7 +85,7 @@ impl<'a> RunInvocation<'a> {
         )
     }
     pub(crate) fn resume_prepared(
-        revision: &'a std::sync::Arc<crate::api::code::PreparedAgentRevision>,
+        revision: &'a std::sync::Arc<crate::api::code::PreparedCodeRevision>,
         checkpoint: &'a InterpreterCheckpoint,
         host: &'a dyn HostServices,
         options: RunOptions,

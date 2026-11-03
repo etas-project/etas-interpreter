@@ -10,8 +10,13 @@ use etas_frontend::{
 };
 use std::{collections::BTreeMap, sync::Arc};
 
+mod applications;
+mod cancel_edit;
 mod checkpoints;
+mod compile_handlers;
 mod descriptors;
+mod flows;
+mod method_snapshots;
 
 fn prepared(
     source: &str,
@@ -212,7 +217,7 @@ flow main() -> bool {
 "#,
         &["app.main.Worker"],
     );
-    assert_eq!(checked.types.std_method_calls.len(), 1);
+    assert_eq!(checked.types.std_intrinsic_calls.len(), 1);
     let result = execute(
         &checked,
         RunOptions {

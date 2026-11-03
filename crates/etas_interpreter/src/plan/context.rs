@@ -25,6 +25,13 @@ pub(super) struct PlanContext<'a> {
     pub(super) dispatch: Option<IntrinsicDispatchTable>,
     pub(super) host_requirements: Option<HostRequirementTable>,
     pub(super) action_mediation: Option<ActionMediationTable>,
+    /// Final revision binding of the program's residual plans: the ordinary
+    /// program's own binding, or the binding of an emitted candidate.
+    pub(super) residual_binding: Option<etas_frontend::CheckedResidualBinding>,
+    pub(super) validated_residual: Option<super::residual::ValidatedResidualPlans>,
+    pub(super) residual: Option<super::residual::PreparedResidualPlans>,
+    pub(super) prepared_residual: Option<std::sync::Arc<super::residual::PreparedResidualPlans>>,
+    pub(super) residual_installation: Option<super::residual::ResidualInstallationEvidence>,
 }
 
 impl<'a> PlanContext<'a> {
@@ -45,6 +52,11 @@ impl<'a> PlanContext<'a> {
             dispatch: None,
             host_requirements: None,
             action_mediation: None,
+            residual_binding: project.residual_plans().binding().cloned(),
+            validated_residual: None,
+            residual: None,
+            prepared_residual: None,
+            residual_installation: None,
         }
     }
 

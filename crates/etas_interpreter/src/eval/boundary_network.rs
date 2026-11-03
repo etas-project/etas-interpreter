@@ -32,6 +32,7 @@ impl<'a> EvalContext<'a> {
             args: vec![typed_host_error_value(error_type, error)],
             span: host.span,
             continuation: host.continuation,
+            residual: None,
         };
         Some(self.propagate_perform_signal(perform))
     }

@@ -86,6 +86,7 @@ impl<'a> EvalContext<'a> {
             args: evaluated_args,
             span,
             continuation: Continuation::BlockValue,
+            residual: None,
         };
         if error_type.is_none() {
             match self.action_invocation(&pending, expr, frame) {

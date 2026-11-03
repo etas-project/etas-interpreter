@@ -10,13 +10,25 @@ use crate::{
 };
 
 use super::{
-    InterpreterPlan, PreparedProgram, action_mediation::ComputeEntryActionMediationPass,
-    arguments::BuildCallArgumentsPass, captures::BuildClosureLayoutsPass, context::PlanContext,
-    dispatch::BuildIntrinsicDispatchTablePass, entry::BuildEntryPlanPass,
-    frames::BuildFrameLayoutsPass, globals::BuildGlobalTablePass,
-    readiness::ComputeReachableHostRequirementsPass, records::BuildRecordLayoutsPass,
-    resources::BuildResourceHandleTablePass, slots::BuildSlotLayoutPass,
-    validate::ValidateCheckedProjectPass, variants::BuildNamedVariantLayoutsPass,
+    InterpreterPlan, PreparedProgram,
+    action_mediation::ComputeEntryActionMediationPass,
+    arguments::BuildCallArgumentsPass,
+    captures::BuildClosureLayoutsPass,
+    context::PlanContext,
+    dispatch::BuildIntrinsicDispatchTablePass,
+    entry::BuildEntryPlanPass,
+    frames::BuildFrameLayoutsPass,
+    globals::BuildGlobalTablePass,
+    readiness::ComputeReachableHostRequirementsPass,
+    records::BuildRecordLayoutsPass,
+    residual::{
+        BindResidualSitesPass, UsePreparedResidualPlansPass, ValidateResidualPlansPass,
+        VerifyResidualCoveragePass,
+    },
+    resources::BuildResourceHandleTablePass,
+    slots::BuildSlotLayoutPass,
+    validate::ValidateCheckedProjectPass,
+    variants::BuildNamedVariantLayoutsPass,
 };
 
 pub fn build_plan(project: &CheckedProject, _options: PlanOptions) -> PlanResult {
@@ -27,6 +39,15 @@ pub(crate) fn build_plan_for_entry(
     project: &CheckedProject,
     entry: Option<etas_hir::HirItemId>,
 ) -> PlanResult {
+    build_plan_with_residual_binding(project, entry, project.residual_plans().binding())
+}
+
+/// Plans `entry` of a program whose residual plans are bound outside it.
+pub(crate) fn build_plan_with_residual_binding(
+    project: &CheckedProject,
+    entry: Option<etas_hir::HirItemId>,
+    residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
+) -> PlanResult {
     let result = entry
         .ok_or_else(|| {
             vec![diagnostics::missing_entry(
@@ -35,7 +56,8 @@ pub(crate) fn build_plan_for_entry(
             )]
         })
         .and_then(|entry| {
-            prepare_program(project)?.select_callable(CheckedCallableRoot::Item(entry))
+            prepare_program_with_residual_binding(project, residual_binding)?
+                .select_callable(CheckedCallableRoot::Item(entry))
         });
     match result {
         Ok(plan) => PlanResult {
@@ -52,7 +74,17 @@ pub(crate) fn build_plan_for_entry(
 pub(crate) fn prepare_program(
     project: &CheckedProject,
 ) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
+    prepare_program_with_residual_binding(project, project.residual_plans().binding())
+}
+
+/// Prepares a program whose residual plans are bound outside it, such as an
+/// emitted candidate bound to its frozen-contract revision.
+pub(crate) fn prepare_program_with_residual_binding(
+    project: &CheckedProject,
+    residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
+) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
     let mut context = PlanContext::new(project);
+    context.residual_binding = residual_binding.cloned();
     // Layout/ABI preparation must not select main or require analysis of a
     // merely reflected declaration.
     context.requested_root = None;
@@ -74,6 +106,7 @@ pub(crate) fn prepare_program(
         Some(globals),
         Some(resources),
         Some(dispatch),
+        Some(residual),
     ) = (
         context.slots,
         context.frames,
@@ -84,6 +117,7 @@ pub(crate) fn prepare_program(
         context.globals,
         context.resources,
         context.dispatch,
+        context.residual,
     )
     else {
         return Err(vec![diagnostics::missing_checked_fact(
@@ -104,6 +138,7 @@ pub(crate) fn prepare_program(
         globals: Arc::new(globals),
         resources: Arc::new(resources),
         dispatch,
+        residual: Arc::new(residual),
         diagnostics: context.diagnostics,
     }))
 }
@@ -143,8 +178,11 @@ impl PreparedProgram {
         let mut context = PlanContext::new(project);
         context.diagnostics.clone_from(&self.diagnostics);
         context.requested_root = Some(root);
+        context.prepared_residual = Some(self.residual.clone());
         let mut pipeline = Pipeline::new("interpreter.plan.select_entry")
+            .pass(UsePreparedResidualPlansPass)
             .pass(BuildEntryPlanPass)
+            .pass(VerifyResidualCoveragePass)
             .pass(ComputeReachableHostRequirementsPass)
             .pass(ComputeEntryActionMediationPass);
         run_pipeline(&mut pipeline, &mut context);
@@ -164,14 +202,21 @@ impl PreparedProgram {
         {
             return Err(context.diagnostics);
         }
-        let (Some(entry), Some(host_requirements), Some(action_mediation)) = (
+        let (
+            Some(entry),
+            Some(host_requirements),
+            Some(action_mediation),
+            Some(residual_installation),
+        ) = (
             context.entry,
             context.host_requirements,
             context.action_mediation,
-        ) else {
+            context.residual_installation,
+        )
+        else {
             return Err(vec![diagnostics::missing_checked_fact(
                 diagnostics::primary_span(project),
-                "selected callable plan is missing checked entry facts",
+                "selected callable plan is missing checked entry facts or residual installation evidence",
             )]);
         };
         Ok(InterpreterPlan {
@@ -182,6 +227,8 @@ impl PreparedProgram {
             dispatch,
             host_requirements,
             action_mediation,
+            residual: self.residual.clone(),
+            residual_installation,
             diagnostics: context.diagnostics,
             known_std_types: self.known_std_types,
             spec_facts: self.spec_facts.clone(),
@@ -253,4 +300,6 @@ fn layout_pipeline<'a>() -> Pipeline<PlanContext<'a>> {
         .pass(BuildGlobalTablePass)
         .pass(BuildResourceHandleTablePass)
         .pass(BuildIntrinsicDispatchTablePass)
+        .pass(ValidateResidualPlansPass)
+        .pass(BindResidualSitesPass)
 }

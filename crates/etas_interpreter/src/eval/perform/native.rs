@@ -93,6 +93,7 @@ impl EvalContext<'_> {
             args,
             span,
             continuation: Continuation::BlockValue,
+            residual: None,
         })
     }
 }

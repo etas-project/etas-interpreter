@@ -43,6 +43,8 @@ pub struct EvalRunState {
     pub(crate) storage_identity: Result<etas_host::StorageOperationKey, etas_host::HostError>,
     pub(crate) storage_writes: Vec<StorageWriteRecord>,
     pub(crate) storage_operations: std::collections::BTreeMap<u32, StorageOperationRef>,
+    /// Live residual monitor bookkeeping shared by every program scope.
+    pub(crate) residual: crate::eval::residual::ResidualRunState,
 }
 
 impl EvalRunState {
@@ -81,6 +83,7 @@ impl EvalRunState {
             )),
             storage_writes: Vec::new(),
             storage_operations: Default::default(),
+            residual: Default::default(),
         }
     }
 

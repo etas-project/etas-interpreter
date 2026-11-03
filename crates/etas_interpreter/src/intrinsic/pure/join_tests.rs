@@ -14,6 +14,7 @@ fn join_wrapped_elements_reuses_prepared_projection_without_per_element_allocati
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let nominal = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Text".into(),
         params: vec![],
         representation: Some(string),
@@ -115,11 +116,13 @@ fn join_preserves_checked_wrapper_validation_and_unicode_results() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let nominal = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Text".into(),
         params: vec![],
         representation: Some(string),
     }));
     let other = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Other".into(),
         params: vec![],
         representation: Some(string),
@@ -130,6 +133,7 @@ fn join_preserves_checked_wrapper_validation_and_unicode_results() {
     });
     let array = types.intern(Type::Array(trusted));
     let container = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Texts".into(),
         params: vec![],
         representation: Some(array),

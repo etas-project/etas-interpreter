@@ -91,6 +91,16 @@ impl<'a> EvalContext<'a> {
                                 span,
                                 &mut frame,
                             ),
+                            Continuation::ResidualScope(scope) if pending.error_type.is_some() => {
+                                match self.residual_exit_signal(
+                                    &scope,
+                                    crate::control::residual::ResidualExitKind::ErrorPropagation,
+                                    ControlSignal::Value(InterpValue::Unit),
+                                ) {
+                                    ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
+                                    _ => ControlSignal::Perform(pending),
+                                }
+                            }
                             continuation => {
                                 pending.continuation =
                                     compose_continuation(pending.continuation, continuation);
@@ -205,6 +215,11 @@ impl<'a> EvalContext<'a> {
                 self.finish_retry_attempt_success(&retry);
                 ControlSignal::Return(value)
             }
+            Continuation::ResidualScope(scope) => self.residual_exit_signal(
+                &scope,
+                crate::control::residual::ResidualExitKind::Return,
+                ControlSignal::Return(value),
+            ),
             Continuation::RestoreModelPolicy { previous, inner } => {
                 self.model_policy = *previous;
                 self.propagate_return_to_continuation(value, inner.into_value())
@@ -279,6 +294,11 @@ impl<'a> EvalContext<'a> {
                 self.model_policy = *previous;
                 self.propagate_resume_to_continuation(value, inner.into_value())
             }
+            Continuation::ResidualScope(scope) => self.residual_exit_signal(
+                &scope,
+                crate::control::residual::ResidualExitKind::NonLocalReturn,
+                ControlSignal::Resume(value),
+            ),
             _ => ControlSignal::Resume(value),
         }
     }
@@ -315,6 +335,11 @@ impl<'a> EvalContext<'a> {
                 self.model_policy = *previous;
                 self.propagate_finish_to_continuation(value, inner.into_value())
             }
+            Continuation::ResidualScope(scope) => self.residual_exit_signal(
+                &scope,
+                crate::control::residual::ResidualExitKind::HandlerFinish,
+                ControlSignal::Finish(value),
+            ),
             _ => ControlSignal::Finish(value),
         }
     }
@@ -354,6 +379,11 @@ impl<'a> EvalContext<'a> {
                     _ => unreachable!("loop-control propagation requires break or continue"),
                 }
             }
+            Continuation::ResidualScope(scope) => self.residual_exit_signal(
+                &scope,
+                crate::control::residual::ResidualExitKind::NonLocalReturn,
+                signal,
+            ),
             _ => signal,
         }
     }
@@ -1011,6 +1041,12 @@ impl<'a> EvalContext<'a> {
                     ControlSignal::runtime_fault(message, span)
                 }
             },
+            Continuation::ValidateCompileResult { definition, span } => {
+                match self.validate_compile_handler_result(&definition, &value, span) {
+                    Ok(()) => ControlSignal::Value(value),
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                }
+            }
             Continuation::MemoryClearDeleteNext {
                 region_stable_id,
                 path,
@@ -1085,6 +1121,24 @@ impl<'a> EvalContext<'a> {
                     "program continuation must be resumed by its owning evaluation machine",
                     crate::diagnostics::item_span(self.checked, self.entry_item),
                 )
+            }
+            Continuation::ResidualScope(scope) => {
+                let span = crate::diagnostics::item_span(self.checked, self.entry_item);
+                match self.exit_residual_scope(
+                    &scope,
+                    crate::control::residual::ResidualExitKind::Return,
+                    span,
+                ) {
+                    Ok(()) => ControlSignal::Value(value),
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                }
+            }
+            Continuation::ResidualOutcome(tag) => {
+                let span = crate::diagnostics::item_span(self.checked, self.entry_item);
+                match self.complete_residual_attempt(&tag, &value, span) {
+                    Ok(()) => ControlSignal::Value(value),
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                }
             }
             Continuation::Return => ControlSignal::Return(value),
             Continuation::Resume => ControlSignal::Resume(value),

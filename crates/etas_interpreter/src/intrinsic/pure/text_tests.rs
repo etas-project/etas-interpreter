@@ -72,11 +72,13 @@ fn borrowed_text_projection_validates_nominal_trust_and_result_identity() {
     let string = types.primitive(PrimitiveType::String);
     let boolean = types.primitive(PrimitiveType::Bool);
     let left = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Left".into(),
         representation: Some(string),
         params: vec![],
     }));
     let right = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Right".into(),
         representation: Some(string),
         params: vec![],

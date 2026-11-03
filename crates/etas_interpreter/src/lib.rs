@@ -9,6 +9,8 @@ mod orchestration;
 mod plan;
 mod value;
 
+pub use plan::residual::interpreter_residual_capabilities;
+
 use api::{
     EntryPoint, InterpValue, InterpreterCheckpoint, PlanOptions, PlanResult,
     RunInfrastructureError, RunInvocation, RunOptions, RunResult,

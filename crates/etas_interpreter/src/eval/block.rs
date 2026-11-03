@@ -18,6 +18,7 @@ impl<'a> EvalContext<'a> {
             next_stmt_index: start_stmt_index,
             frame: frame.clone(),
             continuation: Continuation::BlockValue,
+            residual: None,
         })
     }
 

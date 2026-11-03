@@ -12,6 +12,7 @@ fn checked_adt_wrap_tag_and_unwrap_share_nominal_payloads() {
         let text = types.primitive(PrimitiveType::String);
         let tuple = types.intern(Type::Tuple(vec![text; count]));
         let nominal = types.intern(Type::Nominal(NominalTypeRef {
+            read_only_erased_view: false,
             name: "Wide".into(),
             representation: Some(tuple),
             params: vec![],

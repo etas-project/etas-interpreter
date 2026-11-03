@@ -63,10 +63,14 @@ pub(in crate::driver) async fn dispatch(
     .await
     {
         Ok(response) => {
-            let value = match response.decision {
-                etas_host::ApprovalDecision::Approved { .. } => InterpValue::Bool(true),
-                etas_host::ApprovalDecision::Denied { .. } => InterpValue::Bool(false),
-            };
+            let approved = matches!(
+                response.decision,
+                etas_host::ApprovalDecision::Approved { .. }
+            );
+            let value = InterpValue::Bool(approved);
+            if let Some(tag) = &perform.residual {
+                tag.record_trusted_approval(approved);
+            }
             if let Err(fault) = eval.record_completed_host_boundary(
                 crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                 "approval",

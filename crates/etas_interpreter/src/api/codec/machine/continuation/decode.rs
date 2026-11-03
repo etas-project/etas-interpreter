@@ -38,6 +38,12 @@ fn continuation_leaf_from_snapshot(
         "program_resume" => ContinuationSnapshot::ProgramResume {
             id: required_u32(value, "id")?,
         },
+        "residual_scope" => ContinuationSnapshot::ResidualScope {
+            scope: required_u32(value, "scope")?,
+        },
+        "residual_outcome" => ContinuationSnapshot::ResidualOutcome {
+            attempt: required_u32(value, "attempt")?,
+        },
         "stream_read_reduction" => ContinuationSnapshot::StreamReadReduction {
             call: call_target_snapshot_from_json(limits, required(value, "call")?)?,
             args: required_values(limits, value, "args")?,

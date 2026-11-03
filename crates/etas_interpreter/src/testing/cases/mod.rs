@@ -49,6 +49,7 @@ mod prompt_data;
 mod pure_queries;
 mod records;
 mod replay_keys;
+mod residual;
 mod retry_call;
 mod return_control;
 mod secret_values;

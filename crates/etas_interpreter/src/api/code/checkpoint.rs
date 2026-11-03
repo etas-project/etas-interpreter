@@ -1,13 +1,13 @@
 use etas_code::definition::SourceBundleLimits;
 
-use super::{RevisionCheckpointError, SavedAgentRevision};
+use super::{RevisionCheckpointError, SavedCodeRevision};
 use crate::api::InterpreterCheckpoint;
 
 #[derive(Debug)]
 pub(crate) struct CheckpointCodePins {
     revisions: std::collections::BTreeMap<
         etas_code::RevisionKey,
-        std::sync::Arc<super::PreparedAgentRevision>,
+        std::sync::Arc<super::PreparedCodeRevision>,
     >,
 }
 
@@ -15,7 +15,7 @@ impl CheckpointCodePins {
     pub(crate) fn new(
         revisions: std::collections::BTreeMap<
             etas_code::RevisionKey,
-            std::sync::Arc<super::PreparedAgentRevision>,
+            std::sync::Arc<super::PreparedCodeRevision>,
         >,
     ) -> Self {
         Self { revisions }
@@ -28,7 +28,7 @@ impl CheckpointCodePins {
 pub fn checkpoint_source_revisions(
     checkpoint: &InterpreterCheckpoint,
     limits: SourceBundleLimits,
-) -> Result<Vec<SavedAgentRevision>, RevisionCheckpointError> {
+) -> Result<Vec<SavedCodeRevision>, RevisionCheckpointError> {
     checkpoint
         .retained_code
         .as_ref()

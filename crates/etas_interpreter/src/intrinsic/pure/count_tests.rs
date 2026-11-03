@@ -17,6 +17,7 @@ fn count_rejects_runtime_shape_that_disagrees_with_checked_parameter() {
     let size = types.primitive(PrimitiveType::USize);
     let array = types.intern(Type::Array(string));
     let nominal = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Texts".into(),
         params: vec![],
         representation: Some(array),
@@ -153,6 +154,7 @@ fn count_projection_preserves_checked_wrappers_and_result_identity() {
     let size = types.primitive(PrimitiveType::USize);
     let array = types.intern(Type::Array(string));
     let nominal = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Texts".into(),
         params: vec![],
         representation: Some(array),
@@ -162,6 +164,7 @@ fn count_projection_preserves_checked_wrappers_and_result_identity() {
         inner: nominal,
     });
     let count_type = types.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Count".into(),
         params: vec![],
         representation: Some(size),

@@ -258,6 +258,7 @@ fn shared_runtime_call_target_dags_capture_and_restore_without_expanding_aliases
                     span,
                 },
             }],
+            residual: Default::default(),
         })
     };
     for depth in [1000, 4000, 30_000] {

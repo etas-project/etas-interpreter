@@ -28,6 +28,8 @@ pub struct InterpreterPlan {
     pub dispatch: IntrinsicDispatchTable,
     pub host_requirements: HostRequirementTable,
     pub action_mediation: ActionMediationTable,
+    pub(crate) residual: Arc<super::residual::PreparedResidualPlans>,
+    pub(crate) residual_installation: super::residual::ResidualInstallationEvidence,
     pub diagnostics: Vec<Diagnostic>,
 }
 
@@ -46,5 +48,6 @@ pub(crate) struct PreparedProgram {
     pub(super) globals: Arc<GlobalTable>,
     pub(super) resources: Arc<ResourceTable>,
     pub(super) dispatch: IntrinsicDispatchTable,
+    pub(super) residual: Arc<super::residual::PreparedResidualPlans>,
     pub(super) diagnostics: Vec<Diagnostic>,
 }

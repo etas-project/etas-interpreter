@@ -42,6 +42,7 @@ pub(crate) fn validate_snapshot_signature(
             specs,
         )?;
     }
+    checked_item_application(checked, root, bindings)?;
     validate_signature_bindings(checked, root, expected, bindings)?;
     super::effects::validate_snapshot_effects(checked, root, expected, bindings)
 }

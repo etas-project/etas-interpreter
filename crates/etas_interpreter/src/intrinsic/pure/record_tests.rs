@@ -136,11 +136,13 @@ fn checked_record_abi_keeps_shared_inputs_and_validates_nested_nominal_trust_fie
         inner: string,
     });
     let id = interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Id".into(),
         params: vec![],
         representation: Some(int),
     }));
     let other = interner.intern(Type::Nominal(NominalTypeRef {
+        read_only_erased_view: false,
         name: "Other".into(),
         params: vec![],
         representation: Some(int),
