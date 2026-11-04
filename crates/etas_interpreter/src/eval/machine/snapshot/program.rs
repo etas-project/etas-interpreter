@@ -117,6 +117,7 @@ pub(crate) fn resolve_destination(
                 crate::control::CallTarget::AgentRevision(revisions.restore(reference, parent)?);
             if let CallTargetSnapshot::Specialized {
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
                 ..
             } = &snapshot.call
@@ -124,6 +125,7 @@ pub(crate) fn resolve_destination(
                 target = crate::control::CallTarget::Specialized {
                     target: target.into(),
                     type_bindings: type_bindings.clone(),
+                    type_parameter_bindings: type_parameter_bindings.clone(),
                     effect_row_bindings: effect_row_bindings.clone(),
                 };
             }
@@ -271,14 +273,19 @@ fn validate_specialization(
     let expected_rows = expected
         .as_ref()
         .map_or(&[][..], |bindings| bindings.rows.as_slice());
+    let expected_parameters = expected
+        .as_ref()
+        .map_or(&[][..], |bindings| bindings.parameters.as_slice());
     match target {
         CallTargetSnapshot::Specialized {
             target,
             type_bindings,
+            type_parameter_bindings,
             effect_row_bindings,
         } => {
             if matches!(&**target, CallTargetSnapshot::Specialized { .. })
                 || type_bindings != expected_types
+                || type_parameter_bindings != expected_parameters
                 || effect_row_bindings != expected_rows
             {
                 return Err(
@@ -287,7 +294,10 @@ fn validate_specialization(
                 );
             }
         }
-        _ if !expected_types.is_empty() || !expected_rows.is_empty() => {
+        _ if !expected_types.is_empty()
+            || !expected_parameters.is_empty()
+            || !expected_rows.is_empty() =>
+        {
             return Err("program boundary is missing its checked generic specialization".into());
         }
         _ => {}

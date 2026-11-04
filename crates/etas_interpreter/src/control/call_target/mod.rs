@@ -26,6 +26,7 @@ pub enum CallTarget {
     Specialized {
         target: CallTargetLink,
         type_bindings: Vec<(String, etas_types::TypeId)>,
+        type_parameter_bindings: Vec<(etas_types::TypeId, etas_types::TypeId)>,
         effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     },
     Limited {

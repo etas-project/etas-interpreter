@@ -13,6 +13,7 @@ fn tree(mut leaf: CallTargetSnapshot, depth: usize, mode: usize) -> TargetTree {
             1 => CallTargetSnapshot::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: leaf.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
             2 => CallTargetSnapshot::Composed(
@@ -128,6 +129,7 @@ fn call_target_validation_preserves_child_binding_and_sibling_error_order() {
     let specialize = |target: CallTargetSnapshot, name: &str| CallTargetSnapshot::Specialized {
         effect_row_bindings: Vec::new(),
         target: target.into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![(name.to_owned(), TypeId(u32::MAX))],
     };
     for (node, message) in [
@@ -220,6 +222,7 @@ fn deep_specialized_target_validates_every_nonempty_binding_after_its_child() {
             target = CallTargetSnapshot::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: target.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: if invalid_at == Some(index) {
                     vec![("T".into(), ty), ("T".into(), ty)]
                 } else {
@@ -288,6 +291,7 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
                         effect_row_bindings: Vec::new(),
                         id: frame_id,
                         locals: Default::default(),
+                        type_parameter_bindings: Vec::new(),
                         type_bindings: vec![],
                     },
                 },

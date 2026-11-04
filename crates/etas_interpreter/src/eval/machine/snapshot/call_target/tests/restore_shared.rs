@@ -90,6 +90,7 @@ fn callable_restore_cache_crosses_captured_frames_without_merging_distinct_graph
                     SymbolId(2),
                     ValueSnapshot::Callable(saved.clone()),
                 )]),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
         };
@@ -140,6 +141,7 @@ fn callable_restore_cache_does_not_hide_conflicting_frames_and_releases_failed_g
                     SymbolId(2),
                     ValueSnapshot::capture(&InterpValue::i32(value)).unwrap(),
                 )]),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
         };
@@ -205,6 +207,7 @@ fn checked_machine_restore_shares_callables_between_continuations() {
                 effect_row_bindings: Vec::new(),
                 id: 1,
                 locals: Default::default(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
         };

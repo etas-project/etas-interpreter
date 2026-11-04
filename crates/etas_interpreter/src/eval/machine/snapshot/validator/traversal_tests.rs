@@ -105,6 +105,7 @@ fn shared_dag_validation_keeps_duplicate_scopes_and_invalid_leaves_fail_closed()
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![],
         },
     };
@@ -212,6 +213,7 @@ fn boundary(scope_id: u32, inner: ContinuationSnapshot) -> ContinuationSnapshot 
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![],
         },
     }
@@ -376,6 +378,7 @@ fn deep_validator_preserves_leaf_checks_and_handler_validation_order() {
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![],
         },
     };

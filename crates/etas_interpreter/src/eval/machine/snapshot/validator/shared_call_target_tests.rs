@@ -68,6 +68,7 @@ fn failed_frame_validation_is_not_cached_as_success() {
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![("T".into(), TypeId(u32::MAX))],
         };
         for context in ["first frame", "second frame"] {
@@ -109,6 +110,7 @@ fn shared_callable_validation_cache_preserves_cow_and_outer_binding_errors() {
                 let wrapper = CallTargetSnapshot::Specialized {
                     effect_row_bindings: Vec::new(),
                     target: retained.clone().into(),
+                    type_parameter_bindings: Vec::new(),
                     type_bindings: vec![(name.into(), TypeId(u32::MAX))],
                 };
                 for context in ["binding first", "binding again"] {
@@ -129,6 +131,7 @@ fn failed_shared_callable_parent_is_rechecked_after_completed_siblings() {
             let invalid_binding = CallTargetSnapshot::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: good.clone().into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![("".into(), TypeId(u32::MAX))],
             };
             for (children, expected) in [
@@ -224,6 +227,7 @@ fn checked_machine_validation_reuses_callable_graph_but_rejects_late_tampering()
                     effect_row_bindings: Vec::new(),
                     id: 1,
                     locals: Default::default(),
+                    type_parameter_bindings: Vec::new(),
                     type_bindings: vec![],
                 },
             };

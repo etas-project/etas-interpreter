@@ -303,6 +303,7 @@ fn callable_metadata_and_nominal_identity_still_distinguish_values() {
     assert!(make(etas_types::TypeId(1)) != make(etas_types::TypeId(2)));
     let target = |bindings| CallTarget::Specialized {
         target: CallTarget::FlowItem(etas_hir::HirItemId(1)).into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: bindings,
         effect_row_bindings: Vec::new(),
     };

@@ -57,6 +57,7 @@ fn a_matching_arrow_cannot_authorize_an_unchecked_phantom_application() {
     };
     let target = CallTarget::Specialized {
         target: CallTarget::FlowItem(item).into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![("R".into(), unchecked)],
         effect_row_bindings: vec![],
     };
@@ -123,6 +124,7 @@ fn a_closure_retains_its_checked_lexical_generic_application() {
     );
     let conflicting = CallTarget::Specialized {
         target: target(allowed).into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![("R".into(), nominal(&checked, "Unchecked"))],
         effect_row_bindings: vec![],
     };

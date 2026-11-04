@@ -53,9 +53,15 @@ impl ScopedCallableValue {
                 T::Specialized {
                     target: inner,
                     type_bindings,
+                    type_parameter_bindings,
                     effect_row_bindings,
                 } => {
-                    merge_checked_bindings(&mut bindings, type_bindings, effect_row_bindings)?;
+                    merge_checked_bindings(
+                        &mut bindings,
+                        type_bindings,
+                        type_parameter_bindings,
+                        effect_row_bindings,
+                    )?;
                     target = inner;
                 }
                 T::Limited { target: inner, .. } => target = inner,
@@ -63,6 +69,7 @@ impl ScopedCallableValue {
                     merge_checked_bindings(
                         &mut bindings,
                         &captured.type_bindings,
+                        &captured.type_parameter_bindings,
                         &captured.effect_row_bindings,
                     )?;
                     break;

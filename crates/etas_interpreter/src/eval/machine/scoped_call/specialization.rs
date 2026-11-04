@@ -9,6 +9,7 @@ use etas_types::{
 #[derive(Clone, Debug)]
 pub(super) struct ProgramSpecialization {
     pub presented_types: Vec<(String, TypeId)>,
+    pub presented_parameters: Vec<(TypeId, TypeId)>,
     pub presented_rows: Vec<(String, EffectRowRef)>,
     destination_bindings: GenericBindings,
     source_signature: FlowType,
@@ -22,13 +23,18 @@ impl ProgramSpecialization {
         call: &ProgramCall,
         source: &CheckedProgram,
         types: Vec<(String, TypeId)>,
+        parameters: Vec<(TypeId, TypeId)>,
         rows: Vec<(String, EffectRowRef)>,
     ) -> Result<Self, String> {
         let bindings = GenericBindings {
             types: types.iter().cloned().collect(),
+            parameters: parameters.iter().copied().collect(),
             rows: rows.iter().cloned().collect(),
         };
-        if bindings.types.len() != types.len() || bindings.rows.len() != rows.len() {
+        if bindings.types.len() != types.len()
+            || bindings.parameters.len() != parameters.len()
+            || bindings.rows.len() != rows.len()
+        {
             return Err("program call contains duplicate generic bindings".into());
         }
         let destination = call.destination()?;
@@ -85,6 +91,13 @@ impl ProgramSpecialization {
                 .into_iter()
                 .map(|(name, ty)| Ok((name, edge.runtime_type(ty)?)))
                 .collect::<Result<_, String>>()?;
+            mapped.parameters = mapped
+                .parameters
+                .into_iter()
+                .map(|(parameter, argument)| {
+                    Ok((edge.runtime_type(parameter)?, edge.runtime_type(argument)?))
+                })
+                .collect::<Result<_, String>>()?;
             mapped.rows = mapped
                 .rows
                 .iter()
@@ -92,6 +105,7 @@ impl ProgramSpecialization {
                 .collect::<Result<_, String>>()?;
         }
         let mut destination_bindings = GenericBindings::new();
+        destination_bindings.parameters = std::mem::take(&mut mapped.parameters);
         for (from, to) in source_params.iter().zip(destination_params) {
             match from.kind {
                 CallableGenericParamKind::Type => {
@@ -124,6 +138,7 @@ impl ProgramSpecialization {
         .map_err(|error| format!("generic destination signature is not materialized: {error}"))?;
         Ok(Self {
             presented_types: types,
+            presented_parameters: parameters,
             presented_rows: rows,
             destination_bindings,
             source_signature,
@@ -176,6 +191,7 @@ impl ProgramSpecialization {
         while let CallTarget::Specialized {
             target: inner,
             type_bindings,
+            type_parameter_bindings,
             effect_row_bindings,
         } = target
         {
@@ -184,6 +200,17 @@ impl ProgramSpecialization {
                     return Err("native callable has conflicting generic specializations".into());
                 }
                 bindings.insert(name, ty);
+            }
+            for (parameter, ty) in type_parameter_bindings {
+                if bindings
+                    .parameters
+                    .insert(parameter, ty)
+                    .is_some_and(|previous| previous != ty)
+                {
+                    return Err(
+                        "native callable has conflicting checked parameter specializations".into(),
+                    );
+                }
             }
             for (name, row) in effect_row_bindings {
                 if bindings.rows.get(&name).is_some_and(|old| old != &row) {
@@ -196,6 +223,7 @@ impl ProgramSpecialization {
         Ok(CallTarget::Specialized {
             target: target.into(),
             type_bindings: bindings.types.into_iter().collect(),
+            type_parameter_bindings: bindings.parameters.into_iter().collect(),
             effect_row_bindings: bindings
                 .rows
                 .iter()

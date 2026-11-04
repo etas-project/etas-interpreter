@@ -268,6 +268,7 @@ impl RestoreContext {
             locals,
             crate::control::GenericBindings {
                 types: snapshot.type_bindings.iter().cloned().collect(),
+                parameters: snapshot.type_parameter_bindings.iter().copied().collect(),
                 rows: snapshot.effect_row_bindings.iter().cloned().collect(),
             },
         )?;

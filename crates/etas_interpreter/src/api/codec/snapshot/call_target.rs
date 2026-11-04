@@ -7,6 +7,7 @@ pub(super) fn frame<'a>(frame: &'a LocalsSnapshot, slot: &'a mut Value, pending:
     *slot = json!({"id":frame.id, "locals":null,
         "residual_invocation": frame.residual_invocation,
         "effect_row_bindings": frame.effect_row_bindings,
+        "type_parameter_bindings": frame.type_parameter_bindings,
         "type_bindings":frame.type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
     for ((symbol, value), entry) in frame
         .locals
@@ -63,9 +64,10 @@ pub(super) fn encode<'a>(
         T::Specialized {
             target,
             type_bindings,
+            type_parameter_bindings,
             effect_row_bindings,
         } => {
-            *slot = json!({"kind":"specialized","target":null,"effect_row_bindings":effect_row_bindings,"type_bindings":type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
+            *slot = json!({"kind":"specialized","target":null,"effect_row_bindings":effect_row_bindings,"type_parameter_bindings":type_parameter_bindings,"type_bindings":type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
             pending.push((Node::CallTarget(target), &mut slot["target"]));
         }
         T::Limited { target, limits } => {

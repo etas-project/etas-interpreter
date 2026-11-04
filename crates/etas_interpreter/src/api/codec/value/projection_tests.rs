@@ -111,6 +111,7 @@ fn public_callable_projection_preserves_deep_wrapper_order() {
             },
             1 => CallTarget::Specialized {
                 target: target.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
                 effect_row_bindings: vec![],
             },

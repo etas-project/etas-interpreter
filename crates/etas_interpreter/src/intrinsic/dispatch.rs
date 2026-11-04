@@ -17,6 +17,7 @@ pub struct StdIntrinsicIdentity {
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct IntrinsicSubstitutionStep {
     pub types: Vec<(String, TypeId)>,
+    pub parameters: Vec<(TypeId, TypeId)>,
     pub rows: Vec<(String, etas_types::EffectRowRef)>,
 }
 

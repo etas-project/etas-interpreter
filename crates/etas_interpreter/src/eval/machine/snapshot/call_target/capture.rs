@@ -8,6 +8,7 @@ enum PendingParent<'a> {
     Scoped(Box<crate::orchestration::ScopedCallableMetadata>),
     Specialized(
         &'a [(String, TypeId)],
+        &'a [(TypeId, TypeId)],
         &'a [(String, etas_types::EffectRowRef)],
         Option<*const CallTarget>,
     ),
@@ -17,6 +18,11 @@ enum PendingParent<'a> {
         values: Vec<CallTargetSnapshot>,
         identity: Option<*const Vec<CallTarget>>,
     },
+}
+
+#[cfg(test)]
+pub(super) fn frontier_frame_size() -> usize {
+    std::mem::size_of::<PendingParent<'_>>()
 }
 
 #[cfg(test)]
@@ -42,6 +48,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
             CallTarget::Specialized {
                 target,
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             } => {
                 let identity = target.shared_identity();
@@ -49,11 +56,13 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
                     CallTargetSnapshot::Specialized {
                         target: saved.clone(),
                         type_bindings: type_bindings.clone(),
+                        type_parameter_bindings: type_parameter_bindings.clone(),
                         effect_row_bindings: effect_row_bindings.clone(),
                     }
                 } else {
                     pending.push(PendingParent::Specialized(
                         type_bindings,
+                        type_parameter_bindings,
                         effect_row_bindings,
                         identity,
                     ));
@@ -102,7 +111,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
                         target: value.into(),
                     };
                 }
-                Some(PendingParent::Specialized(bindings, rows, identity)) => {
+                Some(PendingParent::Specialized(bindings, parameters, rows, identity)) => {
                     let target: CallTargetSnapshotLink = value.into();
                     if let Some(key) = identity {
                         context.call_nodes.insert(key, target.clone());
@@ -110,6 +119,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
                     value = CallTargetSnapshot::Specialized {
                         target,
                         type_bindings: bindings.to_vec(),
+                        type_parameter_bindings: parameters.to_vec(),
                         effect_row_bindings: rows.to_vec(),
                     };
                 }

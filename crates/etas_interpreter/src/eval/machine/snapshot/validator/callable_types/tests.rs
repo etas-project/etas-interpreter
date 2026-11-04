@@ -68,6 +68,7 @@ flow main(
                 Target::FlowItem(item(validator, "apply")).into();
             let specialize = |row| Target::Specialized {
                 target: shared.clone(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
                 effect_row_bindings: vec![("E".into(), row)],
             };
@@ -115,6 +116,7 @@ flow main(good: Good -> Good, wrong: i32 -> i32) -> Good {
             let specialize = |ty| Target::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: shared.clone(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![("T".into(), ty)],
             };
             validator
@@ -132,6 +134,7 @@ flow main(good: Good -> Good, wrong: i32 -> i32) -> Good {
                 Target::Specialized {
                     effect_row_bindings: Vec::new(),
                     target: shared.clone(),
+                    type_parameter_bindings: Vec::new(),
                     type_bindings: vec![],
                 },
                 Target::Limited {
@@ -192,6 +195,7 @@ fn checkpoint_phantom_arguments_must_match_a_prepared_native_application() {
             };
             let target = |name| Target::Specialized {
                 target: Target::FlowItem(item(validator, "phantom")).into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![("R".into(), nominal(name))],
                 effect_row_bindings: vec![],
             };

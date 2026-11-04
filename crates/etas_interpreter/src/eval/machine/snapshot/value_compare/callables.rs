@@ -13,6 +13,7 @@ impl PartialEq for LocalsSnapshot {
             return self.id == other.id
                 && self.residual_invocation == other.residual_invocation
                 && self.type_bindings == other.type_bindings
+                && self.type_parameter_bindings == other.type_parameter_bindings
                 && self.effect_row_bindings == other.effect_row_bindings;
         }
         equal(Comparison::Frame(self, other))
@@ -29,6 +30,7 @@ pub(super) fn frame<'a>(
     if (compare_ids && a.id != b.id)
         || a.residual_invocation != b.residual_invocation
         || a.type_bindings != b.type_bindings
+        || a.type_parameter_bindings != b.type_parameter_bindings
         || a.effect_row_bindings != b.effect_row_bindings
         || a.locals.len() != b.locals.len()
     {
@@ -105,15 +107,17 @@ pub(super) fn target<'a>(
             Target::Specialized {
                 target: a,
                 type_bindings: at,
+                type_parameter_bindings: ap,
                 effect_row_bindings: ar,
             },
             Target::Specialized {
                 target: b,
                 type_bindings: bt,
+                type_parameter_bindings: bp,
                 effect_row_bindings: br,
             },
         ) => {
-            if at != bt || ar != br {
+            if at != bt || ap != bp || ar != br {
                 return false;
             }
             if !seen.edge(0, a.shared_identity(), b.shared_identity()) {

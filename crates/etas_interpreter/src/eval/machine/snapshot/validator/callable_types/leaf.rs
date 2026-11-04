@@ -104,6 +104,7 @@ impl SnapshotValidator<'_> {
                 let mut bindings = bindings.clone();
                 for step in substitutions {
                     bindings.types.extend(step.types.iter().cloned());
+                    bindings.parameters.extend(step.parameters.iter().copied());
                     bindings.rows.extend(step.rows.iter().cloned());
                 }
                 (

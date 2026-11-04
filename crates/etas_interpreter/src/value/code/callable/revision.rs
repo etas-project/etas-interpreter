@@ -118,6 +118,7 @@ impl ScopedCallableValue {
             target = CallTarget::Specialized {
                 target: target.into(),
                 type_bindings,
+                type_parameter_bindings: Vec::new(),
                 effect_row_bindings,
             };
         }

@@ -80,6 +80,7 @@ fn decode_snapshot_frame(
         id: decoded.id,
         locals: std::rc::Rc::new(decoded.locals),
         type_bindings: decoded.type_bindings,
+        type_parameter_bindings: decoded.type_parameter_bindings,
         effect_row_bindings: decoded.effect_row_bindings,
     })
 }
@@ -97,6 +98,7 @@ fn decode_runtime_frame(
         decoded.locals,
         crate::control::GenericBindings {
             types: decoded.type_bindings.into_iter().collect(),
+            parameters: decoded.type_parameter_bindings.into_iter().collect(),
             rows: decoded.effect_row_bindings.into_iter().collect(),
         },
     )?;
@@ -112,6 +114,7 @@ struct DecodedLocals<T> {
     residual_invocation: Option<std::num::NonZeroU64>,
     locals: Vec<(SymbolId, T)>,
     type_bindings: Vec<(String, etas_types::TypeId)>,
+    type_parameter_bindings: Vec<(etas_types::TypeId, etas_types::TypeId)>,
     effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
 }
 
@@ -168,8 +171,24 @@ fn decode_locals<T>(
         residual_invocation,
         locals,
         type_bindings,
+        type_parameter_bindings: type_parameters_from_snapshot(value)?,
         effect_row_bindings: effect_rows_from_snapshot(value)?,
     })
+}
+
+pub(crate) fn type_parameters_from_snapshot(
+    value: &Value,
+) -> Result<Vec<(etas_types::TypeId, etas_types::TypeId)>, String> {
+    let mut parameters =
+        <Vec<(etas_types::TypeId, etas_types::TypeId)> as serde::Deserialize>::deserialize(
+            required(value, "type_parameter_bindings")?,
+        )
+        .map_err(|error| format!("invalid snapshot type-parameter bindings: {error}"))?;
+    parameters.sort_unstable();
+    if parameters.windows(2).any(|pair| pair[0].0 == pair[1].0) {
+        return Err("duplicate snapshot type-parameter binding".into());
+    }
+    Ok(parameters)
 }
 
 pub(crate) fn effect_rows_from_snapshot(

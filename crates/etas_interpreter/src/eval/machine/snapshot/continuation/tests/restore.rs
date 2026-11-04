@@ -149,6 +149,7 @@ fn frame(id: u64) -> LocalsSnapshot {
             etas_hir::SymbolId(1),
             ValueSnapshot::capture(&InterpValue::i32(7)).unwrap(),
         )]),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![],
     }
 }

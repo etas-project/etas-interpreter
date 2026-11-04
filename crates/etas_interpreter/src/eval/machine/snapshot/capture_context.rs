@@ -264,6 +264,7 @@ impl CaptureContext {
                 id: frame.snapshot_id(),
                 locals: Rc::new(locals),
                 type_bindings: frame.sorted_type_bindings(),
+                type_parameter_bindings: frame.generic_bindings().sorted_parameters(),
                 effect_row_bindings: frame.generic_bindings().sorted_rows(),
             });
         if self.first_active == Some(backing) {

@@ -85,6 +85,7 @@ fn captured_frame_encoding_removes_runtime_graph_materialization() {
                         .collect(),
                 ),
             )]),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![],
         };
         let target = CallTargetSnapshot::Lambda {
@@ -112,7 +113,7 @@ fn captured_frame_encoding_removes_runtime_graph_materialization() {
                 })
                 .collect::<Vec<_>>();
             // Bounded former frame -> runtime JSON -> parent serialization path.
-            let captured = json!({"id":frame.snapshot_id(),"residual_invocation":frame.residual_invocation(),"locals":locals,"effect_row_bindings":frame.generic_bindings().sorted_rows(),"type_bindings":[]});
+            let captured = json!({"id":frame.snapshot_id(),"residual_invocation":frame.residual_invocation(),"locals":locals,"effect_row_bindings":frame.generic_bindings().sorted_rows(),"type_parameter_bindings":frame.generic_bindings().sorted_parameters(),"type_bindings":[]});
             json!({"kind":"lambda","expr":3,"captured":captured})
         });
         assert_eq!(actual, expected);

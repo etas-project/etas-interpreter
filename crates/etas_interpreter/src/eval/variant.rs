@@ -214,6 +214,7 @@ impl<'a> EvalContext<'a> {
         } else {
             CallTarget::Specialized {
                 target: target.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: layout
                     .type_params
                     .iter()

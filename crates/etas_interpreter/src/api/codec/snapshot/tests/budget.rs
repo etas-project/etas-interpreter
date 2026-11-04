@@ -15,6 +15,7 @@ fn effect_row_metadata_is_bounded_before_checkpoint_json_allocation() {
     )];
     let target = CallTargetSnapshot::Specialized {
         target: CallTargetSnapshot::FlowItem(HirItemId(7)).into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![],
         effect_row_bindings: rows.clone(),
     };
@@ -22,6 +23,7 @@ fn effect_row_metadata_is_bounded_before_checkpoint_json_allocation() {
         residual_invocation: None,
         id: 1,
         locals: Rc::new(vec![]),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![],
         effect_row_bindings: rows,
     };
@@ -39,6 +41,7 @@ fn effect_row_metadata_is_bounded_before_checkpoint_json_allocation() {
     }
     let target = CallTargetSnapshot::Specialized {
         target: CallTargetSnapshot::FlowItem(HirItemId(7)).into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![],
         effect_row_bindings: (0..1024)
             .map(|i| {

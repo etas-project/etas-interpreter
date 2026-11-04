@@ -27,14 +27,17 @@ impl ProgramCall {
     ) -> Result<Result<Self, CallTarget>, String> {
         let mut root = &target;
         let mut types = Vec::new();
+        let mut parameters = Vec::new();
         let mut rows = Vec::new();
         while let CallTarget::Specialized {
             target,
             type_bindings,
+            type_parameter_bindings,
             effect_row_bindings,
         } = root
         {
             types.extend(type_bindings.iter().cloned());
+            parameters.extend(type_parameter_bindings.iter().copied());
             rows.extend(effect_row_bindings.iter().cloned());
             root = target;
         }
@@ -47,9 +50,9 @@ impl ProgramCall {
             target,
             specialization: None,
         };
-        if !types.is_empty() || !rows.is_empty() {
+        if !types.is_empty() || !parameters.is_empty() || !rows.is_empty() {
             call.specialization = Some(Arc::new(ProgramSpecialization::new(
-                &call, program, types, rows,
+                &call, program, types, parameters, rows,
             )?));
         }
         Ok(Ok(call))
@@ -76,6 +79,7 @@ impl ProgramCall {
             Some(specialization) => CallTarget::Specialized {
                 target: target.into(),
                 type_bindings: specialization.presented_types.clone(),
+                type_parameter_bindings: specialization.presented_parameters.clone(),
                 effect_row_bindings: specialization.presented_rows.clone(),
             },
             None => target,

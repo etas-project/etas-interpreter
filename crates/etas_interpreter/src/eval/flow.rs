@@ -48,6 +48,7 @@ impl<'a> EvalContext<'a> {
             args,
             crate::control::GenericBindings {
                 types: type_bindings,
+                parameters: Default::default(),
                 rows: Default::default(),
             },
         )

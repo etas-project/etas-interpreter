@@ -1512,6 +1512,7 @@ flow main() -> unit {
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: Vec::new(),
         }
     }
