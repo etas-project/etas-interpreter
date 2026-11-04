@@ -36,6 +36,9 @@ pub(super) fn execute_count(
         (Some(AbiShape::Primitive(PrimitiveType::String)), InterpValue::String(text)) => {
             query.evaluate_text_projected(text)
         }
+        (Some(AbiShape::Primitive(PrimitiveType::Bytes)), InterpValue::Bytes(bytes)) => {
+            query.evaluate_count(bytes.len())
+        }
         _ => return Err(type_mismatch(ty, value)),
     };
     from_builtin_for_type(result, call.result_type, projector)
