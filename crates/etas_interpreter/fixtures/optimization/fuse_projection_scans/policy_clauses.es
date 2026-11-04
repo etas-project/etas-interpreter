@@ -1,0 +1,2 @@
+module app.main;
+flow main() -> string { var rules = ""; var audit = ""; for clause in ["read", "write", "network"] limit Iterations(3) { rules = rules + clause; } for record in ["read", "write", "network"] limit Iterations(3) { audit = audit + record; } return rules + audit; }

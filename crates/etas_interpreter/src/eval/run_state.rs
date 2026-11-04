@@ -48,6 +48,11 @@ pub struct EvalRunState {
 }
 
 impl EvalRunState {
+    #[cfg(test)]
+    pub(crate) fn consumed_steps(&self) -> u64 {
+        self.safe_points.consumed_steps()
+    }
+
     pub(super) fn from_input(input: super::EvalRunStateInput) -> Self {
         let limits = input.storage_limits;
         let receipt_retention = limits.max_receipt_retention_seconds;

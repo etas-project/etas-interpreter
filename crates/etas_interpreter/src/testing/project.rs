@@ -9,6 +9,13 @@ pub(crate) fn checked_project(text: &str) -> CheckedProject {
     checked_project_sources(vec![(SourceId(0), "src/app/main.es", text)])
 }
 
+pub(crate) fn checked_project_with_options(
+    text: &str,
+    options: ProjectCompileOptions,
+) -> CheckedProject {
+    checked_project_sources_with_options(vec![(SourceId(0), "src/app/main.es", text)], options)
+}
+
 pub(super) fn std_value(
     checked: &CheckedProject,
     role: etas_std::RuntimeTypeRole,
@@ -50,11 +57,34 @@ pub(super) fn checked_project_sources_with_environment(
     sources: Vec<(SourceId, &str, &str)>,
     environment: ProjectEnvironmentInput,
 ) -> CheckedProject {
+    checked_project_sources_with_options_and_environment(
+        sources,
+        ProjectCompileOptions::default(),
+        environment,
+    )
+}
+
+fn checked_project_sources_with_options(
+    sources: Vec<(SourceId, &str, &str)>,
+    options: ProjectCompileOptions,
+) -> CheckedProject {
+    checked_project_sources_with_options_and_environment(
+        sources,
+        options,
+        ProjectEnvironmentInput::default(),
+    )
+}
+
+fn checked_project_sources_with_options_and_environment(
+    sources: Vec<(SourceId, &str, &str)>,
+    options: ProjectCompileOptions,
+    environment: ProjectEnvironmentInput,
+) -> CheckedProject {
     let frontend = Frontend;
     let output = frontend.check_project(ProjectInput {
         project_root: PathBuf::from("/workspace/demo"),
         source_root: Some(PathBuf::from("/workspace/demo/src")),
-        options: ProjectCompileOptions::default(),
+        options,
         environment,
         sources: sources
             .into_iter()

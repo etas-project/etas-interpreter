@@ -1,0 +1,2 @@
+module app.main;
+flow main() -> string { var bodies = ""; var roles = ""; for message in ["system", "user", "assistant"] limit Iterations(3) { bodies = bodies + message; } for role in ["system", "user", "assistant"] limit Iterations(3) { roles = roles + role; } return bodies + roles; }

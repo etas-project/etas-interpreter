@@ -1,0 +1,2 @@
+module app.main;
+flow main() -> string { var names = ""; var flags = ""; for capability in ["tools", "json", "vision"] limit Iterations(3) { names = names + capability; } for flag in ["tools", "json", "vision"] limit Iterations(3) { flags = flags + flag; } return names + flags; }

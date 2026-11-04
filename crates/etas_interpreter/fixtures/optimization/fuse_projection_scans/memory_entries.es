@@ -1,0 +1,2 @@
+module app.main;
+flow main() -> string { var keys = ""; var values = ""; for key in ["session", "cursor", "version"] limit Iterations(3) { keys = keys + key; } for value in ["session", "cursor", "version"] limit Iterations(3) { values = values + value; } return keys + values; }

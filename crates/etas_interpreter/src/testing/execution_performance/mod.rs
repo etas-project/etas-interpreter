@@ -1,7 +1,7 @@
 use super::{
     FakeHost,
     allocation::{Allocations, measure},
-    checked_project,
+    checked_project, checked_project_with_options,
 };
 use crate::{
     api::{RunOptions, RunOutcome},
@@ -11,11 +11,22 @@ use crate::{
 };
 use std::time::{Duration, Instant};
 
+mod batch_storage_semijoin;
 mod crypto;
+mod fuse_projection_scans;
+mod fuse_serialization_boundary;
 mod iteration;
+mod lower_owned_snapshot_cow;
+mod lower_resource_region;
+mod quality_aware_context_policy;
+mod request_preparation;
+mod schedule_bounded_pipeline;
 mod scope;
 mod segmented_concat;
+mod suffix_demand_history;
+mod synthesize_scoped_index;
 mod text_reassignment;
+mod versioned_preparation_cse;
 
 struct PreparedExecution {
     checked: etas_frontend::CheckedProject,
@@ -26,6 +37,21 @@ struct PreparedExecution {
 impl PreparedExecution {
     fn new(source: &str) -> Self {
         let checked = checked_project(source);
+        Self::from_checked(checked)
+    }
+
+    fn with_optimization(source: &str, optimize_hir: bool) -> Self {
+        let checked = checked_project_with_options(
+            source,
+            etas_frontend::ProjectCompileOptions {
+                optimize_hir,
+                ..Default::default()
+            },
+        );
+        Self::from_checked(checked)
+    }
+
+    fn from_checked(checked: etas_frontend::CheckedProject) -> Self {
         let planned = crate::Interpreter.plan(&checked, crate::api::PlanOptions);
         assert!(planned.diagnostics.is_empty(), "{:?}", planned.diagnostics);
         let runtime = tokio::runtime::Builder::new_current_thread()
@@ -43,6 +69,11 @@ impl PreparedExecution {
     // Plan, inputs, runtime, host and evaluator preparation are outside the
     // measured region. Drive the real machine, including cooperative yields.
     fn run(&self, args: &[InterpValue]) -> (InterpValue, Allocations, Duration) {
+        let (value, allocations, elapsed, _) = self.run_measured(args);
+        (value, allocations, elapsed)
+    }
+
+    fn run_measured(&self, args: &[InterpValue]) -> (InterpValue, Allocations, Duration, u64) {
         let host = FakeHost::new(Default::default());
         let options = RunOptions::default();
         let execution = etas_host::execution::ExecutionScope::new_owned();
@@ -82,6 +113,7 @@ impl PreparedExecution {
         let RunOutcome::Completed(value) = outcome else {
             panic!("execution did not complete: {outcome:?}")
         };
-        (value, cost, elapsed)
+        let consumed_steps = eval.consumed_steps();
+        (value, cost, elapsed, consumed_steps)
     }
 }
