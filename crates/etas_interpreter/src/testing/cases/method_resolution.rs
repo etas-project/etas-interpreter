@@ -2,6 +2,49 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn generic_spec_owner_witness_executes_and_resumes_without_runtime_selection() {
+    let checked = checked_project(include_str!(
+        "../fixtures/method_resolution/generic_spec_owner.es"
+    ));
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(7)));
+    assert_eq!(host.stdout_text(), "read\n");
+    assert_eq!(host.console_call_count(), 1);
+    assert_eq!(result.checkpoints.len(), 1);
+    let checkpoint = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+    for checkpoint in [checkpoint, &decoded] {
+        let host = FakeHost::new(services);
+        let resumed = Interpreter
+            .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), result.value());
+        assert_eq!(host.stdout_text(), "");
+        assert_eq!(host.console_call_count(), 0);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn returned_method_closure_keeps_owner_binders_across_wrapper_and_checkpoint_resume() {
     let checked = checked_project(include_str!(
         "../fixtures/method_resolution/captured_owner_binders.es"
