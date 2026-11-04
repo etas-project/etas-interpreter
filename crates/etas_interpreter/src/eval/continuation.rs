@@ -166,6 +166,7 @@ impl<'a> EvalContext<'a> {
                 pending.continuation = compose_continuation(pending.continuation, outer);
                 ControlSignal::Call(pending)
             }
+            ControlSignal::Native(pending) => ControlSignal::Native(pending),
             ControlSignal::Expr(mut pending) => {
                 pending.continuation = compose_continuation(pending.continuation, outer);
                 ControlSignal::Expr(pending)
@@ -835,7 +836,7 @@ impl<'a> EvalContext<'a> {
             } => self.resume_for_loop(
                 crate::eval::loop_control::ForLoopResume {
                     pat,
-                    source,
+                    source: source.map(|source| *source),
                     next_index,
                     body,
                     iterations,

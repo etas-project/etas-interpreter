@@ -225,6 +225,18 @@ impl EncodingBudget {
             Node::Value(ValueSnapshot::String(value)) | Node::Json(Json::String(value)) => {
                 self.charge_bytes(value.len())?;
             }
+            Node::Value(ValueSnapshot::TextSequence { source, plan, .. }) => {
+                self.charge_bytes(source.len())?;
+                match &plan.kind {
+                    etas_builtin::text::iteration::TextSequenceKind::Split { separator } => {
+                        self.charge_bytes(separator.len())?;
+                    }
+                    etas_builtin::text::iteration::TextSequenceKind::Matches { pattern } => {
+                        self.charge_bytes(pattern.len())?;
+                    }
+                    _ => {}
+                }
+            }
             Node::Value(ValueSnapshot::Bytes(value)) => self.charge_bytes(value.len())?,
             Node::Value(ValueSnapshot::Prompt(messages)) => {
                 for message in messages.iter() {

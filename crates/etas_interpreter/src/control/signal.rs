@@ -23,6 +23,7 @@ pub enum ControlSignal {
     Block(Box<PendingBlock>),
     Expr(Box<PendingExpr>),
     Call(Box<PendingCall>),
+    Native(Box<crate::intrinsic::pure::PendingNativeWork>),
     Perform(Box<PendingPerform>),
     Memory(Box<PendingMemory>),
     Session(Box<PendingSession>),
@@ -96,6 +97,10 @@ impl ControlSignal {
 
     pub fn pending_call(pending: PendingCall) -> Self {
         Self::Call(Box::new(pending))
+    }
+
+    pub(crate) fn pending_native(pending: crate::intrinsic::pure::PendingNativeWork) -> Self {
+        Self::Native(Box::new(pending))
     }
 
     pub fn pending_perform(pending: PendingPerform) -> Self {

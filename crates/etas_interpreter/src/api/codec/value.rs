@@ -318,6 +318,76 @@ pub(in crate::api::codec) fn snapshot_from_json_with_limits(
     decode::decode(limits, value)
 }
 
+pub(in crate::api::codec) fn text_sequence_plan_json(
+    plan: &etas_builtin::text::iteration::TextSequencePlan,
+) -> Value {
+    use etas_builtin::text::iteration::TextSequenceKind as K;
+    let (kind, argument) = match &plan.kind {
+        K::Chars => ("chars", None),
+        K::CharIndices => ("char_indices", None),
+        K::Lines => ("lines", None),
+        K::Split { separator } => ("split", Some(separator.as_str())),
+        K::Whitespace => ("whitespace", None),
+        K::Matches { pattern } => ("matches", Some(pattern.as_str())),
+        K::Graphemes => ("graphemes", None),
+        K::GraphemeIndices => ("grapheme_indices", None),
+    };
+    json!({"version":plan.version,"kind":kind,"argument":argument})
+}
+
+pub(in crate::api::codec) fn text_sequence_plan_from_json(
+    value: &Value,
+) -> Result<etas_builtin::text::iteration::TextSequencePlan, InterpreterCodecError> {
+    use etas_builtin::text::iteration::{TextSequenceKind as K, TextSequencePlan};
+    let kind = match required_str(value, "kind")? {
+        "chars" => K::Chars,
+        "char_indices" => K::CharIndices,
+        "lines" => K::Lines,
+        "split" => K::Split {
+            separator: required_str(value, "argument")?.to_owned(),
+        },
+        "whitespace" => K::Whitespace,
+        "matches" => K::Matches {
+            pattern: required_str(value, "argument")?.to_owned(),
+        },
+        "graphemes" => K::Graphemes,
+        "grapheme_indices" => K::GraphemeIndices,
+        other => {
+            return Err(InterpreterCodecError::new(format!(
+                "unsupported text sequence plan `{other}`"
+            )));
+        }
+    };
+    let plan = TextSequencePlan {
+        version: required_u32(value, "version")?,
+        kind,
+    };
+    plan.validate().map_err(InterpreterCodecError::new)?;
+    Ok(plan)
+}
+
+pub(in crate::api::codec) fn text_cursor_json(
+    cursor: &etas_builtin::text::iteration::TextCursorState,
+) -> Value {
+    json!({
+        "byte_offset":cursor.byte_offset,
+        "terminal":cursor.terminal,
+        "leading_empty_emitted":cursor.leading_empty_emitted,
+        "trailing_empty_emitted":cursor.trailing_empty_emitted,
+    })
+}
+
+pub(in crate::api::codec) fn text_cursor_from_json(
+    value: &Value,
+) -> Result<etas_builtin::text::iteration::TextCursorState, InterpreterCodecError> {
+    Ok(etas_builtin::text::iteration::TextCursorState {
+        byte_offset: required_usize(value, "byte_offset")?,
+        terminal: required_bool(value, "terminal")?,
+        leading_empty_emitted: required_bool(value, "leading_empty_emitted")?,
+        trailing_empty_emitted: required_bool(value, "trailing_empty_emitted")?,
+    })
+}
+
 fn decode_scalar_or_support(
     limits: &etas_host::StorageLimits,
     value: &Value,

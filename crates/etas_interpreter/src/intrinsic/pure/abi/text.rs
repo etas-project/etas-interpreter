@@ -32,6 +32,42 @@ pub(in crate::intrinsic::pure) fn from_text_range(
     })
 }
 
+pub(in crate::intrinsic::pure) fn from_text_value(
+    value: StringValue,
+    ty: TypeId,
+    projector: &PureAbiProjector,
+) -> Result<InterpValue, AdapterError> {
+    super::result::restore_wrappers(value, ty, projector, |value, ty, shape| {
+        if !matches!(shape, AbiShape::Primitive(PrimitiveType::String)) {
+            return Err(AdapterError::TypeMismatch {
+                expected: ty,
+                actual: "String".into(),
+            });
+        }
+        Ok(InterpValue::String(value))
+    })
+}
+
+pub(in crate::intrinsic::pure) fn from_optional_text_value(
+    value: Option<StringValue>,
+    ty: TypeId,
+    projector: &PureAbiProjector,
+) -> Result<InterpValue, AdapterError> {
+    super::result::restore_wrappers(value, ty, projector, |value, ty, shape| {
+        let AbiShape::Option(inner) = shape else {
+            return Err(AdapterError::TypeMismatch {
+                expected: ty,
+                actual: "Option<String>".into(),
+            });
+        };
+        value.map_or(Ok(InterpValue::OptionNone), |value| {
+            from_text_value(value, *inner, projector)
+                .map(crate::value::SharedValue::new)
+                .map(InterpValue::OptionSome)
+        })
+    })
+}
+
 pub(in crate::intrinsic::pure) fn from_text_ranges(
     ranges: impl Iterator<Item = Range<usize>>,
     source: &StringValue,

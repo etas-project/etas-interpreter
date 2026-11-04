@@ -4,7 +4,8 @@ use crate::value::iteration::IterationSource;
 use etas_std::StdLimitKind;
 use std::collections::HashSet;
 
-pub(super) struct ForLoopResume {
+#[derive(Clone)]
+pub(crate) struct ForLoopResume {
     pub pat: etas_hir::HirPatId,
     pub source: Option<IterationSource>,
     pub next_index: usize,
@@ -46,6 +47,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
             | ControlSignal::Call(_)
+            | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
             | ControlSignal::Memory(_)
             | ControlSignal::Session(_)
@@ -112,6 +114,15 @@ impl<'a> EvalContext<'a> {
         source: IterationSource,
         frame: &mut Frame,
     ) -> ControlSignal {
+        if source.is_text_sequence() && state.next_index < state.iterations {
+            return ControlSignal::pending_native(
+                crate::intrinsic::pure::PendingNativeWork::start_iteration(
+                    state,
+                    source,
+                    frame.clone(),
+                ),
+            );
+        }
         let ForLoopResume {
             pat,
             source: _,
@@ -167,6 +178,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
                 | ControlSignal::Call(_)
+                | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
@@ -176,7 +188,7 @@ impl<'a> EvalContext<'a> {
                         signal,
                         Continuation::ForLoop {
                             pat,
-                            source: Some(source),
+                            source: Some(Box::new(source)),
                             next_index: index,
                             body,
                             iterations,
@@ -190,6 +202,75 @@ impl<'a> EvalContext<'a> {
         }
         frame.cleanup_to(&loop_scope);
         ControlSignal::Value(InterpValue::Unit)
+    }
+
+    pub(crate) fn resume_native_for_loop(
+        &mut self,
+        mut state: ForLoopResume,
+        source: IterationSource,
+        value: Option<InterpValue>,
+        frame: &mut Frame,
+    ) -> ControlSignal {
+        let Some(value) = value else {
+            frame.cleanup_to(&state.loop_scope);
+            return ControlSignal::Value(InterpValue::Unit);
+        };
+        state.next_index += 1;
+        if let Err(fault) = self.bind_pattern(state.pat, value, frame, state.span) {
+            frame.cleanup_to(&state.loop_scope);
+            return ControlSignal::Fault(Box::new(fault));
+        }
+        match self.execute_block(state.body, frame) {
+            ControlSignal::Value(_) | ControlSignal::Continue => {
+                self.continue_for_loop(state, source, frame)
+            }
+            ControlSignal::Break => {
+                frame.cleanup_to(&state.loop_scope);
+                ControlSignal::Value(InterpValue::Unit)
+            }
+            ControlSignal::Return(value) => {
+                frame.cleanup_to(&state.loop_scope);
+                ControlSignal::Return(value)
+            }
+            ControlSignal::Resume(value) => {
+                frame.cleanup_to(&state.loop_scope);
+                ControlSignal::Resume(value)
+            }
+            ControlSignal::Finish(value) => {
+                frame.cleanup_to(&state.loop_scope);
+                ControlSignal::Finish(value)
+            }
+            ControlSignal::Fault(fault) => {
+                frame.cleanup_to(&state.loop_scope);
+                ControlSignal::Fault(fault)
+            }
+            ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
+            signal @ (ControlSignal::Apply(_)
+            | ControlSignal::Memory(_)
+            | ControlSignal::Session(_)
+            | ControlSignal::Checkpoint(_)
+            | ControlSignal::Block(_)
+            | ControlSignal::Expr(_)
+            | ControlSignal::Call(_)
+            | ControlSignal::Native(_)
+            | ControlSignal::Perform(_)
+            | ControlSignal::Console(_)
+            | ControlSignal::Command(_)
+            | ControlSignal::Model(_)
+            | ControlSignal::Host(_)) => self.wrap_loop_body_signal(
+                signal,
+                Continuation::ForLoop {
+                    pat: state.pat,
+                    source: Some(Box::new(source)),
+                    next_index: state.next_index,
+                    body: state.body,
+                    iterations: state.iterations,
+                    loop_scope: state.loop_scope,
+                    span: state.span,
+                    frame: frame.clone(),
+                },
+            ),
+        }
     }
 
     fn wrap_loop_body_signal(
@@ -232,6 +313,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
                 | ControlSignal::Call(_)
+                | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
                 | ControlSignal::Memory(_)
                 | ControlSignal::Session(_)
@@ -283,6 +365,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
                 | ControlSignal::Call(_)
+                | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
@@ -350,6 +433,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
             | ControlSignal::Call(_)
+            | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)

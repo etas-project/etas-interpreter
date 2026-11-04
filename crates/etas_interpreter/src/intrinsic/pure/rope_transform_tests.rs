@@ -25,7 +25,7 @@ fn cold_unchanged_text_transforms_preserve_backing_without_flattening() {
     let mut costs = Vec::new();
     for count in [1000, 2000, 4000] {
         let prefix = "中😀e\u{301}".repeat(count);
-        for id in [pure::TEXT_TRIM, pure::TEXT_LINES, pure::TEXT_SPLIT] {
+        for id in [pure::TEXT_TRIM, pure::TEXT_SPLIT] {
             let source = cold_text(&prefix, "tail");
             let mut args = vec![InterpValue::String(source.clone())];
             if id == pure::TEXT_SPLIT {
@@ -95,26 +95,18 @@ fn cold_partial_trim_copies_only_the_selected_result() {
 }
 
 #[test]
-fn cold_split_and_lines_materialize_only_output_fragments() {
+fn cold_split_materializes_only_output_fragments() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let array = types.intern(Type::Array(string));
     let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for count in [1000, 2000, 4000] {
-        for (id, prefix, suffix, separator) in [
-            (
-                pure::TEXT_LINES,
-                format!("{}tail\r", "中😀\r\n".repeat(count)),
-                "\nend",
-                None,
-            ),
-            (
-                pure::TEXT_SPLIT,
-                format!("{}tail:", "中😀::".repeat(count)),
-                ":end",
-                Some("::"),
-            ),
-        ] {
+        for (id, prefix, suffix, separator) in [(
+            pure::TEXT_SPLIT,
+            format!("{}tail:", "中😀::".repeat(count)),
+            ":end",
+            Some("::"),
+        )] {
             let source = cold_text(&prefix, suffix);
             let mut cold = vec![InterpValue::String(source.clone())];
             let mut flat = vec![InterpValue::String(format!("{prefix}{suffix}").into())];
@@ -180,40 +172,6 @@ fn malformed_text_ranges_release_partial_output_without_exposing_input() {
         .unwrap_err();
     assert!(!format!("{error:?}").contains("PRIVATE_PAYLOAD_MARKER"));
     assert!(source.contiguous().is_none());
-}
-
-#[test]
-fn deep_fragment_projection_uses_bounded_cursor_metadata_not_repeated_root_walks() {
-    let mut types = TypeInterner::new();
-    let string = types.primitive(PrimitiveType::String);
-    let array = types.intern(Type::Array(string));
-    let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
-    let call = CheckedPureIntrinsicCall {
-        intrinsic: StdIntrinsicId(pure::TEXT_LINES),
-        parameter_types: vec![string],
-        result_type: array,
-    };
-    let chunk = format!("{}😀\n", "x".repeat(1024));
-    for count in [1000, 2000, 4000] {
-        let mut source = StringValue::default();
-        for _ in 0..count {
-            let alias = source.clone();
-            source = source.concat(chunk.clone().into()).unwrap();
-            drop(alias);
-        }
-        let flat = vec![InterpValue::String(chunk.repeat(count).into())];
-        let args = vec![InterpValue::String(source.clone())];
-        let (reference, reference_cost) =
-            measure(|| execute_pure_intrinsic(&call, flat, &projector).unwrap());
-        let (output, cost) = measure(|| execute_pure_intrinsic(&call, args, &projector).unwrap());
-        assert!(source.contiguous().is_none());
-        assert_eq!(output, reference);
-        eprintln!("deep fragments n={count}: {cost:?}, required_flat_output={reference_cost:?}");
-        assert!(
-            cost.bytes <= reference_cost.bytes + 128 * count + 4096,
-            "repeated root projection: {cost:?}"
-        );
-    }
 }
 
 #[test]

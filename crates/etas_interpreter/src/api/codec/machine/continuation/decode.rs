@@ -385,6 +385,13 @@ fn continuation_leaf_from_snapshot(
         "for_loop" => ContinuationSnapshot::ForLoop {
             pat: HirPatId(required_u32(value, "pat")?),
             source: optional_value(limits, value, "source")?,
+            text_cursor: match required(value, "text_cursor")? {
+                Value::Null => None,
+                cursor => Some(
+                    crate::api::codec::value::text_cursor_from_json(cursor)
+                        .map_err(|error| error.to_string())?,
+                ),
+            },
             next_index: required_usize(value, "next_index")?,
             body: HirBlockId(required_u32(value, "body")?),
             iterations: required_usize(value, "iterations")?,

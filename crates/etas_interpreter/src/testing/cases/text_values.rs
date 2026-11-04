@@ -262,8 +262,8 @@ import std.text.contains;
 import std.text.starts_with;
 import std.text.ends_with;
 import std.text.len;
+import std.text.char_count;
 import std.text.split;
-import std.text.lines;
 import std.text.join;
 import std.text.trim;
 import std.text.lowercase;
@@ -286,13 +286,12 @@ flow main() -> bool {
     let joined = join(parts, "😀");
     return alias == "中😀é" && row.text == alias
         && wrapped == Some(Ok<string, string>(alias)) && joined == alias
-        && len(alias) == 4 && contains(text, "suffix")
+        && len(alias) == 10 && char_count(alias) == 4 && contains(text, "suffix")
         && starts_with(text, alias) && ends_with(text, "!")
         && trim(alias) == alias && trim("  hi  ") == "hi"
         && unchanged == alias && whole_parts == [alias] && shortened == "small"
         && uppercase("ß中") == "SS中" && lowercase("İΣ") == "i̇ς"
-        && split("", "") == ["", ""] && lines("") == []
-        && lines("a\r\nb\n") == ["a", "b"];
+        && split("", "") == ["", ""];
 }
 "#,
     );

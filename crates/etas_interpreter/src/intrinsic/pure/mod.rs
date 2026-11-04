@@ -3,9 +3,11 @@ mod call;
 mod count;
 mod fast_path;
 mod text;
+mod work;
 
 pub use abi::{AdapterError, PureAbiProjector};
 pub use call::execute_pure_intrinsic;
+pub(crate) use work::{NativeWorkPoll, PendingNativeWork};
 
 #[cfg(test)]
 mod adt_tests;

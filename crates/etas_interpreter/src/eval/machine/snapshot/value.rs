@@ -22,6 +22,11 @@ impl ValueSnapshot {
             InterpValue::Bool(value) => Self::Bool(*value),
             InterpValue::Number(value) => Self::Number(*value),
             InterpValue::String(value) => Self::String(value.clone()),
+            InterpValue::TextSequence(value) => Self::TextSequence {
+                source: value.source().clone(),
+                plan: value.plan().clone(),
+                item_type: value.item_type(),
+            },
             InterpValue::Bytes(value) => Self::Bytes(value.clone()),
             InterpValue::Json(value) => Self::Json(value.clone()),
             InterpValue::StdConstant(value) => Self::StdConstant(*value),
@@ -172,6 +177,13 @@ impl ValueSnapshot {
             Self::Bool(value) => InterpValue::Bool(value),
             Self::Number(value) => InterpValue::Number(value),
             Self::String(value) => InterpValue::String(value),
+            Self::TextSequence {
+                source,
+                plan,
+                item_type,
+            } => InterpValue::TextSequence(crate::value::iteration::TextSequenceValue::new(
+                source, plan, item_type,
+            )?),
             Self::Bytes(value) => InterpValue::Bytes(value),
             Self::Json(value) => InterpValue::Json(value),
             Self::StdConstant(value) => InterpValue::StdConstant(value),
