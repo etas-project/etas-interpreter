@@ -24,9 +24,9 @@ The following results are from 2026-11-05. Ranges cover all ten programs in each
 | `BatchStorageSemijoin` | 10 | 427 → 360 | 309 → 247 | lower in 10/10 |
 | `ScheduleBoundedPipeline` | 10 | 767 → 700 | 565 → 503 | lower in 10/10 |
 | `LowerResourceRegion` | 10 | 463 → 299 | 345 → 217 | lower in 10/10 |
-| `QualityAwareContextPolicy` | 10 | 64 → 11 | 58 → 17 | lower in 10/10 |
+| `QualityAwareContextPolicy` | 10 | 64 → 11 | 58–59 → 17 | lower in 10/10 |
 
-`SuffixDemandHistory` reduces a complete literal history traversal to the demanded last entry. The exact mode of `QualityAwareContextPolicy` removes a pure context candidate only when typed-HIR use analysis proves that it never reaches a consumer.
+`SuffixDemandHistory` reduces a complete literal history traversal to the demanded last entry. The exact mode of `QualityAwareContextPolicy` removes a pure `QualityContext` boundary only when typed-HIR use analysis proves that it never reaches a consumer. Resource factories and bounded stages are likewise selected by explicit `ReusableResourceFactory` and `BoundedPipelineStage` optimization contracts; checked effect/version/disjointness facts remain the legality authority.
 
 The separate `quality_context_token_budget` compile option enables the policy-changing P3 mode. Its ten Etas programs return 18–20 whitespace-delimited context units without the policy and exactly 8 recent units with it. The interpreter test asserts the reduced input and suffix retention; it does not pretend that the two policy outputs are semantically identical.
 

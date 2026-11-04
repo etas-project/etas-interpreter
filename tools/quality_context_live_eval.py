@@ -29,7 +29,7 @@ def fixture_context(root: Path, name: str) -> str:
         / f"{name}.es"
     ).read_text()
     return re.search(
-        r"let\s+(?:context|history|retrieval|summary)_[^=]+\s*=\s*\"([^\"]+)\"",
+        r"let\s+(?:context|history|retrieval|summary)_[^=]+\s*=\s*quality_context\(\"([^\"]+)\"\)",
         source,
     ).group(1)
 
