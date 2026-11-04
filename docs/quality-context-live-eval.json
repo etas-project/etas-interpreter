@@ -1,0 +1,156 @@
+{
+  "generated_at": "2026-11-04T17:59:16.126091+00:00",
+  "model": "MiniMax-M3.1-Flash",
+  "endpoint": "https://api.minimaxi.com/v1/text/chatcompletion_v2",
+  "context_unit_budget": 8,
+  "cases": [
+    {
+      "case": "repo_map",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 242,
+        "completion_tokens": 69,
+        "latency_ms": 1438.564
+      },
+      "optimized": {
+        "prompt_tokens": 231,
+        "completion_tokens": 3,
+        "latency_ms": 1522.828
+      }
+    },
+    {
+      "case": "chat_history",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 244,
+        "completion_tokens": 28,
+        "latency_ms": 1299.33
+      },
+      "optimized": {
+        "prompt_tokens": 232,
+        "completion_tokens": 3,
+        "latency_ms": 1051.905
+      }
+    },
+    {
+      "case": "retrieval_pack",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 248,
+        "completion_tokens": 9,
+        "latency_ms": 1131.536
+      },
+      "optimized": {
+        "prompt_tokens": 236,
+        "completion_tokens": 8,
+        "latency_ms": 1521.025
+      }
+    },
+    {
+      "case": "session_summary",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 240,
+        "completion_tokens": 61,
+        "latency_ms": 1536.793
+      },
+      "optimized": {
+        "prompt_tokens": 230,
+        "completion_tokens": 39,
+        "latency_ms": 1323.201
+      }
+    },
+    {
+      "case": "tool_catalog",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 241,
+        "completion_tokens": 10,
+        "latency_ms": 1121.455
+      },
+      "optimized": {
+        "prompt_tokens": 230,
+        "completion_tokens": 9,
+        "latency_ms": 1422.65
+      }
+    },
+    {
+      "case": "diagnostic_trace",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 241,
+        "completion_tokens": 10,
+        "latency_ms": 1172.822
+      },
+      "optimized": {
+        "prompt_tokens": 230,
+        "completion_tokens": 4,
+        "latency_ms": 1087.801
+      }
+    },
+    {
+      "case": "code_window",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 242,
+        "completion_tokens": 84,
+        "latency_ms": 1672.814
+      },
+      "optimized": {
+        "prompt_tokens": 232,
+        "completion_tokens": 40,
+        "latency_ms": 1438.956
+      }
+    },
+    {
+      "case": "memory_recall",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 242,
+        "completion_tokens": 6,
+        "latency_ms": 1241.17
+      },
+      "optimized": {
+        "prompt_tokens": 232,
+        "completion_tokens": 6,
+        "latency_ms": 1193.085
+      }
+    },
+    {
+      "case": "plan_history",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 240,
+        "completion_tokens": 61,
+        "latency_ms": 2485.27
+      },
+      "optimized": {
+        "prompt_tokens": 230,
+        "completion_tokens": 14,
+        "latency_ms": 1089.153
+      }
+    },
+    {
+      "case": "policy_summary",
+      "expected_fact_retained": true,
+      "baseline": {
+        "prompt_tokens": 242,
+        "completion_tokens": 7,
+        "latency_ms": 1121.938
+      },
+      "optimized": {
+        "prompt_tokens": 231,
+        "completion_tokens": 8,
+        "latency_ms": 2669.215
+      }
+    }
+  ],
+  "aggregate": {
+    "cases": 10,
+    "fact_retention_passes": 10,
+    "baseline_prompt_tokens": 2422,
+    "optimized_prompt_tokens": 2314,
+    "baseline_latency_ms": 14221.692,
+    "optimized_latency_ms": 14319.819
+  }
+}

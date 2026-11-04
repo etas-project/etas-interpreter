@@ -1,0 +1,1 @@
+module app.main; flow main() -> string { let context_diagnostic_trace = "parse started parse complete type started type complete effect started effect complete final diagnostic code is effect row mismatch"; return context_diagnostic_trace; }

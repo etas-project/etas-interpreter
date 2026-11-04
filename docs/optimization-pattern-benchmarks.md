@@ -26,6 +26,26 @@ The following results are from 2026-11-05. Ranges cover all ten programs in each
 | `LowerResourceRegion` | 10 | 463 → 299 | 345 → 217 | lower in 10/10 |
 | `QualityAwareContextPolicy` | 10 | 64 → 11 | 58 → 17 | lower in 10/10 |
 
-`SuffixDemandHistory` reduces a complete literal history traversal to the demanded last entry. `QualityAwareContextPolicy` removes a pure context candidate only when typed-HIR use analysis proves that it never reaches a consumer. These exact rewrites reduce history/context materialization work; they do not claim a reduction in live model-input tokens because the observable returned model input is intentionally unchanged. A live-model quality/token comparison belongs to an explicitly policy-changing P3 mode rather than these semantics-preserving defaults.
+`SuffixDemandHistory` reduces a complete literal history traversal to the demanded last entry. The exact mode of `QualityAwareContextPolicy` removes a pure context candidate only when typed-HIR use analysis proves that it never reaches a consumer.
+
+The separate `quality_context_token_budget` compile option enables the policy-changing P3 mode. Its ten Etas programs return 18–20 whitespace-delimited context units without the policy and exactly 8 recent units with it. The interpreter test asserts the reduced input and suffix retention; it does not pretend that the two policy outputs are semantically identical.
+
+## Live-model token and quality evaluation
+
+`tools/quality_context_live_eval.py` reads the same ten Etas fixtures and sends baseline/optimized pairs to the official China-region MiniMax endpoint. The committed report in `docs/quality-context-live-eval.json` was generated with `MiniMax-M3.1-Flash` on 2026-11-05.
+
+| Metric | Baseline | P3 budget | Change |
+|---|---:|---:|---:|
+| API `prompt_tokens`, 10 calls | 2,422 | 2,314 | -108 (-4.46%) |
+| Expected fact retained | 10/10 | 10/10 | unchanged |
+| Aggregate network/model latency | 14,221.692 ms | 14,319.819 ms | +98.127 ms |
+
+Latency is recorded but not claimed as a benefit for this run because request scheduling and generation variance dominate these short prompts. The measured P3 benefit is lower provider-counted input tokens with unchanged fact retention on the ten workload probes.
+
+Run it again with:
+
+```sh
+python3 tools/quality_context_live_eval.py --api-key-file /path/to/minimax-key
+```
 
 The frontend suite contains the source-level pass assertions, including the ten `AgentEffectLegality` programs. The interpreter suite owns runtime equivalence and cost measurements. No model API is required for this exact benchmark.

@@ -41,13 +41,27 @@ impl PreparedExecution {
     }
 
     fn with_optimization(source: &str, optimize_hir: bool) -> Self {
-        let checked = checked_project_with_options(
+        Self::with_compile_options(
             source,
             etas_frontend::ProjectCompileOptions {
                 optimize_hir,
                 ..Default::default()
             },
-        );
+        )
+    }
+
+    fn with_quality_context_token_budget(source: &str, budget: Option<usize>) -> Self {
+        Self::with_compile_options(
+            source,
+            etas_frontend::ProjectCompileOptions {
+                quality_context_token_budget: budget,
+                ..Default::default()
+            },
+        )
+    }
+
+    fn with_compile_options(source: &str, options: etas_frontend::ProjectCompileOptions) -> Self {
+        let checked = checked_project_with_options(source, options);
         Self::from_checked(checked)
     }
 
