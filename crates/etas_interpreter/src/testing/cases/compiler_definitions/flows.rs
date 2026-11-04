@@ -1,6 +1,94 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn compiled_flow_preserves_generic_method_owner_witnesses_across_checkpoint() {
+    use crate::api::code::InterpreterCandidatePublisher;
+    use etas_code::{definition::CodeDefinitionOperations, syntax::CodeSyntaxOperations};
+    use etas_frontend::{FrontendSession, code::service::CandidatePublisher};
+
+    let (checked, definitions) = prepared(
+        include_str!("../../fixtures/method_resolution/revision_owner.es"),
+        &["app.main.target"],
+    );
+    let reflection = *checked.types.reflections.keys().next().unwrap();
+    let backend = definitions.definitions().clone();
+    let original = backend.reflect_flow(reflection).unwrap();
+    let body = backend
+        .syntax_operations()
+        .parse_body("return load(Container<i32> { value = 9 });")
+        .unwrap();
+    let draft = backend.with_body(&original, body).unwrap();
+    let candidate = FrontendSession::new()
+        .compile_body_overlay(backend.body_overlay(&draft).unwrap())
+        .unwrap();
+    let mut revision = InterpreterCandidatePublisher.publish(candidate).unwrap();
+    Arc::get_mut(&mut revision)
+        .unwrap()
+        .retain_reflected_definition(backend.clone(), &draft)
+        .unwrap();
+    let mut revisions = crate::api::code::PreparedRevisionSet::new(checked.clone());
+    revisions.insert(revision.clone()).unwrap();
+    let revisions = Arc::new(revisions);
+    let entry = checked.entry.unwrap();
+    let etas_types::ItemSignature::Flow(signature) = &checked.types.item_signatures[&entry] else {
+        panic!("source entry");
+    };
+    let current = crate::value::ScopedCallableValue::from_revision(
+        revision,
+        None,
+        &checked,
+        signature.params[0],
+    )
+    .unwrap();
+    let services = availability(&[HostRequirementKind::Checkpoint]);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint { item: entry },
+            vec![InterpValue::Callable(current)],
+            &FakeHost::new(services),
+            RunOptions {
+                code_definitions: Some(definitions.clone()),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(9)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        crate::api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let bytes = crate::api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
+    let artifact =
+        crate::api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+    let restored = crate::api::codec::checkpoint_from_json_with_revisions(
+        &Default::default(),
+        &artifact,
+        &checked,
+        Some(&revisions),
+    )
+    .unwrap();
+    for checkpoint in [&result.checkpoints[0], &restored] {
+        let resumed = Interpreter
+            .resume_checkpoint(
+                &checked,
+                checkpoint,
+                &FakeHost::new(services),
+                RunOptions {
+                    code_definitions: Some(definitions.clone()),
+                    checkpoint_revisions: Some(revisions.clone()),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), result.value());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn compiled_flow_executes_effectful_callback_handler_arm_in_order() {
     use crate::api::code::InterpreterCandidatePublisher;
     use etas_code::{definition::CodeDefinitionOperations, syntax::CodeSyntaxOperations};

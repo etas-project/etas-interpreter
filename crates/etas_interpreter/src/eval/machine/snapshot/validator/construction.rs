@@ -120,11 +120,10 @@ impl SnapshotValidator<'_> {
         expr: HirExprId,
         variant: Option<SymbolId>,
     ) -> Result<HashMap<String, TypeId>, String> {
-        let mut ty = *self
+        let mut ty = self
             .checked
             .types
-            .expr_types
-            .get(&expr)
+            .expression_producer_type(expr)
             .ok_or("checkpoint record construction has no checked type")?;
         let mut layouts = crate::plan::code::CheckedValueTypes::default();
         if let Some(variant) = variant {

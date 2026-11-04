@@ -122,6 +122,12 @@ impl MethodDispatchPlan {
                 receiver,
             )? {
                 let entry = resolved.declaration;
+                if let MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. } =
+                    entry.target
+                    && !project.reachability.analysis_items.contains(&callable)
+                {
+                    continue;
+                }
                 let member = entry
                     .spec_member
                     .as_ref()
@@ -276,6 +282,9 @@ impl MethodDispatchPlan {
                 body,
             } = fact.target
             {
+                if !project.reachability.analysis_items.contains(&callable) {
+                    return Err("checked method target has no analyzed source body".into());
+                }
                 if !matches!(project.hir.items.get(callable), Some(etas_hir::HirItem::Flow(flow)) if flow.symbol == symbol)
                     || view
                         .body(body)

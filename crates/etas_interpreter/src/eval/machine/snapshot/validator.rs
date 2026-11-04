@@ -1382,7 +1382,12 @@ impl<'a> SnapshotValidator<'a> {
             return Err(error());
         };
         let expected_type = if record.path.is_some() {
-            Some(*self.checked.types.expr_types.get(&expr).ok_or_else(error)?)
+            Some(
+                self.checked
+                    .types
+                    .expression_producer_type(expr)
+                    .ok_or_else(error)?,
+            )
         } else {
             None
         };

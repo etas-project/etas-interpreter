@@ -110,7 +110,7 @@ impl RecordLayoutTable {
         site: FieldAccessSite<'_>,
     ) -> Option<TypeId> {
         match site {
-            FieldAccessSite::Expr(expr) => project.types.expr_types.get(&expr).copied(),
+            FieldAccessSite::Expr(expr) => project.types.expression_producer_type(expr),
             FieldAccessSite::Path {
                 prefix,
                 remaining,
@@ -152,10 +152,10 @@ impl RecordLayoutTable {
         for (expr, data) in project.hir.exprs.iter() {
             match data {
                 HirExpr::Record(record) => {
-                    let Some(ty) = project.types.expr_types.get(&expr) else {
+                    let Some(ty) = project.types.expression_producer_type(expr) else {
                         continue;
                     };
-                    let Some(names) = shapes.get(*ty)? else {
+                    let Some(names) = shapes.get(ty)? else {
                         continue;
                     };
                     let source: Vec<_> = record
@@ -199,7 +199,8 @@ impl RecordLayoutTable {
                         };
                         if projection.receiver != *ty
                             || projection.field != *field
-                            || project.types.expr_types.get(&expr) != Some(&projection.output)
+                            || project.types.expression_producer_type(expr)
+                                != Some(projection.output)
                         {
                             return Err("native field differs from checked projection fact".into());
                         }
