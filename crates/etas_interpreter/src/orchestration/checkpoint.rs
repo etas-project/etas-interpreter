@@ -352,6 +352,11 @@ pub(crate) enum ValueSnapshot {
     Number(crate::value::NumericValue),
     // Immutable backing is shared with runtime values; mutations use COW.
     String(crate::value::StringValue),
+    TextSequence {
+        source: crate::value::StringValue,
+        plan: etas_builtin::text::iteration::TextSequencePlan,
+        item_type: TypeId,
+    },
     Bytes(crate::value::BytesValue),
     Json(HostJsonSupportValue),
     Nominal {
@@ -805,6 +810,7 @@ pub(crate) enum ContinuationSnapshot {
     ForLoop {
         pat: HirPatId,
         source: Option<ValueSnapshot>,
+        text_cursor: Option<etas_builtin::text::iteration::TextCursorState>,
         next_index: usize,
         body: HirBlockId,
         iterations: usize,

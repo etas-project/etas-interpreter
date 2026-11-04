@@ -113,6 +113,9 @@ fn from_builtin_representation(
                 .map(|values| InterpValue::Tuple(values.into()))
         }
         AbiShape::Enum(layout) => from_builtin_enum(value, ty, layout, projector),
+        AbiShape::Iterable(_) => Err(AdapterError::UnsupportedValue(
+            "lazy iterable results require an interpreter sequence plan".into(),
+        )),
         AbiShape::Nominal { .. } | AbiShape::Refined { .. } | AbiShape::Trust { .. } => {
             Err(AdapterError::UnsupportedValue(
                 "checked result representation contains an unprojected wrapper".into(),
@@ -179,6 +182,9 @@ fn from_builtin_primitive(
             Ok(InterpValue::String(value.into()))
         }
         (PrimitiveType::Bytes, BuiltinValue::Bytes(value)) => Ok(InterpValue::Bytes(value.into())),
+        (PrimitiveType::Char, BuiltinValue::Char(value)) => {
+            Ok(InterpValue::String(value.to_string().into()))
+        }
         (PrimitiveType::I8, BuiltinValue::I8(value)) => {
             Ok(InterpValue::Number(NumericValue::I8(value)))
         }

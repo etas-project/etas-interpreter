@@ -90,6 +90,88 @@ async fn cpu_loop_yields_to_external_stop_without_language_error() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn large_text_query_yields_to_external_stop() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.text.contains;
+flow main(input: string) -> bool { return contains(input, "z"); }
+"#,
+    );
+    let host = FakeHost::new(HostServiceAvailability::default());
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![InterpValue::String("a".repeat(8 * 1024 * 1024).into())],
+        &host,
+        RunOptions::default(),
+    );
+    let control = invocation.control();
+    let (result, ()) = tokio::time::timeout(Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            tokio::task::yield_now().await;
+            control.stop(CancellationReason::Requested).unwrap();
+        })
+    })
+    .await
+    .expect("large text query must yield on a current-thread executor");
+    let result = result.unwrap();
+    assert!(matches!(result.outcome, RunOutcome::Cancelled(_)));
+    assert!(result.value().is_none());
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn large_text_query_consumes_run_fuel_between_native_quanta() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.text.contains;
+flow main(input: string) -> bool { return contains(input, "z"); }
+"#,
+    );
+    let host = FakeHost::new(HostServiceAvailability::default());
+    let mut options = RunOptions::default();
+    options.execution_limits.max_steps = std::num::NonZeroU64::new(64);
+
+    let small = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![InterpValue::String("a".repeat(1024).into())],
+            &host,
+            options.clone(),
+        )
+        .await
+        .unwrap();
+    assert!(small.diagnostics.is_empty(), "{:?}", small.diagnostics);
+    assert_eq!(small.value(), Some(&InterpValue::Bool(false)));
+
+    let large = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![InterpValue::String("a".repeat(8 * 1024 * 1024).into())],
+            &host,
+            options,
+        )
+        .await
+        .unwrap();
+    assert!(large.value().is_none());
+    assert!(large.diagnostics.iter().any(|diagnostic| {
+        diagnostic
+            .message
+            .contains("maximum interpreter execution steps (64)")
+    }));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn stopped_before_first_poll_does_not_call_host() {
     let checked = checked_project(
         r#"

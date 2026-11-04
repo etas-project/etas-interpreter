@@ -2,6 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use etas_types::{
     PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner, TypeStore, applied_representation,
+    facts::symbols::StdIterableItemFact,
 };
 
 use super::record::RecordAbiLayout;
@@ -24,6 +25,7 @@ pub enum AbiShape {
         ok: TypeId,
         err: TypeId,
     },
+    Iterable(TypeId),
     Record(RecordAbiLayout),
     Tuple(Vec<TypeId>),
     Enum(super::enum_layout::EnumAbiLayout),
@@ -51,6 +53,14 @@ impl PureAbiProjector {
     pub fn build(
         store: &TypeStore,
         layouts: &HashMap<TypeId, etas_types::EnumLayoutFact>,
+    ) -> Result<Self, String> {
+        Self::build_with_known_std_types(store, layouts, &etas_types::KnownStdTypes::default())
+    }
+
+    pub fn build_with_known_std_types(
+        store: &TypeStore,
+        layouts: &HashMap<TypeId, etas_types::EnumLayoutFact>,
+        known: &etas_types::KnownStdTypes,
     ) -> Result<Self, String> {
         let mut interner = TypeInterner::from_store(store.clone());
         let mut representations = HashMap::new();
@@ -139,6 +149,38 @@ impl PureAbiProjector {
                     Type::Slice(inner) => AbiShape::Slice(*inner),
                     Type::Option(inner) => AbiShape::Option(*inner),
                     Type::Result { ok, err } => AbiShape::Result { ok: *ok, err: *err },
+                    Type::Applied { constructor, args }
+                        if known
+                            .intrinsic_only_constructors
+                            .contains(&TypeId(constructor.0))
+                            && known.iterables.contains_key(&TypeId(constructor.0)) =>
+                    {
+                        let fact = &known.iterables[&TypeId(constructor.0)];
+                        if fact.arity != args.len() {
+                            return Err(format!(
+                                "intrinsic-only iterable constructor {:?} expects {} arguments, got {}",
+                                constructor,
+                                fact.arity,
+                                args.len()
+                            ));
+                        }
+                        match fact.item {
+                            StdIterableItemFact::Element { parameter } => {
+                                AbiShape::Iterable(*args.get(parameter).ok_or_else(|| {
+                                    format!(
+                                        "intrinsic-only iterable constructor {:?} has invalid element parameter {parameter}",
+                                        constructor
+                                    )
+                                })?)
+                            }
+                            StdIterableItemFact::Entry { .. } => {
+                                return Err(
+                                    "intrinsic-only entry iterables require a checked tuple result type"
+                                        .into(),
+                                );
+                            }
+                        }
+                    }
                     Type::Record(record) => match RecordAbiLayout::build(&record.fields) {
                         Ok(layout) => AbiShape::Record(layout),
                         Err(message) => AbiShape::Unsupported(message),

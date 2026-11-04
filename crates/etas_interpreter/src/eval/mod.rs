@@ -41,6 +41,7 @@ pub(crate) mod collection_ordering;
 mod index_access;
 pub(crate) mod limit;
 mod loop_control;
+pub(crate) use loop_control::ForLoopResume;
 pub(crate) mod machine;
 mod memory_commit;
 mod memory_intent;
@@ -506,6 +507,7 @@ fn is_pending_host_boundary_signal(signal: &ControlSignal) -> bool {
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
             | ControlSignal::Call(_)
+            | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
             | ControlSignal::Memory(_)
             | ControlSignal::Session(_)

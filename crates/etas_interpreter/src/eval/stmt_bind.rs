@@ -46,6 +46,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
             | ControlSignal::Call(_)
+            | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
             | ControlSignal::Memory(_)
             | ControlSignal::Session(_)

@@ -10,6 +10,7 @@ mod concat;
 mod formatting;
 mod ranges;
 mod read;
+pub(crate) use chunks::OwnedTextCursor;
 pub use chunks::TextChunks;
 use concat::Repr;
 pub(crate) use concat::TextCapacityExceeded;
@@ -52,6 +53,10 @@ impl StringValue {
 
     pub fn chunks(&self) -> TextChunks<'_> {
         TextChunks::new(self)
+    }
+
+    pub(crate) fn owned_cursor(&self) -> OwnedTextCursor {
+        OwnedTextCursor::new(self)
     }
 
     /// Share an unchanged prefix while the caller's old slot or aliases remain

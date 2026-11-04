@@ -441,6 +441,7 @@ impl<'a> EvalContext<'a> {
                 );
                 ControlSignal::Call(nested)
             }
+            ControlSignal::Native(pending) => ControlSignal::Native(pending),
             ControlSignal::Memory(mut nested) => {
                 nested.continuation = compose_continuation(
                     nested.continuation,

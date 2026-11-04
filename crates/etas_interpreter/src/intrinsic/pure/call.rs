@@ -19,6 +19,12 @@ pub fn execute_pure_intrinsic(
             actual: args.len(),
         });
     }
+    if let Some(sequence) = super::text::execute_lazy_sequence(call, &args, projector)? {
+        return Ok(sequence);
+    }
+    if let Some(value) = super::text::execute_integer_parse(call, &args, projector)? {
+        return Ok(value);
+    }
     if let Some(query) = etas_builtin::collections::count::CountQuery::for_intrinsic(call.intrinsic)
     {
         return super::count::execute_count(query, call, &args, projector);

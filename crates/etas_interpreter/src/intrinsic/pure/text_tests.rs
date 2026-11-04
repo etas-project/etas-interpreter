@@ -43,7 +43,7 @@ fn checked_text_queries_borrow_shared_inputs_without_payload_materialization() {
                 pure::TEXT_LEN,
                 None,
                 size,
-                InterpValue::usize(count * 4 + 8),
+                InterpValue::usize(count * 10 + 8),
             ),
         ] {
             let args = std::iter::once(text.clone())

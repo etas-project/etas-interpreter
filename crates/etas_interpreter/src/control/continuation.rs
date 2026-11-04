@@ -274,7 +274,7 @@ pub enum Continuation {
     },
     ForLoop {
         pat: HirPatId,
-        source: Option<crate::value::iteration::IterationSource>,
+        source: Option<Box<crate::value::iteration::IterationSource>>,
         next_index: usize,
         body: HirBlockId,
         iterations: usize,

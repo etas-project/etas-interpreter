@@ -135,6 +135,18 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         (V::Bool(a), V::Bool(b)) => a == b,
         (V::Number(a), V::Number(b)) => a == b,
         (V::String(a), V::String(b)) => a == b,
+        (
+            V::TextSequence {
+                source: a,
+                plan: c,
+                item_type: e,
+            },
+            V::TextSequence {
+                source: b,
+                plan: d,
+                item_type: f,
+            },
+        ) => a == b && c == d && e == f,
         (V::Bytes(a), V::Bytes(b)) => a == b,
         (V::Json(a), V::Json(b)) => a == b,
         (V::StdConstant(a), V::StdConstant(b)) => a == b,

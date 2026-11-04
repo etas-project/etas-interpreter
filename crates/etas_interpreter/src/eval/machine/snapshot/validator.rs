@@ -859,6 +859,7 @@ impl<'a> SnapshotValidator<'a> {
             ContinuationSnapshot::ForLoop {
                 pat,
                 source,
+                text_cursor,
                 next_index,
                 body,
                 iterations,
@@ -876,10 +877,10 @@ impl<'a> SnapshotValidator<'a> {
                     return Err(format!("{context} has an invalid for-loop iteration limit"));
                 }
                 if let Some(source) = source {
-                    self.iteration_source(source, *next_index, context)?;
-                } else if *next_index != 0 {
+                    self.iteration_source(source, text_cursor.as_ref(), *next_index, context)?;
+                } else if *next_index != 0 || text_cursor.is_some() {
                     return Err(format!(
-                        "{context} has a for-loop index without an iteration source"
+                        "{context} has for-loop progress without an iteration source"
                     ));
                 }
                 self.frame(frame, context)
@@ -965,6 +966,16 @@ impl<'a> SnapshotValidator<'a> {
         let mut query_seeds = Vec::new();
         for value in root.walk() {
             match value {
+                ValueSnapshot::TextSequence {
+                    source: _,
+                    plan,
+                    item_type,
+                } => {
+                    plan.validate().map_err(|error| {
+                        format!("checkpoint has invalid text sequence: {error}")
+                    })?;
+                    self.type_id(*item_type, "checkpoint text sequence item")?;
+                }
                 ValueSnapshot::Tuple(values) if values.is_empty() => {
                     return Err("empty tuple must use the canonical unit value encoding".into());
                 }
@@ -1111,10 +1122,42 @@ impl<'a> SnapshotValidator<'a> {
     fn iteration_source(
         &self,
         source: &ValueSnapshot,
+        text_cursor: Option<&etas_builtin::text::iteration::TextCursorState>,
         position: usize,
         context: &str,
     ) -> Result<(), String> {
         match source {
+            ValueSnapshot::TextSequence {
+                source,
+                plan,
+                item_type,
+            } => {
+                self.type_id(*item_type, context)?;
+                plan.validate()
+                    .map_err(|error| format!("{context} has invalid text sequence: {error}"))?;
+                let cursor = text_cursor
+                    .ok_or_else(|| format!("{context} is missing its text iteration cursor"))?;
+                if cursor.byte_offset > source.len() || !source.is_char_boundary(cursor.byte_offset)
+                {
+                    return Err(format!("{context} has an invalid text cursor boundary"));
+                }
+                let mut expected = etas_builtin::text::iteration::TextCursorState::default();
+                for _ in 0..position {
+                    if matches!(
+                        etas_builtin::text::iteration::step(plan, &mut expected, source.as_str()),
+                        Ok(etas_builtin::text::iteration::TextSequenceStep::End) | Err(_)
+                    ) {
+                        return Err(format!(
+                            "{context} has a text iteration position past the sequence end"
+                        ));
+                    }
+                }
+                if &expected != cursor {
+                    return Err(format!(
+                        "{context} text cursor does not match its completed iteration count"
+                    ));
+                }
+            }
             ValueSnapshot::Array(values)
             | ValueSnapshot::List(values)
             | ValueSnapshot::Slice(values)
@@ -1147,6 +1190,11 @@ impl<'a> SnapshotValidator<'a> {
                 }
             }
             _ => return Err(format!("{context} has a non-iterable for-loop source")),
+        }
+        if !matches!(source, ValueSnapshot::TextSequence { .. }) && text_cursor.is_some() {
+            return Err(format!(
+                "{context} has a text cursor for a non-text iteration source"
+            ));
         }
         self.snapshot_value(source)
     }

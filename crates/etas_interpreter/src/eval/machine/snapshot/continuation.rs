@@ -495,6 +495,11 @@ impl ContinuationSnapshot {
                         .as_ref()
                         .map(|source| context.value(source.value()))
                         .transpose()?,
+                    text_cursor: source
+                        .as_ref()
+                        .map(|source| source.text_cursor(*next_index))
+                        .transpose()?
+                        .flatten(),
                     next_index: *next_index,
                     body: *body,
                     iterations: *iterations,
@@ -1074,6 +1079,7 @@ impl ContinuationSnapshot {
             Self::ForLoop {
                 pat,
                 source,
+                text_cursor,
                 next_index,
                 body,
                 iterations,
@@ -1082,11 +1088,24 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::ForLoop {
                 pat,
-                source: source
-                    .map(|source| {
-                        crate::value::iteration::IterationSource::new(source.restore_with(context)?)
-                    })
-                    .transpose()?,
+                source: match (source, text_cursor) {
+                    (Some(source), Some(cursor)) => Some(Box::new(
+                        crate::value::iteration::IterationSource::restore_text_cursor(
+                            source.restore_with(context)?,
+                            next_index,
+                            cursor,
+                        )?,
+                    )),
+                    (Some(source), None) => {
+                        Some(Box::new(crate::value::iteration::IterationSource::new(
+                            source.restore_with(context)?,
+                        )?))
+                    }
+                    (None, None) => None,
+                    (None, Some(_)) => {
+                        return Err("checkpoint text cursor has no iteration source".into());
+                    }
+                },
                 next_index,
                 body,
                 iterations,
