@@ -117,6 +117,16 @@ impl CheckedCallBindings {
 }
 
 impl GenericBindings {
+    pub(crate) fn is_checked_parameter(
+        checked: &etas_frontend::CheckedProgram,
+        parameter: TypeId,
+    ) -> bool {
+        checked.type_store.parameter_identity(parameter).is_some()
+            || matches!(checked.type_store.get(parameter), Some(etas_types::Type::Named(named))
+                if named.source_parameter.is_some_and(|symbol|
+                    matches!(checked.hir.symbols.get(symbol).map(|symbol| &symbol.def), Some(etas_hir::SymbolDef::TypeParam { .. }))))
+    }
+
     pub(crate) fn shared(self) -> std::sync::Arc<Self> {
         static EMPTY: std::sync::LazyLock<std::sync::Arc<GenericBindings>> =
             std::sync::LazyLock::new(Default::default);

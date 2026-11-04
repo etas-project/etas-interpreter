@@ -27,20 +27,21 @@ async fn generic_spec_owner_witness_executes_and_resumes_without_runtime_selecti
     assert_eq!(result.value(), Some(&InterpValue::i32(7)));
     assert_eq!(host.stdout_text(), "read\n");
     assert_eq!(host.console_call_count(), 1);
-    assert_eq!(result.checkpoints.len(), 1);
-    let checkpoint = &result.checkpoints[0];
-    let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
-    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
-    for checkpoint in [checkpoint, &decoded] {
-        let host = FakeHost::new(services);
-        let resumed = Interpreter
-            .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
-            .await
-            .unwrap();
-        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-        assert_eq!(resumed.value(), result.value());
-        assert_eq!(host.stdout_text(), "");
-        assert_eq!(host.console_call_count(), 0);
+    assert_eq!(result.checkpoints.len(), 2);
+    for (checkpoint, expected) in result.checkpoints.iter().zip(["read\n", ""]) {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [checkpoint, &decoded] {
+            let host = FakeHost::new(services);
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), result.value());
+            assert_eq!(host.stdout_text(), expected);
+            assert_eq!(host.console_call_count(), usize::from(!expected.is_empty()));
+        }
     }
 }
 

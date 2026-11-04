@@ -1,4 +1,5 @@
-use std::{collections::HashMap, sync::Arc};
+use crate::control::GenericBindings;
+use std::sync::Arc;
 
 use super::*;
 use crate::{
@@ -37,9 +38,12 @@ fn source_action_origin_rejects_an_abi_or_identity_not_proven_by_the_perform() {
     let execution = execution(
         "module app.main; effect Query { action next(value: i32) -> i32; action other(value: i32) -> i32; } flow main() -> i32 ![Query.next] { return perform Query.next(4); }",
     );
-    let proof =
-        CheckedActionInvocation::source(execution.clone(), performed(&execution), &HashMap::new())
-            .unwrap();
+    let proof = CheckedActionInvocation::source(
+        execution.clone(),
+        performed(&execution),
+        &GenericBindings::new(),
+    )
+    .unwrap();
     proof.validate_origin().unwrap();
     let mut invalid = proof.clone();
     invalid.parameters.clear();
@@ -62,9 +66,13 @@ fn source_action_origin_rejects_an_abi_or_identity_not_proven_by_the_perform() {
     invalid.output = TypeId(u32::MAX);
     assert!(invalid.validate_origin().is_err());
     assert!(
-        CheckedActionInvocation::source(execution, etas_hir::HirExprId(u32::MAX), &HashMap::new())
-            .unwrap_err()
-            .contains("not a checked perform")
+        CheckedActionInvocation::source(
+            execution,
+            etas_hir::HirExprId(u32::MAX),
+            &GenericBindings::new()
+        )
+        .unwrap_err()
+        .contains("not a checked perform")
     );
 }
 
@@ -81,7 +89,7 @@ fn source_action_origin_keeps_instantiated_generic_selector_and_payload_types() 
             (*ty == etas_types::Type::Primitive(etas_types::PrimitiveType::I32)).then_some(id)
         })
         .unwrap();
-    let bindings = HashMap::from([("T".into(), integer)]);
+    let bindings = GenericBindings::from([("T".into(), integer)]);
     let proof =
         CheckedActionInvocation::source(execution.clone(), performed(&execution), &bindings)
             .unwrap();
@@ -92,7 +100,7 @@ fn source_action_origin_keeps_instantiated_generic_selector_and_payload_types() 
     };
     assert_eq!(action.args, [etas_types::EffectArgRef::Type(integer)]);
     proof.validate_origin().unwrap();
-    let invalid = HashMap::from([("T".into(), TypeId(u32::MAX))]);
+    let invalid = GenericBindings::from([("T".into(), TypeId(u32::MAX))]);
     assert!(
         CheckedActionInvocation::source(execution.clone(), performed(&execution), &invalid)
             .is_err()
@@ -109,7 +117,7 @@ fn source_action_origin_rejects_generic_bindings_that_violate_action_spec_bounds
         panic!("entry flow")
     };
     let expr = performed(&execution);
-    let bindings = HashMap::from([("T".into(), signature.output)]);
+    let bindings = GenericBindings::from([("T".into(), signature.output)]);
     CheckedActionInvocation::source(execution.clone(), expr, &bindings)
         .unwrap()
         .validate_origin()
@@ -122,10 +130,11 @@ fn source_action_origin_rejects_generic_bindings_that_violate_action_spec_bounds
             (*ty == etas_types::Type::Primitive(etas_types::PrimitiveType::I32)).then_some(id)
         })
         .unwrap();
-    let bindings = HashMap::from([("T".into(), integer)]);
+    let bindings = GenericBindings::from([("T".into(), integer)]);
     let error = CheckedActionInvocation::source(execution.clone(), expr, &bindings).unwrap_err();
     assert!(error.contains("violates a checked spec bound"), "{error}");
-    let error = CheckedActionInvocation::source(execution, expr, &HashMap::new()).unwrap_err();
+    let error =
+        CheckedActionInvocation::source(execution, expr, &GenericBindings::new()).unwrap_err();
     assert!(error.contains("generic argument is not closed"), "{error}");
 }
 
@@ -148,7 +157,7 @@ fn inference_action_origin_cannot_change_the_checked_schema_or_output() {
     let [parameter] = signature.generic_params.as_slice() else {
         panic!("single inference output parameter")
     };
-    let bindings = HashMap::from([(parameter.name.clone(), inference.output)]);
+    let bindings = GenericBindings::from([(parameter.name.clone(), inference.output)]);
     CheckedActionInvocation::source(execution.clone(), *expr, &bindings)
         .unwrap()
         .validate_origin()
@@ -161,7 +170,7 @@ fn inference_action_origin_cannot_change_the_checked_schema_or_output() {
             (*ty == etas_types::Type::Primitive(etas_types::PrimitiveType::String)).then_some(id)
         })
         .unwrap();
-    let bindings = HashMap::from([(parameter.name.clone(), string)]);
+    let bindings = GenericBindings::from([(parameter.name.clone(), string)]);
     let error = CheckedActionInvocation::source(execution.clone(), *expr, &bindings).unwrap_err();
     assert!(error.contains("payload/output facts"), "{error}");
 }
@@ -236,9 +245,12 @@ fn action_evidence_aliases_share_the_native_execution_instead_of_copying_the_typ
     let execution = execution(
         "module app.main; effect Query { action next(value: i32) -> i32; } flow main() -> i32 ![Query.next] { return perform Query.next(4); }",
     );
-    let proof =
-        CheckedActionInvocation::source(execution.clone(), performed(&execution), &HashMap::new())
-            .unwrap();
+    let proof = CheckedActionInvocation::source(
+        execution.clone(),
+        performed(&execution),
+        &GenericBindings::new(),
+    )
+    .unwrap();
     let (_, cost) = crate::testing::allocation::measure(|| {
         let copies = (0..100).map(|_| proof.clone()).collect::<Vec<_>>();
         assert!(

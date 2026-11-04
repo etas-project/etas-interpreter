@@ -1,7 +1,6 @@
 use std::collections::HashMap;
 
 use etas_hir::{HirExpr, HirExprId, ResolveResult};
-use etas_types::TypeId;
 
 use super::CheckedActionAbi;
 use crate::value::CheckedExecutionProgram;
@@ -9,14 +8,21 @@ use crate::value::CheckedExecutionProgram;
 pub(crate) fn source_action(
     execution: &CheckedExecutionProgram,
     expr: HirExprId,
-    bindings: &HashMap<String, TypeId>,
+    bindings: &crate::control::GenericBindings,
 ) -> Result<CheckedActionAbi, String> {
     let checked = &execution.checked;
     if bindings
+        .types
         .iter()
         .any(|(name, ty)| name.is_empty() || checked.type_store.get(*ty).is_none())
     {
         return Err("action origin has an invalid checked type binding".into());
+    }
+    if bindings.parameters.iter().any(|(parameter, argument)| {
+        !crate::control::GenericBindings::is_checked_parameter(checked, *parameter)
+            || checked.type_store.get(*argument).is_none()
+    }) {
+        return Err("action origin has an invalid checked owner binding".into());
     }
     let (action, args) = match checked.hir.exprs.get(expr) {
         Some(HirExpr::Perform { action, args, .. }) => (action, Some(args)),
@@ -31,6 +37,26 @@ pub(crate) fn source_action(
         .action_signatures
         .get(&symbol)
         .ok_or("perform has no checked action signature")?;
+    let (parameters, output, generic_params, returns_never) =
+        match checked.types.action_calls.get(&expr) {
+            Some(selected) => (
+                &selected.signature.params,
+                selected.signature.output,
+                &selected.signature.generic_params,
+                matches!(
+                    checked.type_store.get(selected.signature.output),
+                    Some(etas_types::Type::Primitive(
+                        etas_types::PrimitiveType::Never
+                    ))
+                ),
+            ),
+            None => (
+                &signature.params,
+                signature.output,
+                &signature.generic_params,
+                signature.returns_never,
+            ),
+        };
     let fact = checked
         .effects
         .performed_actions
@@ -49,7 +75,7 @@ pub(crate) fn source_action(
         return Err("perform invocation disagrees with its checked action fact".into());
     }
     if let Some(args) = args {
-        if args.len() != signature.params.len()
+        if args.len() != parameters.len()
             || args.len() != fact.args.len()
             || args.iter().zip(&fact.args).any(|(arg, expected)| {
                 let (etas_hir::HirArg::Positional(value) | etas_hir::HirArg::Named { value, .. }) =
@@ -73,7 +99,9 @@ pub(crate) fn source_action(
         }
     }
     let substitute_caller = |ty| {
-        etas_types::substitute_named_params_in_store(&checked.type_store, ty, bindings)
+        bindings
+            .substitution(&checked.type_store)
+            .substitute(ty)
             .map_err(|error| error.to_string())
     };
     let mut action_bindings = bindings.clone();
@@ -86,16 +114,26 @@ pub(crate) fn source_action(
                     .map_err(|error| {
                         format!("action origin generic argument is not closed: {error}")
                     })?;
-                action_bindings.insert(name.clone(), actual);
+                let parameter = generic_params
+                    .iter()
+                    .find(|parameter| {
+                        parameter.name == *name
+                            && parameter.kind == etas_types::CallableGenericParamKind::Type
+                    })
+                    .ok_or("action origin references an undeclared type parameter")?;
+                action_bindings.types.insert(name.clone(), actual);
+                action_bindings.parameters.insert(parameter.subject, actual);
             }
         }
     }
     let substitute = |ty| {
-        etas_types::substitute_named_params_in_store(&checked.type_store, ty, &action_bindings)
+        action_bindings
+            .substitution(&checked.type_store)
+            .substitute(ty)
             .map_err(|error| error.to_string())
     };
     let mut obligations = Vec::new();
-    for param in &signature.generic_params {
+    for param in generic_params {
         if param.bounds.is_empty() {
             continue;
         }
@@ -121,7 +159,7 @@ pub(crate) fn source_action(
             &checked.type_store,
             execution.plan.checked_spec_facts(),
             &obligations,
-            &action_bindings,
+            &action_bindings.types,
         );
         if let Some(failure) = report.failures.first() {
             return Err(format!(
@@ -140,13 +178,12 @@ pub(crate) fn source_action(
     }
     let abi = CheckedActionAbi {
         effect,
-        parameters: signature
-            .params
+        parameters: parameters
             .iter()
             .map(|ty| substitute(*ty))
             .collect::<Result<_, _>>()?,
-        output: substitute(signature.output)?,
-        returns_never: signature.returns_never,
+        output: substitute(output)?,
+        returns_never,
     };
     if args.is_none() {
         let inference = checked

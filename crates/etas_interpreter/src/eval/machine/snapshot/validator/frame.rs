@@ -119,10 +119,7 @@ impl SnapshotValidator<'_> {
         let mut seen = std::collections::HashSet::new();
         for (parameter, argument) in parameters {
             if !seen.insert(*parameter)
-                || !matches!(self.checked.type_store.get(*parameter), Some(etas_types::Type::Named(named))
-                    if named.source_parameter.is_some_and(|symbol|
-                        matches!(self.checked.hir.symbols.get(symbol).map(|symbol| &symbol.def),
-                            Some(etas_hir::SymbolDef::TypeParam { .. }))))
+                || !crate::control::GenericBindings::is_checked_parameter(self.checked, *parameter)
             {
                 return Err(format!(
                     "{context} has an invalid checked type-parameter binding"

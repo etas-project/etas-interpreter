@@ -11,7 +11,7 @@ use crate::{
 pub(super) enum NativeActionOrigin {
     Source {
         expr: etas_hir::HirExprId,
-        bindings: Vec<(String, etas_types::TypeId)>,
+        bindings: crate::control::GenericBindings,
     },
     Standard(Box<CheckedStdIntrinsicCall>),
 }
@@ -63,7 +63,9 @@ impl ActionEvidence {
         let origin = match &native.origin {
             NativeActionOrigin::Source { expr, bindings } => ActionOriginSnapshot::Source {
                 expr: *expr,
-                bindings: bindings.clone(),
+                bindings: bindings.sorted_types(),
+                type_parameter_bindings: bindings.sorted_parameters(),
+                effect_row_bindings: bindings.sorted_rows(),
             },
             NativeActionOrigin::Standard(call) => ActionOriginSnapshot::Standard {
                 call: CallTargetSnapshot::StdIntrinsic {
@@ -135,14 +137,7 @@ impl ActionEvidence {
         };
         let mut abi = match &native.origin {
             NativeActionOrigin::Source { expr, bindings } => {
-                let map = bindings
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::HashMap<_, _>>();
-                if map.len() != bindings.len() {
-                    return Err("action origin has duplicate type bindings".into());
-                }
-                crate::plan::checked_action::source_action(&native.execution, *expr, &map)?
+                crate::plan::checked_action::source_action(&native.execution, *expr, bindings)?
             }
             NativeActionOrigin::Standard(call) => {
                 crate::plan::checked_action::standard_action(&native.execution, call)?

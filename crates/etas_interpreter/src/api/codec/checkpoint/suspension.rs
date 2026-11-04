@@ -45,12 +45,27 @@ pub(super) fn encode(
                 })?,
             )?;
             let origin = match origin {
-                ActionOriginSnapshot::Source { expr, bindings } => {
+                ActionOriginSnapshot::Source {
+                    expr,
+                    bindings,
+                    type_parameter_bindings,
+                    effect_row_bindings,
+                } => {
                     budget.metadata(
-                        bindings.len(),
+                        bindings.len() + type_parameter_bindings.len() + effect_row_bindings.len(),
                         bindings.iter().map(|(name, _)| name.len()).sum(),
                     )?;
-                    json!({"kind":"source", "expr": expr.0, "bindings": bindings})
+                    budget.metadata(
+                        0,
+                        usize::try_from(
+                            etas_core::memory::MemoryFootprint::of(effect_row_bindings)
+                                .estimated_bytes(),
+                        )
+                        .map_err(|_| {
+                            InterpreterCodecError::new("action row bindings exceed encoding limits")
+                        })?,
+                    )?;
+                    json!({"kind":"source", "expr": expr.0, "bindings": bindings, "type_parameter_bindings": type_parameter_bindings, "effect_row_bindings": effect_row_bindings})
                 }
                 ActionOriginSnapshot::Standard { call } => {
                     let mut origin = json!({"kind":"standard", "call": null});
@@ -160,7 +175,13 @@ fn decode_action(
     let origin = required_obj(action, "origin")?;
     let origin = match required_str(origin, "kind")? {
         "source" => {
-            if required_array(origin, "bindings")?.len() > limits.max_nodes {
+            if ["bindings", "type_parameter_bindings", "effect_row_bindings"]
+                .iter()
+                .try_fold(0usize, |total, field| {
+                    required_array(origin, field).map(|values| total.saturating_add(values.len()))
+                })?
+                > limits.max_nodes
+            {
                 return Err(InterpreterCodecError::new(
                     "action binding table exceeds limits",
                 ));
@@ -171,6 +192,10 @@ fn decode_action(
                     .map_err(|error| {
                         InterpreterCodecError::new(format!("invalid action type bindings: {error}"))
                     })?,
+                type_parameter_bindings: machine::type_parameters_from_snapshot(origin)
+                    .map_err(InterpreterCodecError::new)?,
+                effect_row_bindings: machine::effect_rows_from_snapshot(origin)
+                    .map_err(InterpreterCodecError::new)?,
             }
         }
         "standard" => ActionOriginSnapshot::Standard {
