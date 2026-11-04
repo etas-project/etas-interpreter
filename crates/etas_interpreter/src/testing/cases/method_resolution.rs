@@ -2,6 +2,51 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn heterogeneous_objects_keep_distinct_witnesses_in_a_restored_iteration() {
+    let checked = checked_project(include_str!(
+        "../fixtures/method_resolution/existential_sequence.es"
+    ));
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::usize(11)));
+    assert_eq!(host.stdout_text(), "first\nsecond\n");
+    assert_eq!(host.console_call_count(), 2);
+    assert_eq!(result.checkpoints.len(), 2);
+    for (checkpoint, expected_output) in result
+        .checkpoints
+        .iter()
+        .zip(["first\nsecond\n", "second\n"])
+    {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let restored = checkpoint_from_json(&artifact, &checked).unwrap();
+        let host = FakeHost::new(services);
+        let result = Interpreter
+            .resume_checkpoint(&checked, &restored, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.value(), Some(&InterpValue::usize(11)));
+        assert_eq!(host.stdout_text(), expected_output);
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn existential_method_witnesses_survive_producer_and_argument_checkpoints() {
     let source = include_str!("../fixtures/method_resolution/existential.es");
     for source in [
