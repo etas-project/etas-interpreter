@@ -67,6 +67,11 @@ pub(crate) struct PreparedWitness {
     pub parameters: Vec<(String, String)>,
 }
 
+struct WitnessSelection<'a> {
+    target: &'a MethodTarget,
+    parameters: &'a [(String, String)],
+}
+
 pub(crate) struct ResolvedMethodCall<'a> {
     pub target: &'a MethodTarget,
     pub bindings: crate::control::CheckedCallBindings,
@@ -76,6 +81,10 @@ pub(crate) struct ResolvedMethodCall<'a> {
 pub(super) struct MethodDispatchPlan {
     calls: HashMap<HirExprId, CheckedMethodCallFact>,
     witnesses: HashMap<WitnessKey, PreparedWitness>,
+    packs: HashMap<
+        HirExprId,
+        HashMap<RequirementKey, Vec<etas_types::facts::existentials::ExistentialMethodWitnessFact>>,
+    >,
 }
 
 impl MethodDispatchPlan {
@@ -132,6 +141,58 @@ impl MethodDispatchPlan {
                     "method environment has duplicate implementation witness identities".into(),
                 );
             }
+        }
+        for (expr, pack) in &project.types.existential_packs {
+            if project.types.expr_types.get(expr) != Some(&pack.object_type)
+                || !matches!(
+                    project.type_store.get(pack.object_type),
+                    Some(etas_types::Type::Existential { .. })
+                )
+            {
+                return Err("existential packing has no checked interface result".into());
+            }
+            let symbolic = matches!(
+                project.type_store.get(pack.source_type),
+                Some(etas_types::Type::Existential { .. })
+            ) || matches!(project.type_store.get(pack.source_type), Some(etas_types::Type::Named(named)) if named.source_parameter.is_some());
+            let mut members = HashMap::<
+                RequirementKey,
+                Vec<etas_types::facts::existentials::ExistentialMethodWitnessFact>,
+            >::new();
+            for witness in &pack.witnesses {
+                if !requirements.contains_key(&RequirementKey::from(&witness.member)) {
+                    return Err(
+                        "existential packing references a missing checked spec member".into(),
+                    );
+                }
+                if symbolic {
+                    if !matches!(&witness.target, MethodTarget::BoundSpec { spec, member, .. } if *spec == witness.bound.spec && *member == witness.member)
+                    {
+                        return Err(
+                            "symbolic existential packing changed its witness recipe".into()
+                        );
+                    }
+                } else if project
+                    .types
+                    .methods
+                    .witness(pack.source_type, &witness.bound.args, &witness.member)
+                    .is_none_or(|declaration| declaration.target != witness.target)
+                {
+                    return Err(
+                        "existential packing differs from its checked implementation witness"
+                            .into(),
+                    );
+                }
+                let entries = members.entry((&witness.member).into()).or_default();
+                if entries
+                    .iter()
+                    .any(|existing| existing.bound == witness.bound)
+                {
+                    return Err("existential packing contains duplicate member evidence".into());
+                }
+                entries.push(witness.clone());
+            }
+            result.packs.insert(*expr, members);
         }
         let view = project.hir.view();
         for (expr, fact) in &project.types.checked_method_calls {
@@ -230,6 +291,7 @@ impl MethodDispatchPlan {
         project: &CheckedProject,
         call: HirExprId,
         current: &crate::control::GenericBindings,
+        object: Option<crate::value::ExistentialEvidence<'_>>,
     ) -> Result<ResolvedMethodCall<'_>, String> {
         let fact = self
             .call(call)
@@ -251,30 +313,97 @@ impl MethodDispatchPlan {
                         .map_err(|error| error.to_string())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let witness = self
-                .witness(subject, &args, member)
-                .ok_or("generic method has no prepared implementation witness")?;
+            let WitnessSelection { target, parameters } = if let Some(object) = object {
+                if object.object_type() != subject {
+                    return Err(
+                        "existential receiver differs from its checked method interface".into(),
+                    );
+                }
+                self.object_witness(project, object, &args, member)?
+            } else {
+                let witness = self
+                    .witness(subject, &args, member)
+                    .ok_or("generic method has no prepared implementation witness")?;
+                WitnessSelection {
+                    target: &witness.target,
+                    parameters: &witness.parameters,
+                }
+            };
             for (name, _) in &mut bindings.types {
-                *name = witness
-                    .parameters
+                *name = parameters
                     .iter()
                     .find(|(required, _)| required == name)
                     .map(|(_, actual)| actual.clone())
                     .ok_or("method witness has no type binder mapping")?;
             }
             for (name, _) in &mut bindings.rows {
-                *name = witness
-                    .parameters
+                *name = parameters
                     .iter()
                     .find(|(required, _)| required == name)
                     .map(|(_, actual)| actual.clone())
                     .ok_or("method witness has no effect binder mapping")?;
             }
-            &witness.target
+            target
         } else {
             &fact.target
         };
         Ok(ResolvedMethodCall { target, bindings })
+    }
+
+    fn object_witness(
+        &self,
+        project: &CheckedProject,
+        mut object: crate::value::ExistentialEvidence<'_>,
+        args: &[TypeId],
+        member: &SpecMethodIdentity,
+    ) -> Result<WitnessSelection<'_>, String> {
+        loop {
+            let candidates = self
+                .packs
+                .get(&object.pack())
+                .and_then(|members| members.get(&member.into()))
+                .ok_or("existential value has no prepared member evidence")?;
+            let bindings = object.bindings(project)?;
+            let mut substitute = bindings.substitution(&project.type_store);
+            let mut selected = None;
+            for witness in candidates {
+                let actual = witness
+                    .bound
+                    .args
+                    .iter()
+                    .map(|arg| substitute.substitute(*arg))
+                    .collect::<Result<Vec<_>, _>>()
+                    .map_err(|error| error.to_string())?;
+                if actual == args && selected.replace(witness).is_some() {
+                    return Err("existential member evidence is ambiguous".into());
+                }
+            }
+            let witness =
+                selected.ok_or("existential member has different checked spec arguments")?;
+            if matches!(witness.target, MethodTarget::BoundSpec { .. }) {
+                if let Some(inner) = object.inner() {
+                    if inner.object_type() != object.source_type() {
+                        return Err(
+                            "repacked existential has a different checked producer interface"
+                                .into(),
+                        );
+                    }
+                    object = inner;
+                    continue;
+                }
+                let witness = self
+                    .witness(object.source_type(), args, member)
+                    .ok_or("existential generic recipe has no prepared implementation")?;
+                return Ok(WitnessSelection {
+                    target: &witness.target,
+                    parameters: &witness.parameters,
+                });
+            }
+            return Ok(WitnessSelection {
+                target: &witness.target,
+                parameters: &[],
+            });
+        }
     }
 }
 

@@ -219,7 +219,7 @@ impl<'a> EvalContext<'a> {
             );
         };
         let nominal_type = if record.path.is_some() {
-            let Some(ty) = self.checked.types.expr_types.get(&expr).copied() else {
+            let Some(ty) = self.checked.types.expression_producer_type(expr) else {
                 return ControlSignal::missing_checked_fact(
                     "nominal record constructor is missing its checked result type",
                     record.span,

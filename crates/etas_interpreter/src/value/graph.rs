@@ -208,6 +208,7 @@ impl FrameDiscovery {
 
 fn value_children(value: &Value) -> Children<'_> {
     match value {
+        Value::Existential(value) => Children::One(Some(Node::Value(&value.value))),
         Value::Callable(target) => Children::One(Some(Node::Target(target))),
         Value::Nominal { value, .. } | Value::Trust { value, .. } | Value::OptionSome(value) => {
             Children::One(Some(Node::Value(value)))

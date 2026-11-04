@@ -112,7 +112,17 @@ impl EvalContext<'_> {
         let selection = self
             .plan
             .dispatch
-            .resolve_method(self.checked, call, frame.generic_bindings())
+            .resolve_method(
+                self.checked,
+                call,
+                frame.generic_bindings(),
+                receiver.and_then(|value| match value {
+                    InterpValue::Existential(value) => {
+                        Some(crate::value::ExistentialEvidence::Runtime(value))
+                    }
+                    _ => None,
+                }),
+            )
             .map_err(|reason| missing(&reason))?;
         let bindings = selection.bindings;
         let target = match selection.target {

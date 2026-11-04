@@ -36,6 +36,7 @@ enum Children<'a> {
 impl<'a> Children<'a> {
     fn of(value: &'a Value) -> Option<Self> {
         Some(match value {
+            Value::Existential(value) => Self::One(Some(&value.value)),
             Value::Trust { value, .. }
             | Value::Nominal { value, .. }
             | Value::OptionSome(value) => Self::One(Some(value)),

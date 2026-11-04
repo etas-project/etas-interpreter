@@ -8,13 +8,17 @@ impl EvalContext<'_> {
         bindings: &crate::control::GenericBindings,
         span: Span,
     ) -> Result<etas_types::TypeId, ExecutionFault> {
-        let ty = *self.checked.types.expr_types.get(&expr).ok_or_else(|| {
-            ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "expression has no checked result type",
-            )
-        })?;
+        let ty = self
+            .checked
+            .types
+            .expression_producer_type(expr)
+            .ok_or_else(|| {
+                ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    "expression has no checked result type",
+                )
+            })?;
         self.materialized_type(ty, bindings, span)
     }
 

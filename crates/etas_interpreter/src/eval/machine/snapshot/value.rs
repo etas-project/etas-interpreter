@@ -56,6 +56,7 @@ impl ValueSnapshot {
             },
             InterpValue::OptionNone => Self::OptionNone,
             InterpValue::Nominal { .. }
+            | InterpValue::Existential(_)
             | InterpValue::Message(_)
             | InterpValue::Conversation(_)
             | InterpValue::Trust { .. }
@@ -213,7 +214,8 @@ impl ValueSnapshot {
                 bounds,
             }),
             Self::OptionNone => InterpValue::OptionNone,
-            Self::Nominal { .. }
+            Self::Existential { .. }
+            | Self::Nominal { .. }
             | Self::Message(_)
             | Self::Conversation(_)
             | Self::Trust { .. }

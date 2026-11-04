@@ -9,6 +9,10 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
     // Only scalar metadata goes through serde. Recursive children are filled in
     // their final JSON slots, never serialized/cloned through an ancestor.
     match value {
+        V::Existential { header, value } => {
+            *slot = json!({"kind":"existential", "header":header, "value":null});
+            pending.push((Node::Value(value), &mut slot["value"]));
+        }
         V::Nominal { ty, value } => {
             *slot = json!({"kind":"nominal", "ty":ty.0, "value":null});
             pending.push((Node::Value(value), &mut slot["value"]));
@@ -249,7 +253,8 @@ fn leaf(value: &ValueSnapshot) -> Value {
         } => {
             json!({"kind":"memory_store","region_stable_id":region_stable_id,"path":path,"key_type":key_type.0,"value_type":value_type.0})
         }
-        V::Nominal { .. }
+        V::Existential { .. }
+        | V::Nominal { .. }
         | V::Trust { .. }
         | V::OptionSome(_)
         | V::Tuple(_)

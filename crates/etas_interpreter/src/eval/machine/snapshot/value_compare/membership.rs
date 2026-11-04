@@ -67,6 +67,23 @@ fn node<'a>(mut a: &'a V, mut b: &'a V, context: &'a Context) -> Comparison<Curs
     }
     loop {
         let cursor = match (a, b) {
+            (
+                V::Existential {
+                    header: ah,
+                    value: av,
+                },
+                V::Existential {
+                    header: bh,
+                    value: bv,
+                },
+            ) => {
+                if ah.object_type != bh.object_type || ah.concrete_type != bh.concrete_type {
+                    return Comparison::Ready(false);
+                }
+                a = av;
+                b = bv;
+                continue;
+            }
             (V::Nominal { ty: at, value: av }, V::Nominal { ty: bt, value: bv }) => {
                 if at != bt {
                     return Comparison::Ready(false);

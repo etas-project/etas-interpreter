@@ -351,7 +351,8 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         ForLoop { body, frame, .. } | WhileLoop { body, frame, .. } => {
             (HirNodeRef::Block(*body), frame)
         }
-        FieldReceiver { expr, frame, .. }
+        PackExistential { expr, frame }
+        | FieldReceiver { expr, frame, .. }
         | AggregateElement { expr, frame, .. }
         | RecordField { expr, frame, .. }
         | MapKey { expr, frame, .. }

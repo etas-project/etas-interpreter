@@ -280,7 +280,7 @@ impl SnapshotValidator<'_> {
         self.call_target_in(target, context, call_target::ReferenceScope::CheckedSlot)?;
         let site = self.call_site(*call, args, *span, context)?;
         let bindings = frame.generic_bindings();
-        self.pending_call_target(*call, target, site, &bindings)?;
+        self.pending_call_target(*call, target, site, &bindings, evaluated_args.first())?;
         self.index_at_most(*next_arg_index, args.len(), context)?;
         let prefix = next_arg_index
             .checked_sub(1)

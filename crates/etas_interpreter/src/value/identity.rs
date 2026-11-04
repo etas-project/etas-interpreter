@@ -17,6 +17,7 @@ enum Kind {
     Record,
     Some,
     Nominal(etas_types::TypeId),
+    Existential(etas_types::TypeId, etas_types::TypeId),
     Trust(etas_types::TrustWrapper),
     Variant(IdentityText),
 }
@@ -58,6 +59,10 @@ impl ValueIdentity {
             InterpValue::PriorityQueue(v) => (Kind::PriorityQueue, v.shared_capture_identity()?),
             InterpValue::Record(v) => (Kind::Record, v.shared_capture_identity()?),
             InterpValue::OptionSome(v) => (Kind::Some, v.shared_capture_identity()?),
+            InterpValue::Existential(v) => (
+                Kind::Existential(v.object_type, v.concrete_type),
+                v.value.shared_capture_identity()?,
+            ),
             InterpValue::Nominal { ty, value } => {
                 (Kind::Nominal(*ty), value.shared_capture_identity()?)
             }

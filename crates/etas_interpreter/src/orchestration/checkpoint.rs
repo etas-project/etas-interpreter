@@ -339,6 +339,10 @@ impl Drop for LocalsSnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
+    Existential {
+        header: crate::value::ExistentialHeader,
+        value: SnapshotBox,
+    },
     MemoryWriteIntent(Box<crate::value::MemoryWriteIntentValue>),
     Unit,
     Bool(bool),
@@ -522,6 +526,10 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
+    PackExistential {
+        expr: HirExprId,
+        frame: LocalsSnapshot,
+    },
     DirectoryListReduction {
         call: CallTargetSnapshot,
         args: Vec<ValueSnapshot>,

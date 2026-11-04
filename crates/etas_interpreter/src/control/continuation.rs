@@ -14,6 +14,10 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    PackExistential {
+        expr: HirExprId,
+        frame: Frame,
+    },
     ValidateCompileResult {
         definition: Box<InterpValue>,
         span: Span,

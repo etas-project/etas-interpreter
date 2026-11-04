@@ -413,6 +413,9 @@ impl<'a> EvalContext<'a> {
         value: InterpValue,
     ) -> ControlSignal {
         match continuation {
+            Continuation::PackExistential { expr, frame } => {
+                self.pack_existential(expr, value, frame.generic_bindings())
+            }
             Continuation::PriorityQueueUpdate(state) => {
                 self.continue_priority_update(*state, value)
             }

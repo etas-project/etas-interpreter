@@ -26,6 +26,9 @@ impl DecodedValue for InterpValue {
     fn unary(kind: Unary, value: Self) -> Self {
         let value = value.into();
         match kind {
+            Unary::Existential(_) => {
+                unreachable!("unchecked runtime decoder cannot admit existential evidence")
+            }
             Unary::Nominal(ty) => Self::Nominal { ty, value },
             Unary::Trust(wrapper) => Self::Trust { wrapper, value },
             Unary::Some => Self::OptionSome(value),

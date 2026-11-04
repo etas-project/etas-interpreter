@@ -16,6 +16,28 @@ pub(super) fn validate<'a>(
         .ok_or("native input has no checked type")?;
     let role = checked.types.known_std_types.runtime_role(store, expected);
     match value {
+        Value::Runtime(R::Existential(object)) => {
+            if expected != object.object_type {
+                return Err("existential value has a different checked interface".into());
+            }
+            crate::value::ExistentialHeader::capture(object).validate(checked)?;
+            pending.push(Task::Visit(
+                Seed::new(Value::Runtime(&object.value), object.concrete_type),
+                false,
+            ));
+            Ok(())
+        }
+        Value::Snapshot(S::Existential { header, value }) => {
+            if expected != header.object_type {
+                return Err("existential snapshot has a different checked interface".into());
+            }
+            header.validate(checked)?;
+            pending.push(Task::Visit(
+                Seed::new(Value::Snapshot(value), header.concrete_type),
+                false,
+            ));
+            Ok(())
+        }
         Value::Runtime(R::StdConstant(value)) | Value::Snapshot(S::StdConstant(value)) => {
             if value.ty() != expected {
                 return Err("standard constant has a different checked slot type".into());

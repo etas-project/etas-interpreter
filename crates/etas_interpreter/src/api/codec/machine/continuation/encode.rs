@@ -15,6 +15,9 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     budget: &mut crate::api::codec::snapshot::EncodingBudget,
 ) -> Result<(), crate::api::codec::InterpreterCodecError> {
     match continuation {
+        Continuation::PackExistential { expr, frame } => object! { slot, pending;
+            "kind": json!("pack_existential"), "expr": json!(expr.0), "frame": Node::Frame(frame),
+        },
         Continuation::SourceToolReturn(frame) => {
             frame
                 .validate_continuation()

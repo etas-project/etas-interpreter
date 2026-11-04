@@ -185,6 +185,21 @@ impl<'a> EvalContext<'a> {
                     );
                 }
             };
+            if matches!(
+                method.target,
+                etas_types::method::MethodTarget::BoundSpec { .. }
+            ) && let etas_types::method::MethodReceiver::Value { slot } = method.receiver
+            {
+                let receiver = &mut evaluated_args[slot as usize];
+                while let InterpValue::Existential(_) = receiver {
+                    let InterpValue::Existential(object) =
+                        std::mem::replace(receiver, InterpValue::Unit)
+                    else {
+                        unreachable!()
+                    };
+                    *receiver = object.value.into_value();
+                }
+            }
         }
         let site = Some(crate::control::CallSite {
             kind: crate::control::CallSiteKind::Expr { expr: call },

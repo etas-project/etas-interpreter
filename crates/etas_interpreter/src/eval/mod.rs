@@ -24,6 +24,7 @@ mod checkpoint;
 mod code;
 mod const_expr;
 mod continuation;
+mod existential;
 mod expr;
 mod field_access;
 mod file_read_limited;

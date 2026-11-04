@@ -2,6 +2,90 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn existential_method_witnesses_survive_producer_and_argument_checkpoints() {
+    let source = include_str!("../fixtures/method_resolution/existential.es");
+    for source in [
+        source.to_owned(),
+        source.replace(
+            "let value: ? ~ Named = label();",
+            "let value = pack(label());",
+        ),
+    ] {
+        let checked = checked_project(&source);
+        let services = availability(&[
+            HostRequirementKind::Console,
+            HostRequirementKind::Checkpoint,
+        ]);
+        let host = FakeHost::new(services);
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                Vec::new(),
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(result.value(), Some(&InterpValue::usize(6)));
+        assert_eq!(host.stdout_text(), "method\n");
+        assert_eq!(result.checkpoints.len(), 4);
+        for (checkpoint, expected_output) in result
+            .checkpoints
+            .iter()
+            .zip(["method\n", "method\n", "method\n", ""])
+        {
+            let artifact =
+                checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+            let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+            for checkpoint in [checkpoint, &decoded] {
+                let host = FakeHost::new(services);
+                let resumed = Interpreter
+                    .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                    .await
+                    .unwrap();
+                assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+                assert_eq!(resumed.value(), result.value());
+                assert_eq!(host.stdout_text(), expected_output);
+            }
+        }
+        let mut invalid = result.checkpoints[2].clone();
+        let mut changed = 0;
+        for frame in &mut invalid.machine.frames {
+            if let crate::orchestration::MachineFrameSnapshot::Continuation {
+                continuation:
+                    crate::orchestration::ContinuationSnapshot::CallArgs { evaluated_args, .. },
+            } = frame
+                && let Some(crate::orchestration::ValueSnapshot::Existential { header, .. }) =
+                    evaluated_args.first_mut()
+            {
+                header.concrete_type = header.object_type;
+                changed += 1;
+            }
+        }
+        assert_eq!(changed, 1);
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", &invalid).unwrap();
+        assert!(checkpoint_from_json(&artifact, &checked).is_err());
+        let host = FakeHost::new(services);
+        let rejected = Interpreter
+            .resume_checkpoint(&checked, &invalid, &host, RunOptions::default())
+            .await
+            .unwrap();
+        assert!(
+            rejected.diagnostics.iter().any(|diagnostic| diagnostic
+                .message
+                .contains("checked producer or interface type")),
+            "{:?}",
+            rejected.diagnostics
+        );
+        assert_eq!(host.stdout_text(), "");
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn method_chains_execute_inferred_callbacks_and_empty_literal_arguments() {
     let source = include_str!("../fixtures/method_resolution/contextual_arguments.es")
         .replace(

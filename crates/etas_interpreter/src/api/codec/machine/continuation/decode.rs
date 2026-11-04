@@ -10,6 +10,10 @@ fn continuation_leaf_from_snapshot(
     kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match kind {
+        "pack_existential" => ContinuationSnapshot::PackExistential {
+            expr: HirExprId(required_u32(value, "expr")?),
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
+        },
         "source_tool_return" => {
             let source = required(value, "source_tool")?;
             let model = required(source, "model_loop")?;

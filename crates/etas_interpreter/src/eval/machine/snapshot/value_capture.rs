@@ -17,6 +17,7 @@ struct PendingFrame {
 }
 
 enum UnaryKind {
+    Existential(ExistentialHeader),
     Nominal(etas_types::TypeId),
     Trust(etas_types::TrustWrapper),
     Some,
@@ -161,6 +162,11 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
             header: Box::new(ConversationHeader::capture(value)),
             source: value.messages.clone(),
             values: Vec::with_capacity(value.messages.len()),
+        },
+        InterpValue::Existential(value) => Frame::Unary {
+            kind: UnaryKind::Existential(ExistentialHeader::capture(value)),
+            source: value.value.clone(),
+            value: None,
         },
         InterpValue::Nominal { ty, value } => Frame::Unary {
             kind: UnaryKind::Nominal(*ty),
@@ -392,6 +398,7 @@ impl Frame {
                     SnapshotBox::new(value.ok_or("checkpoint unary builder has no payload")?);
                 match kind {
                     UnaryKind::Nominal(ty) => ValueSnapshot::Nominal { ty, value },
+                    UnaryKind::Existential(header) => ValueSnapshot::Existential { header, value },
                     UnaryKind::Trust(wrapper) => ValueSnapshot::Trust { wrapper, value },
                     UnaryKind::Some => ValueSnapshot::OptionSome(value),
                     UnaryKind::Message(header) => ValueSnapshot::Message(header.snapshot(value)),

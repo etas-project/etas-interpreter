@@ -51,7 +51,7 @@ impl<'a> EvalContext<'a> {
         is_float: bool,
         span: Span,
     ) -> Result<etas_types::PrimitiveType, ExecutionFault> {
-        let Some(ty) = self.checked.types.expr_types.get(&expr).copied() else {
+        let Some(ty) = self.checked.types.expression_producer_type(expr) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,

@@ -78,6 +78,13 @@ pub(crate) fn release_value(mut current: Value) {
     let mut pending: Vec<Children> = Vec::new();
     loop {
         let children = match current {
+            Value::Existential(value) => {
+                if let Ok(value) = value.value.try_into_value() {
+                    current = value;
+                    continue;
+                }
+                None
+            }
             Value::Callable(crate::control::CallTarget::Lambda { captured, .. }) => {
                 Some(Children::Frame(captured.into_unique_values()))
             }

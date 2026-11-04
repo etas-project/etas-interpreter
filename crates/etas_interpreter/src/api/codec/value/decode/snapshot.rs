@@ -3,6 +3,7 @@ use super::*;
 use crate::orchestration::ValueSnapshot;
 
 impl DecodedValue for ValueSnapshot {
+    const ALLOW_EXISTENTIAL: bool = true;
     type Frame = crate::orchestration::LocalsSnapshot;
     fn frame_cache(
         limits: &etas_host::StorageLimits,
@@ -28,6 +29,7 @@ impl DecodedValue for ValueSnapshot {
     fn unary(kind: Unary, value: Self) -> Self {
         let value = crate::orchestration::SnapshotBox::new(value);
         match kind {
+            Unary::Existential(header) => Self::Existential { header, value },
             Unary::Nominal(ty) => Self::Nominal { ty, value },
             Unary::Trust(wrapper) => Self::Trust { wrapper, value },
             Unary::Some => Self::OptionSome(value),

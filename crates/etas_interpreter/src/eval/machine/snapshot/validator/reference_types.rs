@@ -35,11 +35,24 @@ impl SnapshotValidator<'_> {
         target: &CallTargetSnapshot,
         site: &etas_hir::HirExpr,
         bindings: &crate::control::GenericBindings,
+        receiver: Option<&ValueSnapshot>,
     ) -> Result<(), String> {
         let method = self
             .dispatch
             .method(call)
-            .map(|_| self.dispatch.resolve_method(self.checked, call, bindings))
+            .map(|_| {
+                self.dispatch.resolve_method(
+                    self.checked,
+                    call,
+                    bindings,
+                    receiver.and_then(|value| match value {
+                        ValueSnapshot::Existential { header, value } => {
+                            Some(crate::value::ExistentialEvidence::Snapshot { header, value })
+                        }
+                        _ => None,
+                    }),
+                )
+            })
             .transpose()?;
         let expected = if let Some(method) = &method {
             crate::control::CheckedCallBindings {

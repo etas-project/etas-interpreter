@@ -65,6 +65,15 @@ fn write<'a>(
         return Ok(());
     }
     match value {
+        InterpValue::Existential(value) => {
+            if matches!(purpose, ValuePurpose::Lossless) {
+                return Err(InterpreterCodecError::new(
+                    "existential evidence requires checked checkpoint persistence",
+                ));
+            }
+            *slot = json!({"kind":"existential", "header":crate::value::ExistentialHeader::capture(value), "value":null});
+            child(Node::Value(&value.value), &mut slot["value"]);
+        }
         InterpValue::Unit => *slot = json!({"kind":"unit"}),
         InterpValue::Bool(value) => *slot = json!({"kind":"bool","value":value}),
         InterpValue::Number(value) => *slot = numeric_value_json(*value),

@@ -551,6 +551,13 @@ impl<'a> SnapshotValidator<'a> {
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
         match continuation {
+            ContinuationSnapshot::PackExistential { expr, frame } => {
+                self.expr(*expr, context)?;
+                if !self.checked.types.existential_packs.contains_key(expr) {
+                    return Err("checkpoint packing continuation has no checked producer".into());
+                }
+                self.frame(frame, context)
+            }
             ContinuationSnapshot::ResidualScope { scope } => {
                 self.residual_references.borrow_mut().scopes.push(*scope);
                 Ok(())
@@ -1034,6 +1041,10 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 ValueSnapshot::Nominal { ty, .. } => {
                     self.type_id(*ty, "checkpoint nominal value type")?
+                }
+                ValueSnapshot::Existential { header, value } => {
+                    let bindings = header.validate(self.checked)?;
+                    self.reference_value(value, header.concrete_type, &bindings)?;
                 }
                 ValueSnapshot::Conversation(conversation) => {
                     crate::value::conversation::validate_snapshot(conversation, self.limits)?

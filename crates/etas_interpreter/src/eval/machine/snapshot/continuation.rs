@@ -20,6 +20,10 @@ impl ContinuationSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match continuation {
+            Continuation::PackExistential { expr, frame } => Self::PackExistential {
+                expr: *expr,
+                frame: context.frame(frame)?,
+            },
             Continuation::ValidateCompileResult { .. } => {
                 return Err("pending compiler contract evidence must be restored from source in its locked definition environment, not an opaque checkpoint handle".into());
             }
@@ -586,6 +590,10 @@ impl ContinuationSnapshot {
 
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
+            Self::PackExistential { expr, frame } => Continuation::PackExistential {
+                expr,
+                frame: super::frame::restore_frame(frame, context)?,
+            },
             Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
             Self::ResidualScope { scope } => {
                 Continuation::ResidualScope(context.residual_scope(scope)?)

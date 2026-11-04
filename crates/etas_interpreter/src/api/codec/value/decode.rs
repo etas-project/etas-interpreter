@@ -53,6 +53,7 @@ pub(in crate::api::codec) fn decode_with_frames<T: DecodedValue>(
 }
 
 pub(in crate::api::codec) enum Unary {
+    Existential(crate::value::ExistentialHeader),
     Nominal(TypeId),
     Trust(etas_types::TrustWrapper),
     Some,
@@ -114,6 +115,22 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
     fn for_value(value: &'a Value) -> Result<Option<Self>, InterpreterCodecError> {
         let kind = required_str(value, "kind")?;
         let unary = match kind {
+            "existential" => {
+                if !T::ALLOW_EXISTENTIAL {
+                    return Err(InterpreterCodecError::new(
+                        "existential evidence requires checked checkpoint restoration",
+                    ));
+                }
+                Some(Unary::Existential(
+                    serde_json::from_value(required_obj(value, "header")?.clone()).map_err(
+                        |error| {
+                            InterpreterCodecError::new(format!(
+                                "invalid existential evidence header: {error}"
+                            ))
+                        },
+                    )?,
+                ))
+            }
             "nominal" => Some(Unary::Nominal(TypeId(required_u32(value, "ty")?))),
             "trust" => Some(Unary::Trust(
                 value_codec::trust_wrapper_from_json(required_str(value, "wrapper")?)
@@ -351,6 +368,7 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
 }
 
 pub(in crate::api::codec) trait DecodedValue: Sized {
+    const ALLOW_EXISTENTIAL: bool = false;
     type Frame: Clone;
     fn frame_cache(
         limits: &etas_host::StorageLimits,

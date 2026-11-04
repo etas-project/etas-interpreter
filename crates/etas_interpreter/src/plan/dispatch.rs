@@ -276,8 +276,11 @@ impl IntrinsicDispatchTable {
         project: &CheckedProject,
         call: HirExprId,
         bindings: &crate::control::GenericBindings,
+        object: Option<crate::value::ExistentialEvidence<'_>>,
     ) -> Result<methods::ResolvedMethodCall<'_>, String> {
-        self.program.methods.resolve(project, call, bindings)
+        self.program
+            .methods
+            .resolve(project, call, bindings, object)
     }
 
     pub(crate) fn intrinsic_callable_root(
