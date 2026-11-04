@@ -65,11 +65,13 @@ struct WitnessKey {
 pub(crate) struct PreparedWitness {
     pub target: MethodTarget,
     pub parameters: Vec<(String, String)>,
+    pub owner_bindings: Vec<(TypeId, TypeId)>,
 }
 
 struct WitnessSelection<'a> {
     target: &'a MethodTarget,
     parameters: &'a [(String, String)],
+    owner_bindings: &'a [(TypeId, TypeId)],
 }
 
 pub(crate) struct ResolvedMethodCall<'a> {
@@ -111,35 +113,53 @@ impl MethodDispatchPlan {
                 .entry((&entry.target).into())
                 .or_default()
                 .push(entry);
-            let (Some(member), MethodEvidence::Implementation { subject, args, .. }) =
-                (&entry.spec_member, &entry.evidence)
-            else {
-                continue;
-            };
-            let required = requirements
-                .get(&RequirementKey::from(member))
-                .ok_or("method witness has no checked requirement declaration")?;
-            let signature = required
-                .signature_in(&project.types)
-                .ok_or("method witness has no checked requirement signature")?;
-            let parameters = required
-                .implementation_generic_parameters(signature, &entry.signature)?
-                .into_iter()
-                .map(|(required, provided)| (required.name.clone(), provided.name.clone()))
-                .collect();
-            let key = WitnessKey {
-                receiver: *subject,
-                member: member.into(),
-                args: args.clone(),
-            };
-            let witness = PreparedWitness {
-                target: entry.target.clone(),
-                parameters,
-            };
-            if result.witnesses.insert(key, witness).is_some() {
-                return Err(
-                    "method environment has duplicate implementation witness identities".into(),
-                );
+        }
+        let specs = etas_types::SpecFacts::from(project.types.as_ref());
+        for (receiver, _) in project.type_store.iter() {
+            for resolved in project.types.methods.witnesses_for_receiver(
+                &project.type_store,
+                &specs,
+                receiver,
+            )? {
+                let entry = resolved.declaration;
+                if let MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. } =
+                    entry.target
+                    && !project.reachability.analysis_items.contains(&callable)
+                {
+                    continue;
+                }
+                let member = entry
+                    .spec_member
+                    .as_ref()
+                    .ok_or("prepared implementation has no checked spec member")?;
+                let required = requirements
+                    .get(&RequirementKey::from(member))
+                    .ok_or("method witness has no checked requirement declaration")?;
+                let signature = required
+                    .signature_in(&project.types)
+                    .ok_or("method witness has no checked requirement signature")?;
+                let parameters = required
+                    .implementation_generic_parameters(signature, &entry.signature)?
+                    .into_iter()
+                    .map(|(required, provided)| (required.name.clone(), provided.name.clone()))
+                    .collect();
+                let key = WitnessKey {
+                    receiver,
+                    member: member.into(),
+                    args: resolved.spec_args,
+                };
+                let mut owner_bindings = resolved.owner_bindings.into_iter().collect::<Vec<_>>();
+                owner_bindings.sort_unstable();
+                let witness = PreparedWitness {
+                    target: entry.target.clone(),
+                    parameters,
+                    owner_bindings,
+                };
+                if result.witnesses.insert(key, witness).is_some() {
+                    return Err(
+                        "method environment has duplicate implementation witness identities".into(),
+                    );
+                }
             }
         }
         for (expr, pack) in &project.types.existential_packs {
@@ -175,8 +195,14 @@ impl MethodDispatchPlan {
                 } else if project
                     .types
                     .methods
-                    .witness(pack.source_type, &witness.bound.args, &witness.member)
-                    .is_none_or(|declaration| declaration.target != witness.target)
+                    .resolve_witness(
+                        &project.type_store,
+                        &specs,
+                        pack.source_type,
+                        &witness.bound.args,
+                        &witness.member,
+                    )?
+                    .is_none_or(|resolved| resolved.declaration.target != witness.target)
                 {
                     return Err(
                         "existential packing differs from its checked implementation witness"
@@ -256,6 +282,9 @@ impl MethodDispatchPlan {
                 body,
             } = fact.target
             {
+                if !project.reachability.analysis_items.contains(&callable) {
+                    return Err("checked method target has no analyzed source body".into());
+                }
                 if !matches!(project.hir.items.get(callable), Some(etas_hir::HirItem::Flow(flow)) if flow.symbol == symbol)
                     || view
                         .body(body)
@@ -313,7 +342,11 @@ impl MethodDispatchPlan {
                         .map_err(|error| error.to_string())
                 })
                 .collect::<Result<Vec<_>, _>>()?;
-            let WitnessSelection { target, parameters } = if let Some(object) = object {
+            let WitnessSelection {
+                target,
+                parameters,
+                owner_bindings,
+            } = if let Some(object) = object {
                 if object.object_type() != subject {
                     return Err(
                         "existential receiver differs from its checked method interface".into(),
@@ -327,6 +360,7 @@ impl MethodDispatchPlan {
                 WitnessSelection {
                     target: &witness.target,
                     parameters: &witness.parameters,
+                    owner_bindings: &witness.owner_bindings,
                 }
             };
             for (name, _) in &mut bindings.types {
@@ -343,6 +377,7 @@ impl MethodDispatchPlan {
                     .map(|(_, actual)| actual.clone())
                     .ok_or("method witness has no effect binder mapping")?;
             }
+            bindings.parameters.extend_from_slice(owner_bindings);
             target
         } else {
             &fact.target
@@ -391,17 +426,19 @@ impl MethodDispatchPlan {
                     object = inner;
                     continue;
                 }
-                let witness = self
-                    .witness(object.source_type(), args, member)
-                    .ok_or("existential generic recipe has no prepared implementation")?;
-                return Ok(WitnessSelection {
-                    target: &witness.target,
-                    parameters: &witness.parameters,
-                });
+            }
+            let prepared = self
+                .witness(object.source_type(), args, member)
+                .ok_or("existential recipe has no prepared implementation")?;
+            if !matches!(witness.target, MethodTarget::BoundSpec { .. })
+                && prepared.target != witness.target
+            {
+                return Err("existential recipe differs from its prepared implementation".into());
             }
             return Ok(WitnessSelection {
-                target: &witness.target,
-                parameters: &[],
+                target: &prepared.target,
+                parameters: &prepared.parameters,
+                owner_bindings: &prepared.owner_bindings,
             });
         }
     }

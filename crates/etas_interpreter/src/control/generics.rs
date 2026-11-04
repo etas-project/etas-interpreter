@@ -54,11 +54,13 @@ impl<'a> IntoIterator for &'a EffectRowBindings {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct GenericBindings {
     pub(crate) types: HashMap<String, TypeId>,
+    pub(crate) parameters: HashMap<TypeId, TypeId>,
     pub(crate) rows: EffectRowBindings,
 }
 
 pub(crate) struct CheckedCallBindings {
     pub types: Vec<(String, TypeId)>,
+    pub parameters: Vec<(TypeId, TypeId)>,
     pub rows: Vec<(String, EffectRowRef)>,
 }
 
@@ -68,17 +70,12 @@ impl CheckedCallBindings {
         call: etas_hir::HirExprId,
         outer: &GenericBindings,
     ) -> Result<Self, String> {
-        let Some(fact) = checked.types.generic_instantiations.get(&call) else {
-            return Ok(Self {
-                types: vec![],
-                rows: vec![],
-            });
-        };
+        let fact = checked.types.generic_instantiations.get(&call);
         let mut substitution = outer.substitution(&checked.type_store);
         Ok(Self {
             types: fact
-                .type_bindings
-                .iter()
+                .into_iter()
+                .flat_map(|fact| &fact.type_bindings)
                 .map(|(name, ty)| {
                     Ok((
                         name.clone(),
@@ -88,9 +85,24 @@ impl CheckedCallBindings {
                     ))
                 })
                 .collect::<Result<_, String>>()?,
+            parameters: checked
+                .types
+                .checked_method_calls
+                .get(&call)
+                .into_iter()
+                .flat_map(|method| &method.owner_bindings)
+                .map(|(parameter, argument)| {
+                    Ok((
+                        *parameter,
+                        substitution
+                            .substitute(*argument)
+                            .map_err(|error| error.to_string())?,
+                    ))
+                })
+                .collect::<Result<_, String>>()?,
             rows: fact
-                .effect_row_bindings
-                .iter()
+                .into_iter()
+                .flat_map(|fact| &fact.effect_row_bindings)
                 .map(|(name, row)| {
                     Ok((
                         name.clone(),
@@ -105,6 +117,16 @@ impl CheckedCallBindings {
 }
 
 impl GenericBindings {
+    pub(crate) fn is_checked_parameter(
+        checked: &etas_frontend::CheckedProgram,
+        parameter: TypeId,
+    ) -> bool {
+        checked.type_store.parameter_identity(parameter).is_some()
+            || matches!(checked.type_store.get(parameter), Some(etas_types::Type::Named(named))
+                if named.source_parameter.is_some_and(|symbol|
+                    matches!(checked.hir.symbols.get(symbol).map(|symbol| &symbol.def), Some(etas_hir::SymbolDef::TypeParam { .. }))))
+    }
+
     pub(crate) fn shared(self) -> std::sync::Arc<Self> {
         static EMPTY: std::sync::LazyLock<std::sync::Arc<GenericBindings>> =
             std::sync::LazyLock::new(Default::default);
@@ -119,11 +141,23 @@ impl GenericBindings {
     }
 
     pub(crate) fn substitution<'a>(&'a self, store: &'a TypeStore) -> TypeSubstitutionEngine<'a> {
-        TypeSubstitutionEngine::existing(store, &self.types).with_effect_arguments(&self.rows)
+        TypeSubstitutionEngine::existing(store, &self.types)
+            .with_type_parameters(&self.parameters)
+            .with_effect_arguments(&self.rows)
     }
 
     pub(crate) fn is_empty(&self) -> bool {
-        self.types.is_empty() && self.rows.is_empty()
+        self.types.is_empty() && self.parameters.is_empty() && self.rows.is_empty()
+    }
+
+    pub(crate) fn sorted_parameters(&self) -> Vec<(TypeId, TypeId)> {
+        let mut parameters = self
+            .parameters
+            .iter()
+            .map(|(parameter, ty)| (*parameter, *ty))
+            .collect::<Vec<_>>();
+        parameters.sort_unstable();
+        parameters
     }
 
     pub(crate) fn sorted_types(&self) -> Vec<(String, TypeId)> {
@@ -162,6 +196,7 @@ impl FromIterator<(String, TypeId)> for GenericBindings {
     fn from_iter<T: IntoIterator<Item = (String, TypeId)>>(iter: T) -> Self {
         Self {
             types: iter.into_iter().collect(),
+            parameters: Default::default(),
             rows: Default::default(),
         }
     }

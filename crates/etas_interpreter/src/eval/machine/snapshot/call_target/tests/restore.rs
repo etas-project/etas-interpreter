@@ -10,6 +10,7 @@ fn snapshot_tree(mut node: CallTargetSnapshot, depth: usize, mode: usize) -> Cal
             1 => CallTargetSnapshot::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: node.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
             2 => CallTargetSnapshot::Composed(
@@ -64,8 +65,46 @@ fn deep_call_target_restore_consumes_snapshot_edges_without_recursive_descent() 
                     cost.count <= depth * tables + 32,
                     "intermediate graph allocation: {cost:?}"
                 );
+                let owners = 2 * size_of::<usize>();
+                let output_bytes = if mode < 2 {
+                    depth * (size_of::<CallTarget>() + owners)
+                } else {
+                    depth * (2 * size_of::<CallTarget>() + size_of::<Vec<CallTarget>>() + owners)
+                };
+                let frontier_bytes =
+                    2 * depth.next_power_of_two() * super::super::restore::frontier_frame_size();
+                let shared_bytes = if shared {
+                    // Retained snapshots require cloning their child table and an identity cache.
+                    let (cloned_children, entry_bytes) = if mode < 2 {
+                        (
+                            0,
+                            size_of::<(
+                                *const CallTargetSnapshot,
+                                (
+                                    crate::orchestration::CallTargetSnapshotLink,
+                                    crate::control::CallTargetLink,
+                                ),
+                            )>(),
+                        )
+                    } else {
+                        (
+                            2 * depth * size_of::<CallTargetSnapshot>(),
+                            size_of::<(
+                                *const Vec<CallTargetSnapshot>,
+                                (
+                                    crate::orchestration::CallTargetSnapshotChildren,
+                                    crate::control::CallTargetChildren,
+                                ),
+                            )>(),
+                        )
+                    };
+                    let buckets = (depth * 8 / 7 + 1).next_power_of_two();
+                    cloned_children + 2 * buckets * (entry_bytes + 1)
+                } else {
+                    0
+                };
                 assert!(
-                    cost.bytes <= depth * (384 + usize::from(shared) * 256) + 4096,
+                    cost.bytes <= output_bytes + frontier_bytes + shared_bytes + 4096,
                     "unexpected output/frontier/aliased-identity cache cost: {cost:?}"
                 );
                 let mut cursor = runtime.0.as_ref().unwrap();
@@ -79,6 +118,7 @@ fn deep_call_target_restore_consumes_snapshot_edges_without_recursive_descent() 
                             1,
                             CallTarget::Specialized {
                                 effect_row_bindings: _,
+                                type_parameter_bindings: _,
                                 target,
                                 type_bindings,
                             },
@@ -125,6 +165,7 @@ fn lambda(id: u64, value: i32) -> CallTargetSnapshot {
                 SymbolId(2),
                 ValueSnapshot::capture(&InterpValue::i32(value)).unwrap(),
             )]),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![("T".into(), etas_types::TypeId(3))],
         },
     }
@@ -203,6 +244,7 @@ fn restored_call_target_metadata_and_shared_frames_keep_their_identity() {
             CallTargetSnapshot::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: saved.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![(format!("T{i}"), TypeId(i as u32))],
             }
         } else {
@@ -229,11 +271,13 @@ fn restored_call_target_metadata_and_shared_frames_keep_their_identity() {
                     CallTargetSnapshot::Specialized {
                         effect_row_bindings: _,
                         target: a,
+                        type_parameter_bindings: _,
                         type_bindings: ab,
                     },
                     CallTargetSnapshot::Specialized {
                         effect_row_bindings: _,
                         target: b,
+                        type_parameter_bindings: _,
                         type_bindings: bb,
                     },
                 ) => {
@@ -412,6 +456,7 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                             effect_row_bindings: Vec::new(),
                             id: 1,
                             locals: Default::default(),
+                            type_parameter_bindings: Vec::new(),
                             type_bindings: vec![],
                         },
                     },

@@ -231,6 +231,7 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
                     effect_row_bindings: Vec::new(),
                     id: i as u64 + 1,
                     locals: Default::default(),
+                    type_parameter_bindings: Vec::new(),
                     type_bindings: vec![],
                 },
             },
@@ -272,6 +273,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
                     effect_row_bindings: Vec::new(),
                     id: 1,
                     locals: Default::default(),
+                    type_parameter_bindings: Vec::new(),
                     type_bindings: vec![],
                 },
             }

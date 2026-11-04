@@ -24,6 +24,7 @@ impl<'a> EvalContext<'a> {
             span,
             crate::control::GenericBindings {
                 types: type_bindings,
+                parameters: Default::default(),
                 rows: Default::default(),
             },
         )

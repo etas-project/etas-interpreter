@@ -13,6 +13,7 @@ fn tree(depth: usize, mode: usize) -> CallTarget {
             1 => CallTarget::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: node.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
             2 => CallTarget::Composed(vec![node, CallTarget::FlowItem(HirItemId(2))].into()),
@@ -294,6 +295,7 @@ fn shared_runtime_call_target_dags_capture_and_restore_without_expanding_aliases
         let invalid_binding = CallTargetSnapshot::Specialized {
             effect_row_bindings: Vec::new(),
             target: saved.clone().into(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![(String::new(), etas_types::TypeId(0))],
         };
         assert!(
@@ -356,6 +358,7 @@ fn runtime_call_target_clone_copies_root_metadata_but_not_descendant_metadata() 
                     }],
                 }
                 .into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![("T".to_owned(), etas_types::TypeId(i as u32))],
             };
         }

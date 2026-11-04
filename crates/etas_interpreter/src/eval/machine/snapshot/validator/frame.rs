@@ -76,6 +76,7 @@ impl SnapshotValidator<'_> {
     }
 
     fn frame_contents(&self, frame: &LocalsSnapshot, context: &str) -> Result<(), String> {
+        self.type_parameter_bindings(&frame.type_parameter_bindings, context)?;
         let mut type_params = std::collections::BTreeSet::new();
         for (name, ty) in &frame.type_bindings {
             if name.is_empty() || !type_params.insert(name) {
@@ -106,6 +107,25 @@ impl SnapshotValidator<'_> {
             }
             self.snapshot_value_in(value, super::call_target::ReferenceScope::CheckedSlot)?;
             self.validate_local_references(*symbol, value, &bindings)?;
+        }
+        Ok(())
+    }
+
+    pub(super) fn type_parameter_bindings(
+        &self,
+        parameters: &[(etas_types::TypeId, etas_types::TypeId)],
+        context: &str,
+    ) -> Result<(), String> {
+        let mut seen = std::collections::HashSet::new();
+        for (parameter, argument) in parameters {
+            if !seen.insert(*parameter)
+                || !crate::control::GenericBindings::is_checked_parameter(self.checked, *parameter)
+            {
+                return Err(format!(
+                    "{context} has an invalid checked type-parameter binding"
+                ));
+            }
+            self.type_id(*argument, context)?;
         }
         Ok(())
     }

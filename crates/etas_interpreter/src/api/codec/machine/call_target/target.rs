@@ -53,6 +53,7 @@ pub(super) enum DecodedTarget<F, T> {
     Specialized {
         target: T,
         type_bindings: Vec<(String, TypeId)>,
+        type_parameter_bindings: Vec<(TypeId, TypeId)>,
         effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     },
     Limited {
@@ -99,10 +100,12 @@ impl TargetValue for CallTargetSnapshot {
             DecodedTarget::Specialized {
                 target,
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             } => Self::Specialized {
                 target: target.into(),
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             },
             DecodedTarget::Limited { target, limits } => Self::Limited {
@@ -170,10 +173,12 @@ impl TargetValue for CallTarget {
             DecodedTarget::Specialized {
                 target,
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             } => Self::Specialized {
                 target: target.into(),
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             },
             DecodedTarget::Limited { target, limits } => Self::Limited {

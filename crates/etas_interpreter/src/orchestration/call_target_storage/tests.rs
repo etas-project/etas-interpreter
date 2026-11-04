@@ -13,6 +13,7 @@ fn chain(depth: usize, mode: usize, leaf: u32) -> CallTargetSnapshotLink {
             1 => CallTargetSnapshot::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: node,
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
             2 => CallTargetSnapshot::Composed(
@@ -81,6 +82,7 @@ fn shared_target_release_preserves_aliases_and_releases_every_unique_node() {
                 1 => CallTargetSnapshot::Specialized {
                     effect_row_bindings: Vec::new(),
                     target: node,
+                    type_parameter_bindings: Vec::new(),
                     type_bindings: vec![],
                 },
                 _ => CallTargetSnapshot::Composed(

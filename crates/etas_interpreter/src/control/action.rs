@@ -45,12 +45,21 @@ impl CheckedActionInvocation {
         };
         let execution = revisions.execution_snapshot(native)?;
         let proof = match origin {
-            ActionOriginSnapshot::Source { expr, bindings } => {
-                let map = bindings
-                    .iter()
-                    .cloned()
-                    .collect::<std::collections::HashMap<_, _>>();
-                if map.len() != bindings.len() {
+            ActionOriginSnapshot::Source {
+                expr,
+                bindings,
+                type_parameter_bindings,
+                effect_row_bindings,
+            } => {
+                let map = crate::control::GenericBindings {
+                    types: bindings.iter().cloned().collect(),
+                    parameters: type_parameter_bindings.iter().copied().collect(),
+                    rows: effect_row_bindings.iter().cloned().collect(),
+                };
+                if map.types.len() != bindings.len()
+                    || map.parameters.len() != type_parameter_bindings.len()
+                    || map.rows.len() != effect_row_bindings.len()
+                {
                     return Err("action origin has duplicate type bindings".into());
                 }
                 Self::source(execution, *expr, &map)?
@@ -88,19 +97,20 @@ impl CheckedActionInvocation {
     pub(crate) fn source(
         execution: crate::value::CheckedExecutionProgram,
         expr: etas_hir::HirExprId,
-        bindings: &std::collections::HashMap<String, TypeId>,
+        bindings: &crate::control::GenericBindings,
     ) -> Result<Self, String> {
         let abi = crate::plan::checked_action::source_action(&execution, expr, bindings)?;
-        let mut bindings = bindings
-            .iter()
-            .map(|(name, ty)| (name.clone(), *ty))
-            .collect::<Vec<_>>();
-        bindings.sort_by(|a, b| a.0.cmp(&b.0));
         let program = execution.checked.clone();
         Ok(Self::with_abi(
             program,
             abi,
-            ActionEvidence::native(execution, NativeActionOrigin::Source { expr, bindings }),
+            ActionEvidence::native(
+                execution,
+                NativeActionOrigin::Source {
+                    expr,
+                    bindings: bindings.clone(),
+                },
+            ),
         ))
     }
 

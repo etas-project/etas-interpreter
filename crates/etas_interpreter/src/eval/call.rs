@@ -414,11 +414,15 @@ impl<'a> EvalContext<'a> {
             CallTarget::Specialized {
                 target,
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             } => self.execute_specialized_call_target(
                 target.into_value(),
-                type_bindings,
-                effect_row_bindings,
+                crate::control::GenericBindings {
+                    types: type_bindings.into_iter().collect(),
+                    parameters: type_parameter_bindings.into_iter().collect(),
+                    rows: effect_row_bindings.into_iter().collect(),
+                },
                 call_args,
                 span,
                 site,
@@ -435,47 +439,24 @@ impl<'a> EvalContext<'a> {
     fn execute_specialized_call_target(
         &mut self,
         target: CallTarget,
-        type_bindings: Vec<(String, etas_types::TypeId)>,
-        effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
+        bindings: crate::control::GenericBindings,
         call_args: Vec<InterpValue>,
         span: Span,
         site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
-        let bindings = type_bindings
-            .into_iter()
-            .collect::<std::collections::HashMap<_, _>>();
-        let rows = effect_row_bindings.into_iter().collect();
         match target {
-            CallTarget::EnumVariant(symbol) => match self.eval_variant_constructor(
-                symbol,
-                call_args,
-                &crate::control::GenericBindings {
-                    types: bindings,
-                    rows,
-                },
-                span,
-            ) {
-                Ok(value) => ControlSignal::Value(value),
-                Err(fault) => ControlSignal::Fault(Box::new(fault)),
-            },
-            CallTarget::AgentItem(item) => self.execute_agent_call_with_generic_bindings(
-                item,
-                call_args,
-                span,
-                crate::control::GenericBindings {
-                    types: bindings,
-                    rows,
-                },
-            ),
-            CallTarget::ToolItem(item) => self.execute_source_tool_call_with_generics(
-                item,
-                call_args,
-                span,
-                crate::control::GenericBindings {
-                    types: bindings,
-                    rows,
-                },
-            ),
+            CallTarget::EnumVariant(symbol) => {
+                match self.eval_variant_constructor(symbol, call_args, &bindings, span) {
+                    Ok(value) => ControlSignal::Value(value),
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                }
+            }
+            CallTarget::AgentItem(item) => {
+                self.execute_agent_call_with_generic_bindings(item, call_args, span, bindings)
+            }
+            CallTarget::ToolItem(item) => {
+                self.execute_source_tool_call_with_generics(item, call_args, span, bindings)
+            }
             CallTarget::AgentRevision(_) | CallTarget::Scoped(_) => {
                 ControlSignal::missing_checked_fact(
                     "cross-program generic calls require an evaluation-machine boundary",
@@ -484,15 +465,8 @@ impl<'a> EvalContext<'a> {
             }
             CallTarget::FlowItem(item) => match self.checked.hir.items.get(item) {
                 Some(HirItem::Flow(flow)) => {
-                    let signal = self.execute_flow_with_generic_bindings(
-                        item,
-                        flow,
-                        &call_args,
-                        crate::control::GenericBindings {
-                            types: bindings,
-                            rows,
-                        },
-                    );
+                    let signal =
+                        self.execute_flow_with_generic_bindings(item, flow, &call_args, bindings);
                     match signal {
                         ControlSignal::Value(value) | ControlSignal::Return(value) => {
                             ControlSignal::Value(value)
@@ -506,13 +480,7 @@ impl<'a> EvalContext<'a> {
                 ),
             },
             CallTarget::PureIntrinsic(call) => {
-                match call.specialize(
-                    &self.checked.type_store,
-                    &crate::control::GenericBindings {
-                        types: bindings,
-                        rows,
-                    },
-                ) {
+                match call.specialize(&self.checked.type_store, &bindings) {
                     Ok(call) => self.execute_call_target_frame(
                         CallTarget::PureIntrinsic(call),
                         call_args,
@@ -525,14 +493,7 @@ impl<'a> EvalContext<'a> {
             CallTarget::StdIntrinsic(call) => {
                 match self.plan.dispatch.resolve_std_callable(call.identity) {
                     Ok(kind) => self.execute_std_callable_with_generic_bindings(
-                        kind,
-                        &call,
-                        call_args,
-                        span,
-                        &crate::control::GenericBindings {
-                            types: bindings,
-                            rows,
-                        },
+                        kind, &call, call_args, span, &bindings,
                     ),
                     Err(message) => ControlSignal::missing_checked_fact(message, span),
                 }

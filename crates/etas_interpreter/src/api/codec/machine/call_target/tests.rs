@@ -65,8 +65,8 @@ fn standard_intrinsic_decode_requires_and_preserves_its_checked_origin() {
 fn standard_intrinsic_substitution_decode_is_bounded_and_rejects_ambiguous_bindings() {
     let limits = etas_host::StorageLimits::default();
     let base = json!({ "kind": "std_intrinsic", "origin": 1, "intrinsic": etas_std::intrinsic::runtime::STREAM_READ, "dispatch": "host", "parameter_types": [3], "result_type": 4, "substitutions": [
-        {"types": [{"name":"SourceStream", "type":5}], "effect_row_bindings": []},
-        {"types": [{"name":"S", "type":5}], "effect_row_bindings": [["E", {"effects": [], "tail": null}]]}
+        {"types": [{"name":"SourceStream", "type":5}], "type_parameter_bindings": [], "effect_row_bindings": []},
+        {"types": [{"name":"S", "type":5}], "type_parameter_bindings": [], "effect_row_bindings": [["E", {"effects": [], "tail": null}]]}
     ] });
     let runtime = call_target_from_artifact_snapshot(&limits, &base).unwrap();
     assert_eq!(
@@ -74,10 +74,10 @@ fn standard_intrinsic_substitution_decode_is_bounded_and_rejects_ambiguous_bindi
         base
     );
     for substitutions in [
-        json!([{"types": [], "effect_row_bindings": []}]),
-        json!([{"types": [{"name":"S", "type":5}, {"name":"S", "type":6}], "effect_row_bindings": []}]),
-        json!([{"types": [{"name":"", "type":5}], "effect_row_bindings": []}]),
-        json!([{"types": [], "effect_row_bindings": [["E", {"effects": [], "tail": null}], ["E", {"effects": [], "tail": null}]]}]),
+        json!([{"types": [], "type_parameter_bindings": [], "effect_row_bindings": []}]),
+        json!([{"types": [{"name":"S", "type":5}, {"name":"S", "type":6}], "type_parameter_bindings": [], "effect_row_bindings": []}]),
+        json!([{"types": [{"name":"", "type":5}], "type_parameter_bindings": [], "effect_row_bindings": []}]),
+        json!([{"types": [], "type_parameter_bindings": [], "effect_row_bindings": [["E", {"effects": [], "tail": null}], ["E", {"effects": [], "tail": null}]]}]),
     ] {
         let mut invalid = base.clone();
         invalid["substitutions"] = substitutions;
@@ -98,7 +98,7 @@ fn wire(depth: usize, mode: usize) -> Value {
         let mut parent = match mode {
             0 => json!({"kind":"limited","limits":[],"target":null}),
             1 => {
-                json!({"kind":"specialized","effect_row_bindings": [], "type_bindings":[],"target":null})
+                json!({"kind":"specialized","effect_row_bindings": [], "type_parameter_bindings": [], "type_bindings":[],"target":null})
             }
             2 => json!({"kind":"composed","targets":[null,{"kind":"flow","item":2}]}),
             _ => json!({"kind":"composed","targets":[{"kind":"flow","item":2},null]}),
@@ -127,6 +127,7 @@ fn check_snapshot(mut target: &CallTargetSnapshot, depth: usize, mode: usize) {
                 1,
                 CallTargetSnapshot::Specialized {
                     effect_row_bindings: _,
+                    type_parameter_bindings: _,
                     target,
                     type_bindings,
                 },
@@ -163,6 +164,7 @@ fn check_runtime(mut target: &CallTarget, depth: usize, mode: usize) {
                 1,
                 CallTarget::Specialized {
                     effect_row_bindings: _,
+                    type_parameter_bindings: _,
                     target,
                     type_bindings,
                 },

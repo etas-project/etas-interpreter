@@ -20,11 +20,13 @@ fn effect_row_bindings_roundtrip_in_callable_wrappers_and_captured_frames() {
                 residual_invocation: None,
                 id: 71,
                 locals: Rc::new(vec![]),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
                 effect_row_bindings: sorted.clone(),
             },
         }
         .into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![],
         effect_row_bindings: bindings.clone(),
     };
@@ -78,13 +80,14 @@ fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() 
             limits: vec![],
         }
         .into(),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![("T".into(), TypeId(3))],
     };
     let expected = json!({"kind":"specialized", "target": {
         "kind":"limited", "target": {"kind":"composed", "targets":[
             {"kind":"flow", "item":7}, {"kind":"enum_variant", "symbol":11}
         ]}, "limits":[]
-    }, "effect_row_bindings": [], "type_bindings":[{"name":"T", "type":3}]});
+    }, "effect_row_bindings": [], "type_parameter_bindings": [], "type_bindings":[{"name":"T", "type":3}]});
     let retained = target.clone();
     let encoded = encode(Node::CallTarget(&target));
     assert_eq!(encoded, expected);
@@ -112,6 +115,7 @@ fn shared_call_target_snapshot_encoding_does_not_change_after_copy_on_write() {
         effect_row_bindings: Vec::new(),
         id: 1,
         locals: Rc::new(vec![(SymbolId(1), ValueSnapshot::String("saved".into()))]),
+        type_parameter_bindings: Vec::new(),
         type_bindings: vec![],
     };
     let mut original = CallTargetSnapshot::Lambda {
@@ -163,6 +167,7 @@ fn iterative_call_target_decode_roundtrips_deep_bindings_limits_and_frames_on_wi
             effect_row_bindings: Vec::new(),
             id: 19,
             locals: Rc::new(vec![(SymbolId(9), ValueSnapshot::String("saved".into()))]),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![("U".into(), TypeId(3))],
         },
     };
@@ -178,6 +183,7 @@ fn iterative_call_target_decode_roundtrips_deep_bindings_limits_and_frames_on_wi
                 }],
             }
             .into(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![(format!("T{i}"), TypeId(i as u32))],
         };
     }

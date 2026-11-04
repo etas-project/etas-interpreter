@@ -61,6 +61,7 @@ fn shared_continuation_edges_preserve_wire_and_checked_identity_validation() {
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: vec![],
         },
     };
@@ -90,7 +91,7 @@ fn continuation_decode_builds_snapshot_locals_without_a_temporary_runtime_frame(
     for count in [1000, 2000, 4000] {
         let wire = json!({
             "kind":"continue_block", "block":0, "next_stmt_index":0,
-            "frame": { "id":73, "residual_invocation": null, "effect_row_bindings": [], "type_bindings":[], "locals":
+            "frame": { "id":73, "residual_invocation": null, "effect_row_bindings": [], "type_parameter_bindings": [], "type_bindings":[], "locals":
                 (0..count).map(|symbol| json!({"symbol":symbol,
                     "value":{"kind":"string", "value":"x".repeat(1024)}})).collect::<Vec<_>>()
             }
@@ -202,11 +203,11 @@ fn direct_continuation_decode_preserves_deep_payloads_and_rejects_late_invalid_n
 fn direct_frame_decode_rejects_zero_identity_and_duplicate_bindings() {
     let limits = etas_host::StorageLimits::default();
     for wire in [
-        json!({"id":0,"residual_invocation":null,"locals":[],"effect_row_bindings": [], "type_bindings":[]}),
+        json!({"id":0,"residual_invocation":null,"locals":[],"effect_row_bindings": [], "type_parameter_bindings": [], "type_bindings":[]}),
         json!({"id":1,"residual_invocation":null,"locals":[
             {"symbol":7,"value":{"kind":"unit"}},
-            {"symbol":7,"value":{"kind":"unit"}}],"effect_row_bindings": [], "type_bindings":[]}),
-        json!({"id":1,"residual_invocation":null,"locals":[],"effect_row_bindings": [], "type_bindings":[
+            {"symbol":7,"value":{"kind":"unit"}}],"effect_row_bindings": [], "type_parameter_bindings": [], "type_bindings":[]}),
+        json!({"id":1,"residual_invocation":null,"locals":[],"effect_row_bindings": [], "type_parameter_bindings": [], "type_bindings":[
             {"name":"T","type":1},{"name":"T","type":2}]}),
     ] {
         assert!(locals_from_snapshot(&limits, &wire).is_err());
@@ -218,7 +219,7 @@ fn callable_decode_preserves_artifact_frame_identity_in_both_representations() {
     let limits = etas_host::StorageLimits::default();
     let wire = json!({"kind":"lambda","expr":3,"captured":{
         "id":7341, "residual_invocation":null, "locals":[{"symbol":7,"value":{"kind":"string","value":"kept"}}],
-        "effect_row_bindings": [], "type_bindings":[{"name":"T","type":4}]
+        "effect_row_bindings": [], "type_parameter_bindings": [], "type_bindings":[{"name":"T","type":4}]
     }});
     let snapshot =
         super::super::call_target::call_target_snapshot_from_json(&limits, &wire).unwrap();

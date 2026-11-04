@@ -334,9 +334,15 @@ fn validate_signature(
             CallTarget::Specialized {
                 target: inner,
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             } => {
-                merge_checked_bindings(&mut bindings, type_bindings, effect_row_bindings)?;
+                merge_checked_bindings(
+                    &mut bindings,
+                    type_bindings,
+                    type_parameter_bindings,
+                    effect_row_bindings,
+                )?;
                 target = inner;
             }
             CallTarget::Limited { target: inner, .. } => target = inner,
@@ -348,6 +354,7 @@ fn validate_signature(
                         .iter()
                         .map(|(name, ty)| (name.clone(), *ty))
                         .collect::<Vec<_>>(),
+                    &captured.generic_bindings().sorted_parameters(),
                     &captured
                         .generic_bindings()
                         .rows
@@ -417,8 +424,18 @@ fn native_application_owner(
 fn merge_checked_bindings(
     bindings: &mut crate::control::GenericBindings,
     types: &[(String, TypeId)],
+    parameters: &[(TypeId, TypeId)],
     rows: &[(String, etas_types::EffectRowRef)],
 ) -> Result<(), String> {
+    for (parameter, argument) in parameters {
+        if bindings
+            .parameters
+            .insert(*parameter, *argument)
+            .is_some_and(|previous| previous != *argument)
+        {
+            return Err("native callable has conflicting checked parameter arguments".into());
+        }
+    }
     for (name, ty) in types {
         if bindings
             .insert(name.clone(), *ty)

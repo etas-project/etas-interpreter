@@ -2,6 +2,188 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn entry_reachable_generic_witness_executes_without_checking_other_impl_bodies() {
+    let mut session = etas_frontend::FrontendSession::new();
+    let project = session.open_project(etas_frontend::ProjectInput::single_source(
+        etas_frontend::SourceInput::anonymous(include_str!(
+            "../fixtures/method_resolution/reachable_bound.es"
+        )),
+    ));
+    let output = session
+        .check(
+            project,
+            etas_frontend::CheckRequest::full_project()
+                .with_scope(etas_frontend::CheckScope::EntryReachable),
+        )
+        .unwrap()
+        .output;
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    let checked = output.checked.unwrap();
+    let services = availability(&[HostRequirementKind::Checkpoint]);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &FakeHost::new(services),
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(7)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let checkpoint = &result.checkpoints[0];
+    let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+    for checkpoint in [checkpoint, &decoded] {
+        let resumed = Interpreter
+            .resume_checkpoint(
+                &checked,
+                checkpoint,
+                &FakeHost::new(services),
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), result.value());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn generic_spec_owner_witness_executes_and_resumes_without_runtime_selection() {
+    let checked = checked_project(include_str!(
+        "../fixtures/method_resolution/generic_spec_owner.es"
+    ));
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(7)));
+    assert_eq!(host.stdout_text(), "read\n");
+    assert_eq!(host.console_call_count(), 1);
+    assert_eq!(result.checkpoints.len(), 2);
+    for (checkpoint, expected) in result.checkpoints.iter().zip(["read\n", ""]) {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [checkpoint, &decoded] {
+            let host = FakeHost::new(services);
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), result.value());
+            assert_eq!(host.stdout_text(), expected);
+            assert_eq!(host.console_call_count(), usize::from(!expected.is_empty()));
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn returned_method_closure_keeps_owner_binders_across_wrapper_and_checkpoint_resume() {
+    let checked = checked_project(include_str!(
+        "../fixtures/method_resolution/captured_owner_binders.es"
+    ));
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::String("changed".into())));
+    assert_eq!(host.stdout_text(), "copy\n");
+    assert_eq!(host.console_call_count(), 1);
+    assert_eq!(result.checkpoints.len(), 3);
+    for (checkpoint, expected_output) in result.checkpoints.iter().zip(["copy\n", "copy\n", ""]) {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [checkpoint, &decoded] {
+            let host = FakeHost::new(services);
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), result.value());
+            assert_eq!(host.stdout_text(), expected_output);
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn impl_owner_binders_survive_method_shadowing_and_checkpoint_resume() {
+    let checked = checked_project(include_str!(
+        "../fixtures/method_resolution/owner_binders.es"
+    ));
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::String("changed".into())));
+    assert_eq!(host.stdout_text(), "copy\ncopy\n");
+    assert_eq!(host.console_call_count(), 2);
+    assert_eq!(result.checkpoints.len(), 3);
+    for (checkpoint, expected_output) in result.checkpoints.iter().zip(["copy\n", "", ""]) {
+        let artifact = checkpoint_artifact_json(&["main.es".into()], "main", checkpoint).unwrap();
+        let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+        for checkpoint in [checkpoint, &decoded] {
+            let host = FakeHost::new(services);
+            let resumed = Interpreter
+                .resume_checkpoint(&checked, checkpoint, &host, RunOptions::default())
+                .await
+                .unwrap();
+            assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+            assert_eq!(resumed.value(), result.value());
+            assert_eq!(host.stdout_text(), expected_output);
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn heterogeneous_objects_keep_distinct_witnesses_in_a_restored_iteration() {
     let checked = checked_project(include_str!(
         "../fixtures/method_resolution/existential_sequence.es"

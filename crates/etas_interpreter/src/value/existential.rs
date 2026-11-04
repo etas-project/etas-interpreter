@@ -72,6 +72,7 @@ pub(crate) struct ExistentialHeader {
     pub object_type: TypeId,
     pub concrete_type: TypeId,
     pub type_bindings: Vec<(String, TypeId)>,
+    pub type_parameter_bindings: Vec<(TypeId, TypeId)>,
     pub effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
 }
 
@@ -90,9 +91,11 @@ impl ExistentialHeader {
         }
         let bindings = GenericBindings {
             types: self.type_bindings.iter().cloned().collect(),
+            parameters: self.type_parameter_bindings.iter().copied().collect(),
             rows: self.effect_row_bindings.iter().cloned().collect(),
         };
         if bindings.types.len() != self.type_bindings.len()
+            || bindings.parameters.len() != self.type_parameter_bindings.len()
             || bindings.rows.len() != self.effect_row_bindings.len()
         {
             return Err("existential evidence contains duplicate generic binders".into());
@@ -100,6 +103,15 @@ impl ExistentialHeader {
         for ty in bindings.types.values() {
             if checked.type_store.get(*ty).is_none() {
                 return Err("existential evidence references a missing checked type".into());
+            }
+        }
+        for (parameter, argument) in &bindings.parameters {
+            if !matches!(checked.type_store.get(*parameter), Some(etas_types::Type::Named(named)) if named.source_parameter.is_some())
+                || checked.type_store.get(*argument).is_none()
+            {
+                return Err(
+                    "existential evidence references an invalid checked type parameter".into(),
+                );
             }
         }
         let mut substitute = bindings.substitution(&checked.type_store);
@@ -122,6 +134,7 @@ impl ExistentialHeader {
             object_type: value.object_type,
             concrete_type: value.concrete_type,
             type_bindings: value.bindings.sorted_types(),
+            type_parameter_bindings: value.bindings.sorted_parameters(),
             effect_row_bindings: value.bindings.sorted_rows(),
         }
     }
@@ -133,6 +146,7 @@ impl ExistentialHeader {
             concrete_type: self.concrete_type,
             bindings: GenericBindings {
                 types: self.type_bindings.into_iter().collect(),
+                parameters: self.type_parameter_bindings.into_iter().collect(),
                 rows: self.effect_row_bindings.into_iter().collect(),
             }
             .shared(),

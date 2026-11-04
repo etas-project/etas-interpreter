@@ -81,15 +81,17 @@ pub(super) fn target<'c>(a: &T, b: &T, context: &'c Context) -> Comparison<Curso
             T::Specialized {
                 target: a,
                 type_bindings: at,
+                type_parameter_bindings: ap,
                 effect_row_bindings: ar,
             },
             T::Specialized {
                 target: b,
                 type_bindings: bt,
+                type_parameter_bindings: bp,
                 effect_row_bindings: br,
             },
         ) => {
-            if at != bt || ar != br {
+            if at != bt || ap != bp || ar != br {
                 return Comparison::Ready(false);
             }
             (a, b)

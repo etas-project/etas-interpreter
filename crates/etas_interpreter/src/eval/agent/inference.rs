@@ -94,7 +94,7 @@ impl EvalContext<'_> {
         {
             return Err("inference output is not its checked action type parameter".into());
         }
-        let bindings = std::collections::HashMap::from([(output.name.clone(), fact.output)]);
+        let bindings = crate::control::GenericBindings::from([(output.name.clone(), fact.output)]);
         let proof = self.action_invocation_with_bindings(pending, &bindings)?;
         let [prompt, schema] = proof.parameters.as_slice() else {
             return Err("inference action has no checked Prompt/Schema payload contract".into());

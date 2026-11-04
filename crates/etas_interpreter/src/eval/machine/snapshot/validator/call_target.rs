@@ -56,9 +56,11 @@ impl SnapshotValidator<'_> {
                     CallTargetSnapshot::Specialized {
                         target,
                         type_bindings,
+                        type_parameter_bindings,
                         effect_row_bindings,
                     } => {
                         self.effect_row_bindings(effect_row_bindings, context)?;
+                        self.type_parameter_bindings(type_parameter_bindings, context)?;
                         // Bindings are checked after the target, before its next sibling.
                         if !type_bindings.is_empty() {
                             pending.push(Pending::Bindings(type_bindings));

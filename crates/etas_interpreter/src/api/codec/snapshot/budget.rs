@@ -148,14 +148,29 @@ impl EncodingBudget {
                 | Host::String(_) => (0, 0),
             },
             Node::Model(part) => model_work(part)?,
-            Node::Frame(frame) => (frame.locals.len(), frame.type_bindings.len()),
+            Node::Frame(frame) => (
+                frame.locals.len(),
+                frame
+                    .type_bindings
+                    .len()
+                    .checked_add(frame.type_parameter_bindings.len())
+                    .ok_or_else(exhausted)?,
+            ),
             Node::CallTarget(CallTargetSnapshot::Composed(targets)) => (targets.len(), 0),
             Node::CallTarget(CallTargetSnapshot::Scoped { metadata, .. }) => {
                 (1, metadata.projections.len())
             }
-            Node::CallTarget(CallTargetSnapshot::Specialized { type_bindings, .. }) => {
-                (1, type_bindings.len())
-            }
+            Node::CallTarget(CallTargetSnapshot::Specialized {
+                type_bindings,
+                type_parameter_bindings,
+                ..
+            }) => (
+                1,
+                type_bindings
+                    .len()
+                    .checked_add(type_parameter_bindings.len())
+                    .ok_or_else(exhausted)?,
+            ),
             Node::CallTarget(CallTargetSnapshot::Limited { limits, .. }) => (1, limits.len()),
             Node::CallTarget(CallTargetSnapshot::PureIntrinsic {
                 parameter_types, ..
@@ -170,7 +185,12 @@ impl EncodingBudget {
                         .len()
                         .checked_add(substitutions.len())
                         .ok_or_else(exhausted)?,
-                    |count, step| count.checked_add(step.types.len()).ok_or_else(exhausted),
+                    |count, step| {
+                        count
+                            .checked_add(step.types.len())
+                            .and_then(|count| count.checked_add(step.parameters.len()))
+                            .ok_or_else(exhausted)
+                    },
                 )?;
                 (0, nodes)
             }

@@ -149,6 +149,8 @@ fn decode_with_frames<T: TargetValue>(
                     DecodedTarget::Specialized {
                         target: value,
                         type_bindings,
+                        type_parameter_bindings:
+                            super::super::frame::type_parameters_from_snapshot(parent)?,
                         effect_row_bindings: super::super::frame::effect_rows_from_snapshot(
                             parent,
                         )?,
@@ -265,7 +267,13 @@ fn substitutions(
             .checked_add(types.len())
             .ok_or("intrinsic substitutions exceed node budget")?;
         let rows = super::super::frame::effect_rows_from_snapshot(step)?;
-        if (types.is_empty() && rows.is_empty()) || nodes > limits.max_nodes {
+        let parameters = super::super::frame::type_parameters_from_snapshot(step)?;
+        nodes = nodes
+            .checked_add(parameters.len())
+            .ok_or("intrinsic substitutions exceed node budget")?;
+        if (types.is_empty() && parameters.is_empty() && rows.is_empty())
+            || nodes > limits.max_nodes
+        {
             return Err("intrinsic substitution is empty or exceeds node budget".into());
         }
         let mut names = std::collections::HashSet::new();
@@ -287,6 +295,7 @@ fn substitutions(
         }
         output.push(crate::intrinsic::dispatch::IntrinsicSubstitutionStep {
             types: bindings,
+            parameters,
             rows,
         });
     }

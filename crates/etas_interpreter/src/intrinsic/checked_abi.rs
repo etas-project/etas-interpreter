@@ -40,6 +40,7 @@ impl CheckedStdIntrinsicCall {
             store,
             &crate::control::GenericBindings {
                 types: bindings.clone(),
+                parameters: Default::default(),
                 rows: Default::default(),
             },
         )
@@ -55,6 +56,7 @@ impl CheckedStdIntrinsicCall {
         if !bindings.is_empty() {
             substitutions.push(IntrinsicSubstitutionStep {
                 types: bindings.sorted_types(),
+                parameters: bindings.sorted_parameters(),
                 rows: bindings.sorted_rows(),
             });
         }
@@ -90,8 +92,13 @@ impl CheckedStdIntrinsicCall {
         for step in steps {
             let bindings = step.types.iter().cloned().collect::<HashMap<_, _>>();
             let rows = step.rows.iter().cloned().collect::<HashMap<_, _>>();
-            if (step.types.is_empty() && step.rows.is_empty())
+            let parameters = step.parameters.iter().copied().collect::<HashMap<_, _>>();
+            if (step.types.is_empty() && step.parameters.is_empty() && step.rows.is_empty())
                 || bindings.len() != step.types.len()
+                || parameters.len() != step.parameters.len()
+                || step.parameters.iter().any(|(parameter, argument)| {
+                    store.get(*parameter).is_none() || store.get(*argument).is_none()
+                })
                 || rows.len() != step.rows.len()
                 || step
                     .types
@@ -104,6 +111,7 @@ impl CheckedStdIntrinsicCall {
                 );
             }
             ty = etas_types::TypeSubstitutionEngine::existing(store, &bindings)
+                .with_type_parameters(&parameters)
                 .with_effect_arguments(&rows)
                 .substitute(ty)
                 .map_err(|error| {
@@ -269,6 +277,7 @@ mod tests {
         };
         let bindings = crate::control::GenericBindings {
             types: HashMap::new(),
+            parameters: Default::default(),
             rows: [("E".into(), row)].into_iter().collect(),
         };
         let specialized = call

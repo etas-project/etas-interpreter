@@ -50,6 +50,7 @@ impl<'a> EvalContext<'a> {
             CallTarget::Specialized {
                 target: target.into(),
                 type_bindings: frame.sorted_type_bindings(),
+                type_parameter_bindings: frame.generic_bindings().sorted_parameters(),
                 effect_row_bindings: frame.generic_bindings().sorted_rows(),
             }
         };
@@ -171,12 +172,13 @@ impl<'a> EvalContext<'a> {
                 format!("checked call bindings cannot be materialized: {error}"),
             )
         })?;
-        if bindings.types.is_empty() && bindings.rows.is_empty() {
+        if bindings.types.is_empty() && bindings.parameters.is_empty() && bindings.rows.is_empty() {
             return Ok(target);
         }
         Ok(CallTarget::Specialized {
             target: target.into(),
             type_bindings: bindings.types,
+            type_parameter_bindings: bindings.parameters,
             effect_row_bindings: bindings.rows,
         })
     }

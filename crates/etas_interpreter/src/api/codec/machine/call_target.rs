@@ -16,6 +16,7 @@ pub(in crate::api::codec) fn intrinsic_substitutions_snapshot(
             .iter()
             .map(|step| json!({
                 "types": step.types.iter().map(|(name, ty)| json!({"name": name, "type": ty.0})).collect::<Vec<_>>(),
+                "type_parameter_bindings": step.parameters,
                 "effect_row_bindings": step.rows,
             }))
             .collect::<Vec<_>>()

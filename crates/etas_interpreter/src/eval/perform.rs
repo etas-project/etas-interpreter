@@ -102,13 +102,13 @@ impl<'a> EvalContext<'a> {
         pending: &PendingPerform,
         frame: &Frame,
     ) -> Result<crate::control::CheckedActionInvocation, String> {
-        self.action_invocation_with_bindings(pending, frame.type_bindings())
+        self.action_invocation_with_bindings(pending, frame.generic_bindings())
     }
 
     pub(in crate::eval) fn action_invocation_with_bindings(
         &self,
         pending: &PendingPerform,
-        bindings: &std::collections::HashMap<String, etas_types::TypeId>,
+        bindings: &crate::control::GenericBindings,
     ) -> Result<crate::control::CheckedActionInvocation, String> {
         let expr = pending
             .expr

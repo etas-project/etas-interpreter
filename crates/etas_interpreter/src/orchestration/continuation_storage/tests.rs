@@ -85,6 +85,7 @@ fn mixed_continuation_edges_release_every_node_after_last_snapshot_owner() {
                         effect_row_bindings: Vec::new(),
                         id: i as u64 + 1,
                         locals: Rc::new(vec![]),
+                        type_parameter_bindings: Vec::new(),
                         type_bindings: vec![],
                     },
                 },

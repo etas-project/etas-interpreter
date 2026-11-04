@@ -1382,7 +1382,12 @@ impl<'a> SnapshotValidator<'a> {
             return Err(error());
         };
         let expected_type = if record.path.is_some() {
-            Some(*self.checked.types.expr_types.get(&expr).ok_or_else(error)?)
+            Some(
+                self.checked
+                    .types
+                    .expression_producer_type(expr)
+                    .ok_or_else(error)?,
+            )
         } else {
             None
         };
@@ -1512,6 +1517,7 @@ flow main() -> unit {
             effect_row_bindings: Vec::new(),
             id: 1,
             locals: Default::default(),
+            type_parameter_bindings: Vec::new(),
             type_bindings: Vec::new(),
         }
     }

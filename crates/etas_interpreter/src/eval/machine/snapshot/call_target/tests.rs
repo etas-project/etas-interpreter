@@ -19,6 +19,7 @@ fn tree(mut node: CallTarget, depth: usize, mode: usize) -> RuntimeTree {
             1 => CallTarget::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: node.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![],
             },
             2 => CallTarget::Composed(vec![node, CallTarget::FlowItem(HirItemId(2))].into()),
@@ -65,11 +66,14 @@ fn deep_call_target_capture_is_stack_safe_and_allocates_only_snapshot_and_fronti
                 } else {
                     std::mem::size_of::<Vec<CallTargetSnapshot>>()
                 };
-            // Output nodes plus their Rc owners are retained data, not frontier copies.
+            let frontier_bytes =
+                2 * depth.next_power_of_two() * super::capture::frontier_frame_size();
+            // Include the geometric Vec growth, separately from retained snapshot nodes.
             assert!(
                 cost.bytes
                     <= nodes * std::mem::size_of::<CallTargetSnapshot>()
-                        + depth * (128 + owner_bytes)
+                        + depth * owner_bytes
+                        + frontier_bytes
                         + 4096,
                 "unbounded frontier or intermediate nodes: {cost:?}"
             );
@@ -84,6 +88,7 @@ fn deep_call_target_capture_is_stack_safe_and_allocates_only_snapshot_and_fronti
                         1,
                         CallTargetSnapshot::Specialized {
                             effect_row_bindings: _,
+                            type_parameter_bindings: _,
                             target,
                             type_bindings,
                         },
@@ -176,6 +181,7 @@ fn mixed_call_target_capture_preserves_metadata_and_detaches_live_frame() {
             CallTarget::Specialized {
                 effect_row_bindings: Vec::new(),
                 target: node.into(),
+                type_parameter_bindings: Vec::new(),
                 type_bindings: vec![(format!("T{i}"), TypeId(i as u32))],
             }
         } else {
@@ -199,6 +205,7 @@ fn mixed_call_target_capture_preserves_metadata_and_detaches_live_frame() {
                 0,
                 CallTargetSnapshot::Specialized {
                     effect_row_bindings: _,
+                    type_parameter_bindings: _,
                     target,
                     type_bindings,
                 },

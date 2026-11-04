@@ -57,21 +57,29 @@ impl SnapshotValidator<'_> {
         let expected = if let Some(method) = &method {
             crate::control::CheckedCallBindings {
                 types: method.bindings.types.clone(),
+                parameters: method.bindings.parameters.clone(),
                 rows: method.bindings.rows.clone(),
             }
         } else {
             crate::control::CheckedCallBindings::resolve(self.checked, call, bindings)?
         };
-        if !expected.types.is_empty() || !expected.rows.is_empty() {
+        if !expected.types.is_empty()
+            || !expected.parameters.is_empty()
+            || !expected.rows.is_empty()
+        {
             let CallTargetSnapshot::Specialized {
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
                 ..
             } = target
             else {
                 return Err("checkpoint call is missing its checked specialization".into());
             };
-            if type_bindings != &expected.types || effect_row_bindings != &expected.rows {
+            if type_bindings != &expected.types
+                || type_parameter_bindings != &expected.parameters
+                || effect_row_bindings != &expected.rows
+            {
                 return Err(
                     "checkpoint call specialization differs from its checked generic arguments"
                         .into(),
@@ -86,6 +94,7 @@ impl SnapshotValidator<'_> {
         {
             let mut specialization = bindings.clone();
             specialization.extend(expected.types);
+            specialization.parameters.extend(expected.parameters);
             specialization.rows.extend(expected.rows);
             if self.pending_direct_intrinsic(call, target, site, &specialization)? {
                 return Ok(());

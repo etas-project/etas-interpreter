@@ -10,6 +10,7 @@ enum PendingParent {
     Scoped(Box<ScopedRestore>),
     Specialized(
         Vec<(String, TypeId)>,
+        Vec<(TypeId, TypeId)>,
         Vec<(String, etas_types::EffectRowRef)>,
         Option<CallTargetSnapshotLink>,
     ),
@@ -19,6 +20,11 @@ enum PendingParent {
         values: Vec<CallTarget>,
         source: Option<(*const Vec<CallTargetSnapshot>, CallTargetSnapshotChildren)>,
     },
+}
+
+#[cfg(test)]
+pub(super) fn frontier_frame_size() -> usize {
+    std::mem::size_of::<PendingParent>()
 }
 
 struct ScopedRestore {
@@ -62,6 +68,7 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
             CallTargetSnapshot::Specialized {
                 target,
                 type_bindings,
+                type_parameter_bindings,
                 effect_row_bindings,
             } => {
                 let identity = target.shared_identity();
@@ -71,11 +78,13 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                     CallTarget::Specialized {
                         target: restored.clone(),
                         type_bindings,
+                        type_parameter_bindings,
                         effect_row_bindings,
                     }
                 } else {
                     pending.push(PendingParent::Specialized(
                         type_bindings,
+                        type_parameter_bindings,
                         effect_row_bindings,
                         identity.map(|_| target.clone()),
                     ));
@@ -145,7 +154,12 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                             projections,
                         )?);
                 }
-                Some(PendingParent::Specialized(type_bindings, effect_row_bindings, source)) => {
+                Some(PendingParent::Specialized(
+                    type_bindings,
+                    type_parameter_bindings,
+                    effect_row_bindings,
+                    source,
+                )) => {
                     let target: CallTargetLink = value.into();
                     if let Some(source) = source {
                         context
@@ -156,6 +170,7 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                     value = CallTarget::Specialized {
                         target,
                         type_bindings,
+                        type_parameter_bindings,
                         effect_row_bindings,
                     };
                 }

@@ -294,6 +294,7 @@ pub(crate) enum CallTargetSnapshot {
     Specialized {
         target: CallTargetSnapshotLink,
         type_bindings: Vec<(String, etas_types::TypeId)>,
+        type_parameter_bindings: Vec<(etas_types::TypeId, etas_types::TypeId)>,
         effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     },
     Limited {
@@ -312,6 +313,7 @@ pub(crate) struct LocalsSnapshot {
     // copying an already captured definition during validation and restoration.
     pub(crate) locals: std::rc::Rc<Vec<(SymbolId, ValueSnapshot)>>,
     pub(crate) type_bindings: Vec<(String, etas_types::TypeId)>,
+    pub(crate) type_parameter_bindings: Vec<(etas_types::TypeId, etas_types::TypeId)>,
     pub(crate) effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
 }
 
@@ -322,6 +324,7 @@ impl LocalsSnapshot {
     pub(crate) fn generic_bindings(&self) -> crate::control::GenericBindings {
         crate::control::GenericBindings {
             types: self.type_bindings.iter().cloned().collect(),
+            parameters: self.type_parameter_bindings.iter().copied().collect(),
             rows: self.effect_row_bindings.iter().cloned().collect(),
         }
     }

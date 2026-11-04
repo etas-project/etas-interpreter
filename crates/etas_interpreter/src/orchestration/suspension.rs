@@ -36,6 +36,8 @@ pub(crate) enum ActionOriginSnapshot {
     Source {
         expr: HirExprId,
         bindings: Vec<(String, TypeId)>,
+        type_parameter_bindings: Vec<(TypeId, TypeId)>,
+        effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
     },
     Standard {
         call: CallTargetSnapshot,

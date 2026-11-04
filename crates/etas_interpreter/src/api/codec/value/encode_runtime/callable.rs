@@ -32,9 +32,10 @@ pub(super) fn write<'a>(
         CallTarget::Specialized {
             target,
             type_bindings,
+            type_parameter_bindings,
             effect_row_bindings,
         } => {
-            *slot = json!({"kind":"specialized","effect_row_bindings":effect_row_bindings,"target":null,"type_bindings":type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
+            *slot = json!({"kind":"specialized","effect_row_bindings":effect_row_bindings,"type_parameter_bindings":type_parameter_bindings,"target":null,"type_bindings":type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
             child(Node::Target(target), &mut slot["target"]);
         }
         CallTarget::Limited { target, limits } => {
