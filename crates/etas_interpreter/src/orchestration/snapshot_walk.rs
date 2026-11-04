@@ -95,9 +95,10 @@ impl<'a> Iterator for Children<'a> {
 fn children(value: &ValueSnapshot) -> Children<'_> {
     use ValueSnapshot as V;
     let fixed = match value {
-        V::Nominal { value, .. } | V::Trust { value, .. } | V::OptionSome(value) => {
-            [Some(value.as_ref()), None]
-        }
+        V::Existential { value, .. }
+        | V::Nominal { value, .. }
+        | V::Trust { value, .. }
+        | V::OptionSome(value) => [Some(value.as_ref()), None],
         V::Tuple(values)
         | V::Array(values)
         | V::List(values)

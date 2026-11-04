@@ -42,8 +42,7 @@ pub(crate) use checkpoint::{
     LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot,
     MessageSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelLoopFrameSnapshot,
     ModelRepairSnapshot, ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramReturnSnapshot,
-    SliceExprEvalSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
-    StaticMethodKindSnapshot, ValueSnapshot,
+    SliceExprEvalSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot, ValueSnapshot,
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{WorkflowEvent, WorkflowStepId};

@@ -1,237 +1,43 @@
 use super::*;
+use etas_types::method::{MethodReceiver, MethodTarget};
 
-impl<'a> EvalContext<'a> {
+impl EvalContext<'_> {
     pub(in crate::eval) fn eval_method_call(
         &mut self,
         dispatch: MethodDispatch<'_>,
         receiver: HirExprId,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let MethodDispatch {
-            expr,
-            method,
-            type_args,
-            args,
-            span,
-        } = dispatch;
-        if let Some(checked) = self.plan.dispatch.std_type_member(expr).cloned() {
-            return self.resume_call_args(
-                crate::eval::call::CallArgsState {
-                    call: expr,
-                    target: CallTarget::StdIntrinsic(checked),
-                    args: args.into(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
+        let Some(fact) = self.plan.dispatch.method(dispatch.expr) else {
+            return ControlSignal::missing_checked_fact(
+                "method call has no prepared checked target",
+                dispatch.span,
             );
-        }
-        if self.expr_is_std_prompt_type(receiver) {
-            return self.resume_static_method_args(
-                StaticMethodArgsState {
-                    expr,
-                    kind: StaticMethodKind::Prompt,
-                    method: method.to_owned(),
-                    type_args: type_args.to_vec(),
-                    args: args.to_vec(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
-            );
-        }
-        if self.expr_is_std_message_type(receiver) {
-            return self.resume_static_method_args(
-                StaticMethodArgsState {
-                    expr,
-                    kind: StaticMethodKind::Message,
-                    method: method.to_owned(),
-                    type_args: type_args.to_vec(),
-                    args: args.to_vec(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
-            );
-        }
-        if self.expr_is_std_session_config_type(receiver) {
-            return self.resume_static_method_args(
-                StaticMethodArgsState {
-                    expr,
-                    kind: StaticMethodKind::SessionConfig,
-                    method: method.to_owned(),
-                    type_args: type_args.to_vec(),
-                    args: args.to_vec(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
-            );
-        }
-        if self.expr_is_std_conversation_type(receiver) {
-            return self.resume_static_method_args(
-                StaticMethodArgsState {
-                    expr,
-                    kind: StaticMethodKind::Conversation,
-                    method: method.to_owned(),
-                    type_args: type_args.to_vec(),
-                    args: args.to_vec(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
-            );
-        }
-        let receiver = match self.eval_expr(receiver, frame) {
-            ControlSignal::Value(value) => value,
-            ControlSignal::Apply(pending) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Apply(pending),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Checkpoint(pending) => {
-                return ControlSignal::Checkpoint(pending);
-            }
-            ControlSignal::Block(pending) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Block(pending),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Expr(pending) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Expr(pending),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Call(call) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Call(call),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Perform(perform) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Perform(perform),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Memory(memory) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Memory(memory),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Session(session) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Session(session),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Console(console) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Console(console),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Command(command) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Command(command),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Model(model) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Model(model),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Host(host) => {
-                return attach_method_receiver_continuation(
-                    ControlSignal::Host(host),
-                    expr,
-                    method,
-                    type_args,
-                    args,
-                    span,
-                    frame,
-                );
-            }
-            ControlSignal::Return(value) => return ControlSignal::Return(value),
-            ControlSignal::Resume(value) => return ControlSignal::Resume(value),
-            ControlSignal::Finish(value) => return ControlSignal::Finish(value),
-            ControlSignal::Break => return ControlSignal::Break,
-            ControlSignal::Fault(fault) => return ControlSignal::Fault(fault),
-            ControlSignal::Cancelled(cause) => return ControlSignal::Cancelled(cause),
-            ControlSignal::Continue => return ControlSignal::Continue,
         };
-        self.eval_method_on_receiver(
-            MethodDispatch {
-                expr,
-                method,
-                type_args,
-                args,
-                span,
-            },
-            receiver,
-            frame,
-        )
+        if fact.receiver == MethodReceiver::Associated {
+            return self.resume_checked_method(
+                dispatch.expr,
+                None,
+                dispatch.args,
+                dispatch.span,
+                frame,
+            );
+        }
+        match self.eval_expr(receiver, frame) {
+            ControlSignal::Value(value) => self.eval_method_on_receiver(dispatch, value, frame),
+            signal if is_pending_host_boundary_signal(&signal) => {
+                attach_method_receiver_continuation(
+                    signal,
+                    dispatch.expr,
+                    dispatch.method,
+                    dispatch.type_args,
+                    dispatch.args,
+                    dispatch.span,
+                    frame,
+                )
+            }
+            other => other,
+        }
     }
 
     pub(in crate::eval) fn eval_method_on_receiver(
@@ -240,249 +46,134 @@ impl<'a> EvalContext<'a> {
         receiver: InterpValue,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let MethodDispatch {
-            expr,
-            method,
-            type_args,
-            args,
-            span,
-        } = dispatch;
-        if self.checked.types.agent_method_calls.contains_key(&expr) {
-            let target = match self.checked_agent_method_target(expr, receiver, span) {
-                Ok(target) => target,
-                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-            };
-            let target = match self.specialize_call_target_for_call(expr, target, frame, span) {
-                Ok(target) => target,
-                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-            };
-            return self.resume_call_args(
-                CallArgsState {
-                    call: expr,
-                    target,
-                    args: args.into(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span,
-                },
-                frame,
-            );
-        }
-        let expected = self
-            .plan
-            .dispatch
-            .std_method(expr)
-            .map(|call| call.parameter_types.len() - 1)
-            .or_else(|| local_value_method_expected_arg_count(&receiver, method));
-        if let Some(expected) = expected {
-            return self.resume_local_method_args(
-                LocalMethodArgsState {
-                    expr,
-                    receiver,
-                    method: method.to_owned(),
-                    type_args: type_args.to_vec(),
-                    args: args.to_vec(),
-                    start_arg_index: 0,
-                    evaluated_args: Vec::with_capacity(expected),
-                    span,
-                },
-                frame,
-            );
-        }
-        match receiver {
-            InterpValue::Prompt(messages) => {
-                self.eval_prompt_value_method(messages, method, args, span, frame)
-            }
-            InterpValue::Message(message) => {
-                self.eval_message_value_method(message, method, type_args, args, span)
-            }
-            collection @ (InterpValue::Array(_)
-            | InterpValue::List(_)
-            | InterpValue::Slice(_)
-            | InterpValue::Map(_)
-            | InterpValue::Deque(_)
-            | InterpValue::Queue(_)
-            | InterpValue::Stack(_)
-            | InterpValue::PriorityQueue(_)
-            | InterpValue::OrderedMap(_)
-            | InterpValue::OrderedSet(_)) => {
-                unsupported_collection_method(span, local_receiver_name(&collection), method)
-            }
-            InterpValue::MemoryStore {
-                region_stable_id,
-                path,
-                key_type,
-                value_type,
-            } => self.eval_memory_store_method(
-                MemoryStoreMethodEval {
-                    result_type: match self.checked.types.expr_types.get(&expr).copied() {
-                        Some(ty) => ty,
-                        None => {
-                            return ControlSignal::Fault(Box::new(
-                                crate::control::ExecutionFault::new(
-                                    AnalysisDiagnosticCode::MissingCheckedFact,
-                                    span,
-                                    "memory method result type is missing",
-                                ),
-                            ));
-                        }
-                    },
-                    region_stable_id,
-                    path,
-                    key_type,
-                    value_type,
-                    method,
-                    args,
-                    span,
-                },
-                frame,
-            ),
-            InterpValue::MemorySelection {
-                region_stable_id,
-                path,
-                key_type,
-                value_type,
-                kind,
-                predicate_type,
-                predicate,
-                limit,
-            } => self.eval_memory_selection_method(
-                MemorySelectionMethodEval {
-                    region_stable_id,
-                    path,
-                    key_type,
-                    value_type,
-                    kind,
-                    predicate_type,
-                    predicate: predicate.map(|value| *value),
-                    limit,
-                    method,
-                    args,
-                    span,
-                },
-                frame,
-            ),
-            _ => {
-                let message = format!(
-                    "method `{method}` is not supported for runtime value {:?}",
-                    receiver
-                );
-                ControlSignal::invalid_arguments(message, span)
-            }
-        }
+        self.resume_checked_method(
+            dispatch.expr,
+            Some(receiver),
+            dispatch.args,
+            dispatch.span,
+            frame,
+        )
     }
 
-    pub(in crate::eval) fn resume_static_method_args(
+    fn resume_checked_method(
         &mut self,
-        state: StaticMethodArgsState,
+        call: HirExprId,
+        receiver: Option<InterpValue>,
+        args: &[HirArg],
+        span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let StaticMethodArgsState {
-            expr: call_expr,
-            kind,
-            method,
-            type_args,
-            args,
-            start_arg_index,
-            mut evaluated_args,
-            span,
-        } = state;
-        for (index, arg) in args.iter().enumerate().skip(start_arg_index) {
-            let arg_expr = match arg {
-                HirArg::Positional(expr) | HirArg::Named { value: expr, .. } => *expr,
-            };
-            match self.eval_expr(arg_expr, frame) {
-                ControlSignal::Value(value) => evaluated_args.push(value),
-                signal if is_pending_host_boundary_signal(&signal) => {
-                    return compose_signal_continuation(
-                        signal,
-                        Continuation::StaticMethodArgs {
-                            expr: call_expr,
-                            kind,
-                            method,
-                            type_args,
-                            args,
-                            next_arg_index: index + 1,
-                            evaluated_args,
-                            span,
-                            frame: frame.clone(),
-                        },
-                    );
-                }
-                other => return other,
+        let receiver_mode = match self.plan.dispatch.method(call) {
+            Some(fact) => fact.receiver,
+            None => {
+                return ControlSignal::missing_checked_fact(
+                    "method call has no prepared checked target",
+                    span,
+                );
             }
-        }
-        self.eval_static_method_values(call_expr, kind, &method, &evaluated_args, span)
+        };
+        let target = match self.prepared_method_target(call, receiver.as_ref(), frame, span) {
+            Ok(target) => target,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        let evaluated_args = match (receiver_mode, receiver) {
+            (MethodReceiver::Value { .. }, Some(value)) => vec![value],
+            (MethodReceiver::Associated, None) | (MethodReceiver::Component, Some(_)) => Vec::new(),
+            _ => {
+                return ControlSignal::missing_checked_fact(
+                    "method receiver does not match its checked ABI",
+                    span,
+                );
+            }
+        };
+        self.resume_call_args(
+            CallArgsState {
+                call,
+                target,
+                args: args.into(),
+                start_arg_index: 0,
+                evaluated_args,
+                span,
+            },
+            frame,
+        )
     }
 
-    pub(in crate::eval) fn eval_static_method_values(
-        &mut self,
-        expr: HirExprId,
-        kind: StaticMethodKind,
-        method: &str,
-        args: &[InterpValue],
+    fn prepared_method_target(
+        &self,
+        call: HirExprId,
+        receiver: Option<&InterpValue>,
+        frame: &Frame,
         span: Span,
-    ) -> ControlSignal {
-        match kind {
-            StaticMethodKind::Prompt => {
-                if method != "new" || !args.is_empty() {
-                    return unsupported_method(span, "Prompt type", method);
+    ) -> Result<CallTarget, ExecutionFault> {
+        let missing = |message: &str| {
+            ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+        };
+        let selection = self
+            .plan
+            .dispatch
+            .resolve_method(
+                self.checked,
+                call,
+                frame.generic_bindings(),
+                receiver.and_then(|value| match value {
+                    InterpValue::Existential(value) => {
+                        Some(crate::value::ExistentialEvidence::Runtime(value))
+                    }
+                    _ => None,
+                }),
+            )
+            .map_err(|reason| missing(&reason))?;
+        let bindings = selection.bindings;
+        let target = match selection.target {
+            MethodTarget::Source { callable, .. } => CallTarget::FlowItem(*callable),
+            MethodTarget::Standard { .. } => {
+                let checked = self
+                    .plan
+                    .dispatch
+                    .std_method(call)
+                    .ok_or_else(|| missing("standard method has no prepared intrinsic ABI"))?;
+                if checked.identity.dispatch == etas_std::IntrinsicDispatch::PureKernel {
+                    CallTarget::PureIntrinsic(
+                        crate::intrinsic::dispatch::CheckedPureIntrinsicCall {
+                            intrinsic: checked.identity.intrinsic,
+                            parameter_types: checked.parameter_types.clone(),
+                            result_type: checked.result_type,
+                        }
+                        .specialize(&self.checked.type_store, frame.generic_bindings())
+                        .map_err(|reason| missing(&reason))?,
+                    )
+                } else {
+                    CallTarget::StdIntrinsic(
+                        checked
+                            .specialize_generic(&self.checked.type_store, frame.generic_bindings())
+                            .map_err(|reason| missing(&reason))?,
+                    )
                 }
-                ControlSignal::Value(InterpValue::Prompt(Default::default()))
             }
-            StaticMethodKind::Message => self.eval_message_type_method_values(method, args, span),
-            StaticMethodKind::SessionConfig => {
-                self.eval_session_config_type_method_values(expr, method, args, span)
+            MethodTarget::Agent { .. } => self.checked_agent_method_target(
+                call,
+                receiver
+                    .ok_or_else(|| missing("agent method has no evaluated component"))?
+                    .clone(),
+                span,
+            )?,
+            MethodTarget::BoundSpec { .. } => {
+                unreachable!("prepared witness resolves the generic target")
             }
-            StaticMethodKind::Conversation => {
-                self.eval_conversation_type_method_values(expr, method, args, span)
+            MethodTarget::External { .. } => {
+                return Err(missing(
+                    "external method has no materialized executable body",
+                ));
             }
+        };
+        if bindings.types.is_empty() && bindings.rows.is_empty() {
+            return Ok(target);
         }
-    }
-
-    pub(in crate::eval) fn expr_is_std_prompt_type(&self, expr: HirExprId) -> bool {
-        let HirExpr::Path(path) = &self.checked.hir.exprs[expr] else {
-            return false;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return false;
-        };
-        let Some(symbol_data) = self.checked.symbols.get(symbol) else {
-            return false;
-        };
-        matches!(
-            &symbol_data.def,
-            SymbolDef::ImportAlias { path, .. }
-                if path == &["std", "agent", "prompt", "Prompt"].map(str::to_owned)
-        )
-    }
-
-    pub(in crate::eval) fn expr_is_std_message_type(&self, expr: HirExprId) -> bool {
-        self.expr_is_std_type(expr, &["std", "agent", "message", "Message"])
-    }
-
-    pub(in crate::eval) fn expr_is_std_session_config_type(&self, expr: HirExprId) -> bool {
-        self.expr_is_std_type(expr, &["std", "agent", "session", "SessionConfig"])
-    }
-
-    pub(in crate::eval) fn expr_is_std_conversation_type(&self, expr: HirExprId) -> bool {
-        self.expr_is_std_type(expr, &["std", "agent", "session", "Conversation"])
-    }
-
-    pub(in crate::eval) fn expr_is_std_type(&self, expr: HirExprId, expected: &[&str]) -> bool {
-        let HirExpr::Path(path) = &self.checked.hir.exprs[expr] else {
-            return false;
-        };
-        let ResolveResult::Resolved(symbol) = path.resolution else {
-            return false;
-        };
-        let Some(symbol_data) = self.checked.symbols.get(symbol) else {
-            return false;
-        };
-        matches!(
-            &symbol_data.def,
-            SymbolDef::ImportAlias { path, .. }
-                if path.iter().map(String::as_str).eq(expected.iter().copied())
-        )
+        Ok(CallTarget::Specialized {
+            target: target.into(),
+            type_bindings: bindings.types,
+            effect_row_bindings: bindings.rows,
+        })
     }
 }

@@ -259,33 +259,6 @@ pub(super) fn prompt_messages_from_snapshot(
         .collect()
 }
 
-pub(super) fn static_method_kind_snapshot(
-    kind: &crate::orchestration::StaticMethodKindSnapshot,
-) -> Value {
-    match kind {
-        crate::orchestration::StaticMethodKindSnapshot::Prompt => json!({ "kind": "prompt" }),
-        crate::orchestration::StaticMethodKindSnapshot::Message => json!({ "kind": "message" }),
-        crate::orchestration::StaticMethodKindSnapshot::SessionConfig => {
-            json!({ "kind": "session_config" })
-        }
-        crate::orchestration::StaticMethodKindSnapshot::Conversation => {
-            json!({ "kind": "conversation" })
-        }
-    }
-}
-
-pub(super) fn static_method_kind_from_snapshot(
-    value: &Value,
-) -> Result<StaticMethodKindSnapshot, String> {
-    match required_str(value, "kind")? {
-        "prompt" => Ok(StaticMethodKindSnapshot::Prompt),
-        "message" => Ok(StaticMethodKindSnapshot::Message),
-        "session_config" => Ok(StaticMethodKindSnapshot::SessionConfig),
-        "conversation" => Ok(StaticMethodKindSnapshot::Conversation),
-        other => Err(format!("unknown machine static method kind `{other}`")),
-    }
-}
-
 pub(in crate::api::codec) fn runtime_limit_snapshot(
     limit: &crate::eval::limit::RuntimeLimit,
 ) -> Value {

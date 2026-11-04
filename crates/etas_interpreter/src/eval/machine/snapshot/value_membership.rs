@@ -81,6 +81,11 @@ impl StructuralPartition for ValueSnapshot {
                 }
                 return None;
             }
+            Self::Existential { header, value } => {
+                header.object_type.hash(state);
+                header.concrete_type.hash(state);
+                Storage::Single(value)
+            }
             Self::Nominal { ty, value } => {
                 ty.hash(state);
                 Storage::Single(value)

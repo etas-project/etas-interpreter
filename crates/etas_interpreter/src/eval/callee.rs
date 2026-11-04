@@ -211,7 +211,7 @@ impl<'a> EvalContext<'a> {
             }
             _ => return Ok(None),
         };
-        let Some(result_type) = self.checked.types.expr_types.get(&call).copied() else {
+        let Some(result_type) = self.checked.types.expression_producer_type(call) else {
             return Err(crate::control::ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,

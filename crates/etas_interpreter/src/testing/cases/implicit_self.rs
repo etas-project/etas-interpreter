@@ -15,7 +15,7 @@ impl Packet ~ Runner {
     }
 }
 flow invoke<T ~ Runner>(value: T) -> i32 ![] {
-    return value::Runner.run(() => { println("inferred")?; return; });
+    return value.run(() => { println("inferred")?; return; });
 }
 flow main() -> i32 ![] { return invoke(Packet { number = 21 }); }
 "#,
@@ -84,7 +84,7 @@ type Packet = { number: i32 };
 type Snapshot = { number: i32 };
 impl Packet ~ SnapshotEncoder { flow encode(self) -> i32 { return self.number; } }
 impl Snapshot ~ SnapshotEncoder { flow encode(self) -> i32 { return self.number + 1; } }
-flow encode<T ~ SnapshotEncoder>(value: T) -> i32 { return value::SnapshotEncoder.encode(); }
+flow encode<T ~ SnapshotEncoder>(value: T) -> i32 { return value.encode(); }
 flow main() -> i32 { return encode(Packet { number = 7 }) + encode(Snapshot { number = 11 }); }
 "#,
     );
@@ -113,7 +113,7 @@ import std.runtime.checkpoint;
 spec Encoder { flow encode(self) -> i32; }
 type Packet = { number: i32 };
 impl Packet ~ Encoder { flow encode(self) -> i32 { checkpoint("method"); return self.number; } }
-flow encode<T ~ Encoder>(value: T) -> i32 { return value::Encoder.encode(); }
+flow encode<T ~ Encoder>(value: T) -> i32 { return value.encode(); }
 flow main() -> i32 { return encode(Packet { number = 7 }); }
 "#,
     );

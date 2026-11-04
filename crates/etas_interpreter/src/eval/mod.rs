@@ -24,6 +24,7 @@ mod checkpoint;
 mod code;
 mod const_expr;
 mod continuation;
+mod existential;
 mod expr;
 mod field_access;
 mod file_read_limited;
@@ -41,7 +42,6 @@ mod index_access;
 pub(crate) mod limit;
 mod loop_control;
 pub(crate) mod machine;
-mod memory_args;
 mod memory_commit;
 mod memory_intent;
 mod memory_page;
@@ -65,7 +65,6 @@ mod session_context;
 mod session_history;
 mod session_value;
 mod slice_access;
-mod spec_method;
 mod std_call;
 mod std_value;
 mod stmt;
@@ -76,6 +75,7 @@ mod stmt_retry;
 mod stmt_value;
 mod storage;
 mod stream;
+mod support_call;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
@@ -83,15 +83,13 @@ pub(crate) use crate::control::{
     Frame, HostBoundaryDecode, HostBoundaryRequest, MemoryDecode, ModelDecode, PendingBlock,
     PendingCall, PendingCheckpoint, PendingCommand, PendingConsole, PendingContinuation,
     PendingExpr, PendingHostBoundary, PendingMemory, PendingModel, PendingPerform, PendingSession,
-    SessionDecode, SourceToolBinding, StaticMethodKind,
+    SessionDecode, SourceToolBinding,
 };
 pub(crate) use assign_place::{LocalPlaceComponent, LocalPlaceSegment};
 use branch::IfStmtResume;
 use call::CallArgsState;
 pub(crate) use host_value::interp_to_host_value;
-use memory_args::MemoryArgsResume;
-use memory_selection::{MemorySelectionLimitResume, MemorySelectionMethodEval};
-use memory_store::{MemoryStoreArgs, MemoryStoreMethodEval};
+use memory_store::MemoryStoreArgs;
 use perform::PerformArgsResume;
 pub(crate) use slice_access::SliceExprEval;
 

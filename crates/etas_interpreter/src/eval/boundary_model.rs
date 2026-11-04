@@ -152,6 +152,7 @@ fn expected_type_name(expected: TypeId, store: &TypeStore) -> String {
 
 fn display_type_name(ty: Type, store: &TypeStore) -> String {
     match ty {
+        Type::Existential { .. } => "existential spec object".into(),
         Type::Primitive(primitive) => format!("{primitive:?}"),
         Type::IntegerLiteral { .. } => "integer literal".to_owned(),
         Type::Array(_) => "Array".to_owned(),

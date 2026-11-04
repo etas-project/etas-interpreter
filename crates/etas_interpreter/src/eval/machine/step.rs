@@ -192,7 +192,19 @@ impl EvalMachine {
                     let mut pending = *pending;
                     self.push_continuation_frames(pending.continuation);
                     self.push_frame(EvalFrame::Expr(ExprFrame {
-                        continuation: Continuation::BlockValue,
+                        continuation: if ctx
+                            .checked
+                            .types
+                            .existential_packs
+                            .contains_key(&pending.expr)
+                        {
+                            Continuation::PackExistential {
+                                expr: pending.expr,
+                                frame: pending.frame.clone(),
+                            }
+                        } else {
+                            Continuation::BlockValue
+                        },
                     }));
                     ctx.eval_expr_frame(pending.expr, &mut pending.frame)
                 }

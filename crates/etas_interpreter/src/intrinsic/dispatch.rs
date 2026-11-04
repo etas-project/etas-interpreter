@@ -147,8 +147,24 @@ pub enum CodeSyntaxCallable {
     Diff,
 }
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum AgentSupportCallable {
+    PromptNew,
+    PromptSystem,
+    PromptUser,
+    PromptAssistant,
+    PromptData,
+    MessageNew,
+    MessageCast,
+    MessageWithSession,
+    SessionContinueOrNew,
+    ConversationLoad,
+    MemorySelectionLimit,
+}
+
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StdCallable {
+    AgentSupport(AgentSupportCallable),
     Collection(etas_std::StdCollectionIntrinsic),
     ForwardAction,
     CodeSyntax(CodeSyntaxCallable),
@@ -190,6 +206,39 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         return Some(StdCallable::ForwardAction);
     }
     let callable = match descriptor.id.0 {
+        intrinsic::runtime::PROMPT_NEW => {
+            StdCallable::AgentSupport(AgentSupportCallable::PromptNew)
+        }
+        intrinsic::runtime::PROMPT_SYSTEM => {
+            StdCallable::AgentSupport(AgentSupportCallable::PromptSystem)
+        }
+        intrinsic::runtime::PROMPT_USER => {
+            StdCallable::AgentSupport(AgentSupportCallable::PromptUser)
+        }
+        intrinsic::runtime::PROMPT_ASSISTANT => {
+            StdCallable::AgentSupport(AgentSupportCallable::PromptAssistant)
+        }
+        intrinsic::runtime::PROMPT_DATA => {
+            StdCallable::AgentSupport(AgentSupportCallable::PromptData)
+        }
+        intrinsic::runtime::MESSAGE_NEW => {
+            StdCallable::AgentSupport(AgentSupportCallable::MessageNew)
+        }
+        intrinsic::runtime::MESSAGE_CAST => {
+            StdCallable::AgentSupport(AgentSupportCallable::MessageCast)
+        }
+        intrinsic::runtime::MESSAGE_WITH_SESSION => {
+            StdCallable::AgentSupport(AgentSupportCallable::MessageWithSession)
+        }
+        intrinsic::runtime::SESSION_CONTINUE_OR_NEW => {
+            StdCallable::AgentSupport(AgentSupportCallable::SessionContinueOrNew)
+        }
+        intrinsic::runtime::SESSION_LOAD => {
+            StdCallable::AgentSupport(AgentSupportCallable::ConversationLoad)
+        }
+        intrinsic::runtime::MEMORY_SELECTION_LIMIT => {
+            StdCallable::AgentSupport(AgentSupportCallable::MemorySelectionLimit)
+        }
         intrinsic::runtime::CODE_PARSE_BODY => {
             StdCallable::CodeSyntax(CodeSyntaxCallable::ParseBody)
         }

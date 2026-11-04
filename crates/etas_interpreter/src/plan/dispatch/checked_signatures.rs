@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use etas_frontend::CheckedProject;
 use etas_hir::{HirExpr, HirExprId};
-use etas_std::{FlowSourceMethodOperation, IntrinsicDispatch, StdDecl, StdIntrinsicId};
+use etas_std::{IntrinsicDispatch, StdDecl, StdIntrinsicId};
 
 use crate::intrinsic::{
     dispatch::{CheckedStdIntrinsicCall, StdIntrinsicIdentity},
@@ -23,6 +23,7 @@ pub(super) fn lower(
     let mut calls = HashMap::new();
     let mut type_members = HashSet::new();
     for (expr, fact) in &project.types.std_intrinsic_calls {
+        let method_fact = project.types.checked_method_calls.get(expr);
         if project.types.agent_method_calls.contains_key(expr) {
             return Err("method call has conflicting agent and standard intrinsic targets".into());
         }
@@ -67,7 +68,9 @@ pub(super) fn lower(
                     let etas_hir::ResolveResult::Resolved(subject) = path.resolution else {
                         return Err("checked type member has no resolved type identity".into());
                     };
-                    validate_collection_subject(project, collection, subject)?;
+                    if method_fact.is_none() {
+                        validate_collection_subject(project, collection, subject)?;
+                    }
                 }
                 ((!type_member).then_some(*receiver), method, args)
             }
@@ -81,13 +84,15 @@ pub(super) fn lower(
                 let [method] = partial.remaining.as_slice() else {
                     return Err("checked type member call has an invalid member path".into());
                 };
-                validate_collection_subject(
-                    project,
-                    collection,
-                    partial
-                        .resolved_prefix
-                        .ok_or("checked type member has no resolved subject")?,
-                )?;
+                if method_fact.is_none() {
+                    validate_collection_subject(
+                        project,
+                        collection,
+                        partial
+                            .resolved_prefix
+                            .ok_or("checked type member has no resolved subject")?,
+                    )?;
+                }
                 (None, method, args)
             }
             Some(HirExpr::Call { args, .. }) if !type_member => (None, &symbol.name, args),
@@ -97,12 +102,7 @@ pub(super) fn lower(
                 );
             }
         };
-        if descriptor.id.0 != fact.intrinsic
-            || source.is_some_and(|source| {
-                source.name != *method
-                    || (source.operation != FlowSourceMethodOperation::CheckedIntrinsic
-                        && !(type_member && collection.is_some()))
-            })
+        if descriptor.id.0 != fact.intrinsic || source.is_some_and(|source| source.name != *method)
         {
             return Err("checked std method identity differs from its registry descriptor".into());
         }
@@ -124,6 +124,12 @@ pub(super) fn lower(
                 != flow
                     .type_params
                     .iter()
+                    .filter(|param| {
+                        method_fact.is_none()
+                            || source.is_none_or(|method| {
+                                !method.owner_type_params.contains(&param.name)
+                            })
+                    })
                     .map(|param| &param.name)
                     .collect::<Vec<_>>()
         {
@@ -145,12 +151,30 @@ pub(super) fn lower(
         }
         let (parameter_types, result_type) =
             if descriptor.dispatch == IntrinsicDispatch::PureKernel || collection.is_some() {
-                let parameter_types = receiver
-                    .into_iter()
-                    .chain(args.iter().map(|arg| match arg {
+                let source_args = args
+                    .iter()
+                    .map(|arg| match arg {
                         etas_hir::HirArg::Positional(expr)
                         | etas_hir::HirArg::Named { value: expr, .. } => *expr,
-                    }))
+                    })
+                    .collect::<Vec<_>>();
+                let expressions = if let Some(method) = method_fact {
+                    let mut ordered = vec![None; method.signature.params.len()];
+                    if let etas_types::method::MethodReceiver::Value { slot } = method.receiver {
+                        ordered[slot as usize] = receiver;
+                    }
+                    for (expr, slot) in source_args.iter().zip(&method.argument_slots) {
+                        ordered[*slot as usize] = Some(*expr);
+                    }
+                    ordered
+                        .into_iter()
+                        .collect::<Option<Vec<_>>>()
+                        .ok_or("checked standard method argument ABI is incomplete")?
+                } else {
+                    receiver.into_iter().chain(source_args).collect()
+                };
+                let parameter_types = expressions
+                    .into_iter()
                     .map(|arg| {
                         project.types.expr_types.get(&arg).copied().ok_or_else(|| {
                             "checked pure method argument is missing its value type".to_owned()

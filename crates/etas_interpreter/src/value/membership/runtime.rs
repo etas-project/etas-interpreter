@@ -94,6 +94,11 @@ impl StructuralPartition for InterpValue {
                 value.end.as_number().hash(state);
                 return None;
             }
+            Self::Existential(value) => {
+                value.object_type.hash(state);
+                value.concrete_type.hash(state);
+                Storage::Single(value.value.clone())
+            }
             Self::Nominal { ty, value } => {
                 ty.hash(state);
                 Storage::Single(value.clone())

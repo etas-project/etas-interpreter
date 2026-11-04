@@ -2,14 +2,6 @@ use super::host_value::interp_to_host_value;
 use super::*;
 
 impl<'a> EvalContext<'a> {
-    pub(super) fn eval_memory_store_method(
-        &mut self,
-        eval: MemoryStoreMethodEval<'_>,
-        frame: &mut Frame,
-    ) -> ControlSignal {
-        self.resume_memory_args(MemoryArgsResume::from_eval(eval), frame)
-    }
-
     pub(super) fn finish_memory_store_method(&mut self, args: MemoryStoreArgs) -> ControlSignal {
         let MemoryStoreArgs {
             region_stable_id,
@@ -428,17 +420,6 @@ pub(super) fn memory_version_from_interp(
                 _ => None,
             })?;
     etas_host::MemoryVersion::parse(&token).ok()
-}
-
-pub(super) struct MemoryStoreMethodEval<'a> {
-    pub region_stable_id: String,
-    pub path: Vec<String>,
-    pub key_type: etas_types::TypeId,
-    pub value_type: etas_types::TypeId,
-    pub result_type: etas_types::TypeId,
-    pub method: &'a str,
-    pub args: &'a [HirArg],
-    pub span: Span,
 }
 
 pub(super) struct MemoryStoreArgs {

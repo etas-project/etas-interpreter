@@ -30,6 +30,14 @@ pub(super) fn compare_node<'c>(
             return Comparison::Ready(true);
         }
         let children = match (a, b) {
+            (V::Existential(av), V::Existential(bv)) => {
+                if av.object_type != bv.object_type || av.concrete_type != bv.concrete_type {
+                    return Comparison::Ready(false);
+                }
+                a = &av.value;
+                b = &bv.value;
+                continue;
+            }
             (V::Nominal { ty: at, value: av }, V::Nominal { ty: bt, value: bv }) => {
                 if at != bt {
                     return Comparison::Ready(false);

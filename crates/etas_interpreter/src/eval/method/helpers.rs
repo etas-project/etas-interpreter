@@ -50,36 +50,6 @@ pub(super) fn unsupported_method(span: Span, receiver: &str, method: &str) -> Co
     ControlSignal::invalid_arguments(message, span)
 }
 
-pub(super) struct LocalMethodArgContinuation<'a> {
-    pub(super) expr: HirExprId,
-    pub(super) receiver: InterpValue,
-    pub(super) method: &'a str,
-    pub(super) type_args: &'a [etas_hir::HirTypeId],
-    pub(super) args: Vec<HirArg>,
-    pub(super) next_arg_index: usize,
-    pub(super) evaluated_args: Vec<InterpValue>,
-    pub(super) span: Span,
-    pub(super) frame: &'a Frame,
-}
-
-pub(super) fn attach_local_method_args_continuation(
-    signal: ControlSignal,
-    pending: LocalMethodArgContinuation<'_>,
-) -> ControlSignal {
-    let continuation = Continuation::LocalMethodArgs {
-        expr: pending.expr,
-        receiver: pending.receiver,
-        method: pending.method.to_owned(),
-        type_args: pending.type_args.to_vec(),
-        args: pending.args,
-        next_arg_index: pending.next_arg_index,
-        evaluated_args: pending.evaluated_args,
-        span: pending.span,
-        frame: pending.frame.clone(),
-    };
-    attach_continuation(signal, continuation)
-}
-
 pub(super) fn local_value_method_expected_arg_count(
     receiver: &InterpValue,
     method: &str,
@@ -177,24 +147,6 @@ pub(super) fn attach_method_receiver_continuation(
         args: args.to_vec(),
         span,
         frame: frame.clone(),
-    };
-    attach_continuation(signal, continuation)
-}
-
-pub(super) fn attach_prompt_value_method_arg_continuation(
-    signal: ControlSignal,
-    messages: crate::value::PromptValue,
-    method: &str,
-    role: crate::value::PromptRole,
-    allow_plain_system_content: bool,
-    span: Span,
-) -> ControlSignal {
-    let continuation = Continuation::PromptValueMethodArg {
-        messages,
-        method: method.to_owned(),
-        role,
-        allow_plain_system_content,
-        span,
     };
     attach_continuation(signal, continuation)
 }

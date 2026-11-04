@@ -14,6 +14,7 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub enum InterpValue {
+    Existential(Box<super::ExistentialValue>),
     Unit,
     Bool(bool),
     Number(super::NumericValue),
@@ -111,6 +112,7 @@ impl Eq for InterpValue {}
 impl InterpValue {
     pub(crate) fn kind_name(&self) -> &'static str {
         match self {
+            Self::Existential(_) => "Existential",
             Self::Unit => "Unit",
             Self::Bool(_) => "Bool",
             Self::Number(_) => "Number",

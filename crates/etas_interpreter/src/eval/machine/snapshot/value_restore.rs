@@ -10,6 +10,7 @@ enum Started {
     Pending(Frame),
 }
 enum UnaryKind {
+    Existential(ExistentialHeader),
     Nominal(etas_types::TypeId),
     Trust(etas_types::TrustWrapper),
     Some,
@@ -110,6 +111,9 @@ fn start(value: ValueSnapshot, context: &mut RestoreContext) -> Result<Started, 
                 remaining: messages.into_iter(),
                 pending: None,
             }
+        }
+        ValueSnapshot::Existential { header, value } => {
+            unary(UnaryKind::Existential(header), value.into_value())
         }
         ValueSnapshot::Nominal { ty, value } => unary(UnaryKind::Nominal(ty), value.into_value()),
         ValueSnapshot::Trust { wrapper, value } => {
@@ -290,6 +294,9 @@ impl Frame {
                 let value = SharedValue::new(value);
                 match kind {
                     UnaryKind::Nominal(ty) => InterpValue::Nominal { ty, value },
+                    UnaryKind::Existential(header) => {
+                        InterpValue::Existential(Box::new(header.runtime(value)))
+                    }
                     UnaryKind::Trust(wrapper) => InterpValue::Trust { wrapper, value },
                     UnaryKind::Some => InterpValue::OptionSome(value),
                     UnaryKind::Message(header) => InterpValue::Message(header.runtime(value)),

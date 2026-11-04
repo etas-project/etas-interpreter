@@ -85,7 +85,8 @@ pub(super) fn release_value(mut current: Value) {
             Value::Callable(crate::orchestration::CallTargetSnapshot::Composed(targets)) => targets
                 .into_unique()
                 .map(|values| Children::Targets(values.into_iter())),
-            Value::Nominal { value, .. }
+            Value::Existential { value, .. }
+            | Value::Nominal { value, .. }
             | Value::Trust { value, .. }
             | Value::OptionSome(value)
             | Value::MemorySelection {

@@ -145,6 +145,19 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         (V::CodeIdentity { ty: a, identity: x }, V::CodeIdentity { ty: b, identity: y }) => {
             a == b && x == y
         }
+        (
+            V::Existential {
+                header: a,
+                value: x,
+            },
+            V::Existential {
+                header: b,
+                value: y,
+            },
+        ) => {
+            pending.push((x, y));
+            a.object_type == b.object_type && a.concrete_type == b.concrete_type
+        }
         (V::Nominal { ty: a, value: x }, V::Nominal { ty: b, value: y }) => {
             pending.push((x, y));
             a == b

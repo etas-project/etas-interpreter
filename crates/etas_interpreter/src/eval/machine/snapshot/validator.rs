@@ -551,6 +551,13 @@ impl<'a> SnapshotValidator<'a> {
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
         match continuation {
+            ContinuationSnapshot::PackExistential { expr, frame } => {
+                self.expr(*expr, context)?;
+                if !self.checked.types.existential_packs.contains_key(expr) {
+                    return Err("checkpoint packing continuation has no checked producer".into());
+                }
+                self.frame(frame, context)
+            }
             ContinuationSnapshot::ResidualScope { scope } => {
                 self.residual_references.borrow_mut().scopes.push(*scope);
                 Ok(())
@@ -684,64 +691,36 @@ impl<'a> SnapshotValidator<'a> {
             }
             ContinuationSnapshot::MethodReceiver {
                 expr,
+                method,
                 type_args,
                 args,
+                span,
                 frame,
-                ..
             } => {
-                self.expr(*expr, context)?;
-                self.hir_types(type_args, context)?;
-                self.args(args, context)?;
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::LocalMethodArgs {
-                expr,
-                receiver,
-                type_args,
-                args,
-                next_arg_index,
-                evaluated_args,
-                frame,
-                ..
-            } => {
-                self.expr(*expr, context)?;
-                self.snapshot_value(receiver)?;
-                self.hir_types(type_args, context)?;
-                self.args(args, context)?;
-                self.index_at_most(*next_arg_index, args.len(), context)?;
-                self.snapshot_values(evaluated_args)?;
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::StaticMethodArgs {
-                expr,
-                type_args,
-                args,
-                next_arg_index,
-                evaluated_args,
-                frame,
-                ..
-            } => {
-                self.expr(*expr, context)?;
-                self.hir_types(type_args, context)?;
-                self.args(args, context)?;
-                self.index_at_most(*next_arg_index, args.len(), context)?;
-                self.snapshot_values(evaluated_args)?;
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::SpecMethodReceiver {
-                expr,
-                receiver_expr,
-                spec_symbol,
-                spec_args,
-                args,
-                frame,
-                ..
-            } => {
-                self.expr(*expr, context)?;
-                self.expr(*receiver_expr, context)?;
-                self.symbol(*spec_symbol, context)?;
-                self.hir_types(spec_args, context)?;
-                self.args(args, context)?;
+                let site = self.call_site(*expr, args, *span, context)?;
+                let (etas_hir::HirExpr::MethodCall {
+                    method: expected, ..
+                }
+                | etas_hir::HirExpr::SpecMethodCall {
+                    method: expected, ..
+                }) = site
+                else {
+                    return Err(format!(
+                        "{context}: receiver continuation is not a checked method call"
+                    ));
+                };
+                let fact = self
+                    .dispatch
+                    .method(*expr)
+                    .ok_or("checkpoint receiver has no prepared method target")?;
+                if method != expected
+                    || !type_args.is_empty()
+                    || fact.receiver == etas_types::method::MethodReceiver::Associated
+                {
+                    return Err(format!(
+                        "{context}: receiver continuation differs from its checked method selection"
+                    ));
+                }
                 self.frame(frame, context)
             }
             ContinuationSnapshot::CallArgs { .. } => {
@@ -811,53 +790,6 @@ impl<'a> SnapshotValidator<'a> {
                 self.args(args, context)?;
                 self.index_at_most(*next_arg_index, args.len(), context)?;
                 self.snapshot_values(evaluated_args)?;
-                self.frame(frame, context)
-            }
-            ContinuationSnapshot::MemoryArgs {
-                key_type,
-                value_type,
-                args,
-                next_arg_index,
-                evaluated_args,
-                frame,
-                ..
-            }
-            | ContinuationSnapshot::MemorySelectionLimitArgs {
-                key_type,
-                value_type,
-                args,
-                next_arg_index,
-                evaluated_args,
-                frame,
-                ..
-            } => {
-                self.type_id(*key_type, context)?;
-                self.type_id(*value_type, context)?;
-                if let ContinuationSnapshot::MemoryArgs { result_type, .. } = continuation {
-                    self.type_id(*result_type, context)?;
-                }
-                self.args(args, context)?;
-                self.index_at_most(*next_arg_index, args.len(), context)?;
-                self.snapshot_values(evaluated_args)?;
-                if let ContinuationSnapshot::MemorySelectionLimitArgs {
-                    kind,
-                    predicate_type,
-                    predicate,
-                    ..
-                } = continuation
-                {
-                    let seed = crate::value::contract::selection_query(
-                        kind,
-                        *predicate_type,
-                        predicate
-                            .as_ref()
-                            .map(crate::value::contract::Value::Snapshot),
-                    )?;
-                    crate::value::contract::validate(self, seed, &frame.generic_bindings())?;
-                    if let Some(predicate) = predicate {
-                        self.snapshot_value(predicate)?;
-                    }
-                }
                 self.frame(frame, context)
             }
             ContinuationSnapshot::IfExpr {
@@ -1109,6 +1041,10 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 ValueSnapshot::Nominal { ty, .. } => {
                     self.type_id(*ty, "checkpoint nominal value type")?
+                }
+                ValueSnapshot::Existential { header, value } => {
+                    let bindings = header.validate(self.checked)?;
+                    self.reference_value(value, header.concrete_type, &bindings)?;
                 }
                 ValueSnapshot::Conversation(conversation) => {
                     crate::value::conversation::validate_snapshot(conversation, self.limits)?
@@ -1538,8 +1474,7 @@ impl<'a> SnapshotValidator<'a> {
 #[cfg(test)]
 mod tests {
     use etas_core::{SourceId, Span, TextRange, TextSize};
-    use etas_hir::{HirBlockId, HirExprId, HirItemId, HirPatId, HirTypeId, ScopeId, SymbolId};
-    use etas_types::TypeId;
+    use etas_hir::{HirBlockId, HirExprId, HirItemId, HirPatId, ScopeId};
 
     use crate::orchestration::{
         ActiveHandlerArmRecord, CallTargetSnapshot, ContinuationSnapshot, LocalsSnapshot,
@@ -1715,43 +1650,14 @@ flow main() -> unit {
             ),
             (
                 ContinuationSnapshot::MethodReceiver {
-                    expr,
+                    expr: HirExprId(u32::MAX),
                     method: "method".to_owned(),
-                    type_args: vec![HirTypeId(u32::MAX)],
+                    type_args: Vec::new(),
                     args: Vec::new(),
                     span: span(),
                     frame: empty_locals(),
                 },
-                "missing HIR type",
-            ),
-            (
-                ContinuationSnapshot::MemoryArgs {
-                    result_type: TypeId(u32::MAX),
-                    region_stable_id: "region".to_owned(),
-                    path: Vec::new(),
-                    key_type: TypeId(u32::MAX),
-                    value_type: TypeId(u32::MAX),
-                    method: "get".to_owned(),
-                    args: Vec::new(),
-                    next_arg_index: 0,
-                    evaluated_args: Vec::new(),
-                    span: span(),
-                    frame: empty_locals(),
-                },
-                "missing checked type",
-            ),
-            (
-                ContinuationSnapshot::SpecMethodReceiver {
-                    expr,
-                    receiver_expr: expr,
-                    spec_symbol: SymbolId(u32::MAX),
-                    spec_args: Vec::new(),
-                    method: "method".to_owned(),
-                    args: Vec::new(),
-                    span: span(),
-                    frame: empty_locals(),
-                },
-                "missing HIR symbol",
+                "missing checked call site",
             ),
             (
                 ContinuationSnapshot::CallArgs {

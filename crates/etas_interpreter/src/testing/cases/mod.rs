@@ -39,6 +39,7 @@ mod memory_intent;
 mod memory_paging;
 mod memory_source_commit;
 mod message_session;
+mod method_resolution;
 mod model_completion;
 mod model_payload;
 mod native_actions;

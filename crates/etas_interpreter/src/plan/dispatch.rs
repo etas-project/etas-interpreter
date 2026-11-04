@@ -21,6 +21,7 @@ mod checked_definition_ops;
 mod checked_signatures;
 mod default_actions;
 mod forwarded_actions;
+mod methods;
 
 use super::context::{PlanContext, plan_pass};
 
@@ -34,6 +35,7 @@ pub struct IntrinsicDispatchTable {
 
 #[derive(Debug, Default)]
 struct ProgramDispatch {
+    methods: methods::MethodDispatchPlan,
     compiler_actions: HashMap<etas_effects::ActionRef, forwarded_actions::CheckedCompilerAction>,
     forwarded_actions: HashMap<StdIntrinsicId, forwarded_actions::CheckedForwardedAction>,
     default_actions: HashMap<HirExprId, default_actions::CheckedDefaultAction>,
@@ -85,6 +87,7 @@ impl IntrinsicDispatchTable {
     }
 
     fn for_program(project: &CheckedProject) -> Result<Self, Vec<String>> {
+        let methods = methods::MethodDispatchPlan::prepare(project).map_err(|error| vec![error])?;
         checked_actions::validate(project).map_err(|error| vec![error])?;
         checked_definition_ops::validate(project).map_err(|error| vec![error])?;
         let handlers = StdIntrinsicHandlerRegistry::build(&project.std_registry);
@@ -217,6 +220,7 @@ impl IntrinsicDispatchTable {
             reachable_intrinsics: HashSet::new(),
             pure_registry: PureIntrinsicRegistry,
             program: Arc::new(ProgramDispatch {
+                methods,
                 compiler_actions,
                 forwarded_actions,
                 default_actions,
@@ -258,6 +262,25 @@ impl IntrinsicDispatchTable {
 
     pub fn std_intrinsic(&self, symbol: SymbolId) -> Option<StdIntrinsicIdentity> {
         self.program.std_intrinsics.get(&symbol).copied()
+    }
+
+    pub(crate) fn method(
+        &self,
+        expr: HirExprId,
+    ) -> Option<&etas_types::facts::CheckedMethodCallFact> {
+        self.program.methods.call(expr)
+    }
+
+    pub(crate) fn resolve_method(
+        &self,
+        project: &CheckedProject,
+        call: HirExprId,
+        bindings: &crate::control::GenericBindings,
+        object: Option<crate::value::ExistentialEvidence<'_>>,
+    ) -> Result<methods::ResolvedMethodCall<'_>, String> {
+        self.program
+            .methods
+            .resolve(project, call, bindings, object)
     }
 
     pub(crate) fn intrinsic_callable_root(

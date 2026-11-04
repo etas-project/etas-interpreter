@@ -35,8 +35,33 @@ impl SnapshotValidator<'_> {
         target: &CallTargetSnapshot,
         site: &etas_hir::HirExpr,
         bindings: &crate::control::GenericBindings,
+        receiver: Option<&ValueSnapshot>,
     ) -> Result<(), String> {
-        let expected = crate::control::CheckedCallBindings::resolve(self.checked, call, bindings)?;
+        let method = self
+            .dispatch
+            .method(call)
+            .map(|_| {
+                self.dispatch.resolve_method(
+                    self.checked,
+                    call,
+                    bindings,
+                    receiver.and_then(|value| match value {
+                        ValueSnapshot::Existential { header, value } => {
+                            Some(crate::value::ExistentialEvidence::Snapshot { header, value })
+                        }
+                        _ => None,
+                    }),
+                )
+            })
+            .transpose()?;
+        let expected = if let Some(method) = &method {
+            crate::control::CheckedCallBindings {
+                types: method.bindings.types.clone(),
+                rows: method.bindings.rows.clone(),
+            }
+        } else {
+            crate::control::CheckedCallBindings::resolve(self.checked, call, bindings)?
+        };
         if !expected.types.is_empty() || !expected.rows.is_empty() {
             let CallTargetSnapshot::Specialized {
                 type_bindings,
@@ -52,6 +77,9 @@ impl SnapshotValidator<'_> {
                         .into(),
                 );
             }
+        }
+        if let Some(method) = method {
+            self.pending_method_target(call, target, method.target, bindings)?;
         }
         if let etas_hir::HirExpr::Call { callee, .. } = site
             && !self.checked.types.agent_method_calls.contains_key(&call)
