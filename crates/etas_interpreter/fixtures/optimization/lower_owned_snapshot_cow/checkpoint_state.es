@@ -1,1 +1,6 @@
-module app.main; flow copy_checkpoint_state(value: string) -> string { return value; } flow main() -> string { let current = "step:9"; return copy_checkpoint_state(current); }
+module app.main;
+
+flow main() -> List<i32> {
+    let snapshot = [10; 20; 30; 40];
+    return snapshot.extend([]);
+}

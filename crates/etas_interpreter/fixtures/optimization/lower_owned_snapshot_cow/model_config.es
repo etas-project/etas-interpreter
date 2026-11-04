@@ -1,1 +1,6 @@
-module app.main; flow snapshot_model_config(value: string) -> string { return value; } flow main() -> string { let current = "m3:flash"; return snapshot_model_config(current); }
+module app.main;
+
+flow main() -> Array<string> {
+    let snapshot = ["m3.1-flash", "json", "tools"];
+    return snapshot.extend([]);
+}
