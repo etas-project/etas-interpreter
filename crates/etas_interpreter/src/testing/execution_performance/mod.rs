@@ -16,6 +16,7 @@ const MIN_EFFECTIVE_FIXTURE_LINES: usize = 30;
 
 mod agent_context_specialization;
 mod batch_storage_semijoin;
+mod cross_level_semantics;
 mod crypto;
 mod fuse_projection_scans;
 mod fuse_serialization_boundary;
@@ -176,14 +177,21 @@ fn compare_optimization_levels(
                 steps,
             });
         }
-        measurements.push((level, expected, median_metrics(&samples)));
+        let entry = prepared.checked.entry.expect("checked optimization entry");
+        let effects = prepared.checked.effects.item_effects[&entry].clone();
+        measurements.push((level, expected, effects, median_metrics(&samples)));
     }
 
     let baseline_value = &measurements[0].1;
-    for (level, value, metrics) in &measurements[1..] {
+    let baseline_effects = &measurements[0].2;
+    for (level, value, effects, metrics) in &measurements[1..] {
         assert_eq!(
             value, baseline_value,
             "{name}: semantic result differs at {level}"
+        );
+        assert_eq!(
+            effects, baseline_effects,
+            "{name}: effect summary or action trace differs at {level}"
         );
         eprintln!(
             "{name} {level}: steps {}; allocations {}; elapsed {:?}",
@@ -192,8 +200,8 @@ fn compare_optimization_levels(
     }
 
     let optimized_index = usize::from(optimized_level.number());
-    let baseline = measurements[0].2;
-    let optimized = measurements[optimized_index].2;
+    let baseline = measurements[0].3;
+    let optimized = measurements[optimized_index].3;
     eprintln!(
         "ETAS_OPT_METRIC,{pass_name},{name},O0,{optimized_level},{},{},{},{},{},{}",
         baseline.steps,
