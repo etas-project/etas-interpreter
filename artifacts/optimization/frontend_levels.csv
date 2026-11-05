@@ -1,0 +1,5 @@
+level,fixtures,compile_ms,retained_bytes,hir_nodes,optimized_out_nodes,rewritten_nodes
+O0,120,1245,413879961,3758,0,0
+O1,120,1156,413893857,3758,242,40
+O2,120,1110,413905131,3758,661,90
+O3,120,1111,413929511,3758,781,110

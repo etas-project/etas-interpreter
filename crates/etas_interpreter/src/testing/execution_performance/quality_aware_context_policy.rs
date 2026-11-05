@@ -1,4 +1,5 @@
-use super::PreparedExecution;
+use super::{PreparedExecution, compare_optimization_levels};
+use etas_frontend::OptimizationLevel;
 
 const PROGRAMS: [(&str, &str); 10] = [
     (
@@ -119,29 +120,32 @@ const BUDGETED_PROGRAMS: [(&str, &str); 10] = [
 #[test]
 fn context_policy_pruning_reduces_real_candidate_work() {
     for (name, source) in PROGRAMS {
-        let baseline = PreparedExecution::with_optimization(source, false);
-        let optimized = PreparedExecution::with_optimization(source, true);
-        let (baseline_value, baseline_allocations, baseline_elapsed, baseline_steps) =
-            baseline.run_measured(&[]);
-        let (optimized_value, optimized_allocations, optimized_elapsed, optimized_steps) =
-            optimized.run_measured(&[]);
-        assert_eq!(baseline_value, optimized_value, "{name} semantic result");
-        assert!(
-            optimized_steps < baseline_steps,
-            "{name}: steps {baseline_steps} -> {optimized_steps}"
+        let (baseline, optimized) = compare_optimization_levels(
+            "PruneUnusedQualityContext",
+            name,
+            source,
+            OptimizationLevel::O1,
         );
         assert!(
-            optimized_allocations.count < baseline_allocations.count,
+            optimized.steps < baseline.steps,
+            "{name}: steps {} -> {}",
+            baseline.steps,
+            optimized.steps
+        );
+        assert!(
+            optimized.allocations.count < baseline.allocations.count,
             "{name}: allocations {} -> {}",
-            baseline_allocations.count,
-            optimized_allocations.count
+            baseline.allocations.count,
+            optimized.allocations.count
         );
         eprintln!(
-            "{name}: steps {baseline_steps} -> {optimized_steps}; allocations {} -> {}; elapsed {:?} -> {:?}",
-            baseline_allocations.count,
-            optimized_allocations.count,
-            baseline_elapsed,
-            optimized_elapsed
+            "{name} O0 -> O1: steps {} -> {}; allocations {} -> {}; elapsed {:?} -> {:?}",
+            baseline.steps,
+            optimized.steps,
+            baseline.allocations.count,
+            optimized.allocations.count,
+            baseline.elapsed,
+            optimized.elapsed
         );
     }
 }
@@ -149,33 +153,47 @@ fn context_policy_pruning_reduces_real_candidate_work() {
 #[test]
 fn explicit_context_budget_reduces_real_model_input_units() {
     for (name, source) in BUDGETED_PROGRAMS {
-        let baseline = PreparedExecution::with_quality_context_token_budget(source, None);
-        let optimized = PreparedExecution::with_quality_context_token_budget(source, Some(8));
-        let (baseline_value, _, baseline_elapsed, _) = baseline.run_measured(&[]);
-        let (optimized_value, _, optimized_elapsed, _) = optimized.run_measured(&[]);
-        let crate::value::InterpValue::String(baseline_text) = baseline_value else {
-            panic!("{name}: baseline context must be text")
-        };
-        let crate::value::InterpValue::String(optimized_text) = optimized_value else {
-            panic!("{name}: optimized context must be text")
-        };
-        let baseline_text = baseline_text.into_string();
-        let optimized_text = optimized_text.into_string();
-        let baseline_units = baseline_text.split_whitespace().count();
-        let optimized_units = optimized_text.split_whitespace().count();
+        for level in [
+            OptimizationLevel::O0,
+            OptimizationLevel::O1,
+            OptimizationLevel::O2,
+            OptimizationLevel::O3,
+        ] {
+            let baseline =
+                PreparedExecution::with_quality_context_token_budget(source, level, None);
+            let optimized =
+                PreparedExecution::with_quality_context_token_budget(source, level, Some(8));
+            let (baseline_value, _, baseline_elapsed, _) = baseline.run_measured(&[]);
+            let (optimized_value, _, optimized_elapsed, _) = optimized.run_measured(&[]);
+            let crate::value::InterpValue::String(baseline_text) = baseline_value else {
+                panic!("{name} {level}: baseline context must be text")
+            };
+            let crate::value::InterpValue::String(optimized_text) = optimized_value else {
+                panic!("{name} {level}: optimized context must be text")
+            };
+            let baseline_text = baseline_text.into_string();
+            let optimized_text = optimized_text.into_string();
+            let baseline_units = baseline_text.split_whitespace().count();
+            let optimized_units = optimized_text.split_whitespace().count();
 
-        assert_eq!(optimized_units, 8, "{name}: budgeted units");
-        assert!(
-            optimized_units < baseline_units,
-            "{name}: input units {baseline_units} -> {optimized_units}"
-        );
-        assert!(
-            baseline_text.ends_with(&optimized_text),
-            "{name}: policy must retain the recent suffix"
-        );
-        eprintln!(
-            "{name}: model input units {baseline_units} -> {optimized_units}; elapsed {:?} -> {:?}",
-            baseline_elapsed, optimized_elapsed
-        );
+            assert_eq!(optimized_units, 8, "{name} {level}: budgeted units");
+            assert!(
+                optimized_units < baseline_units,
+                "{name} {level}: input units {baseline_units} -> {optimized_units}"
+            );
+            assert!(
+                baseline_text.ends_with(&optimized_text),
+                "{name} {level}: policy must retain the recent suffix"
+            );
+            eprintln!(
+                "{name} {level} policy: model input units {baseline_units} -> {optimized_units}; elapsed {:?} -> {:?}",
+                baseline_elapsed, optimized_elapsed
+            );
+            eprintln!(
+                "ETAS_POLICY_METRIC,ApplyQualityContextBudgetPolicy,{name},{level},{baseline_units},{optimized_units},{},{}",
+                baseline_elapsed.as_nanos(),
+                optimized_elapsed.as_nanos(),
+            );
+        }
     }
 }

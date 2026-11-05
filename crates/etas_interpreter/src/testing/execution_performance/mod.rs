@@ -40,20 +40,28 @@ impl PreparedExecution {
         Self::from_checked(checked)
     }
 
-    fn with_optimization(source: &str, optimize_hir: bool) -> Self {
+    fn with_optimization_level(
+        source: &str,
+        optimization_level: etas_frontend::OptimizationLevel,
+    ) -> Self {
         Self::with_compile_options(
             source,
             etas_frontend::ProjectCompileOptions {
-                optimize_hir,
+                optimization_level,
                 ..Default::default()
             },
         )
     }
 
-    fn with_quality_context_token_budget(source: &str, budget: Option<usize>) -> Self {
+    fn with_quality_context_token_budget(
+        source: &str,
+        optimization_level: etas_frontend::OptimizationLevel,
+        budget: Option<usize>,
+    ) -> Self {
         Self::with_compile_options(
             source,
             etas_frontend::ProjectCompileOptions {
+                optimization_level,
                 quality_context_token_budget: budget,
                 ..Default::default()
             },
@@ -130,4 +138,64 @@ impl PreparedExecution {
         let consumed_steps = eval.consumed_steps();
         (value, cost, elapsed, consumed_steps)
     }
+}
+
+#[derive(Clone, Copy, Debug)]
+struct ExecutionMetrics {
+    allocations: Allocations,
+    elapsed: Duration,
+    steps: u64,
+}
+
+fn compare_optimization_levels(
+    pass_name: &str,
+    name: &str,
+    source: &str,
+    optimized_level: etas_frontend::OptimizationLevel,
+) -> (ExecutionMetrics, ExecutionMetrics) {
+    use etas_frontend::OptimizationLevel::{O0, O1, O2, O3};
+
+    assert_ne!(optimized_level, O0, "optimized comparison level");
+    let levels = [O0, O1, O2, O3];
+    let mut measurements = Vec::with_capacity(levels.len());
+    for level in levels {
+        let prepared = PreparedExecution::with_optimization_level(source, level);
+        assert_eq!(prepared.checked.compile_options.optimization_level, level);
+        let (value, allocations, elapsed, steps) = prepared.run_measured(&[]);
+        measurements.push((
+            level,
+            value,
+            ExecutionMetrics {
+                allocations,
+                elapsed,
+                steps,
+            },
+        ));
+    }
+
+    let baseline_value = &measurements[0].1;
+    for (level, value, metrics) in &measurements[1..] {
+        assert_eq!(
+            value, baseline_value,
+            "{name}: semantic result differs at {level}"
+        );
+        eprintln!(
+            "{name} {level}: steps {}; allocations {}; elapsed {:?}",
+            metrics.steps, metrics.allocations.count, metrics.elapsed
+        );
+    }
+
+    let optimized_index = usize::from(optimized_level.number());
+    let baseline = measurements[0].2;
+    let optimized = measurements[optimized_index].2;
+    eprintln!(
+        "ETAS_OPT_METRIC,{pass_name},{name},O0,{optimized_level},{},{},{},{},{},{}",
+        baseline.steps,
+        optimized.steps,
+        baseline.allocations.count,
+        optimized.allocations.count,
+        baseline.elapsed.as_nanos(),
+        optimized.elapsed.as_nanos(),
+    );
+    (baseline, optimized)
 }

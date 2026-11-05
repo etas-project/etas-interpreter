@@ -1,13 +1,13 @@
 # HIR agent optimization benchmark
 
-This benchmark covers the twelve optimization prototypes identified in the agent-system survey. Each transform is implemented in the frontend typed-HIR pipeline. Every performance transform has ten Etas programs compiled twice, once with `optimize_hir = false` and once with it enabled, then executed by the real interpreter.
+This benchmark covers the typed-HIR optimization prototypes identified in the agent-system survey. Each semantics-preserving transform has ten Etas programs compiled and executed at O0, O1, O2, and O3. Runtime benefit is compared between O0 and the pass's minimum enabled level.
 
 The tests assert equal returned values, fewer deterministic interpreter steps, and fewer measured allocations. Wall-clock time is printed for observation but is not asserted because it is scheduler-sensitive. `AgentEffectLegality` is the P0 analysis gate from the survey: it has ten compile programs and deliberately reports no direct runtime benefit.
 
 Run the reproducible performance set with:
 
 ```sh
-cargo test -p etas_interpreter reduces_real --offline -- --nocapture
+cargo test -p etas_interpreter reduces_real --offline -- --nocapture --test-threads=1
 ```
 
 The following results are from 2026-11-05. Ranges cover all ten programs in each row.
@@ -24,9 +24,11 @@ The following results are from 2026-11-05. Ranges cover all ten programs in each
 | `BatchStorageSemijoin` | 10 | 427 → 360 | 309 → 247 | lower in 10/10 |
 | `ScheduleBoundedPipeline` | 10 | 767 → 700 | 565 → 503 | lower in 10/10 |
 | `LowerResourceRegion` | 10 | 463 → 299 | 345 → 217 | lower in 10/10 |
-| `QualityAwareContextPolicy` | 10 | 64 → 11 | 58–59 → 17 | lower in 10/10 |
+| `PruneUnusedQualityContext` | 10 | 64 → 11 | 58–59 → 17 | lower in 10/10 |
 
-`SuffixDemandHistory` reduces a complete literal history traversal to the demanded last entry. The exact mode of `QualityAwareContextPolicy` removes a pure `QualityContext` boundary only when typed-HIR use analysis proves that it never reaches a consumer. Resource factories and bounded stages are likewise selected by explicit `ReusableResourceFactory` and `BoundedPipelineStage` optimization contracts; checked effect/version/disjointness facts remain the legality authority.
+`SuffixDemandHistory` reduces a complete literal history traversal to the demanded last entry. `PruneUnusedQualityContext` removes a pure `QualityContext` boundary only when typed-HIR use analysis proves that it never reaches a consumer. Resource factories and bounded stages are likewise selected by explicit `ReusableResourceFactory` and `BoundedPipelineStage` optimization contracts; checked effect/version/disjointness facts remain the legality authority.
+
+Generate the CSV evidence and Matplotlib overview with `python3 scripts/plot_optimization_metrics.py`.
 
 The separate `quality_context_token_budget` compile option enables the policy-changing P3 mode. Its ten Etas programs return 18–20 whitespace-delimited context units without the policy and exactly 8 recent units with it. The interpreter test asserts the reduced input and suffix retention; it does not pretend that the two policy outputs are semantically identical.
 

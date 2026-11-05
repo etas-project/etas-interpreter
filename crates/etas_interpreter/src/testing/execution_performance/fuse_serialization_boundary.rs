@@ -1,4 +1,5 @@
-use super::PreparedExecution;
+use super::compare_optimization_levels;
+use etas_frontend::OptimizationLevel;
 
 const PROGRAMS: [(&str, &str); 10] = [
     (
@@ -52,29 +53,32 @@ const PROGRAMS: [(&str, &str); 10] = [
 #[test]
 fn serialization_boundary_fusion_reduces_real_codec_work() {
     for (name, source) in PROGRAMS {
-        let baseline = PreparedExecution::with_optimization(source, false);
-        let optimized = PreparedExecution::with_optimization(source, true);
-        let (baseline_value, baseline_allocations, baseline_elapsed, baseline_steps) =
-            baseline.run_measured(&[]);
-        let (optimized_value, optimized_allocations, optimized_elapsed, optimized_steps) =
-            optimized.run_measured(&[]);
-        assert_eq!(baseline_value, optimized_value, "{name} semantic result");
-        assert!(
-            optimized_steps < baseline_steps,
-            "{name}: steps {baseline_steps} -> {optimized_steps}"
+        let (baseline, optimized) = compare_optimization_levels(
+            "FuseSerializationBoundary",
+            name,
+            source,
+            OptimizationLevel::O1,
         );
         assert!(
-            optimized_allocations.count < baseline_allocations.count,
+            optimized.steps < baseline.steps,
+            "{name}: steps {} -> {}",
+            baseline.steps,
+            optimized.steps
+        );
+        assert!(
+            optimized.allocations.count < baseline.allocations.count,
             "{name}: allocations {} -> {}",
-            baseline_allocations.count,
-            optimized_allocations.count
+            baseline.allocations.count,
+            optimized.allocations.count
         );
         eprintln!(
-            "{name}: steps {baseline_steps} -> {optimized_steps}; allocations {} -> {}; elapsed {:?} -> {:?}",
-            baseline_allocations.count,
-            optimized_allocations.count,
-            baseline_elapsed,
-            optimized_elapsed
+            "{name} O0 -> O1: steps {} -> {}; allocations {} -> {}; elapsed {:?} -> {:?}",
+            baseline.steps,
+            optimized.steps,
+            baseline.allocations.count,
+            optimized.allocations.count,
+            baseline.elapsed,
+            optimized.elapsed
         );
     }
 }
