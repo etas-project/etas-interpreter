@@ -14,6 +14,7 @@ use std::time::{Duration, Instant};
 const MEASUREMENT_ROUNDS: usize = 5;
 const MIN_EFFECTIVE_FIXTURE_LINES: usize = 30;
 
+mod agent_context_specialization;
 mod batch_storage_semijoin;
 mod crypto;
 mod fuse_projection_scans;
@@ -242,7 +243,7 @@ fn optimization_fixtures_are_realistic_programs_not_micro_snippets() {
             }
         }
     }
-    assert_eq!(fixtures.len(), 120);
+    assert_eq!(fixtures.len(), 131);
 
     for fixture in fixtures {
         let source = std::fs::read_to_string(&fixture).unwrap();

@@ -13,6 +13,7 @@ import numpy as np
 
 
 PASS_FIXTURES = {
+    "AgentContextSpecialization": "agent_context_specialization",
     "LowerOwnedSnapshotCow": "lower_owned_snapshot_cow",
     "FuseSerializationBoundary": "fuse_serialization_boundary",
     "SuffixDemandHistory": "suffix_demand_history",
@@ -90,8 +91,8 @@ def interpreter_metrics(repository):
                         "optimized_elapsed_ns": int(fields[7]),
                     }
                 )
-    if len(rows) != 110:
-        raise RuntimeError(f"expected 110 optimization measurements, found {len(rows)}")
+    if len(rows) != 121:
+        raise RuntimeError(f"expected 121 optimization measurements, found {len(rows)}")
     if len(policy_rows) != 40:
         raise RuntimeError(f"expected 40 policy measurements, found {len(policy_rows)}")
     return rows, policy_rows
@@ -202,7 +203,7 @@ def plot(rows, policy_rows, levels, stats, output):
     ax.invert_yaxis()
     ax.axvline(0, color="#444", linewidth=0.8)
     ax.set_xlabel("Reduction vs O0 (%) — higher is better")
-    ax.set_title("A. Real execution benefit across 10 programs per pass")
+    ax.set_title("A. Real execution benefit across at least 10 programs per pass")
     ax.legend(loc="lower right")
 
     ax = fig.add_subplot(grid[0, 1])
@@ -211,7 +212,7 @@ def plot(rows, policy_rows, levels, stats, output):
     ax.set_yticks(y, short_names)
     ax.invert_yaxis()
     ax.set_xlabel("Effective Etas source lines (blank/comment lines excluded)")
-    ax.set_title("B. Test coverage size (110 programs total)")
+    ax.set_title(f"B. Test coverage size ({sum(item['tests'] for item in stats.values())} programs total)")
     for bar, name in zip(bars, pass_names):
         ax.text(
             bar.get_width() + max(lines) * 0.01,
@@ -283,7 +284,7 @@ def plot(rows, policy_rows, levels, stats, output):
 
     total_lines = sum(item["lines"] for item in stats.values())
     fig.suptitle(
-        f"Etas HIR Optimization Evidence — 110 programs, {total_lines} effective fixture LOC",
+        f"Etas HIR Optimization Evidence — 121 programs, {total_lines} effective fixture LOC",
         fontsize=18,
         fontweight="bold",
     )
