@@ -225,16 +225,36 @@ def plot(rows, policy_rows, levels, stats, output):
     level_names = [row["level"] for row in levels]
     compile_ms = [int(row["compile_ms"]) for row in levels]
     optimized_out = [int(row["optimized_out_nodes"]) for row in levels]
-    bars = ax.bar(level_names, compile_ms, color="#3182ce", alpha=0.82)
-    ax.set_ylabel("Compile time for 120 fixtures (ms)", color="#2b6cb0")
-    ax.tick_params(axis="y", labelcolor="#2b6cb0")
-    ax.set_title("C. Frontend optimization-level axis")
-    for bar, value in zip(bars, compile_ms):
-        ax.text(bar.get_x() + bar.get_width() / 2, value, str(value), ha="center", va="bottom")
-    twin = ax.twinx()
-    twin.plot(level_names, optimized_out, color="#c53030", marker="o", linewidth=2.5)
-    twin.set_ylabel("HIR nodes optimized out", color="#c53030")
-    twin.tick_params(axis="y", labelcolor="#c53030")
+    hir_nodes = [int(row["hir_nodes"]) for row in levels]
+    baseline_compile_ms = compile_ms[0]
+    compile_reduction = [
+        100.0 * (baseline_compile_ms - value) / baseline_compile_ms
+        for value in compile_ms
+    ]
+    hir_elimination = [
+        100.0 * removed / total for removed, total in zip(optimized_out, hir_nodes)
+    ]
+    x = np.arange(len(level_names))
+    compile_bars = ax.bar(
+        x - 0.18,
+        compile_reduction,
+        0.36,
+        label="Compile-time reduction vs O0",
+        color="#3182ce",
+    )
+    hir_bars = ax.bar(
+        x + 0.18,
+        hir_elimination,
+        0.36,
+        label="HIR node elimination rate",
+        color="#c53030",
+    )
+    ax.set_xticks(x, level_names)
+    ax.set_ylabel("Percentage (%) — higher is better")
+    ax.set_title("C. Frontend optimization benefit by level")
+    ax.legend(loc="upper left")
+    ax.bar_label(compile_bars, fmt="%.1f%%", padding=3)
+    ax.bar_label(hir_bars, fmt="%.1f%%", padding=3)
 
     ax = fig.add_subplot(grid[1, 1])
     policy_by_level = defaultdict(list)
