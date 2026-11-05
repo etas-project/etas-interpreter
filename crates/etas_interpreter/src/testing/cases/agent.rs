@@ -1263,6 +1263,91 @@ flow main(input: string) -> Draft {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn run_checked_lowers_and_decodes_typed_agent_enum_output() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+
+enum Choice {
+  Read(string),
+  Final(string),
+}
+
+agent Choose() -> Choice ![] {
+  return perform infer<Choice>(Prompt.new().system(Trusted("Choose a file.")));
+}
+
+flow main() -> Choice {
+  return Choose.run();
+}
+"#,
+    );
+
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    host.seed_model_response_text(r#"{"name":"Read","fields":["note.txt"]}"#);
+    let options = RunOptions {
+        host_context: api::HostExecutionContext {
+            authority: AuthorityContext {
+                grants: vec![HostActionGrant::allow("Agentic", "infer")],
+                approvals: Vec::new(),
+                sandbox: SandboxPolicy::deny_all(),
+                policy: Default::default(),
+            },
+            trace: TraceContext::root(TraceId(46)),
+            budget: etas_host::ExecutionBudget::default(),
+        },
+        model_policy: api::ModelExecutionPolicy {
+            provider_capabilities: Some(full_model_capabilities()),
+            max_tool_rounds: 0,
+            ..api::ModelExecutionPolicy::default()
+        },
+        ..RunOptions::default()
+    };
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            vec![],
+            &host,
+            options,
+        )
+        .await
+        .expect("execution lifecycle infrastructure");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    let schema = host.model_requests()[0]
+        .response_schema
+        .clone()
+        .expect("typed enum request should carry an output schema");
+    assert_eq!(
+        schema,
+        HostSchema::Variant(vec![
+            etas_host::HostVariantSchema {
+                name: "Read".to_owned(),
+                fields: vec![HostSchema::String],
+            },
+            etas_host::HostVariantSchema {
+                name: "Final".to_owned(),
+                fields: vec![HostSchema::String],
+            },
+        ])
+    );
+    let Some(value::InterpValue::Nominal { value, .. }) = result.value().cloned() else {
+        panic!("typed enum output must preserve nominal runtime identity");
+    };
+    assert_eq!(
+        *value,
+        value::InterpValue::Variant {
+            name: "Read".into(),
+            fields: vec![value::InterpValue::String("note.txt".into())].into(),
+        }
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_reports_typed_agent_json_decode_context() {
     let checked = checked_project(
         r#"

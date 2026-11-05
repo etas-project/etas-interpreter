@@ -1,7 +1,8 @@
 use super::*;
 mod view;
-use view::{JsonRef, valid_host_json};
+use view::{JsonArray, JsonRef, valid_host_json};
 
+#[cfg(test)]
 pub(super) fn from_serde(
     value: &serde_json::Value,
     expected: TypeId,
@@ -12,9 +13,26 @@ pub(super) fn from_serde(
         expected,
         store,
         &std::collections::HashMap::new(),
+        None,
     )
 }
 
+pub(super) fn from_serde_with_layouts(
+    value: &serde_json::Value,
+    expected: TypeId,
+    store: &TypeStore,
+    enum_layouts: &std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>,
+) -> Option<InterpValue> {
+    decode(
+        JsonRef::Serde(value),
+        expected,
+        store,
+        &std::collections::HashMap::new(),
+        Some(enum_layouts),
+    )
+}
+
+#[cfg(test)]
 pub(super) fn from_host(
     value: &etas_host::HostJsonValue,
     expected: TypeId,
@@ -28,6 +46,25 @@ pub(super) fn from_host(
         expected,
         store,
         &std::collections::HashMap::new(),
+        None,
+    )
+}
+
+pub(super) fn from_host_with_layouts(
+    value: &etas_host::HostJsonValue,
+    expected: TypeId,
+    store: &TypeStore,
+    enum_layouts: &std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>,
+) -> Option<InterpValue> {
+    if !valid_host_json(value) {
+        return None;
+    }
+    decode(
+        JsonRef::Host(value),
+        expected,
+        store,
+        &std::collections::HashMap::new(),
+        Some(enum_layouts),
     )
 }
 
@@ -36,25 +73,28 @@ fn decode(
     expected: TypeId,
     store: &TypeStore,
     substitutions: &std::collections::HashMap<String, TypeId>,
+    enum_layouts: Option<&std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>>,
 ) -> Option<InterpValue> {
     if let Some(Type::Named(named)) = store.get(expected)
         && let Some(expected) = substitutions.get(&named.name).copied()
     {
-        return decode(value, expected, store, substitutions);
+        return decode(value, expected, store, substitutions, enum_layouts);
     }
     match store.get(expected)? {
         Type::Primitive(primitive) => json_to_primitive(value, *primitive),
-        Type::Array(elem) => json_array_to_values(value, *elem, store, substitutions)
+        Type::Array(elem) => json_array_to_values(value, *elem, store, substitutions, enum_layouts)
             .map(ArrayValue::new)
             .map(InterpValue::Array),
-        Type::List(elem) => json_array_to_values(value, *elem, store, substitutions)
+        Type::List(elem) => json_array_to_values(value, *elem, store, substitutions, enum_layouts)
             .map(|values| InterpValue::List(values.into())),
-        Type::Slice(elem) => json_array_to_values(value, *elem, store, substitutions)
+        Type::Slice(elem) => json_array_to_values(value, *elem, store, substitutions, enum_layouts)
             .map(SliceValue::new)
             .map(InterpValue::Slice),
-        Type::Set(elem) => json_array_to_values(value, *elem, store, substitutions)
+        Type::Set(elem) => json_array_to_values(value, *elem, store, substitutions, enum_layouts)
             .map(|values| InterpValue::Set(values.into())),
-        Type::Map { key, value: elem } => json_to_map(value, *key, *elem, store, substitutions),
+        Type::Map { key, value: elem } => {
+            json_to_map(value, *key, *elem, store, substitutions, enum_layouts)
+        }
         Type::Record(record) => {
             let object = value.as_object()?;
             record
@@ -64,7 +104,7 @@ fn decode(
                     let field_value = object.get(&field.name)?;
                     Some((
                         field.name.clone(),
-                        decode(field_value, field.ty, store, substitutions)?,
+                        decode(field_value, field.ty, store, substitutions, enum_layouts)?,
                     ))
                 })
                 .collect::<Option<Vec<_>>>()
@@ -72,31 +112,44 @@ fn decode(
         }
         Type::Nominal(nominal) => {
             let representation = nominal.representation?;
-            decode(value, representation, store, substitutions).map(|value| InterpValue::Nominal {
-                ty: expected,
-                value: crate::value::SharedValue::new(value),
+            decode(value, representation, store, substitutions, enum_layouts).map(|value| {
+                InterpValue::Nominal {
+                    ty: expected,
+                    value: crate::value::SharedValue::new(value),
+                }
             })
         }
-        Type::Applied { constructor, args } => {
-            let Type::Nominal(nominal) = store.get(TypeId(constructor.0))? else {
-                return None;
-            };
-            if nominal.params.len() != args.len() {
-                return None;
+        Type::Applied { constructor, args } => match store.get(TypeId(constructor.0))? {
+            Type::Nominal(nominal) => {
+                if nominal.params.len() != args.len() {
+                    return None;
+                }
+                let mut applied_substitutions = substitutions.clone();
+                applied_substitutions
+                    .extend(nominal.params.iter().cloned().zip(args.iter().copied()));
+                decode(
+                    value,
+                    nominal.representation?,
+                    store,
+                    &applied_substitutions,
+                    enum_layouts,
+                )
+                .map(|value| InterpValue::Nominal {
+                    ty: expected,
+                    value: crate::value::SharedValue::new(value),
+                })
             }
-            let mut applied_substitutions = substitutions.clone();
-            applied_substitutions.extend(nominal.params.iter().cloned().zip(args.iter().copied()));
-            decode(
+            Type::Enum(_) => json_to_checked_enum(
                 value,
-                nominal.representation?,
+                expected,
+                TypeId(constructor.0),
+                args,
                 store,
-                &applied_substitutions,
-            )
-            .map(|value| InterpValue::Nominal {
-                ty: expected,
-                value: crate::value::SharedValue::new(value),
-            })
-        }
+                substitutions,
+                enum_layouts?,
+            ),
+            _ => None,
+        },
         Type::Tuple(types) => {
             let values = value.as_array()?;
             if values.len() != types.len() {
@@ -105,7 +158,7 @@ fn decode(
             values
                 .iter()
                 .zip(types.iter())
-                .map(|(value, ty)| decode(value, *ty, store, substitutions))
+                .map(|(value, ty)| decode(value, *ty, store, substitutions, enum_layouts))
                 .collect::<Option<Vec<_>>>()
                 .map(|values| InterpValue::Tuple(values.into()))
         }
@@ -113,23 +166,42 @@ fn decode(
             if value.is_null() {
                 Some(InterpValue::OptionNone)
             } else {
-                decode(value, *inner, store, substitutions)
+                decode(value, *inner, store, substitutions, enum_layouts)
                     .map(crate::value::SharedValue::new)
                     .map(InterpValue::OptionSome)
             }
         }
-        Type::Result { ok, err } => json_to_result(value, *ok, *err, store, substitutions),
-        Type::Enum(_) => json_to_enum(value),
+        Type::Result { ok, err } => {
+            json_to_result(value, *ok, *err, store, substitutions, enum_layouts)
+        }
+        Type::Enum(_) => enum_layouts.map_or_else(
+            || json_to_enum(value),
+            |layouts| {
+                json_to_checked_enum(
+                    value,
+                    expected,
+                    expected,
+                    &[],
+                    store,
+                    substitutions,
+                    layouts,
+                )
+            },
+        ),
         Type::Trust { wrapper, inner }
             if matches!(wrapper, etas_types::TrustWrapper::Untrusted) =>
         {
-            decode(value, *inner, store, substitutions).map(|value| InterpValue::Trust {
-                wrapper: *wrapper,
-                value: crate::value::SharedValue::new(value),
+            decode(value, *inner, store, substitutions, enum_layouts).map(|value| {
+                InterpValue::Trust {
+                    wrapper: *wrapper,
+                    value: crate::value::SharedValue::new(value),
+                }
             })
         }
         Type::Trust { .. } => None,
-        Type::Schema(inner) | Type::Message(inner) => decode(value, *inner, store, substitutions),
+        Type::Schema(inner) | Type::Message(inner) => {
+            decode(value, *inner, store, substitutions, enum_layouts)
+        }
         _ => None,
     }
 }
@@ -187,11 +259,12 @@ fn json_array_to_values(
     elem: TypeId,
     store: &TypeStore,
     substitutions: &std::collections::HashMap<String, TypeId>,
+    enum_layouts: Option<&std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>>,
 ) -> Option<Vec<InterpValue>> {
     value
         .as_array()?
         .iter()
-        .map(|value| decode(value, elem, store, substitutions))
+        .map(|value| decode(value, elem, store, substitutions, enum_layouts))
         .collect()
 }
 
@@ -201,14 +274,21 @@ fn json_to_map(
     value_type: TypeId,
     store: &TypeStore,
     substitutions: &std::collections::HashMap<String, TypeId>,
+    enum_layouts: Option<&std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>>,
 ) -> Option<InterpValue> {
     if let Some(object) = value.as_object() {
         return object
             .iter()
             .map(|(key, value)| {
                 Some((
-                    decode(JsonRef::String(key), key_type, store, substitutions)?,
-                    decode(value, value_type, store, substitutions)?,
+                    decode(
+                        JsonRef::String(key),
+                        key_type,
+                        store,
+                        substitutions,
+                        enum_layouts,
+                    )?,
+                    decode(value, value_type, store, substitutions, enum_layouts)?,
                 ))
             })
             .collect::<Option<Vec<_>>>()
@@ -226,14 +306,26 @@ fn json_to_map(
                 let key = pair.get(0)?;
                 let value = pair.get(1)?;
                 return Some((
-                    decode(key, key_type, store, substitutions)?,
-                    decode(value, value_type, store, substitutions)?,
+                    decode(key, key_type, store, substitutions, enum_layouts)?,
+                    decode(value, value_type, store, substitutions, enum_layouts)?,
                 ));
             }
             let object = entry.as_object()?;
             Some((
-                decode(object.get("key")?, key_type, store, substitutions)?,
-                decode(object.get("value")?, value_type, store, substitutions)?,
+                decode(
+                    object.get("key")?,
+                    key_type,
+                    store,
+                    substitutions,
+                    enum_layouts,
+                )?,
+                decode(
+                    object.get("value")?,
+                    value_type,
+                    store,
+                    substitutions,
+                    enum_layouts,
+                )?,
             ))
         })
         .collect::<Option<Vec<_>>>()
@@ -247,17 +339,20 @@ fn json_to_result(
     err: TypeId,
     store: &TypeStore,
     substitutions: &std::collections::HashMap<String, TypeId>,
+    enum_layouts: Option<&std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>>,
 ) -> Option<InterpValue> {
     let object = value.as_object()?;
     if let Some(value) = object.get("Ok") {
-        return decode(value, ok, store, substitutions).map(|value| InterpValue::Variant {
-            name: "Ok".to_owned().into(),
-            fields: vec![value].into(),
+        return decode(value, ok, store, substitutions, enum_layouts).map(|value| {
+            InterpValue::Variant {
+                name: "Ok".to_owned().into(),
+                fields: vec![value].into(),
+            }
         });
     }
     object
         .get("Err")
-        .and_then(|value| decode(value, err, store, substitutions))
+        .and_then(|value| decode(value, err, store, substitutions, enum_layouts))
         .map(|value| InterpValue::Variant {
             name: "Err".to_owned().into(),
             fields: vec![value].into(),
@@ -284,5 +379,92 @@ fn json_to_enum(value: JsonRef<'_>) -> Option<InterpValue> {
     Some(InterpValue::Variant {
         name: name.into(),
         fields: fields.into(),
+    })
+}
+
+fn json_to_checked_enum(
+    value: JsonRef<'_>,
+    expected: TypeId,
+    constructor: TypeId,
+    args: &[TypeId],
+    store: &TypeStore,
+    substitutions: &std::collections::HashMap<String, TypeId>,
+    enum_layouts: &std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>,
+) -> Option<InterpValue> {
+    let layout = enum_layouts.get(&constructor)?;
+    if layout.type_params.len() != args.len() {
+        return None;
+    }
+    if let Some(name) = value.as_str() {
+        return json_to_checked_enum_variant(
+            name,
+            None,
+            expected,
+            args,
+            store,
+            substitutions,
+            enum_layouts,
+            layout,
+        );
+    }
+    let object = value.as_object()?;
+    if object.iter().len() != 2 {
+        return None;
+    }
+    let name = object.get("name")?.as_str()?;
+    let fields = object.get("fields")?.as_array()?;
+    json_to_checked_enum_variant(
+        name,
+        Some(fields),
+        expected,
+        args,
+        store,
+        substitutions,
+        enum_layouts,
+        layout,
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn json_to_checked_enum_variant(
+    name: &str,
+    fields: Option<JsonArray<'_>>,
+    expected: TypeId,
+    args: &[TypeId],
+    store: &TypeStore,
+    substitutions: &std::collections::HashMap<String, TypeId>,
+    enum_layouts: &std::collections::HashMap<TypeId, etas_types::EnumLayoutFact>,
+    layout: &etas_types::EnumLayoutFact,
+) -> Option<InterpValue> {
+    let variant = layout
+        .variants
+        .iter()
+        .find(|variant| variant.name == name)?;
+    let field_count = fields.map_or(0, |fields| fields.len());
+    if field_count != variant.fields.len() {
+        return None;
+    }
+    let mut applied_substitutions = substitutions.clone();
+    applied_substitutions.extend(layout.type_params.iter().cloned().zip(args.iter().copied()));
+    let fields = fields
+        .into_iter()
+        .flat_map(|fields| fields.iter())
+        .zip(&variant.fields)
+        .map(|(value, field)| {
+            decode(
+                value,
+                *field,
+                store,
+                &applied_substitutions,
+                Some(enum_layouts),
+            )
+        })
+        .collect::<Option<Vec<_>>>()?;
+    Some(InterpValue::Nominal {
+        ty: expected,
+        value: crate::value::SharedValue::new(InterpValue::Variant {
+            name: name.to_owned().into(),
+            fields: fields.into(),
+        }),
     })
 }
