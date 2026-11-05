@@ -956,6 +956,15 @@ impl<'a> EvalContext<'a> {
                     fields: vec![self.host_schema_for_type(err, span, depth + 1)?],
                 },
             ])),
+            Type::Enum(_) => self.host_schema_for_enum(ty, &[], span, depth),
+            Type::Applied { constructor, args }
+                if matches!(
+                    self.checked.type_store.get(TypeId(constructor.0)),
+                    Some(Type::Enum(_))
+                ) =>
+            {
+                self.host_schema_for_enum(TypeId(constructor.0), &args, span, depth)
+            }
             Type::Record(record) => {
                 let mut fields = Vec::with_capacity(record.fields.len());
                 for field in record.fields {
@@ -1009,6 +1018,61 @@ impl<'a> EvalContext<'a> {
                 format!("tool schema type `{unsupported:?}` cannot be lowered to host schema"),
             )),
         }
+    }
+
+    fn host_schema_for_enum(
+        &self,
+        constructor: TypeId,
+        args: &[TypeId],
+        span: Span,
+        depth: usize,
+    ) -> Result<HostSchema, ExecutionFault> {
+        let Some(layout) = self.checked.types.enum_layouts.get(&constructor) else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "tool schema enum is missing its checked variant layout",
+            ));
+        };
+        if layout.type_params.len() != args.len() {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "tool schema enum arguments do not match its checked variant layout",
+            ));
+        }
+        let substitutions = layout
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().copied())
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut variants = Vec::with_capacity(layout.variants.len());
+        for variant in &layout.variants {
+            let mut fields = Vec::with_capacity(variant.fields.len());
+            for field in &variant.fields {
+                let field = etas_types::substitute_named_params_in_store(
+                    &self.checked.type_store,
+                    *field,
+                    &substitutions,
+                )
+                .map_err(|error| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        format!(
+                            "tool schema enum payload was not materialized by the checked pipeline: {error}"
+                        ),
+                    )
+                })?;
+                fields.push(self.host_schema_for_type(field, span, depth + 1)?);
+            }
+            variants.push(HostVariantSchema {
+                name: variant.name.clone(),
+                fields,
+            });
+        }
+        Ok(HostSchema::Variant(variants))
     }
 
     fn host_schema_for_primitive(primitive: PrimitiveType) -> HostSchema {

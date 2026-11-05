@@ -44,6 +44,13 @@ pub(in crate::driver) async fn dispatch(
             return true;
         }
     };
+    if remaining_tokens == Some(0) {
+        machine.resume_model_result(Err(HostError::new(
+            HostErrorCode::BudgetExceeded,
+            "run-owned execution token budget is exhausted",
+        )));
+        return true;
+    }
     let reservation_amount = remaining_tokens
         .or(pending.request.options.max_output_tokens)
         .unwrap_or(0);
