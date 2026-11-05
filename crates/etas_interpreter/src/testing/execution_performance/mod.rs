@@ -11,6 +11,9 @@ use crate::{
 };
 use std::time::{Duration, Instant};
 
+const MEASUREMENT_ROUNDS: usize = 5;
+const MIN_EFFECTIVE_FIXTURE_LINES: usize = 30;
+
 mod batch_storage_semijoin;
 mod crypto;
 mod fuse_projection_scans;
@@ -161,16 +164,18 @@ fn compare_optimization_levels(
     for level in levels {
         let prepared = PreparedExecution::with_optimization_level(source, level);
         assert_eq!(prepared.checked.compile_options.optimization_level, level);
-        let (value, allocations, elapsed, steps) = prepared.run_measured(&[]);
-        measurements.push((
-            level,
-            value,
-            ExecutionMetrics {
+        let (expected, _, _, _) = prepared.run_measured(&[]);
+        let mut samples = Vec::with_capacity(MEASUREMENT_ROUNDS);
+        for _ in 0..MEASUREMENT_ROUNDS {
+            let (value, allocations, elapsed, steps) = prepared.run_measured(&[]);
+            assert_eq!(value, expected, "{name}: unstable result at {level}");
+            samples.push(ExecutionMetrics {
                 allocations,
                 elapsed,
                 steps,
-            },
-        ));
+            });
+        }
+        measurements.push((level, expected, median_metrics(&samples)));
     }
 
     let baseline_value = &measurements[0].1;
@@ -198,4 +203,60 @@ fn compare_optimization_levels(
         optimized.elapsed.as_nanos(),
     );
     (baseline, optimized)
+}
+
+fn median_metrics(samples: &[ExecutionMetrics]) -> ExecutionMetrics {
+    assert_eq!(samples.len(), MEASUREMENT_ROUNDS);
+    let middle = samples.len() / 2;
+    let mut allocations = samples
+        .iter()
+        .map(|sample| sample.allocations)
+        .collect::<Vec<_>>();
+    let mut elapsed = samples
+        .iter()
+        .map(|sample| sample.elapsed)
+        .collect::<Vec<_>>();
+    let mut steps = samples
+        .iter()
+        .map(|sample| sample.steps)
+        .collect::<Vec<_>>();
+    allocations.sort_unstable_by_key(|sample| sample.count);
+    elapsed.sort_unstable();
+    steps.sort_unstable();
+    ExecutionMetrics {
+        allocations: allocations[middle],
+        elapsed: elapsed[middle],
+        steps: steps[middle],
+    }
+}
+
+#[test]
+fn optimization_fixtures_are_realistic_programs_not_micro_snippets() {
+    let root = std::path::Path::new(env!("CARGO_MANIFEST_DIR")).join("fixtures/optimization");
+    let mut fixtures = Vec::new();
+    for family in std::fs::read_dir(root).unwrap() {
+        for fixture in std::fs::read_dir(family.unwrap().path()).unwrap() {
+            let path = fixture.unwrap().path();
+            if path.extension().is_some_and(|extension| extension == "es") {
+                fixtures.push(path);
+            }
+        }
+    }
+    assert_eq!(fixtures.len(), 120);
+
+    for fixture in fixtures {
+        let source = std::fs::read_to_string(&fixture).unwrap();
+        let effective_lines = source
+            .lines()
+            .filter(|line| {
+                let line = line.trim();
+                !line.is_empty() && !line.starts_with("//")
+            })
+            .count();
+        assert!(
+            effective_lines >= MIN_EFFECTIVE_FIXTURE_LINES,
+            "{} has only {effective_lines} effective lines",
+            fixture.display()
+        );
+    }
 }

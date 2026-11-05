@@ -124,9 +124,18 @@ def fixture_stats(repository):
     stats = {}
     for pass_name, directory in PASS_FIXTURES.items():
         fixtures = sorted((root / directory).glob("*.es"))
+        effective_lines = [
+            sum(
+                1
+                for line in path.read_text().splitlines()
+                if line.strip() and not line.strip().startswith("//")
+            )
+            for path in fixtures
+        ]
         stats[pass_name] = {
             "tests": len(fixtures),
-            "lines": sum(len(path.read_text().splitlines()) for path in fixtures),
+            "lines": sum(effective_lines),
+            "min_lines": min(effective_lines),
         }
     return stats
 
@@ -201,13 +210,13 @@ def plot(rows, policy_rows, levels, stats, output):
     bars = ax.barh(y, lines, color="#805ad5")
     ax.set_yticks(y, short_names)
     ax.invert_yaxis()
-    ax.set_xlabel("Etas fixture source lines")
+    ax.set_xlabel("Effective Etas source lines (blank/comment lines excluded)")
     ax.set_title("B. Test coverage size (110 programs total)")
     for bar, name in zip(bars, pass_names):
         ax.text(
             bar.get_width() + max(lines) * 0.01,
             bar.get_y() + bar.get_height() / 2,
-            f'{stats[name]["tests"]} tests',
+            f'{stats[name]["tests"]} tests · min {stats[name]["min_lines"]} LOC',
             va="center",
             fontsize=8,
         )
@@ -254,7 +263,7 @@ def plot(rows, policy_rows, levels, stats, output):
 
     total_lines = sum(item["lines"] for item in stats.values())
     fig.suptitle(
-        f"Etas HIR Optimization Evidence — 110 programs, {total_lines} fixture LOC",
+        f"Etas HIR Optimization Evidence — 110 programs, {total_lines} effective fixture LOC",
         fontsize=18,
         fontweight="bold",
     )
