@@ -70,6 +70,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
                 | ControlSignal::Call(_)
+                | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
                 | ControlSignal::Memory(_)
                 | ControlSignal::Session(_)
@@ -138,6 +139,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
                 | ControlSignal::Call(_)
+                | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
                 | ControlSignal::Memory(_)
                 | ControlSignal::Session(_)
@@ -225,6 +227,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
                 | ControlSignal::Call(_)
+                | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
                 | ControlSignal::Memory(_)
                 | ControlSignal::Session(_)
@@ -384,25 +387,21 @@ impl<'a> EvalContext<'a> {
                 }
             }
             CallTarget::PureIntrinsic(call) => {
-                match crate::intrinsic::pure::execute_pure_intrinsic(
+                match crate::intrinsic::pure::PendingNativeWork::start(
                     &call,
-                    call_args,
+                    &call_args,
                     self.plan.dispatch.pure_abi(),
                 ) {
-                    Ok(value) => ControlSignal::Value(value),
-                    Err(error) => {
-                        if let Some(message) = crate::eval::std_call::builtin_abort_message(&error)
-                        {
-                            return ControlSignal::execution_aborted(message, span);
-                        }
-                        ControlSignal::runtime_fault(
-                            format!(
-                                "checked pure builtin dispatch failed for {:?}: {error:?}",
-                                call.intrinsic
-                            ),
-                            span,
-                        )
+                    Ok(Some(work)) => ControlSignal::pending_native(work),
+                    Ok(None) => {
+                        let result = crate::intrinsic::pure::execute_pure_intrinsic(
+                            &call,
+                            call_args,
+                            self.plan.dispatch.pure_abi(),
+                        );
+                        self.complete_pure_intrinsic(&call, result, span)
                     }
+                    Err(error) => self.complete_pure_intrinsic(&call, Err(error), span),
                 }
             }
             CallTarget::StdIntrinsic(call) => {
@@ -434,6 +433,56 @@ impl<'a> EvalContext<'a> {
                 self.execute_composed_call(stages, call_args, span, site)
             }
         }
+    }
+
+    pub(crate) fn complete_pure_intrinsic(
+        &mut self,
+        call: &crate::intrinsic::dispatch::CheckedPureIntrinsicCall,
+        result: Result<InterpValue, crate::intrinsic::pure::AdapterError>,
+        span: Span,
+    ) -> ControlSignal {
+        let error = match result {
+            Ok(value) => return ControlSignal::Value(value),
+            Err(error) => error,
+        };
+        if let Some(message) = crate::eval::std_call::builtin_abort_message(&error) {
+            return ControlSignal::execution_aborted(message, span);
+        }
+        if let crate::intrinsic::pure::AdapterError::Builtin(etas_builtin::BuiltinError::Text(
+            failure,
+        )) = &error
+        {
+            if etas_std::intrinsic_completion_semantics(call.intrinsic)
+                != Some(etas_std::IntrinsicCompletionSemantics::ReturnsOrRaisesDeclaredErrors)
+            {
+                return ControlSignal::missing_checked_fact(
+                    "text intrinsic failure disagrees with its completion descriptor",
+                    span,
+                );
+            }
+            let Some(error_type) = self.checked.types.known_std_types.text_error else {
+                return ControlSignal::missing_checked_fact(
+                    "text intrinsic failure requires the checked std.text.TextError type",
+                    span,
+                );
+            };
+            return ControlSignal::pending_perform(PendingPerform::typed_error(
+                error_type,
+                InterpValue::Variant {
+                    name: failure.variant_name().into(),
+                    fields: Vec::new().into(),
+                },
+                span,
+                Continuation::BlockValue,
+            ));
+        }
+        ControlSignal::runtime_fault(
+            format!(
+                "checked pure builtin dispatch failed for {:?}: {error:?}",
+                call.intrinsic
+            ),
+            span,
+        )
     }
 
     fn execute_specialized_call_target(

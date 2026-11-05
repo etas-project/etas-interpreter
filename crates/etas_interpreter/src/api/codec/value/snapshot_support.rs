@@ -6,6 +6,11 @@ pub(super) fn decode(
     value: &Value,
 ) -> Result<ValueSnapshot, InterpreterCodecError> {
     match required_str(value, "kind")? {
+        "text_sequence" => Ok(ValueSnapshot::TextSequence {
+            source: required_str(value, "source")?.into(),
+            plan: text_sequence_plan_from_json(required_obj(value, "plan")?)?,
+            item_type: TypeId(required_u32(value, "item_type")?),
+        }),
         "compiler_identity" => {
             reject_unknown_fields(
                 value,

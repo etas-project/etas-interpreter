@@ -79,6 +79,11 @@ fn write<'a>(
         InterpValue::Bool(value) => *slot = json!({"kind":"bool","value":value}),
         InterpValue::Number(value) => *slot = numeric_value_json(*value),
         InterpValue::String(value) => *slot = tagged_text("string", value),
+        InterpValue::TextSequence(_) => {
+            return Err(InterpreterCodecError::new(
+                "lazy text sequences can only be persisted inside a checked checkpoint",
+            ));
+        }
         InterpValue::Bytes(value) => *slot = json!({"kind":"bytes","value":value}),
         InterpValue::Json(value) => *slot = super::super::json::wrapped(value),
         InterpValue::StdConstant(value) => {

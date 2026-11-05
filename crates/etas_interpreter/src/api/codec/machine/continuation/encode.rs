@@ -552,6 +552,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
         Continuation::ForLoop {
             pat,
             source,
+            text_cursor,
             next_index,
             body,
             iterations,
@@ -565,6 +566,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "kind": json!("for_loop"),
                 "pat": json!(pat.0),
                 "source": source.as_ref().map(Node::Value),
+                "text_cursor": json!(text_cursor.as_ref().map(crate::api::codec::value::text_cursor_json)),
                 "next_index": json!(next_index),
                 "body": json!(body.0),
                 "iterations": json!(iterations),

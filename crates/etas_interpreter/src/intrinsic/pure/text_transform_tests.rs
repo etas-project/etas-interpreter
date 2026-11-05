@@ -10,27 +10,23 @@ fn text_piece_iteration_does_not_build_an_intermediate_collection() {
     use etas_builtin::text::transform::{TextOutput, TextTransform};
     for count in [1000, 2000, 4000] {
         let source = "x\n".repeat(count);
-        for transform in [TextTransform::Lines, TextTransform::Split] {
-            let args = if matches!(transform, TextTransform::Split) {
-                vec![source.as_str(), "\n"]
-            } else {
-                vec![source.as_str()]
-            };
-            let (output, cost) = measure(|| transform.evaluate(&args).unwrap());
-            assert_eq!(cost.count, 0);
-            let TextOutput::Array(parts) = output else {
-                panic!("parts")
-            };
-            let (actual, cost) = measure(|| {
-                parts.fold((0, 0), |(parts, bytes), part| {
-                    (parts + 1, bytes + part.len())
-                })
-            });
-            let expected_count = count + usize::from(matches!(transform, TextTransform::Split));
-            assert_eq!(actual, (expected_count, count));
-            assert_eq!(cost.count, 0);
-            assert_eq!(cost.bytes, 0);
-        }
+        let (output, cost) = measure(|| {
+            TextTransform::Split
+                .evaluate(&[source.as_str(), "\n"])
+                .unwrap()
+        });
+        assert_eq!(cost.count, 0);
+        let TextOutput::Array(parts) = output else {
+            panic!("parts")
+        };
+        let (actual, cost) = measure(|| {
+            parts.fold((0, 0), |(parts, bytes), part| {
+                (parts + 1, bytes + part.len())
+            })
+        });
+        assert_eq!(actual, (count + 1, count));
+        assert_eq!(cost.count, 0);
+        assert_eq!(cost.bytes, 0);
     }
 }
 
@@ -76,7 +72,7 @@ fn unchanged_text_transforms_share_backing_without_payload_size_allocations() {
     let string = types.primitive(PrimitiveType::String);
     let array = types.intern(Type::Array(string));
     let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
-    for id in [pure::TEXT_TRIM, pure::TEXT_SPLIT, pure::TEXT_LINES] {
+    for id in [pure::TEXT_TRIM, pure::TEXT_SPLIT] {
         let mut first_cost = None;
         for count in [1000, 2000, 4000] {
             let source = "中😀e\u{301}".repeat(count);
@@ -187,14 +183,12 @@ fn case_transforms_allocate_output_without_copying_input() {
 }
 
 #[test]
-fn split_and_lines_preserve_result_values_and_only_materialize_output_fragments() {
+fn split_preserves_result_values_and_only_materializes_output_fragments() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
     let array = types.intern(Type::Array(string));
     let projector = PureAbiProjector::build(&types.into_store(), &Default::default()).unwrap();
     for (id, source, separator) in [
-        (pure::TEXT_LINES, "中\r\n😀\n\n", None),
-        (pure::TEXT_LINES, "", None),
         (pure::TEXT_SPLIT, "中😀e\u{301}", Some("")),
         (pure::TEXT_SPLIT, "aaa", Some("aa")),
         (pure::TEXT_SPLIT, "", Some("")),

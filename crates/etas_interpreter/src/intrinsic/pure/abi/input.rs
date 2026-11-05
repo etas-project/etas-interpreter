@@ -152,6 +152,9 @@ pub(in crate::intrinsic::pure) fn into_builtin_for_type(
                     })
             }
             AbiShape::Enum(layout) => into_builtin_enum(value, ty, layout, projector),
+            AbiShape::Iterable(_) => Err(AdapterError::UnsupportedValue(
+                "lazy iterable values are consumed by the interpreter iteration protocol".into(),
+            )),
             AbiShape::Refined { base } => {
                 ty = *base;
                 continue;
@@ -234,6 +237,17 @@ fn into_builtin_primitive(
         }
         (PrimitiveType::Bytes, InterpValue::Bytes(value)) => {
             Ok(BuiltinValue::Bytes(value.into_vec()))
+        }
+        (PrimitiveType::Char, InterpValue::String(value)) => {
+            let mut chars = value.as_str().chars();
+            let value = chars
+                .next()
+                .filter(|_| chars.next().is_none())
+                .ok_or_else(|| AdapterError::TypeMismatch {
+                    expected: ty,
+                    actual: "String".into(),
+                })?;
+            Ok(BuiltinValue::Char(value))
         }
         (expected, InterpValue::Number(value)) if value.primitive() == expected => {
             numeric_into_builtin(value)

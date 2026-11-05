@@ -207,6 +207,16 @@ fn leaf(value: &ValueSnapshot) -> Value {
         V::Bool(value) => json!({"kind":"bool","value":value}),
         V::Number(value) => numeric_value_json(*value),
         V::String(value) => tagged_text("string", value),
+        V::TextSequence {
+            source,
+            plan,
+            item_type,
+        } => json!({
+            "kind":"text_sequence",
+            "source":source.as_str(),
+            "plan":text_sequence_plan_json(plan),
+            "item_type":item_type.0,
+        }),
         V::Bytes(value) => json!({"kind":"bytes","value":value}),
         V::Prompt(messages) => {
             let mut value = json!({"kind":"prompt", "messages":null});

@@ -5,7 +5,7 @@ use etas_hir::{HirItem, HirItemId};
 
 use super::CheckpointCompilationIdentity;
 
-pub(crate) const CHECKPOINT_ARTIFACT_SCHEMA: &str = "etas.cli.interpreter-checkpoint.v72";
+pub(crate) const CHECKPOINT_ARTIFACT_SCHEMA: &str = "etas.cli.interpreter-checkpoint.v73";
 
 impl CheckpointCompilationIdentity {
     pub(crate) fn for_project(
@@ -78,6 +78,14 @@ fn project_fingerprint(checked: &CheckedProject) -> String {
         &mut hasher,
         checked.project_environment_fingerprint.as_bytes(),
     );
+    update(
+        &mut hasher,
+        checked
+            .std_registry
+            .version()
+            .compatibility_identity()
+            .as_bytes(),
+    );
     for source in sources {
         update(&mut hasher, &source.id.0.to_le_bytes());
         update(
@@ -99,6 +107,14 @@ fn checked_hir_fingerprint(checked: &CheckedProject) -> String {
     let mut hasher = blake3::Hasher::new();
     update(&mut hasher, b"etas-checkpoint-hir:v1");
     update(&mut hasher, checked.compiler_version.as_bytes());
+    update(
+        &mut hasher,
+        checked
+            .std_registry
+            .version()
+            .compatibility_identity()
+            .as_bytes(),
+    );
     for (_, module) in checked.hir.modules_arena.iter() {
         update_debug(&mut hasher, module);
     }

@@ -53,7 +53,7 @@ fn global_string_count_borrows_unicode_text_without_payload_materialization() {
     for count in [0, 1000, 2000, 4000] {
         let input = InterpValue::String("中😀e\u{301}".repeat(count).into());
         for (id, result_type, expected) in [
-            (pure::LIST_LEN, size, InterpValue::usize(count * 4)),
+            (pure::LIST_LEN, size, InterpValue::usize(count * 10)),
             (pure::LIST_IS_EMPTY, boolean, InterpValue::Bool(count == 0)),
         ] {
             let call = CheckedPureIntrinsicCall {

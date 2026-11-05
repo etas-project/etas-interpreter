@@ -146,7 +146,7 @@ async fn slice_view_retains_values_after_source_mutation_and_checkpoint() {
         r#"
 module app.main;
 import std.runtime.checkpoint;
-flow main() -> i32 {
+flow main() -> u8 {
     var values = [1, 2, 3, 4];
     let window = values[1, 4)[0, 2);
     values[1] = 99;
@@ -171,7 +171,10 @@ flow main() -> i32 {
         .await
         .unwrap();
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
-    assert_eq!(result.value(), Some(&InterpValue::i32(5)));
+    assert_eq!(
+        result.value(),
+        Some(&InterpValue::Number(crate::value::NumericValue::U8(5)))
+    );
     let artifact =
         checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
     let checkpoint = checkpoint_from_json(&artifact, &checked).unwrap();
@@ -180,7 +183,10 @@ flow main() -> i32 {
         .await
         .unwrap();
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
-    assert_eq!(resumed.value(), Some(&InterpValue::i32(5)));
+    assert_eq!(
+        resumed.value(),
+        Some(&InterpValue::Number(crate::value::NumericValue::U8(5)))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -215,6 +221,112 @@ flow main() -> i32 {
         .unwrap();
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.value(), Some(&InterpValue::i32(45)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn lazy_text_sequences_resume_exact_cursor_without_replaying_completed_effects() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.runtime.checkpoint;
+import std.text.{chars, find_all};
+
+flow main() -> usize {
+    let matches = find_all("ab", "");
+    var first = 0;
+    for (start, _) in matches limit Iterations(4) {
+        first = first * 10 + start;
+        if start == 1 {
+            println("cursor");
+            checkpoint("text-cursor");
+        }
+    }
+
+    var second = 0;
+    for (start, _) in matches limit Iterations(4) {
+        second = second * 10 + start;
+    }
+
+    let scalars = chars("ab");
+    var nested: usize = 0;
+    for _ in scalars limit Iterations(3) {
+        for _ in scalars limit Iterations(3) {
+            nested = nested + 1;
+        }
+    }
+    return first * 100 + second * 10 + nested;
+}
+"#,
+    );
+    let services = availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Checkpoint,
+    ]);
+    let host = FakeHost::new(services);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::usize(1324)));
+    assert_eq!(host.stdout_text(), "cursor\n");
+    assert_eq!(host.console_call_count(), 1);
+    assert_eq!(result.checkpoints.len(), 1);
+
+    let artifact =
+        checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
+    let checkpoint = checkpoint_from_json(&artifact, &checked).unwrap();
+    let mut bad_cursor = artifact.clone();
+    let mut edits = 0;
+    edit_for_loop(&mut bad_cursor, &mut |object| {
+        if object["source"]["kind"] == "text_sequence" {
+            object["text_cursor"]["byte_offset"] = serde_json::json!(0);
+            edits += 1;
+        }
+    });
+    assert_eq!(edits, 1);
+    assert!(checkpoint_from_json(&bad_cursor, &checked).is_err());
+
+    let mut bad_version = artifact.clone();
+    let mut edits = 0;
+    edit_for_loop(&mut bad_version, &mut |object| {
+        if object["source"]["kind"] == "text_sequence" {
+            object["source"]["plan"]["version"] = serde_json::json!(u32::MAX);
+            edits += 1;
+        }
+    });
+    assert_eq!(edits, 1);
+    assert!(checkpoint_from_json(&bad_version, &checked).is_err());
+
+    let mut bad_item_type = artifact;
+    let mut edits = 0;
+    edit_for_loop(&mut bad_item_type, &mut |object| {
+        if object["source"]["kind"] == "text_sequence" {
+            object["source"]["item_type"] = serde_json::json!(u32::MAX);
+            edits += 1;
+        }
+    });
+    assert_eq!(edits, 1);
+    assert!(checkpoint_from_json(&bad_item_type, &checked).is_err());
+
+    let resumed_host = FakeHost::new(services);
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &checkpoint, &resumed_host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&InterpValue::usize(1324)));
+    assert_eq!(resumed_host.stdout_text(), "");
+    assert_eq!(resumed_host.console_call_count(), 0);
 }
 
 #[tokio::test(flavor = "current_thread")]

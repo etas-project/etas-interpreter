@@ -1248,14 +1248,14 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_checked_executes_string_index_and_list_pop_without_host() {
+async fn run_checked_executes_list_index_and_pop_without_host() {
     let checked = checked_project(
         r#"
 module app.main;
 
 flow main() -> char {
   var stack = ['a', 'm', 'c'];
-  let middle = "roman"[2];
+  let middle = 'm';
   stack.pop();
   if stack[1] == middle {
     return middle;

@@ -262,6 +262,34 @@ impl EvalMachine {
                         Err(signal) => *signal,
                     }
                 }
+                ControlSignal::Native(mut pending) => {
+                    let call = pending.call().cloned();
+                    match pending.poll(ctx.plan.dispatch.pure_abi()) {
+                        Ok(crate::intrinsic::pure::NativeWorkPoll::Ready(value)) => {
+                            ControlSignal::Value(value)
+                        }
+                        Ok(crate::intrinsic::pure::NativeWorkPoll::IterationReady(value)) => {
+                            let Some((state, source, mut frame)) = pending.into_iteration() else {
+                                return machine_fault(
+                                    "native iteration completed without loop state".to_owned(),
+                                    step_span,
+                                );
+                            };
+                            ctx.resume_native_for_loop(state, source, value, &mut frame)
+                        }
+                        Ok(crate::intrinsic::pure::NativeWorkPoll::Pending) => {
+                            self.input = Some(MachineInput::Signal(ControlSignal::Native(pending)));
+                            return MachinePoll::CooperativeYield;
+                        }
+                        Err(error) => match call {
+                            Some(call) => ctx.complete_pure_intrinsic(&call, Err(error), step_span),
+                            None => ControlSignal::missing_checked_fact(
+                                format!("native text iteration failed: {error:?}"),
+                                step_span,
+                            ),
+                        },
+                    }
+                }
                 ControlSignal::Value(value) => {
                     let Some(frame) = self.pop_frame() else {
                         return MachinePoll::Complete(Box::new(value));

@@ -1,7 +1,7 @@
 use super::{Context, Seed, Target, Task, Value};
 use crate::{orchestration::ValueSnapshot as S, value::InterpValue as R};
 use etas_std::RuntimeTypeRole as Role;
-use etas_types::{ResourceHandleType, Type, TypeId};
+use etas_types::{ResourceHandleType, Type, TypeId, facts::symbols::StdIterableItemFact};
 
 pub(super) fn validate<'a>(
     context: &impl Context,
@@ -228,6 +228,12 @@ pub(super) fn validate<'a>(
             }
             Ok(())
         }
+        Value::Runtime(R::TextSequence(sequence)) => {
+            text_sequence(context, expected, sequence.item_type())
+        }
+        Value::Snapshot(S::TextSequence { item_type, .. }) => {
+            text_sequence(context, expected, *item_type)
+        }
         Value::Snapshot(S::MemorySelection {
             region_stable_id,
             path,
@@ -268,6 +274,36 @@ pub(super) fn validate<'a>(
         }
         _ => Err("native input does not match its checked type identity".into()),
     }
+}
+
+fn text_sequence(
+    context: &impl Context,
+    expected: TypeId,
+    item_type: TypeId,
+) -> Result<(), String> {
+    let checked = context.checked();
+    let Some(Type::Applied { constructor, args }) = checked.type_store.get(expected) else {
+        return Err("text sequence has no checked iterable identity".into());
+    };
+    let constructor = TypeId(constructor.0);
+    if !checked
+        .types
+        .known_std_types
+        .intrinsic_only_constructors
+        .contains(&constructor)
+    {
+        return Err("text sequence constructor is not intrinsic-only".into());
+    }
+    let Some(fact) = checked.types.known_std_types.iterables.get(&constructor) else {
+        return Err("text sequence constructor is not iterable".into());
+    };
+    let StdIterableItemFact::Element { parameter } = fact.item else {
+        return Err("text sequence requires an element iterable".into());
+    };
+    if fact.arity != args.len() || args.get(parameter) != Some(&item_type) {
+        return Err("text sequence item type differs from its checked iterable".into());
+    }
+    Ok(())
 }
 
 fn workspace_path(context: &impl Context, ty: TypeId, region: &str) -> Result<(), String> {

@@ -80,6 +80,9 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
             version: "1.0.0".to_owned(),
             edition: "2026".to_owned(),
             import_root: "dep".to_owned(),
+            std_compatibility: etas_std::standard_registry()
+                .version()
+                .compatibility_identity(),
         }],
         external_modules: vec![ProjectExternalModuleInput {
             package: Some(package),

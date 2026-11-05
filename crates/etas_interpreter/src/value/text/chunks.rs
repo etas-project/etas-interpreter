@@ -1,4 +1,4 @@
-use std::collections::VecDeque;
+use std::{collections::VecDeque, ops::Range, rc::Rc};
 
 use super::{Repr, StringValue};
 
@@ -111,6 +111,116 @@ impl DoubleEndedIterator for TextChunks<'_> {
 
 impl ExactSizeIterator for TextChunks<'_> {}
 impl std::iter::FusedIterator for TextChunks<'_> {}
+
+#[derive(Clone, Debug)]
+pub(crate) struct TextPiece {
+    text: Rc<String>,
+    range: Range<usize>,
+}
+
+impl TextPiece {
+    pub(crate) fn as_str(&self) -> &str {
+        &self.text[self.range.clone()]
+    }
+}
+
+#[derive(Clone, Default)]
+pub(crate) struct OwnedTextCursor {
+    next: Option<Repr>,
+    pending: Vec<Repr>,
+    current: Option<Rc<String>>,
+    current_offset: usize,
+    position: usize,
+    length: usize,
+}
+
+impl std::fmt::Debug for OwnedTextCursor {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter
+            .debug_struct("OwnedTextCursor")
+            .field("position", &self.position)
+            .field("length", &self.length)
+            .finish_non_exhaustive()
+    }
+}
+
+impl OwnedTextCursor {
+    pub(crate) fn new(text: &StringValue) -> Self {
+        Self {
+            next: Some(text.0.clone()),
+            pending: Vec::new(),
+            current: None,
+            current_offset: 0,
+            position: 0,
+            length: text.len(),
+        }
+    }
+
+    pub(crate) fn at(text: &StringValue, position: usize) -> Result<Self, String> {
+        if position > text.len() {
+            return Err("text cursor position exceeds source length".into());
+        }
+        let mut cursor = Self::new(text);
+        while cursor.position < position {
+            let piece = cursor
+                .next_piece()
+                .ok_or("text cursor position is not reachable")?;
+            let remaining = position - cursor.position;
+            let consumed = remaining.min(piece.as_str().len());
+            if !piece.as_str().is_char_boundary(consumed) {
+                return Err("text cursor position is not a scalar boundary".into());
+            }
+            cursor.advance(consumed);
+        }
+        Ok(cursor)
+    }
+
+    pub(crate) fn position(&self) -> usize {
+        self.position
+    }
+
+    pub(crate) fn is_finished(&self) -> bool {
+        self.position == self.length
+    }
+
+    pub(crate) fn next_piece(&mut self) -> Option<TextPiece> {
+        loop {
+            if let Some(text) = &self.current
+                && self.current_offset < text.len()
+            {
+                return Some(TextPiece {
+                    text: text.clone(),
+                    range: self.current_offset..text.len(),
+                });
+            }
+            self.current = None;
+            self.current_offset = 0;
+            let mut current = self.next.take().or_else(|| self.pending.pop())?;
+            loop {
+                match current {
+                    Repr::Empty => break,
+                    Repr::Flat(text) => {
+                        self.current = Some(text);
+                        break;
+                    }
+                    Repr::Concat(node) => {
+                        if let Some(text) = node.materialized.get() {
+                            self.current = Some(text.clone());
+                            break;
+                        }
+                        self.pending.push(node.suffix.0.clone());
+                        current = node.prefix.0.clone();
+                    }
+                }
+            }
+        }
+    }
+
+    pub(crate) fn advance(&mut self, bytes: usize) {
+        self.current_offset += bytes;
+        self.position += bytes;
+    }
+}
 
 /// Forward-only consumers need pending tree edges, not a complete leaf index.
 pub(super) struct TextLeaves<'a> {
