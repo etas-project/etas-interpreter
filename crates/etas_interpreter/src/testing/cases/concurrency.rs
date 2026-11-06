@@ -200,3 +200,65 @@ flow main() -> i32 {
         } if kind == "park"
     )));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_child_waiting_on_console_does_not_block_its_sibling() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.task.{run, start, await, Scheduler};
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let first = start(() => {
+            println("first")?;
+            return 1;
+        });
+        let second = start(() => {
+            println("second")?;
+            return 2;
+        });
+        return await(first) + await(second);
+    });
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let gate = host.pause_console_completion();
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+
+    let (result, both_started) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            let both_started = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                while host.console_call_count() < 2 {
+                    gate.started.notified().await;
+                }
+            })
+            .await
+            .is_ok();
+            gate.release.add_permits(2);
+            both_started
+        })
+    })
+    .await
+    .expect("both sibling Host operations should start before either completes");
+    let result = result.unwrap();
+
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert!(
+        both_started,
+        "expected two concurrent Console calls, observed {}",
+        host.console_call_count()
+    );
+    assert_eq!(result.value(), Some(&InterpValue::i32(3)));
+    assert_eq!(host.console_call_count(), 2);
+    assert_eq!(host.stdout_text(), "first\nsecond\n");
+}

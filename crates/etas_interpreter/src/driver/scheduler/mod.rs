@@ -1,4 +1,5 @@
 mod continuation;
+mod host;
 mod task;
 
 use std::{
@@ -7,6 +8,7 @@ use std::{
 };
 
 pub(crate) use continuation::{ConsumedContinuation, ContinuationTransfer};
+pub(in crate::driver) use host::{CompletedTaskHost, TaskHostReactor};
 pub(crate) use task::{
     ContinuationId, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome, TaskResume,
     TaskScopeId, TaskState, TaskWait, TaskWaiter,
@@ -251,6 +253,36 @@ impl TaskScheduler {
             .state = TaskState::Waiting(TaskWait::Task(target_id));
         self.active -= 1;
         Ok(AwaitDecision::Parked)
+    }
+
+    pub(crate) fn wait_for_host(
+        &mut self,
+        handle: TaskHandle,
+        operation: etas_host::execution::OperationId,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Running {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Waiting(TaskWait::Host(operation));
+        self.active -= 1;
+        Ok(())
+    }
+
+    pub(crate) fn wake_from_host(
+        &mut self,
+        handle: TaskHandle,
+        operation: etas_host::execution::OperationId,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Waiting(TaskWait::Host(operation)) {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Ready;
+        self.ready.push_back(id);
+        Ok(())
     }
 
     pub(crate) fn wait_with_continuation(

@@ -12,7 +12,7 @@ use crate::{eval::EvalContext, orchestration::WorkflowEvent};
 
 pub(super) struct HostDispatch;
 
-pub(super) struct PendingHostOperation<Response, Call> {
+pub(in crate::driver) struct PendingHostOperation<Response, Call> {
     request_id: HostRequestId,
     operation: etas_host::execution::OperationRegistration,
     started: Instant,
@@ -20,7 +20,7 @@ pub(super) struct PendingHostOperation<Response, Call> {
     _response: std::marker::PhantomData<fn() -> Response>,
 }
 
-pub(super) struct HostCompletion<Response> {
+pub(in crate::driver) struct HostCompletion<Response> {
     request_id: HostRequestId,
     operation: etas_host::execution::OperationRegistration,
     started: Instant,
@@ -28,7 +28,7 @@ pub(super) struct HostCompletion<Response> {
 }
 
 impl HostDispatch {
-    pub(super) fn begin<Response, Call, Dispatch>(
+    pub(in crate::driver) fn begin<Response, Call, Dispatch>(
         eval: &mut EvalContext<'_>,
         request_id: HostRequestId,
         kind: HostRequestKind,
@@ -76,7 +76,7 @@ impl HostDispatch {
         })
     }
 
-    pub(super) async fn poll<Response, Call>(
+    pub(in crate::driver) async fn poll<Response, Call>(
         pending: PendingHostOperation<Response, Call>,
     ) -> HostCompletion<Response>
     where
@@ -114,7 +114,7 @@ impl HostDispatch {
         }
     }
 
-    pub(super) fn finish<Response>(
+    pub(in crate::driver) fn finish<Response>(
         eval: &mut EvalContext<'_>,
         completion: HostCompletion<Response>,
     ) -> Result<Response, HostError>
@@ -234,6 +234,12 @@ impl HostDispatch {
             checked_call,
         )
         .await
+    }
+}
+
+impl<Response, Call> PendingHostOperation<Response, Call> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.operation.context().operation()
     }
 }
 

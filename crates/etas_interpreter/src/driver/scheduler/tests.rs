@@ -43,6 +43,39 @@ fn fifo_admission_and_waiting_release_concurrency_slots() {
 }
 
 #[test]
+fn host_wait_releases_its_slot_and_wakes_at_the_fifo_tail() {
+    let root = root_local();
+    let operation = root
+        .execution
+        .register(
+            None,
+            None,
+            etas_host::TraceContext::root(etas_host::TraceId(1)),
+        )
+        .unwrap();
+    let operation_id = operation.context().operation();
+    let mut scheduler = TaskScheduler::new(TaskScopeId(8), NonZeroUsize::new(1).unwrap());
+    let first = spawn(&mut scheduler, &root, 0);
+    let second = spawn(&mut scheduler, &root, 1);
+
+    assert_eq!(scheduler.dispatch_ready(), Some(first));
+    scheduler.wait_for_host(first, operation_id).unwrap();
+    assert_eq!(scheduler.dispatch_ready(), Some(second));
+    scheduler.requeue(second).unwrap();
+
+    scheduler.wake_from_host(first, operation_id).unwrap();
+    assert_eq!(scheduler.dispatch_ready(), Some(second));
+    scheduler.requeue(second).unwrap();
+    assert_eq!(scheduler.dispatch_ready(), Some(first));
+    operation
+        .complete(
+            etas_host::execution::ExternalOutcome::NotDispatched,
+            Vec::new(),
+        )
+        .unwrap();
+}
+
+#[test]
 fn completion_wakes_atomic_waiters_and_repeat_await_reads_cached_result() {
     let root = root_local();
     let mut scheduler = TaskScheduler::new(TaskScopeId(3), NonZeroUsize::new(2).unwrap());

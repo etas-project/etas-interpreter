@@ -141,13 +141,14 @@ pub async fn execute_entry_from_snapshot(
     drive_eval_signal(eval, signal, host, machine).await
 }
 
-async fn drive_eval_signal(
+async fn drive_eval_signal<'host>(
     eval: &mut EvalContext<'_>,
     mut signal: ControlSignal,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
     mut machine: EvalMachine,
 ) -> EvaluationOutcome {
     let mut machine_has_input = false;
+    let mut task_hosts = super::scheduler::TaskHostReactor::new();
     loop {
         let scope = machine.program_scope();
         let result = if let Some(scope) = scope {
@@ -169,6 +170,7 @@ async fn drive_eval_signal(
                     &mut scoped,
                     &mut signal,
                     host,
+                    &mut task_hosts,
                     &mut machine,
                     &mut machine_has_input,
                 )
@@ -179,13 +181,14 @@ async fn drive_eval_signal(
                 eval,
                 &mut signal,
                 host,
+                &mut task_hosts,
                 &mut machine,
                 &mut machine_has_input,
             )
             .await
         };
         if let ScopeOutcome::Finished(outcome) = result {
-            let outcome = super::task::settle(eval, host, outcome).await;
+            let outcome = super::task::settle(eval, host, &mut task_hosts, outcome).await;
             return super::residual_exit::finish(eval, Some(machine), outcome);
         }
     }
@@ -196,10 +199,11 @@ enum ScopeOutcome {
     ProgramChanged,
 }
 
-async fn drive_scope(
+async fn drive_scope<'host>(
     eval: &mut EvalContext<'_>,
     signal: &mut ControlSignal,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
+    task_hosts: &mut super::scheduler::TaskHostReactor<'host>,
     machine: &mut EvalMachine,
     machine_has_input: &mut bool,
 ) -> ScopeOutcome {
@@ -266,8 +270,14 @@ async fn drive_scope(
                     ));
                 }
                 if let Some(target) = super::task::awaited_task(&perform) {
-                    match super::task::await_from_root(eval, host, target, perform.continuation)
-                        .await
+                    match super::task::await_from_root(
+                        eval,
+                        host,
+                        task_hosts,
+                        target,
+                        perform.continuation,
+                    )
+                    .await
                     {
                         Ok(signal) => signal,
                         Err(outcome) => return ScopeOutcome::Finished(outcome),
@@ -319,7 +329,9 @@ async fn drive_scope(
                 signal
             }
             PendingBoundary::Task(control) => {
-                match super::task::control_from_root(eval, host, machine, *control).await {
+                match super::task::control_from_root(eval, host, task_hosts, machine, *control)
+                    .await
+                {
                     Ok(()) => {
                         *machine_has_input = true;
                         continue;

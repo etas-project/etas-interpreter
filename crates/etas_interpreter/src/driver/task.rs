@@ -18,8 +18,8 @@ use super::{
     dispatch,
     drive::{EvaluationOutcome, evaluation_failure},
     scheduler::{
-        AwaitDecision, ScheduledTask, SchedulerError, TaskHandle, TaskOutcome, TaskResume,
-        TaskWakeup,
+        AwaitDecision, CompletedTaskHost, ScheduledTask, SchedulerError, TaskHandle,
+        TaskHostReactor, TaskOutcome, TaskResume, TaskWakeup,
     },
 };
 
@@ -41,19 +41,21 @@ pub(super) fn awaited_task(perform: &PendingPerform) -> Option<TaskHandle> {
     }
 }
 
-pub(super) async fn await_from_root(
+pub(super) async fn await_from_root<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
+    reactor: &mut TaskHostReactor<'host>,
     target: TaskHandle,
     continuation: Continuation,
 ) -> Result<ControlSignal, EvaluationOutcome> {
-    let outcome = await_outcome(eval, host, target).await?;
+    let outcome = await_outcome(eval, host, reactor, target).await?;
     signal_from_outcome(outcome, continuation)
 }
 
-pub(super) async fn control_from_root(
+pub(super) async fn control_from_root<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
+    reactor: &mut TaskHostReactor<'host>,
     machine: &mut crate::eval::machine::EvalMachine,
     control: PendingTaskControl,
 ) -> Result<(), EvaluationOutcome> {
@@ -87,7 +89,7 @@ pub(super) async fn control_from_root(
                     crate::driver::scheduler::ContinuationTransfer::Park,
                 )
                 .map_err(|error| scheduler_failure(eval, error))?;
-            let outcome = await_outcome(eval, host, task).await?;
+            let outcome = await_outcome(eval, host, reactor, task).await?;
             match outcome {
                 TaskOutcome::Completed(value) => {
                     validate_continuation_value(eval, &value, consumed.output, span)?;
@@ -107,9 +109,10 @@ pub(super) async fn control_from_root(
     }
 }
 
-pub(super) async fn settle(
+pub(super) async fn settle<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
+    reactor: &mut TaskHostReactor<'host>,
     mut root: EvaluationOutcome,
 ) -> EvaluationOutcome {
     if !matches!(root, EvaluationOutcome::Completed(_)) {
@@ -133,7 +136,7 @@ pub(super) async fn settle(
             }
             break;
         }
-        match drive_one(eval, host).await {
+        match drive_one(eval, host, reactor).await {
             Ok(true) => {}
             Ok(false) => return scheduler_deadlock(eval),
             Err(outcome) => return outcome,
@@ -142,9 +145,10 @@ pub(super) async fn settle(
     primary_failure(eval).unwrap_or(root)
 }
 
-async fn await_outcome(
+async fn await_outcome<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
+    reactor: &mut TaskHostReactor<'host>,
     target: TaskHandle,
 ) -> Result<TaskOutcome, EvaluationOutcome> {
     loop {
@@ -162,7 +166,7 @@ async fn await_outcome(
             Ok(None) => {}
             Err(error) => return Err(scheduler_failure(eval, error)),
         }
-        match drive_one(eval, host).await {
+        match drive_one(eval, host, reactor).await {
             Ok(true) => {}
             Ok(false) => return Err(scheduler_deadlock(eval)),
             Err(outcome) => return Err(outcome),
@@ -170,12 +174,20 @@ async fn await_outcome(
     }
 }
 
-async fn drive_one(
+async fn drive_one<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
+    reactor: &mut TaskHostReactor<'host>,
 ) -> Result<bool, EvaluationOutcome> {
+    if let Some((handle, operation)) = reactor.poll_ready().await {
+        wake_from_host(eval, handle, operation)?;
+    }
     let Some(handle) = eval.scheduler.dispatch_ready() else {
-        return Ok(false);
+        let Some((handle, operation)) = reactor.wait_next().await else {
+            return Ok(false);
+        };
+        wake_from_host(eval, handle, operation)?;
+        return Ok(true);
     };
     let wakeup = eval
         .scheduler
@@ -257,6 +269,22 @@ async fn drive_one(
             drop(child);
             finish_task(eval, handle, task, outcome)?;
             return Ok(true);
+        }
+
+        if let Some(completed) = reactor.take_completed(handle) {
+            let signal = match completed {
+                CompletedTaskHost::Console(completed) => {
+                    let Some(signal) = dispatch::console::finish(&mut child, completed) else {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    };
+                    signal
+                }
+            };
+            task.machine.resume(signal);
+            continue;
         }
 
         let boundary = match task.machine.run_until_yield(&mut child) {
@@ -564,14 +592,29 @@ async fn drive_one(
                 dispatch::session::dispatch(&mut child, host, *session).await
             }
             PendingBoundary::Console(console) => {
-                let Some(signal) = dispatch::console::dispatch(&mut child, host, *console).await
-                else {
-                    let outcome = evaluation_failure(&mut child);
-                    drop(child);
-                    finish_task(eval, handle, task, outcome)?;
-                    return Ok(true);
-                };
-                signal
+                match dispatch::console::begin(&mut child, host, *console).await {
+                    dispatch::console::ConsoleDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::console::ConsoleDispatchStart::Complete(None) => {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    dispatch::console::ConsoleDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        drop(child);
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        let registered = reactor.start_console(handle, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        return Ok(true);
+                    }
+                }
             }
             PendingBoundary::Command(command) => {
                 let Some(signal) =
@@ -601,6 +644,21 @@ async fn drive_one(
         };
         task.machine.resume(signal);
     }
+}
+
+fn wake_from_host(
+    eval: &mut EvalContext<'_>,
+    handle: TaskHandle,
+    operation: etas_host::execution::OperationId,
+) -> Result<(), EvaluationOutcome> {
+    eval.scheduler
+        .wake_from_host(handle, operation)
+        .map_err(|error| scheduler_failure(eval, error))?;
+    eval.events.push(WorkflowEvent::TaskReady {
+        scope: handle.owner.0,
+        task: handle.task.0,
+    });
+    Ok(())
 }
 
 fn signal_from_outcome(
