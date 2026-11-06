@@ -282,6 +282,28 @@ async fn drive_one<'host>(
                     };
                     signal
                 }
+                CompletedTaskHost::Command(completed) => {
+                    let Some(signal) =
+                        dispatch::command::finish(&mut child, &mut task.machine, completed)
+                    else {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    };
+                    signal
+                }
+                CompletedTaskHost::Host(completed) => {
+                    let Some(signal) =
+                        dispatch::host::finish(&mut child, &mut task.machine, completed)
+                    else {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    };
+                    signal
+                }
             };
             task.machine.resume(signal);
             continue;
@@ -617,27 +639,55 @@ async fn drive_one<'host>(
                 }
             }
             PendingBoundary::Command(command) => {
-                let Some(signal) =
-                    dispatch::command::dispatch(&mut child, host, *command, &mut task.machine)
-                        .await
-                else {
-                    let outcome = evaluation_failure(&mut child);
-                    drop(child);
-                    finish_task(eval, handle, task, outcome)?;
-                    return Ok(true);
-                };
-                signal
+                match dispatch::command::begin(&mut child, host, *command, &mut task.machine).await
+                {
+                    dispatch::command::CommandDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::command::CommandDispatchStart::Complete(None) => {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    dispatch::command::CommandDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        drop(child);
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        let registered = reactor.start_command(handle, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        return Ok(true);
+                    }
+                }
             }
             PendingBoundary::Host(boundary) => {
-                let Some(signal) =
-                    dispatch::host::dispatch(&mut child, host, *boundary, &mut task.machine).await
-                else {
-                    let outcome = evaluation_failure(&mut child);
-                    drop(child);
-                    finish_task(eval, handle, task, outcome)?;
-                    return Ok(true);
-                };
-                signal
+                match dispatch::host::begin(&mut child, host, *boundary, &mut task.machine).await {
+                    dispatch::host::HostBoundaryDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::host::HostBoundaryDispatchStart::Complete(None) => {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    dispatch::host::HostBoundaryDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        drop(child);
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        let registered = reactor.start_host(handle, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        return Ok(true);
+                    }
+                }
             }
             PendingBoundary::Perform(_) => unreachable!("perform handled above"),
             PendingBoundary::Task(_) => unreachable!("task control handled above"),

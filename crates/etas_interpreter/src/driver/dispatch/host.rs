@@ -1,7 +1,10 @@
+use std::{future::Future, pin::Pin};
+
 use etas_host::{
-    BrowserProtocolOperation, BrowserProtocolPayload, FilesystemEntry, FilesystemOperation,
-    HostError, HostRequestKind, HostTraceRequest, HostValue, PolicySubject, SecretPayload,
-    StreamFailure, StreamOperation, StreamPayload, StreamRead,
+    BrowserProtocolOperation, BrowserProtocolPayload, BrowserProtocolResponse, FilesystemEntry,
+    FilesystemOperation, FilesystemResponse, HostError, HostRequestKind, HostTraceRequest,
+    HostValue, PolicySubject, SecretPayload, SecretResponse, StreamFailure, StreamOperation,
+    StreamPayload, StreamRead, StreamResponse, TcpConnectResponse, TlsConnectResponse,
 };
 
 use crate::{
@@ -13,7 +16,7 @@ use crate::{
 
 use super::{
     error::{format_host_error, retry_or_report},
-    host_dispatch::HostDispatch,
+    host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation, TraceableHostResponse},
     policy::authorize_before_boundary,
 };
 
@@ -29,16 +32,62 @@ enum HostBoundaryFailure {
     },
 }
 
+pub(in crate::driver) enum HostBoundaryDispatchStart<'host> {
+    Complete(Option<ControlSignal>),
+    Pending(PendingHostBoundaryDispatch<'host>),
+}
+
+pub(in crate::driver) struct PendingHostBoundaryDispatch<'host> {
+    boundary: PendingHostBoundary,
+    key: Option<etas_host::replay::ReplayFingerprint>,
+    operation: etas_host::execution::OperationId,
+    future: Pin<Box<dyn Future<Output = HostBoundaryCompletion> + 'host>>,
+}
+
+pub(in crate::driver) struct CompletedHostBoundaryDispatch {
+    boundary: PendingHostBoundary,
+    key: Option<etas_host::replay::ReplayFingerprint>,
+    completion: HostBoundaryCompletion,
+}
+
+enum HostBoundaryCompletion {
+    Filesystem(HostCompletion<FilesystemResponse>),
+    Tcp(HostCompletion<TcpConnectResponse>),
+    Stream(HostCompletion<StreamResponse>),
+    Tls(HostCompletion<TlsConnectResponse>),
+    Secret(HostCompletion<SecretResponse>),
+    Browser(HostCompletion<BrowserProtocolResponse>),
+}
+
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
-    mut boundary: PendingHostBoundary,
+    boundary: PendingHostBoundary,
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
+    match begin(eval, host, boundary, machine).await {
+        HostBoundaryDispatchStart::Complete(signal) => signal,
+        HostBoundaryDispatchStart::Pending(pending) => {
+            let completed = pending.poll().await;
+            finish(eval, machine, completed)
+        }
+    }
+}
+
+pub(in crate::driver) async fn begin<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    mut boundary: PendingHostBoundary,
+    machine: &mut EvalMachine,
+) -> HostBoundaryDispatchStart<'host> {
     let kind = host_boundary_kind(&boundary.request);
     let key = match host_boundary_key(eval, &boundary) {
         Ok(key) => key,
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(fault) => {
+            return HostBoundaryDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(
+                fault,
+            ))));
+        }
     };
     let occurrence = crate::orchestration::BoundaryOccurrenceId::HostRequest(
         host_boundary_request_id(&boundary.request),
@@ -46,17 +95,25 @@ pub(in crate::driver) async fn dispatch(
     let trace_subject = match host_boundary_policy_subject(&boundary.request) {
         Ok(subject) => subject,
         Err(error) => {
-            return Some(ControlSignal::missing_checked_fact(
+            return HostBoundaryDispatchStart::Complete(Some(ControlSignal::missing_checked_fact(
                 error.message,
                 boundary.span,
-            ));
+            )));
         }
     };
-    if let Some(key) = key {
-        match eval.completed_host_boundary_result(&occurrence, kind, &key, boundary.span) {
-            Ok(Some(value)) => return Some(eval.resume_host_signal(boundary, value)),
+    if let Some(key) = &key {
+        match eval.completed_host_boundary_result(&occurrence, kind, key, boundary.span) {
+            Ok(Some(value)) => {
+                return HostBoundaryDispatchStart::Complete(Some(
+                    eval.resume_host_signal(boundary, value),
+                ));
+            }
             Ok(None) => (),
-            Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+            Err(fault) => {
+                return HostBoundaryDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(
+                    fault,
+                ))));
+            }
         }
     }
     if let Err(error) = authorize_before_boundary(
@@ -68,7 +125,7 @@ pub(in crate::driver) async fn dispatch(
     .await
     {
         if let Some(signal) = eval.cancellation_signal(boundary.span) {
-            return Some(signal);
+            return HostBoundaryDispatchStart::Complete(Some(signal));
         }
         if matches!(
             &boundary.request,
@@ -76,10 +133,8 @@ pub(in crate::driver) async fn dispatch(
                 | HostBoundaryRequest::SessionHistory(_)
                 | HostBoundaryRequest::SessionContext(_)
         ) {
-            return Some(eval.storage_error_with_continuation(
-                error,
-                boundary.span,
-                boundary.continuation,
+            return HostBoundaryDispatchStart::Complete(Some(
+                eval.storage_error_with_continuation(error, boundary.span, boundary.continuation),
             ));
         }
         eval.diagnostics.push(etas_core::Diagnostic::analysis(
@@ -87,7 +142,7 @@ pub(in crate::driver) async fn dispatch(
             boundary.span,
             super::policy::policy_failure_message(kind, &error),
         ));
-        return None;
+        return HostBoundaryDispatchStart::Complete(None);
     }
     boundary.request.bind_authority(eval.host_authority());
     if let Err(error) = host_boundary_budget(&boundary.request).check_time() {
@@ -97,31 +152,29 @@ pub(in crate::driver) async fn dispatch(
                 | HostBoundaryRequest::SessionHistory(_)
                 | HostBoundaryRequest::SessionContext(_)
         ) {
-            return Some(eval.storage_error_with_continuation(
-                error,
-                boundary.span,
-                boundary.continuation,
+            return HostBoundaryDispatchStart::Complete(Some(
+                eval.storage_error_with_continuation(error, boundary.span, boundary.continuation),
             ));
         }
-        return retry_or_report(
+        return HostBoundaryDispatchStart::Complete(retry_or_report(
             eval,
             machine,
             boundary.continuation,
             boundary.span,
             format!("{kind} host boundary failed: {}", format_host_error(&error)),
-        );
+        ));
     }
-    let result = match boundary.request.clone() {
-        HostBoundaryRequest::SessionContext(request) => {
-            return Some(super::session_context::dispatch(eval, host, boundary, request).await);
-        }
-        HostBoundaryRequest::SessionHistory(request) => {
-            return Some(super::session_history::dispatch(eval, host, boundary, request).await);
-        }
-        HostBoundaryRequest::MemoryWrite(request) => {
-            return Some(super::memory_commit::dispatch(eval, host, boundary, request).await);
-        }
-        HostBoundaryRequest::Filesystem(request) => match HostDispatch::execute(
+    match boundary.request.clone() {
+        HostBoundaryRequest::SessionContext(request) => HostBoundaryDispatchStart::Complete(Some(
+            super::session_context::dispatch(eval, host, boundary, request).await,
+        )),
+        HostBoundaryRequest::SessionHistory(request) => HostBoundaryDispatchStart::Complete(Some(
+            super::session_history::dispatch(eval, host, boundary, request).await,
+        )),
+        HostBoundaryRequest::MemoryWrite(request) => HostBoundaryDispatchStart::Complete(Some(
+            super::memory_commit::dispatch(eval, host, boundary, request).await,
+        )),
+        HostBoundaryRequest::Filesystem(request) => match HostDispatch::begin(
             eval,
             request.id,
             HostRequestKind::Filesystem,
@@ -129,41 +182,19 @@ pub(in crate::driver) async fn dispatch(
             request.authority.clone(),
             request.trace.clone(),
             |operation| host.filesystem(operation, request),
-        )
-        .await
-        {
-            Ok(response) => match (response.result, boundary.decode) {
-                (
-                    Ok(FilesystemEntry::LimitedEntries(
-                        etas_host::BoundedDirectoryList::LimitExceeded {
-                            max_entries,
-                            max_bytes,
-                        },
-                    )),
-                    HostBoundaryDecode::DirectoryListLimited {
-                        max_entries: expected_entries,
-                        max_bytes: expected_bytes,
-                    },
-                ) if max_entries == expected_entries && max_bytes == expected_bytes => {
-                    Err(HostBoundaryFailure::DirectoryListLimit {
-                        max_entries,
-                        max_bytes,
-                    })
-                }
-                (
-                    Ok(FilesystemEntry::LimitedRead(etas_host::BoundedFileRead::LimitExceeded {
-                        max_bytes,
-                    })),
-                    HostBoundaryDecode::FileReadLimited {
-                        max_bytes: expected,
-                    },
-                ) if max_bytes == expected => Err(HostBoundaryFailure::FileReadLimit { max_bytes }),
-                (Ok(entry), decode) => Ok(host_boundary_value_from_filesystem_entry(decode, entry)),
-                (Err(error), _) => Err(HostBoundaryFailure::Host(error)),
-            },
-            Err(error) => Err(HostBoundaryFailure::Host(error)),
+        ) {
+            Ok(pending) => {
+                pending_boundary(boundary, key, pending, HostBoundaryCompletion::Filesystem)
+            }
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
         },
-        HostBoundaryRequest::Tcp(request) => match HostDispatch::execute(
+        HostBoundaryRequest::Tcp(request) => match HostDispatch::begin(
             eval,
             request.id,
             HostRequestKind::Tcp,
@@ -171,9 +202,143 @@ pub(in crate::driver) async fn dispatch(
             request.authority.clone(),
             request.trace.clone(),
             |operation| host.tcp(operation, request),
-        )
-        .await
-        {
+        ) {
+            Ok(pending) => pending_boundary(boundary, key, pending, HostBoundaryCompletion::Tcp),
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
+        HostBoundaryRequest::Stream(request) => match HostDispatch::begin(
+            eval,
+            request.id,
+            HostRequestKind::Stream,
+            request.trace_payload(),
+            request.authority.clone(),
+            request.trace.clone(),
+            |operation| host.stream(operation, request),
+        ) {
+            Ok(pending) => pending_boundary(boundary, key, pending, HostBoundaryCompletion::Stream),
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
+        HostBoundaryRequest::Tls(request) => match HostDispatch::begin(
+            eval,
+            request.id,
+            HostRequestKind::Tls,
+            request.trace_payload(),
+            request.authority.clone(),
+            request.trace.clone(),
+            |operation| host.tls(operation, request),
+        ) {
+            Ok(pending) => pending_boundary(boundary, key, pending, HostBoundaryCompletion::Tls),
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
+        HostBoundaryRequest::Secret(request) => match HostDispatch::begin(
+            eval,
+            request.id,
+            HostRequestKind::Secret,
+            request.trace_payload(),
+            request.authority.clone(),
+            request.trace.clone(),
+            |operation| host.secret(operation, request),
+        ) {
+            Ok(pending) => pending_boundary(boundary, key, pending, HostBoundaryCompletion::Secret),
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
+        HostBoundaryRequest::Browser(request) => match HostDispatch::begin(
+            eval,
+            request.id,
+            HostRequestKind::Browser,
+            request.trace_payload(),
+            request.authority.clone(),
+            request.trace.clone(),
+            |operation| host.browser(operation, request),
+        ) {
+            Ok(pending) => {
+                pending_boundary(boundary, key, pending, HostBoundaryCompletion::Browser)
+            }
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
+    }
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    completed: CompletedHostBoundaryDispatch,
+) -> Option<ControlSignal> {
+    let CompletedHostBoundaryDispatch {
+        boundary,
+        key,
+        completion,
+    } = completed;
+    let result = match completion {
+        HostBoundaryCompletion::Filesystem(completion) => {
+            match HostDispatch::finish(eval, completion) {
+                Ok(response) => match (response.result, boundary.decode) {
+                    (
+                        Ok(FilesystemEntry::LimitedEntries(
+                            etas_host::BoundedDirectoryList::LimitExceeded {
+                                max_entries,
+                                max_bytes,
+                            },
+                        )),
+                        HostBoundaryDecode::DirectoryListLimited {
+                            max_entries: expected_entries,
+                            max_bytes: expected_bytes,
+                        },
+                    ) if max_entries == expected_entries && max_bytes == expected_bytes => {
+                        Err(HostBoundaryFailure::DirectoryListLimit {
+                            max_entries,
+                            max_bytes,
+                        })
+                    }
+                    (
+                        Ok(FilesystemEntry::LimitedRead(
+                            etas_host::BoundedFileRead::LimitExceeded { max_bytes },
+                        )),
+                        HostBoundaryDecode::FileReadLimited {
+                            max_bytes: expected,
+                        },
+                    ) if max_bytes == expected => {
+                        Err(HostBoundaryFailure::FileReadLimit { max_bytes })
+                    }
+                    (Ok(entry), decode) => {
+                        Ok(host_boundary_value_from_filesystem_entry(decode, entry))
+                    }
+                    (Err(error), _) => Err(HostBoundaryFailure::Host(error)),
+                },
+                Err(error) => Err(HostBoundaryFailure::Host(error)),
+            }
+        }
+        HostBoundaryCompletion::Tcp(completion) => match HostDispatch::finish(eval, completion) {
             Ok(response) => response
                 .result
                 .map(|stream| {
@@ -185,41 +350,23 @@ pub(in crate::driver) async fn dispatch(
                 .map_err(HostBoundaryFailure::Host),
             Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
-        HostBoundaryRequest::Stream(request) => match HostDispatch::execute(
-            eval,
-            request.id,
-            HostRequestKind::Stream,
-            request.trace_payload(),
-            request.authority.clone(),
-            request.trace.clone(),
-            |operation| host.stream(operation, request),
-        )
-        .await
-        {
-            Ok(response) => response
-                .result
-                .map(|payload| {
-                    host_boundary_value_from_stream_payload(
-                        boundary.decode,
-                        payload,
-                        eval.checked,
-                        &eval.storage_limits,
-                    )
-                })
-                .map_err(HostBoundaryFailure::Stream),
-            Err(error) => Err(HostBoundaryFailure::Host(error)),
-        },
-        HostBoundaryRequest::Tls(request) => match HostDispatch::execute(
-            eval,
-            request.id,
-            HostRequestKind::Tls,
-            request.trace_payload(),
-            request.authority.clone(),
-            request.trace.clone(),
-            |operation| host.tls(operation, request),
-        )
-        .await
-        {
+        HostBoundaryCompletion::Stream(completion) => {
+            match HostDispatch::finish(eval, completion) {
+                Ok(response) => response
+                    .result
+                    .map(|payload| {
+                        host_boundary_value_from_stream_payload(
+                            boundary.decode,
+                            payload,
+                            eval.checked,
+                            &eval.storage_limits,
+                        )
+                    })
+                    .map_err(HostBoundaryFailure::Stream),
+                Err(error) => Err(HostBoundaryFailure::Host(error)),
+            }
+        }
+        HostBoundaryCompletion::Tls(completion) => match HostDispatch::finish(eval, completion) {
             Ok(response) => response
                 .result
                 .map(|stream| {
@@ -231,53 +378,51 @@ pub(in crate::driver) async fn dispatch(
                 .map_err(HostBoundaryFailure::Host),
             Err(error) => Err(HostBoundaryFailure::Host(error)),
         },
-        HostBoundaryRequest::Secret(request) => match HostDispatch::execute(
-            eval,
-            request.id,
-            HostRequestKind::Secret,
-            request.trace_payload(),
-            request.authority.clone(),
-            request.trace.clone(),
-            |operation| host.secret(operation, request),
-        )
-        .await
-        {
-            Ok(response) => response
-                .result
-                .map(|secret| {
-                    host_boundary_value_from_secret(
-                        boundary.decode,
-                        secret,
-                        &eval.checked.type_store,
-                    )
-                })
-                .map_err(HostBoundaryFailure::Host),
-            Err(error) => Err(HostBoundaryFailure::Host(error)),
-        },
-        HostBoundaryRequest::Browser(request) => match HostDispatch::execute(
-            eval,
-            request.id,
-            HostRequestKind::Browser,
-            request.trace_payload(),
-            request.authority.clone(),
-            request.trace.clone(),
-            |operation| host.browser(operation, request),
-        )
-        .await
-        {
-            Ok(response) => response
-                .result
-                .map(|payload| {
-                    host_boundary_value_from_browser_payload(
-                        boundary.decode,
-                        eval.known_std_types.browser_session,
-                        payload,
-                    )
-                })
-                .map_err(HostBoundaryFailure::Host),
-            Err(error) => Err(HostBoundaryFailure::Host(error)),
-        },
+        HostBoundaryCompletion::Secret(completion) => {
+            match HostDispatch::finish(eval, completion) {
+                Ok(response) => response
+                    .result
+                    .map(|secret| {
+                        host_boundary_value_from_secret(
+                            boundary.decode,
+                            secret,
+                            &eval.checked.type_store,
+                        )
+                    })
+                    .map_err(HostBoundaryFailure::Host),
+                Err(error) => Err(HostBoundaryFailure::Host(error)),
+            }
+        }
+        HostBoundaryCompletion::Browser(completion) => {
+            match HostDispatch::finish(eval, completion) {
+                Ok(response) => response
+                    .result
+                    .map(|payload| {
+                        host_boundary_value_from_browser_payload(
+                            boundary.decode,
+                            eval.known_std_types.browser_session,
+                            payload,
+                        )
+                    })
+                    .map_err(HostBoundaryFailure::Host),
+                Err(error) => Err(HostBoundaryFailure::Host(error)),
+            }
+        }
     };
+    finish_result(eval, machine, boundary, key, result)
+}
+
+fn finish_result(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    boundary: PendingHostBoundary,
+    key: Option<etas_host::replay::ReplayFingerprint>,
+    result: Result<Result<InterpValue, String>, HostBoundaryFailure>,
+) -> Option<ControlSignal> {
+    let kind = host_boundary_kind(&boundary.request);
+    let occurrence = crate::orchestration::BoundaryOccurrenceId::HostRequest(
+        host_boundary_request_id(&boundary.request),
+    );
     match result {
         Ok(Ok(value)) => {
             if let HostBoundaryDecode::DirectoryListLimited {
@@ -360,6 +505,40 @@ pub(in crate::driver) async fn dispatch(
                 boundary.span,
                 format!("{kind} host boundary failed: {}", format_host_error(&error)),
             )
+        }
+    }
+}
+
+fn pending_boundary<'host, Response, Call, Wrap>(
+    boundary: PendingHostBoundary,
+    key: Option<etas_host::replay::ReplayFingerprint>,
+    pending: PendingHostOperation<Response, Call>,
+    wrap: Wrap,
+) -> HostBoundaryDispatchStart<'host>
+where
+    Response: TraceableHostResponse + 'host,
+    Call: Future<Output = Result<Response, HostError>> + 'host,
+    Wrap: FnOnce(HostCompletion<Response>) -> HostBoundaryCompletion + 'host,
+{
+    let operation = pending.operation_id();
+    HostBoundaryDispatchStart::Pending(PendingHostBoundaryDispatch {
+        boundary,
+        key,
+        operation,
+        future: Box::pin(async move { wrap(HostDispatch::poll(pending).await) }),
+    })
+}
+
+impl PendingHostBoundaryDispatch<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.operation
+    }
+
+    pub(in crate::driver) async fn poll(self) -> CompletedHostBoundaryDispatch {
+        CompletedHostBoundaryDispatch {
+            boundary: self.boundary,
+            key: self.key,
+            completion: self.future.await,
         }
     }
 }

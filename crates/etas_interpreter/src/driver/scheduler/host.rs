@@ -9,6 +9,8 @@ use super::{TaskHandle, TaskId};
 
 pub(in crate::driver) enum CompletedTaskHost {
     Console(crate::driver::dispatch::console::CompletedConsoleDispatch),
+    Command(crate::driver::dispatch::command::CompletedCommandDispatch),
+    Host(crate::driver::dispatch::host::CompletedHostBoundaryDispatch),
 }
 
 struct PendingTaskHost<'host> {
@@ -40,6 +42,34 @@ impl<'host> TaskHostReactor<'host> {
             handle,
             operation,
             future: Box::pin(async move { CompletedTaskHost::Console(pending.poll().await) }),
+        });
+        operation
+    }
+
+    pub(in crate::driver) fn start_command(
+        &mut self,
+        handle: TaskHandle,
+        pending: crate::driver::dispatch::command::PendingCommandDispatch<'host>,
+    ) -> etas_host::execution::OperationId {
+        let operation = pending.operation_id();
+        self.pending.push_back(PendingTaskHost {
+            handle,
+            operation,
+            future: Box::pin(async move { CompletedTaskHost::Command(pending.poll().await) }),
+        });
+        operation
+    }
+
+    pub(in crate::driver) fn start_host(
+        &mut self,
+        handle: TaskHandle,
+        pending: crate::driver::dispatch::host::PendingHostBoundaryDispatch<'host>,
+    ) -> etas_host::execution::OperationId {
+        let operation = pending.operation_id();
+        self.pending.push_back(PendingTaskHost {
+            handle,
+            operation,
+            future: Box::pin(async move { CompletedTaskHost::Host(pending.poll().await) }),
         });
         operation
     }
