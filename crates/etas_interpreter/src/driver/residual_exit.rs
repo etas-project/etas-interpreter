@@ -19,7 +19,7 @@ pub(super) fn finish(
         // scopes. Any still-active captured scope was abandoned, not returned.
         EvaluationOutcome::Completed(_) => ResidualExitKind::Abort,
     };
-    let log = eval.residual.log.clone();
+    let log = eval.task.residual.log.clone();
     let faults = log.finish_active(kind);
     drop(machine);
     let mut diagnostics = log.take_diagnostics();

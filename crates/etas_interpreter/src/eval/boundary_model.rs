@@ -2,8 +2,13 @@ use super::host_value::decode_checked_host_value;
 use super::*;
 use etas_types::{PrimitiveType, Type, TypeId, TypeStore};
 mod json;
+#[cfg(test)]
 use json::{
     from_host as json_host_value_to_typed_interp_value, from_serde as json_to_typed_interp_value,
+};
+use json::{
+    from_host_with_layouts as json_host_value_to_typed_interp_value_with_layouts,
+    from_serde_with_layouts as json_to_typed_interp_value_with_layouts,
 };
 
 #[cfg(test)]
@@ -110,7 +115,13 @@ impl<'a> EvalContext<'a> {
                 "typed model response from {provider}/{model_name} for {expected_name} was text and must be valid JSON: {error}; preview: {preview}"
             ))
         })?;
-        json_to_typed_interp_value(&json, expected, &self.checked.type_store).ok_or_else(|| {
+        json_to_typed_interp_value_with_layouts(
+            &json,
+            expected,
+            &self.checked.type_store,
+            &self.checked.types.enum_layouts,
+        )
+        .ok_or_else(|| {
             ModelResultError::typed_output(format!(
                 "JSON text model response from {provider}/{model_name} did not match expected output {expected_name}; preview: {preview}"
             ))
@@ -168,6 +179,9 @@ fn display_type_name(ty: Type, store: &TypeStore) -> String {
         Type::Enum(enum_ref) => enum_ref.name,
         Type::Function(_) => "Function".to_owned(),
         Type::Handler(_) => "Handler".to_owned(),
+        Type::Task(_) => "Task".to_owned(),
+        Type::SchedulerHandle => "Scheduler".to_owned(),
+        Type::Continuation(_) => "Continuation".to_owned(),
         Type::Named(named) => named.name,
         Type::Nominal(nominal) => {
             let representation = nominal
@@ -219,10 +233,13 @@ fn host_value_to_typed_interp_value(
         return decode_checked_host_value(value, expected, checked);
     }
     match value {
-        HostValue::Json(json) => {
-            json_host_value_to_typed_interp_value(&json, expected, &checked.type_store)
-                .ok_or_else(|| "structured JSON host value does not match checked type".to_owned())
-        }
+        HostValue::Json(json) => json_host_value_to_typed_interp_value_with_layouts(
+            &json,
+            expected,
+            &checked.type_store,
+            &checked.types.enum_layouts,
+        )
+        .ok_or_else(|| "structured JSON host value does not match checked type".to_owned()),
         value => decode_checked_host_value(value, expected, checked),
     }
 }

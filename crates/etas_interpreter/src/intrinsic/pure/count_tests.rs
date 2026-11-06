@@ -77,6 +77,7 @@ fn global_string_count_borrows_unicode_text_without_payload_materialization() {
 fn count_queries_borrow_all_supported_container_payloads() {
     let mut types = TypeInterner::new();
     let string = types.primitive(PrimitiveType::String);
+    let bytes = types.primitive(PrimitiveType::Bytes);
     let boolean = types.primitive(PrimitiveType::Bool);
     let size = types.primitive(PrimitiveType::USize);
     let array = types.intern(Type::Array(string));
@@ -111,6 +112,7 @@ fn count_queries_borrow_all_supported_container_payloads() {
                         .collect(),
                 )),
             ),
+            (bytes, InterpValue::Bytes(vec![7; count].into())),
         ];
         for (ty, value) in &values {
             for (id, result_type, expected) in [

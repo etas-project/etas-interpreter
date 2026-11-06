@@ -19,7 +19,7 @@ impl EvalContext<'_> {
             Continuation::AgentInference {
                 expr,
                 span,
-                model_policy: Box::new(self.model_policy.clone()),
+                model_policy: Box::new(self.task.model_policy.clone()),
             },
         )
     }
@@ -56,7 +56,7 @@ impl EvalContext<'_> {
             action: action.clone(),
             error_type: None,
             args: vec![value, InterpValue::Schema(fact.output)],
-            inference: Some(Box::new(self.model_policy.clone())),
+            inference: Some(Box::new(self.task.model_policy.clone())),
             span,
             continuation: Continuation::BlockValue,
             residual: None,

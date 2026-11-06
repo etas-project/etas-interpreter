@@ -227,6 +227,120 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
     let event = match event {
         WorkflowEvent::StepStarted(id) => json!({ "kind": "step_started", "id": id.0 }),
         WorkflowEvent::StepCompleted(id) => json!({ "kind": "step_completed", "id": id.0 }),
+        WorkflowEvent::ScopeEntered {
+            scope,
+            parent,
+            concurrency,
+        } => json!({
+            "kind": "task_scope_entered",
+            "scope": scope,
+            "parent": parent,
+            "concurrency": concurrency,
+        }),
+        WorkflowEvent::ScopeExited { scope, outcome } => json!({
+            "kind": "task_scope_exited",
+            "scope": scope,
+            "outcome": outcome,
+        }),
+        WorkflowEvent::ScopePolicy { scope, policy } => json!({
+            "kind": "task_scope_policy",
+            "scope": scope,
+            "policy": policy,
+        }),
+        WorkflowEvent::ScopeResolved {
+            scope,
+            decision,
+            task,
+        } => json!({
+            "kind": "task_scope_resolved",
+            "scope": scope,
+            "decision": decision,
+            "task": task,
+        }),
+        WorkflowEvent::ScopeBudgetObserved {
+            scope,
+            consumed_tokens,
+            consumed_cost_micros,
+        } => json!({
+            "kind": "task_scope_budget_observed",
+            "scope": scope,
+            "consumed_tokens": consumed_tokens,
+            "consumed_cost_micros": consumed_cost_micros.to_string(),
+        }),
+        WorkflowEvent::TaskStarted {
+            scope,
+            task,
+            source_index,
+        } => json!({
+            "kind": "task_started",
+            "scope": scope,
+            "task": task,
+            "source_index": source_index,
+        }),
+        WorkflowEvent::TaskSettled {
+            scope,
+            task,
+            outcome,
+        } => json!({
+            "kind": "task_settled",
+            "scope": scope,
+            "task": task,
+            "outcome": outcome,
+        }),
+        WorkflowEvent::TaskParked {
+            scope,
+            task,
+            waiting_on,
+        } => json!({
+            "kind": "task_parked",
+            "scope": scope,
+            "task": task,
+            "waiting_on": waiting_on,
+        }),
+        WorkflowEvent::TaskReady { scope, task } => json!({
+            "kind": "task_ready",
+            "scope": scope,
+            "task": task,
+        }),
+        WorkflowEvent::TaskCancellationRequested {
+            scope,
+            task,
+            reason,
+        } => json!({
+            "kind": "task_cancellation_requested",
+            "scope": scope,
+            "task": task,
+            "reason": reason,
+        }),
+        WorkflowEvent::TaskCleanupCompleted { scope, task } => json!({
+            "kind": "task_cleanup_completed",
+            "scope": scope,
+            "task": task,
+        }),
+        WorkflowEvent::ContinuationConsumed {
+            scope,
+            continuation,
+            task,
+            kind,
+        } => json!({
+            "kind": "continuation_consumed",
+            "scope": scope,
+            "continuation": continuation,
+            "task": task,
+            "consume_kind": kind,
+        }),
+        WorkflowEvent::ContinuationTransferred {
+            scope,
+            continuation,
+            task,
+            kind,
+        } => json!({
+            "kind": "continuation_transferred",
+            "scope": scope,
+            "continuation": continuation,
+            "task": task,
+            "transfer_kind": kind,
+        }),
         WorkflowEvent::HostTrace(event) => host_trace_event_json(event),
         WorkflowEvent::StorageWrite { request, evidence } => {
             json!({ "kind": "storage_write", "request": request.0, "evidence": evidence })
@@ -1281,6 +1395,7 @@ pub(super) fn handler_arm_json(handler: &ActiveHandlerArmRecord) -> Value {
         "action": handler.action,
         "action_symbol": handler.action_symbol.map(|symbol| symbol.0),
         "patterns": handler.patterns.iter().map(|pat| pat.0).collect::<Vec<_>>(),
+        "continuation": handler.continuation.map(|symbol| symbol.0),
         "body": handler.body.0,
         "scope": handler.scope.0,
         "span": span_json(handler.span),
@@ -1313,6 +1428,7 @@ pub(super) fn handler_arm_from_json(
             .into_iter()
             .map(HirPatId)
             .collect(),
+        continuation: optional_u32(value, "continuation")?.map(SymbolId),
         body: HirBlockId(required_u32(value, "body")?),
         scope: ScopeId(required_u32(value, "scope")?),
         span: span_from_json(required_obj(value, "span")?)?,

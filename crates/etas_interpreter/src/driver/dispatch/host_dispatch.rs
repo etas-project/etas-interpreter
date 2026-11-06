@@ -12,8 +12,26 @@ use crate::{eval::EvalContext, orchestration::WorkflowEvent};
 
 pub(super) struct HostDispatch;
 
+pub(in crate::driver) type ApprovalCall<'host> =
+    crate::host::HostFuture<'host, Result<ApprovalResponse, HostError>>;
+
+pub(in crate::driver) struct PendingHostOperation<Response, Call> {
+    request_id: HostRequestId,
+    operation: etas_host::execution::OperationRegistration,
+    started: Instant,
+    call: Call,
+    _response: std::marker::PhantomData<fn() -> Response>,
+}
+
+pub(in crate::driver) struct HostCompletion<Response> {
+    request_id: HostRequestId,
+    operation: etas_host::execution::OperationRegistration,
+    started: Instant,
+    result: Result<Response, HostError>,
+}
+
 impl HostDispatch {
-    pub(super) async fn execute<Response, Call, Dispatch>(
+    pub(in crate::driver) fn begin<Response, Call, Dispatch>(
         eval: &mut EvalContext<'_>,
         request_id: HostRequestId,
         kind: HostRequestKind,
@@ -21,7 +39,7 @@ impl HostDispatch {
         authority: etas_host::AuthorityContext,
         trace: TraceContext,
         call: Dispatch,
-    ) -> Result<Response, HostError>
+    ) -> Result<PendingHostOperation<Response, Call>, HostError>
     where
         Response: TraceableHostResponse,
         Call: Future<Output = Result<Response, HostError>>,
@@ -32,6 +50,7 @@ impl HostDispatch {
         let started_at_unix_micros = unix_timestamp_micros()?;
         let started = Instant::now();
         let operation = eval
+            .task
             .execution
             .register(None, Some(request_id), trace.clone())?;
         if let Err(error) = operation.begin_dispatch() {
@@ -50,7 +69,31 @@ impl HostDispatch {
                 trace,
                 started_at_unix_micros,
             }));
-        let result = match call(operation.context().clone()).await {
+        let call = call(operation.context().clone());
+        Ok(PendingHostOperation {
+            request_id,
+            operation,
+            started,
+            call,
+            _response: std::marker::PhantomData,
+        })
+    }
+
+    pub(in crate::driver) async fn poll<Response, Call>(
+        pending: PendingHostOperation<Response, Call>,
+    ) -> HostCompletion<Response>
+    where
+        Response: TraceableHostResponse,
+        Call: Future<Output = Result<Response, HostError>>,
+    {
+        let PendingHostOperation {
+            request_id,
+            operation,
+            started,
+            call,
+            _response: _,
+        } = pending;
+        let result = match call.await {
             Ok(response) => {
                 let response_id = response.response_id();
                 if response_id != request_id {
@@ -66,6 +109,27 @@ impl HostDispatch {
             }
             Err(error) => Err(error),
         };
+        HostCompletion {
+            request_id,
+            operation,
+            started,
+            result,
+        }
+    }
+
+    pub(in crate::driver) fn finish<Response>(
+        eval: &mut EvalContext<'_>,
+        completion: HostCompletion<Response>,
+    ) -> Result<Response, HostError>
+    where
+        Response: TraceableHostResponse,
+    {
+        let HostCompletion {
+            request_id,
+            operation,
+            started,
+            result,
+        } = completion;
         let outcome = match &result {
             Ok(response) => response.outcome(),
             Err(error) => HostOutcome::Failed(error.clone()),
@@ -104,8 +168,35 @@ impl HostDispatch {
                 finished_at_unix_micros,
                 duration_micros,
             }));
-        eval.execution.signal()?.check()?;
+        eval.task.execution.signal()?.check()?;
         result
+    }
+
+    pub(super) async fn execute<Response, Call, Dispatch>(
+        eval: &mut EvalContext<'_>,
+        request_id: HostRequestId,
+        kind: HostRequestKind,
+        trace_payload: HostTracePayload,
+        authority: etas_host::AuthorityContext,
+        trace: TraceContext,
+        call: Dispatch,
+    ) -> Result<Response, HostError>
+    where
+        Response: TraceableHostResponse,
+        Call: Future<Output = Result<Response, HostError>>,
+        Dispatch: FnOnce(etas_host::execution::OperationContext) -> Call,
+    {
+        let pending = Self::begin(
+            eval,
+            request_id,
+            kind,
+            trace_payload,
+            authority,
+            trace,
+            call,
+        )?;
+        let completion = Self::poll(pending).await;
+        Self::finish(eval, completion)
     }
 
     pub(super) async fn execute_approval<Call, Dispatch>(
@@ -115,7 +206,22 @@ impl HostDispatch {
         call: Dispatch,
     ) -> Result<ApprovalResponse, HostError>
     where
-        Call: Future<Output = Result<ApprovalResponse, HostError>>,
+        Call: Future<Output = Result<ApprovalResponse, HostError>> + Send,
+        Dispatch: FnOnce(etas_host::execution::OperationContext) -> Call,
+    {
+        let pending = Self::begin_approval(eval, request, authority, call)?;
+        let completion = Self::poll(pending).await;
+        Self::finish(eval, completion)
+    }
+
+    pub(in crate::driver) fn begin_approval<'host, Call, Dispatch>(
+        eval: &mut EvalContext<'_>,
+        request: etas_host::ApprovalRequest,
+        authority: etas_host::AuthorityContext,
+        call: Dispatch,
+    ) -> Result<PendingHostOperation<ApprovalResponse, ApprovalCall<'host>>, HostError>
+    where
+        Call: Future<Output = Result<ApprovalResponse, HostError>> + Send + 'host,
         Dispatch: FnOnce(etas_host::execution::OperationContext) -> Call,
     {
         let id = request.id;
@@ -131,12 +237,15 @@ impl HostDispatch {
             }));
         let expected = request;
         let budget = eval.host_budget();
-        let checked_call = |operation| async move {
-            let response = await_approval_response(call(operation), budget).await?;
-            validate_approval_response(&expected, &response)?;
-            Ok(response)
+        let checked_call = move |operation| {
+            let call = call(operation);
+            Box::pin(async move {
+                let response = await_approval_response(call, budget).await?;
+                validate_approval_response(&expected, &response)?;
+                Ok(response)
+            }) as ApprovalCall<'host>
         };
-        Self::execute(
+        Self::begin(
             eval,
             id,
             HostRequestKind::Approval,
@@ -145,7 +254,12 @@ impl HostDispatch {
             trace,
             checked_call,
         )
-        .await
+    }
+}
+
+impl<Response, Call> PendingHostOperation<Response, Call> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.operation.context().operation()
     }
 }
 

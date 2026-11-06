@@ -102,7 +102,7 @@ impl EvalMachine {
                 reason,
             )
         };
-        let scopes = ctx.handler_stack.get(range).ok_or_else(|| {
+        let scopes = ctx.task.handler_stack.get(range).ok_or_else(|| {
             fail("action handler search has an invalid dynamic scope range".into())
         })?;
         if scopes.is_empty() {
@@ -220,7 +220,7 @@ impl EvalMachine {
                     work.push(inner);
                 }
                 Continuation::CallBoundary { outer, .. }
-                | Continuation::HandlerDispatch { outer }
+                | Continuation::HandlerDispatch { outer, .. }
                 | Continuation::ReenterHandler { boundary: outer } => work.push(outer),
                 Continuation::RestoreModelPolicy { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. } => work.push(inner),
@@ -262,8 +262,8 @@ impl EvalMachine {
         };
         if !Arc::ptr_eq(ctx.checked, &scope.program.checked)
             || ctx.handler_floor != scope.handler_floor
-            || ctx.handler_stack.len() < scope.handler_floor
-            || ctx.retry_stack.len() < boundary.retry_depth
+            || ctx.task.handler_stack.len() < scope.handler_floor
+            || ctx.task.retry_stack.len() < boundary.retry_depth
         {
             return fail("action suspension disagrees with its checked dynamic scope".into());
         }
@@ -301,9 +301,9 @@ impl EvalMachine {
             scope: scope.clone(),
             frames,
             continuation: std::mem::replace(&mut pending.continuation, Continuation::BlockValue),
-            handlers: ctx.handler_stack.split_off(scope.handler_floor),
-            retries: ctx.retry_stack.split_off(retry_depth),
-            model_policy: std::mem::replace(&mut ctx.model_policy, parent_policy),
+            handlers: ctx.task.handler_stack.split_off(scope.handler_floor),
+            retries: ctx.task.retry_stack.split_off(retry_depth),
+            model_policy: std::mem::replace(&mut ctx.task.model_policy, parent_policy),
             projection: projection.clone(),
             resuming_program,
             depth: CallDepthLease {
@@ -383,14 +383,14 @@ impl EvalMachine {
         let Some(EvalFrame::ProgramReturn(boundary)) = saved.frames.first_mut() else {
             return fail("program continuation has no owning call boundary".into());
         };
-        boundary.retry_depth = ctx.retry_stack.len();
-        boundary.parent_model_policy = ctx.model_policy.clone();
+        boundary.retry_depth = ctx.task.retry_stack.len();
+        boundary.parent_model_policy = ctx.task.model_policy.clone();
         boundary.parent = self.program_scope.clone();
         boundary.parent_program = resuming_program;
-        saved.scope.handler_floor = ctx.handler_stack.len();
-        ctx.handler_stack.append(&mut saved.handlers);
-        ctx.retry_stack.append(&mut saved.retries);
-        ctx.model_policy = saved.model_policy;
+        saved.scope.handler_floor = ctx.task.handler_stack.len();
+        ctx.task.handler_stack.append(&mut saved.handlers);
+        ctx.task.retry_stack.append(&mut saved.retries);
+        ctx.task.model_policy = saved.model_policy;
         self.stack.append(&mut saved.frames);
         self.resync_residual_mirror();
         saved.depth.calls = 0;

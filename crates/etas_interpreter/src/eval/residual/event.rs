@@ -35,7 +35,7 @@ impl EvalContext<'_> {
         let span = perform.span;
         let mut captured = Vec::new();
         perform.continuation.residual_scopes(&mut captured);
-        let mirror = self.runtime.residual.mirror.clone();
+        let mirror = self.task.residual.mirror.clone();
         let mirror = mirror.borrow();
         if captured.is_empty() && !mirror.has_scopes() {
             return Ok(());
@@ -95,12 +95,12 @@ impl EvalContext<'_> {
         }
         drop(mirror);
         let id = self
-            .runtime
+            .task
             .residual
             .next_attempt()
             .map_err(|reason| violation(span, reason))?;
         let cursor = self
-            .runtime
+            .task
             .residual
             .next_cursor()
             .map_err(|reason| violation(span, reason))?;
@@ -190,7 +190,7 @@ impl EvalContext<'_> {
         span: Span,
     ) -> Result<(), ExecutionFault> {
         let cursor = self
-            .runtime
+            .task
             .residual
             .next_cursor()
             .map_err(|reason| violation(span, reason))?;

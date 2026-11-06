@@ -14,10 +14,10 @@ impl<'a> EvalContext<'a> {
         &mut self,
         checkpoint: &InterpreterCheckpoint,
     ) -> ControlSignal {
-        self.model_policy =
+        self.task.model_policy =
             crate::eval::machine::snapshot::restore_model_policy(checkpoint.model_policy.clone());
-        self.handler_stack = checkpoint.handlers.handlers.clone();
-        self.retry_stack = checkpoint.retry_state.attempts.clone();
+        self.task.handler_stack = checkpoint.handlers.handlers.clone();
+        self.task.retry_stack = checkpoint.retry_state.attempts.clone();
         let mut boundaries = std::collections::BTreeMap::new();
         for boundary in &checkpoint.completed_host_boundaries.completed {
             if boundaries
@@ -34,6 +34,7 @@ impl<'a> EvalContext<'a> {
         self.resource_versions = checkpoint.resource_versions.versions.clone();
         self.next_checkpoint = checkpoint.id.0 + 1;
         self.next_retry = self
+            .task
             .retry_stack
             .iter()
             .chain(
@@ -47,6 +48,7 @@ impl<'a> EvalContext<'a> {
             .max()
             .unwrap_or(0);
         self.next_handler_scope = self
+            .task
             .handler_stack
             .iter()
             .chain(
@@ -95,6 +97,7 @@ impl<'a> EvalContext<'a> {
             )
         };
         captured.machine.residual.exits = self
+            .task
             .residual
             .log
             .snapshot(&plan.residual)
@@ -171,12 +174,14 @@ impl<'a> EvalContext<'a> {
             entry_item: entry,
             args: captured.args,
             machine: captured.machine,
-            model_policy: crate::eval::machine::snapshot::capture_model_policy(&self.model_policy),
+            model_policy: crate::eval::machine::snapshot::capture_model_policy(
+                &self.task.model_policy,
+            ),
             handlers: HandlerSnapshot {
-                handlers: self.handler_stack.clone(),
+                handlers: self.task.handler_stack.clone(),
             },
             retry_state: RetrySnapshot {
-                attempts: self.retry_stack.clone(),
+                attempts: self.task.retry_stack.clone(),
             },
             trace: TraceSnapshot {
                 events_recorded: self.events.len() + 1,

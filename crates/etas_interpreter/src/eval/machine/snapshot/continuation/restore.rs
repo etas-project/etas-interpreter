@@ -175,7 +175,10 @@ fn restore_parent(
             span,
             outer: child,
         },
-        UnaryParent::HandlerDispatch => Continuation::HandlerDispatch { outer: child },
+        UnaryParent::HandlerDispatch => Continuation::HandlerDispatch {
+            outer: child,
+            deferred: None,
+        },
         UnaryParent::ReenterHandler => Continuation::ReenterHandler { boundary: child },
         UnaryParent::HandleBoundary {
             scope_id,

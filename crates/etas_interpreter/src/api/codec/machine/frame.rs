@@ -37,6 +37,7 @@ pub(super) fn handler_arm_snapshot(handler: &ActiveHandlerArmRecord) -> Value {
         "action": handler.action,
         "action_symbol": handler.action_symbol.map(|symbol| symbol.0),
         "patterns": handler.patterns.iter().map(|pat| pat.0).collect::<Vec<_>>(),
+        "continuation": handler.continuation.map(|symbol| symbol.0),
         "body": handler.body.0,
         "scope": handler.scope.0,
         "span": span_snapshot(handler.span),
@@ -53,6 +54,7 @@ pub(super) fn handler_arm_from_snapshot(value: &Value) -> Result<ActiveHandlerAr
             .into_iter()
             .map(HirPatId)
             .collect(),
+        continuation: optional_u32(value, "continuation")?.map(SymbolId),
         body: HirBlockId(required_u32(value, "body")?),
         scope: ScopeId(required_u32(value, "scope")?),
         span: span_from_snapshot(required(value, "span")?)?,

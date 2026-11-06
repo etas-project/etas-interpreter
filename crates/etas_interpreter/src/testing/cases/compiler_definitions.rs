@@ -217,7 +217,9 @@ flow main() -> bool {
 "#,
         &["app.main.Worker"],
     );
-    assert_eq!(checked.types.std_intrinsic_calls.len(), 1);
+    assert!(checked.types.std_intrinsic_calls.values().any(|call| {
+        call.intrinsic == etas_std::intrinsic::runtime::CODE_PARSE_BODY
+    }));
     let result = execute(
         &checked,
         RunOptions {

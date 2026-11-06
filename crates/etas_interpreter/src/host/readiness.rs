@@ -88,6 +88,8 @@ fn validate_support(
 fn supports_interpreter_feature(kind: InterpreterFeatureKind) -> bool {
     matches!(
         kind,
-        InterpreterFeatureKind::EffectHandler | InterpreterFeatureKind::Checkpoint
+        InterpreterFeatureKind::EffectHandler
+            | InterpreterFeatureKind::Checkpoint
+            | InterpreterFeatureKind::TaskScheduler
     )
 }

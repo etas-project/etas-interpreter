@@ -45,7 +45,7 @@ impl EvalMachine {
         if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
             return poll;
         }
-        let mirror = ctx.residual.mirror.clone();
+        let mirror = ctx.task.residual.mirror.clone();
         self.join_residual_mirror(&mirror);
         let Some(input) = self.input.take() else {
             return machine_fault(
@@ -145,7 +145,7 @@ impl EvalMachine {
                 ControlSignal::Checkpoint(pending) => {
                     let pending = *pending;
                     self.push_continuation_frames(pending.continuation);
-                    let counters = ctx.residual.counters();
+                    let counters = ctx.task.residual.counters();
                     let machine = match self.capture_snapshot(ctx.entry_args, counters) {
                         Ok(machine) => machine,
                         Err(message) => {
@@ -387,7 +387,7 @@ impl EvalMachine {
                         match self.has_action_handler_in(
                             ctx,
                             &pending,
-                            ctx.handler_floor..ctx.handler_stack.len(),
+                            ctx.handler_floor..ctx.task.handler_stack.len(),
                         ) {
                             Ok(false) => {
                                 match self.has_outer_action_handler(ctx, &pending) {
@@ -474,6 +474,9 @@ impl EvalMachine {
                 },
                 ControlSignal::Host(pending) => {
                     return MachinePoll::Yield(PendingBoundary::Host(pending));
+                }
+                ControlSignal::Task(pending) => {
+                    return MachinePoll::Yield(PendingBoundary::Task(pending));
                 }
                 ControlSignal::Fault(fault) => return MachinePoll::Fault(*fault),
                 ControlSignal::Cancelled(cause) => return MachinePoll::Cancelled(cause),

@@ -1043,6 +1043,7 @@ pub struct ActiveHandlerArmRecord {
     pub action: String,
     pub action_symbol: Option<SymbolId>,
     pub patterns: Vec<HirPatId>,
+    pub continuation: Option<SymbolId>,
     pub body: HirBlockId,
     pub scope: ScopeId,
     pub span: Span,

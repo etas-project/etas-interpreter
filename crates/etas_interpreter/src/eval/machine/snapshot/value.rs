@@ -98,6 +98,12 @@ impl ValueSnapshot {
                     handle.kind_name()
                 ));
             }
+            InterpValue::Task(_) | InterpValue::Scheduler(_) | InterpValue::Continuation(_) => {
+                return Err(
+                    "live task, scheduler, and continuation values require a runtime checkpoint"
+                        .into(),
+                );
+            }
             InterpValue::SyntaxBlock(_) => {
                 return Err("structured syntax must be restored from source in its locked definition environment, not a live checkpoint handle".into());
             }

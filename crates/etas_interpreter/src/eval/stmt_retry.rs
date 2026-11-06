@@ -89,11 +89,12 @@ impl<'a> EvalContext<'a> {
         message: &str,
     ) -> ControlSignal {
         if self
+            .task
             .retry_stack
             .last()
             .is_some_and(|current| current.id == state.retry.id)
         {
-            self.retry_stack.pop();
+            self.task.retry_stack.pop();
         }
         self.events
             .push(WorkflowEvent::RetryAttemptFailed(state.retry.id));
@@ -136,7 +137,7 @@ impl<'a> EvalContext<'a> {
             ordinal: attempt as u32,
         };
         self.next_retry += 1;
-        self.retry_stack.push(retry.clone());
+        self.task.retry_stack.push(retry.clone());
         self.events
             .push(WorkflowEvent::RetryAttemptStarted(retry.id));
         let signal = self.execute_block(body, frame);
@@ -153,7 +154,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => Some(self.pending_retry_signal(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => Some(self.pending_retry_signal(
                 signal,
                 RetryResumeState {
                     retry,
@@ -180,11 +182,12 @@ impl<'a> EvalContext<'a> {
             }
             ControlSignal::Fault(fault) => {
                 if self
+                    .task
                     .retry_stack
                     .last()
                     .is_some_and(|current| current.id == retry.id)
                 {
-                    self.retry_stack.pop();
+                    self.task.retry_stack.pop();
                 }
                 self.events
                     .push(WorkflowEvent::RetryAttemptFailed(retry.id));

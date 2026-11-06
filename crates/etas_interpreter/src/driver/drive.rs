@@ -10,9 +10,12 @@ use crate::{
     value::InterpValue,
 };
 
-use super::dispatch;
+use super::{
+    dispatch,
+    scheduler::{CompletedTaskHost, HostOwner},
+};
 
-fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcome {
+pub(super) fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcome {
     if let Some(diagnostic) = eval
         .diagnostics
         .iter()
@@ -104,8 +107,8 @@ pub async fn execute_entry_from_snapshot(
             ordering: Some(ordering.clone()),
             residual: Some(crate::eval::machine::snapshot::ResidualRestoreInput {
                 prepared: eval.plan.residual.clone(),
-                log: eval.residual.log.clone(),
-                limits: eval.residual.limits,
+                log: eval.task.residual.log.clone(),
+                limits: eval.task.residual.limits,
             }),
         },
     ) {
@@ -122,7 +125,7 @@ pub async fn execute_entry_from_snapshot(
         }
     };
     let residual = &checkpoint.machine.residual;
-    eval.residual.restore_counters((
+    eval.task.residual.restore_counters((
         residual.next_cursor,
         residual.next_attempt,
         residual.next_invocation,
@@ -141,13 +144,14 @@ pub async fn execute_entry_from_snapshot(
     drive_eval_signal(eval, signal, host, machine).await
 }
 
-async fn drive_eval_signal(
+async fn drive_eval_signal<'host>(
     eval: &mut EvalContext<'_>,
     mut signal: ControlSignal,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
     mut machine: EvalMachine,
 ) -> EvaluationOutcome {
     let mut machine_has_input = false;
+    let mut task_hosts = super::scheduler::TaskHostReactor::new();
     loop {
         let scope = machine.program_scope();
         let result = if let Some(scope) = scope {
@@ -169,6 +173,7 @@ async fn drive_eval_signal(
                     &mut scoped,
                     &mut signal,
                     host,
+                    &mut task_hosts,
                     &mut machine,
                     &mut machine_has_input,
                 )
@@ -179,12 +184,14 @@ async fn drive_eval_signal(
                 eval,
                 &mut signal,
                 host,
+                &mut task_hosts,
                 &mut machine,
                 &mut machine_has_input,
             )
             .await
         };
         if let ScopeOutcome::Finished(outcome) = result {
+            let outcome = super::task::settle(eval, host, &mut task_hosts, outcome).await;
             return super::residual_exit::finish(eval, Some(machine), outcome);
         }
     }
@@ -195,10 +202,11 @@ enum ScopeOutcome {
     ProgramChanged,
 }
 
-async fn drive_scope(
+async fn drive_scope<'host>(
     eval: &mut EvalContext<'_>,
     signal: &mut ControlSignal,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
+    task_hosts: &mut super::scheduler::TaskHostReactor<'host>,
     machine: &mut EvalMachine,
     machine_has_input: &mut bool,
 ) -> ScopeOutcome {
@@ -242,18 +250,60 @@ async fn drive_scope(
         }
         *signal = match boundary {
             PendingBoundary::Model(model) => {
-                if !dispatch::model::dispatch(eval, host, &model, machine).await {
-                    return ScopeOutcome::Finished(evaluation_failure(eval));
+                match dispatch::model::begin(eval, host, *model, machine).await {
+                    dispatch::model::ModelDispatchStart::Complete(true) => {
+                        *machine_has_input = true;
+                        continue;
+                    }
+                    dispatch::model::ModelDispatchStart::Complete(false) => {
+                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                    }
+                    dispatch::model::ModelDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        let registered = task_hosts.start_model(HostOwner::Root, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        let completed =
+                            match super::task::await_root_host(eval, host, task_hosts).await {
+                                Ok(CompletedTaskHost::Model(completed)) => completed,
+                                Ok(_) => panic!("root model wait received another host boundary"),
+                                Err(outcome) => return ScopeOutcome::Finished(outcome),
+                            };
+                        dispatch::model::finish(eval, machine, completed);
+                        *machine_has_input = true;
+                        continue;
+                    }
                 }
-                *machine_has_input = true;
-                continue;
             }
             PendingBoundary::Tool(tool) => {
-                if !dispatch::tool::dispatch(eval, host, *tool, machine).await {
-                    return ScopeOutcome::Finished(evaluation_failure(eval));
+                match dispatch::tool::begin(eval, host, *tool, machine).await {
+                    dispatch::tool::ToolDispatchStart::Complete(true) => {
+                        *machine_has_input = true;
+                        continue;
+                    }
+                    dispatch::tool::ToolDispatchStart::Complete(false) => {
+                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                    }
+                    dispatch::tool::ToolDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        let registered = task_hosts.start_tool(HostOwner::Root, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        let completed =
+                            match super::task::await_root_host(eval, host, task_hosts).await {
+                                Ok(CompletedTaskHost::Tool(completed)) => completed,
+                                Ok(_) => panic!("root tool wait received another host boundary"),
+                                Err(outcome) => return ScopeOutcome::Finished(outcome),
+                            };
+                        dispatch::tool::finish(eval, machine, completed);
+                        *machine_has_input = true;
+                        continue;
+                    }
                 }
-                *machine_has_input = true;
-                continue;
             }
             PendingBoundary::Perform(perform) => {
                 // The committed residual permit is revalidated and consumed
@@ -264,18 +314,77 @@ async fn drive_scope(
                         crate::api::RunFailure::ExecutionFault(fault),
                     ));
                 }
-                if let Some(signal) = eval.default_agent_inference(&perform) {
+                if let Some(target) = super::task::awaited_task(&perform) {
+                    match super::task::await_from_root(
+                        eval,
+                        host,
+                        task_hosts,
+                        target,
+                        perform.continuation,
+                    )
+                    .await
+                    {
+                        Ok(signal) => signal,
+                        Err(outcome) => return ScopeOutcome::Finished(outcome),
+                    }
+                } else if let Some(signal) = eval.default_agent_inference(&perform) {
                     signal
                 } else {
-                    match dispatch::compiler::dispatch(eval, host, *perform).await {
-                        Ok(signal) => signal,
-                        Err(perform) => {
-                            let Some(signal) =
-                                dispatch::approval::dispatch(eval, host, *perform, machine).await
-                            else {
-                                return ScopeOutcome::Finished(evaluation_failure(eval));
-                            };
-                            signal
+                    match dispatch::compiler::begin(eval, host, *perform).await {
+                        dispatch::compiler::CompilerDispatchStart::Complete(signal) => signal,
+                        dispatch::compiler::CompilerDispatchStart::NotCompiler(perform) => {
+                            match dispatch::approval::begin(eval, host, *perform, machine) {
+                                dispatch::approval::ApprovalDispatchStart::Complete(Some(
+                                    signal,
+                                )) => signal,
+                                dispatch::approval::ApprovalDispatchStart::Complete(None) => {
+                                    return ScopeOutcome::Finished(evaluation_failure(eval));
+                                }
+                                dispatch::approval::ApprovalDispatchStart::Pending(pending) => {
+                                    let operation = pending.operation_id();
+                                    let registered =
+                                        task_hosts.start_approval(HostOwner::Root, pending);
+                                    assert_eq!(
+                                        registered, operation,
+                                        "registered host operation changed id"
+                                    );
+                                    let completed = match super::task::await_root_host(
+                                        eval, host, task_hosts,
+                                    )
+                                    .await
+                                    {
+                                        Ok(CompletedTaskHost::Approval(completed)) => completed,
+                                        Ok(_) => {
+                                            panic!(
+                                                "root approval wait received another host boundary"
+                                            )
+                                        }
+                                        Err(outcome) => return ScopeOutcome::Finished(outcome),
+                                    };
+                                    let Some(signal) = dispatch::approval::finish(eval, completed)
+                                    else {
+                                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                                    };
+                                    signal
+                                }
+                            }
+                        }
+                        dispatch::compiler::CompilerDispatchStart::Pending(pending) => {
+                            let operation = pending.operation_id();
+                            let registered = task_hosts.start_compiler(HostOwner::Root, pending);
+                            assert_eq!(
+                                registered, operation,
+                                "registered host operation changed id"
+                            );
+                            let completed =
+                                match super::task::await_root_host(eval, host, task_hosts).await {
+                                    Ok(CompletedTaskHost::Compiler(completed)) => completed,
+                                    Ok(_) => {
+                                        panic!("root compiler wait received another host boundary")
+                                    }
+                                    Err(outcome) => return ScopeOutcome::Finished(outcome),
+                                };
+                            dispatch::compiler::finish(eval, completed)
                         }
                     }
                 }
@@ -291,24 +400,94 @@ async fn drive_scope(
                 dispatch::session::dispatch(eval, host, *session).await
             }
             PendingBoundary::Console(console) => {
-                let Some(signal) = dispatch::console::dispatch(eval, host, *console).await else {
-                    return ScopeOutcome::Finished(evaluation_failure(eval));
-                };
-                signal
+                match dispatch::console::begin(eval, host, *console).await {
+                    dispatch::console::ConsoleDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::console::ConsoleDispatchStart::Complete(None) => {
+                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                    }
+                    dispatch::console::ConsoleDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        let registered = task_hosts.start_console(HostOwner::Root, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        let completed =
+                            match super::task::await_root_host(eval, host, task_hosts).await {
+                                Ok(CompletedTaskHost::Console(completed)) => completed,
+                                Ok(_) => panic!("root console wait received another host boundary"),
+                                Err(outcome) => return ScopeOutcome::Finished(outcome),
+                            };
+                        let Some(signal) = dispatch::console::finish(eval, completed) else {
+                            return ScopeOutcome::Finished(evaluation_failure(eval));
+                        };
+                        signal
+                    }
+                }
             }
             PendingBoundary::Command(command) => {
-                let Some(signal) = dispatch::command::dispatch(eval, host, *command, machine).await
-                else {
-                    return ScopeOutcome::Finished(evaluation_failure(eval));
-                };
-                signal
+                match dispatch::command::begin(eval, host, *command, machine).await {
+                    dispatch::command::CommandDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::command::CommandDispatchStart::Complete(None) => {
+                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                    }
+                    dispatch::command::CommandDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        let registered = task_hosts.start_command(HostOwner::Root, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        let completed =
+                            match super::task::await_root_host(eval, host, task_hosts).await {
+                                Ok(CompletedTaskHost::Command(completed)) => completed,
+                                Ok(_) => panic!("root command wait received another host boundary"),
+                                Err(outcome) => return ScopeOutcome::Finished(outcome),
+                            };
+                        let Some(signal) = dispatch::command::finish(eval, machine, completed)
+                        else {
+                            return ScopeOutcome::Finished(evaluation_failure(eval));
+                        };
+                        signal
+                    }
+                }
             }
             PendingBoundary::Host(boundary) => {
-                let Some(signal) = dispatch::host::dispatch(eval, host, *boundary, machine).await
-                else {
-                    return ScopeOutcome::Finished(evaluation_failure(eval));
-                };
-                signal
+                match dispatch::host::begin(eval, host, *boundary, machine).await {
+                    dispatch::host::HostBoundaryDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::host::HostBoundaryDispatchStart::Complete(None) => {
+                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                    }
+                    dispatch::host::HostBoundaryDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        let registered = task_hosts.start_host(HostOwner::Root, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        let completed =
+                            match super::task::await_root_host(eval, host, task_hosts).await {
+                                Ok(CompletedTaskHost::Host(completed)) => completed,
+                                Ok(_) => panic!("root host wait received another host boundary"),
+                                Err(outcome) => return ScopeOutcome::Finished(outcome),
+                            };
+                        let Some(signal) = dispatch::host::finish(eval, machine, completed) else {
+                            return ScopeOutcome::Finished(evaluation_failure(eval));
+                        };
+                        signal
+                    }
+                }
+            }
+            PendingBoundary::Task(control) => {
+                match super::task::control_from_root(eval, host, task_hosts, machine, *control)
+                    .await
+                {
+                    Ok(()) => {
+                        *machine_has_input = true;
+                        continue;
+                    }
+                    Err(outcome) => return ScopeOutcome::Finished(outcome),
+                }
             }
         };
     }

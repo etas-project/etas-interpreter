@@ -277,6 +277,11 @@ fn write<'a>(
         InterpValue::HostHandle(handle) => {
             *slot = json!({"kind":"host_handle","handle_kind":handle.kind_name()})
         }
+        InterpValue::Task(_) | InterpValue::Scheduler(_) | InterpValue::Continuation(_) => {
+            return Err(InterpreterCodecError::new(
+                "live task, scheduler, and continuation values require a runtime checkpoint",
+            ));
+        }
         InterpValue::ResourceHandle {
             name,
             stable_id,

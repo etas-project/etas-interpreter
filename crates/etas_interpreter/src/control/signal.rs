@@ -31,6 +31,7 @@ pub enum ControlSignal {
     Command(Box<PendingCommand>),
     Model(Box<PendingModel>),
     Host(Box<PendingHostBoundary>),
+    Task(Box<PendingTaskControl>),
     Resume(InterpValue),
     Finish(InterpValue),
     Fault(Box<crate::control::ExecutionFault>),
@@ -126,6 +127,10 @@ impl ControlSignal {
     pub fn pending_host(pending: PendingHostBoundary) -> Self {
         Self::Host(Box::new(pending))
     }
+
+    pub(crate) fn pending_task(pending: PendingTaskControl) -> Self {
+        Self::Task(Box::new(pending))
+    }
 }
 
 #[derive(Clone, Debug)]
@@ -194,8 +199,35 @@ impl ControlSignal {
             Self::Command(value) => value.span,
             Self::Model(value) => value.span,
             Self::Host(value) => value.span,
+            Self::Task(value) => value.span(),
             _ => return None,
         })
+    }
+}
+
+#[derive(Clone, Debug)]
+pub enum PendingTaskControl {
+    Run {
+        scope: crate::driver::scheduler::TaskScopeId,
+        span: Span,
+    },
+    Requeue {
+        token: crate::value::ContinuationTokenValue,
+        value: InterpValue,
+        span: Span,
+    },
+    Park {
+        task: crate::driver::scheduler::TaskHandle,
+        token: crate::value::ContinuationTokenValue,
+        span: Span,
+    },
+}
+
+impl PendingTaskControl {
+    pub(crate) fn span(&self) -> Span {
+        match self {
+            Self::Run { span, .. } | Self::Requeue { span, .. } | Self::Park { span, .. } => *span,
+        }
     }
 }
 

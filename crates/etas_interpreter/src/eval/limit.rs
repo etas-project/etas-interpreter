@@ -122,11 +122,20 @@ impl<'a> EvalContext<'a> {
                 ));
             }
         };
+        if kind == StdLimitKind::Concurrency
+            && (value == 0 || value > crate::driver::scheduler::MAX_CONCURRENCY as u64)
+        {
+            return Err(invalid_limit(
+                &span,
+                "Concurrency must be positive and within the runtime implementation ceiling",
+            ));
+        }
         Ok(match kind {
             StdLimitKind::Iterations
             | StdLimitKind::Tokens
             | StdLimitKind::ContextTokens
-            | StdLimitKind::Attempts => RuntimeLimitValue::Count(value),
+            | StdLimitKind::Attempts
+            | StdLimitKind::Concurrency => RuntimeLimitValue::Count(value),
             StdLimitKind::WallTime => RuntimeLimitValue::DurationMillis(value),
             StdLimitKind::Cost => RuntimeLimitValue::MoneyMicros {
                 amount: u128::from(value),
@@ -159,7 +168,10 @@ impl<'a> EvalContext<'a> {
                     currency: currency.clone(),
                 });
             }
-            (StdLimitKind::Attempts | StdLimitKind::Iterations, RuntimeLimitValue::Count(_)) => {
+            (
+                StdLimitKind::Attempts | StdLimitKind::Iterations | StdLimitKind::Concurrency,
+                RuntimeLimitValue::Count(_),
+            ) => {
                 return Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::InvalidArguments,
                     limit.span,

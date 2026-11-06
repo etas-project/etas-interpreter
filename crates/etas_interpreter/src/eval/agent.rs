@@ -359,7 +359,9 @@ impl<'a> EvalContext<'a> {
             for limit in limits {
                 let limit = self.resolve_limit_expr(limit)?;
                 match limit.kind {
-                    StdLimitKind::Attempts | StdLimitKind::Iterations => {
+                    StdLimitKind::Attempts
+                    | StdLimitKind::Iterations
+                    | StdLimitKind::Concurrency => {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             limit.span,
@@ -956,6 +958,15 @@ impl<'a> EvalContext<'a> {
                     fields: vec![self.host_schema_for_type(err, span, depth + 1)?],
                 },
             ])),
+            Type::Enum(_) => self.host_schema_for_enum(ty, &[], span, depth),
+            Type::Applied { constructor, args }
+                if matches!(
+                    self.checked.type_store.get(TypeId(constructor.0)),
+                    Some(Type::Enum(_))
+                ) =>
+            {
+                self.host_schema_for_enum(TypeId(constructor.0), &args, span, depth)
+            }
             Type::Record(record) => {
                 let mut fields = Vec::with_capacity(record.fields.len());
                 for field in record.fields {
@@ -1011,6 +1022,61 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    fn host_schema_for_enum(
+        &self,
+        constructor: TypeId,
+        args: &[TypeId],
+        span: Span,
+        depth: usize,
+    ) -> Result<HostSchema, ExecutionFault> {
+        let Some(layout) = self.checked.types.enum_layouts.get(&constructor) else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "tool schema enum is missing its checked variant layout",
+            ));
+        };
+        if layout.type_params.len() != args.len() {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "tool schema enum arguments do not match its checked variant layout",
+            ));
+        }
+        let substitutions = layout
+            .type_params
+            .iter()
+            .cloned()
+            .zip(args.iter().copied())
+            .collect::<std::collections::HashMap<_, _>>();
+        let mut variants = Vec::with_capacity(layout.variants.len());
+        for variant in &layout.variants {
+            let mut fields = Vec::with_capacity(variant.fields.len());
+            for field in &variant.fields {
+                let field = etas_types::substitute_named_params_in_store(
+                    &self.checked.type_store,
+                    *field,
+                    &substitutions,
+                )
+                .map_err(|error| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        format!(
+                            "tool schema enum payload was not materialized by the checked pipeline: {error}"
+                        ),
+                    )
+                })?;
+                fields.push(self.host_schema_for_type(field, span, depth + 1)?);
+            }
+            variants.push(HostVariantSchema {
+                name: variant.name.clone(),
+                fields,
+            });
+        }
+        Ok(HostSchema::Variant(variants))
+    }
+
     fn host_schema_for_primitive(primitive: PrimitiveType) -> HostSchema {
         match primitive {
             PrimitiveType::Bool => HostSchema::Bool,
@@ -1041,7 +1107,7 @@ impl<'a> EvalContext<'a> {
     }
 
     fn agent_model_decode(&self, output_type: TypeId) -> ModelDecode {
-        match self.model_policy.response_decode {
+        match self.task.model_policy.response_decode {
             crate::api::ModelResponseDecodePolicy::ModelResponse => ModelDecode::ModelResponse,
             crate::api::ModelResponseDecodePolicy::String => {
                 if self.type_is_string(output_type) {

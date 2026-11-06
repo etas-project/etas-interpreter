@@ -142,6 +142,7 @@ fn retry_lookup_preserves_chain_order_and_boundary_opacity() {
             chain(
                 Continuation::HandlerDispatch {
                     outer: retry(1).into(),
+                    deferred: None,
                 },
                 retry(2),
             ),

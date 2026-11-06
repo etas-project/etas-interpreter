@@ -40,17 +40,17 @@ impl EvalMachine {
                 args: ctx.entry_args.to_vec(),
             });
         }
-        let handler_floor = ctx.handler_stack.len();
+        let handler_floor = ctx.task.handler_stack.len();
         let parent = self.program_scope.clone();
         self.push_frame(EvalFrame::ProgramReturn(Box::new(ProgramReturnFrame {
             site,
             parent,
             parent_program: source,
-            parent_model_policy: ctx.model_policy.clone(),
+            parent_model_policy: ctx.task.model_policy.clone(),
             call: call.clone(),
             outer,
             span,
-            retry_depth: ctx.retry_stack.len(),
+            retry_depth: ctx.task.retry_stack.len(),
         })));
         self.program_scope = Some(ProgramScope {
             program: destination,
@@ -106,7 +106,7 @@ impl EvalMachine {
             Ok(value) => value,
             Err(reason) => return fail(reason),
         };
-        ctx.model_policy = frame.parent_model_policy;
+        ctx.task.model_policy = frame.parent_model_policy;
         self.program_scope = frame.parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
             PendingContinuation {
@@ -148,7 +148,7 @@ impl EvalMachine {
         // resumed, and no source-program HIR IDs may enter the parent scope.
         let error = PendingPerform::typed_error(ty, payload, frame.span, Continuation::BlockValue);
         self.push_continuation_frames(frame.outer);
-        ctx.model_policy = frame.parent_model_policy;
+        ctx.task.model_policy = frame.parent_model_policy;
         self.program_scope = frame.parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_perform(error)));
         MachinePoll::ProgramChanged
@@ -168,8 +168,8 @@ impl EvalMachine {
             || !Arc::ptr_eq(&scope.program.plan, &destination.plan)
             || !Arc::ptr_eq(ctx.checked, &destination.checked)
             || ctx.handler_floor != scope.handler_floor
-            || ctx.handler_stack.len() != ctx.handler_floor
-            || ctx.retry_stack.len() != frame.retry_depth
+            || ctx.task.handler_stack.len() != ctx.handler_floor
+            || ctx.task.retry_stack.len() != frame.retry_depth
         {
             return Err(
                 "scoped exit disagrees with its program or dynamic handler/retry scope".into(),

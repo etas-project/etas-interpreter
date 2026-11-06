@@ -193,6 +193,44 @@ flow main() -> i32 ![Console, Error<IOError>] {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn checked_bytes_len_and_is_empty_execute_for_zero_and_nonzero_values() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.codec.text.utf8_encode;
+flow byte_count<T>(value: T, bytes: bytes) -> usize { return bytes.len(); }
+flow main() -> bool {
+    let empty = utf8_encode("");
+    let body = utf8_encode("abc");
+    let start: i32 = 1;
+    let end: i32 = 3;
+    let suffix = body[start, end);
+    return empty.len() == 0 && empty.is_empty()
+        && byte_count<i32>(7, body) == 3 && !body.is_empty()
+        && suffix.len() == 2;
+}
+"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await
+        .expect("execution lifecycle");
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.value().cloned(),
+        Some(value::InterpValue::Bool(true))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn forwarded_handler_is_suspended_during_outer_arm_and_restored_after_checkpoint() {
     for (completion, expected, output, resumed_output) in [
         (

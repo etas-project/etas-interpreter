@@ -162,7 +162,8 @@ impl<'a> EvalContext<'a> {
                         | ControlSignal::Console(_)
                         | ControlSignal::Command(_)
                         | ControlSignal::Model(_)
-                        | ControlSignal::Host(_)) => {
+                        | ControlSignal::Host(_)
+                        | ControlSignal::Task(_)) => {
                             return Err(Box::new(self.assign_target_index_signal(
                                 signal,
                                 AssignTargetIndexResume {

@@ -1,6 +1,6 @@
 use etas_host::{
     HostRequestKind, HostTraceRequest, HostValue, PolicySubject,
-    console::{ConsoleOperation, ConsoleRequest},
+    console::{ConsoleOperation, ConsoleRequest, ConsoleResponse},
 };
 
 use crate::{
@@ -9,16 +9,41 @@ use crate::{
     host::HostServices,
 };
 
-use super::{host_dispatch::HostDispatch, policy::evaluate_before_boundary};
+use super::{
+    host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation},
+    policy::evaluate_before_boundary,
+};
 
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+type ConsoleCall<'host> =
+    crate::host::HostFuture<'host, Result<ConsoleResponse, etas_host::HostError>>;
+
+pub(in crate::driver) enum ConsoleDispatchStart<'host> {
+    Complete(Option<ControlSignal>),
+    Pending(PendingConsoleDispatch<'host>),
+}
+
+pub(in crate::driver) struct PendingConsoleDispatch<'host> {
     console: PendingConsole,
-) -> Option<ControlSignal> {
+    key: etas_host::replay::ReplayFingerprint,
+    pending: PendingHostOperation<ConsoleResponse, ConsoleCall<'host>>,
+}
+
+pub(in crate::driver) struct CompletedConsoleDispatch {
+    console: PendingConsole,
+    key: etas_host::replay::ReplayFingerprint,
+    completion: HostCompletion<ConsoleResponse>,
+}
+
+pub(in crate::driver) async fn begin<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    console: PendingConsole,
+) -> ConsoleDispatchStart<'host> {
     let key = match eval.console_boundary_key(&console) {
         Ok(key) => key,
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(fault) => {
+            return ConsoleDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(fault))));
+        }
     };
     match eval.completed_host_boundary_result(
         &crate::orchestration::BoundaryOccurrenceId::HostRequest(console.request.id),
@@ -26,12 +51,20 @@ pub(in crate::driver) async fn dispatch(
         &key,
         console.span,
     ) {
-        Ok(Some(value)) => return Some(eval.resume_console_signal(console, value)),
+        Ok(Some(value)) => {
+            return ConsoleDispatchStart::Complete(Some(
+                eval.resume_console_signal(console, value),
+            ));
+        }
         Ok(None) => (),
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(fault) => {
+            return ConsoleDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(fault))));
+        }
     }
     if let Err(error) = console.request.budget.check_time() {
-        return Some(eval.console_host_error_signal(console, error));
+        return ConsoleDispatchStart::Complete(Some(
+            eval.console_host_error_signal(console, error),
+        ));
     }
     let request_id = console.request.id;
     let trace_subject = policy_subject(&console.request);
@@ -45,9 +78,9 @@ pub(in crate::driver) async fn dispatch(
     )
     .await
     {
-        return None;
+        return ConsoleDispatchStart::Complete(None);
     }
-    match HostDispatch::execute(
+    match HostDispatch::begin(
         eval,
         request_id,
         HostRequestKind::Console,
@@ -55,9 +88,29 @@ pub(in crate::driver) async fn dispatch(
         console.request.authority.clone(),
         console.request.trace.clone(),
         |operation| host.console(operation, console.request.clone()),
-    )
-    .await
-    {
+    ) {
+        Ok(pending) => ConsoleDispatchStart::Pending(PendingConsoleDispatch {
+            console,
+            key,
+            pending,
+        }),
+        Err(error) => {
+            ConsoleDispatchStart::Complete(Some(eval.console_host_error_signal(console, error)))
+        }
+    }
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    completed: CompletedConsoleDispatch,
+) -> Option<ControlSignal> {
+    let CompletedConsoleDispatch {
+        console,
+        key,
+        completion,
+    } = completed;
+    let request_id = console.request.id;
+    match HostDispatch::finish(eval, completion) {
         Ok(response) => match eval.console_result_value(&console, response.result) {
             Ok(value) => {
                 if let Err(fault) = eval.record_completed_host_boundary(
@@ -74,6 +127,20 @@ pub(in crate::driver) async fn dispatch(
             Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),
         },
         Err(error) => Some(eval.console_host_error_signal(console, error)),
+    }
+}
+
+impl PendingConsoleDispatch<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.pending.operation_id()
+    }
+
+    pub(in crate::driver) async fn poll(self) -> CompletedConsoleDispatch {
+        CompletedConsoleDispatch {
+            console: self.console,
+            key: self.key,
+            completion: HostDispatch::poll(self.pending).await,
+        }
     }
 }
 

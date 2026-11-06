@@ -1,5 +1,6 @@
 use etas_host::{
-    HostError, HostErrorCode, HostRequestKind, HostTraceRequest, HostValue, PolicySubject,
+    CostBudget, CostReservation, HostError, HostErrorCode, HostRequestKind, HostTraceRequest,
+    HostValue, ModelResponse, PolicySubject, TokenReservation,
 };
 
 use crate::{
@@ -8,16 +9,41 @@ use crate::{
 };
 
 use super::{
-    host_dispatch::HostDispatch,
+    host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation},
     policy::{boundary_policy_ref_for, evaluate_before_boundary},
 };
 
-pub(in crate::driver) async fn dispatch(
+type ModelCall<'host> = crate::host::HostFuture<'host, Result<ModelResponse, etas_host::HostError>>;
+
+pub(in crate::driver) enum ModelDispatchStart<'host> {
+    Complete(bool),
+    Pending(PendingModelHostDispatch<'host>),
+}
+
+struct ModelAccounting {
+    pending: crate::control::PendingModel,
+    remaining_tokens: Option<u64>,
+    remaining_cost: Option<CostBudget>,
+    token_reservation: TokenReservation,
+    cost_reservation: Option<CostReservation>,
+}
+
+pub(in crate::driver) struct PendingModelHostDispatch<'host> {
+    accounting: ModelAccounting,
+    pending: PendingHostOperation<ModelResponse, ModelCall<'host>>,
+}
+
+pub(in crate::driver) struct CompletedModelHostDispatch {
+    accounting: ModelAccounting,
+    completion: HostCompletion<ModelResponse>,
+}
+
+pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    pending: &crate::control::PendingModel,
+    host: &'host dyn HostServices,
+    pending: crate::control::PendingModel,
     machine: &mut EvalMachine,
-) -> bool {
+) -> ModelDispatchStart<'host> {
     let policy_ref = boundary_policy_ref_for(eval, pending.request.policy_ref.clone());
     let trace_subject = policy_subject(&pending.request);
     if !evaluate_before_boundary(
@@ -30,20 +56,27 @@ pub(in crate::driver) async fn dispatch(
     )
     .await
     {
-        return false;
+        return ModelDispatchStart::Complete(false);
     }
 
     if let Err(error) = pending.request.budget.check_time() {
         machine.resume_model_result(Err(error));
-        return true;
+        return ModelDispatchStart::Complete(true);
     }
     let remaining_tokens = match pending.request.budget.remaining_tokens() {
         Ok(remaining) => remaining,
         Err(error) => {
             machine.resume_model_result(Err(error));
-            return true;
+            return ModelDispatchStart::Complete(true);
         }
     };
+    if remaining_tokens == Some(0) {
+        machine.resume_model_result(Err(HostError::new(
+            HostErrorCode::BudgetExceeded,
+            "run-owned execution token budget is exhausted",
+        )));
+        return ModelDispatchStart::Complete(true);
+    }
     let reservation_amount = remaining_tokens
         .or(pending.request.options.max_output_tokens)
         .unwrap_or(0);
@@ -51,7 +84,7 @@ pub(in crate::driver) async fn dispatch(
         Ok(reservation) => reservation,
         Err(error) => {
             machine.resume_model_result(Err(error));
-            return true;
+            return ModelDispatchStart::Complete(true);
         }
     };
     let remaining_cost = match pending.request.budget.remaining_cost() {
@@ -64,7 +97,7 @@ pub(in crate::driver) async fn dispatch(
                 .err()
                 .unwrap_or(error);
             machine.resume_model_result(Err(error));
-            return true;
+            return ModelDispatchStart::Complete(true);
         }
     };
     let cost_reservation = match remaining_cost.as_ref() {
@@ -82,7 +115,7 @@ pub(in crate::driver) async fn dispatch(
                     .err()
                     .unwrap_or(error);
                 machine.resume_model_result(Err(error));
-                return true;
+                return ModelDispatchStart::Complete(true);
             }
         },
         None => None,
@@ -90,7 +123,7 @@ pub(in crate::driver) async fn dispatch(
 
     let request_id = pending.request.id;
     let trace_payload = pending.request.trace_payload();
-    let result = match HostDispatch::execute(
+    match HostDispatch::begin(
         eval,
         request_id,
         HostRequestKind::Model,
@@ -98,9 +131,41 @@ pub(in crate::driver) async fn dispatch(
         pending.request.authority.clone(),
         pending.request.trace.clone(),
         |operation| host.model(operation, pending.request.clone()),
-    )
-    .await
-    {
+    ) {
+        Ok(host_pending) => ModelDispatchStart::Pending(PendingModelHostDispatch {
+            accounting: ModelAccounting {
+                pending,
+                remaining_tokens,
+                remaining_cost,
+                token_reservation: reservation,
+                cost_reservation,
+            },
+            pending: host_pending,
+        }),
+        Err(error) => {
+            let release = pending
+                .request
+                .budget
+                .release_usage(reservation, cost_reservation);
+            machine.resume_model_result(Err(release.err().unwrap_or(error)));
+            ModelDispatchStart::Complete(true)
+        }
+    }
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    completed: CompletedModelHostDispatch,
+) {
+    let ModelAccounting {
+        pending,
+        remaining_tokens,
+        remaining_cost,
+        token_reservation: reservation,
+        cost_reservation,
+    } = completed.accounting;
+    let result = match HostDispatch::finish(eval, completed.completion) {
         Ok(response) => {
             let consumed = match response.usage.as_ref() {
                 Some(usage) => usage
@@ -166,7 +231,19 @@ pub(in crate::driver) async fn dispatch(
         }
     };
     machine.resume_model_result(result);
-    true
+}
+
+impl PendingModelHostDispatch<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.pending.operation_id()
+    }
+
+    pub(in crate::driver) async fn poll(self) -> CompletedModelHostDispatch {
+        CompletedModelHostDispatch {
+            accounting: self.accounting,
+            completion: HostDispatch::poll(self.pending).await,
+        }
+    }
 }
 
 fn policy_subject(request: &etas_host::ModelRequest) -> PolicySubject {

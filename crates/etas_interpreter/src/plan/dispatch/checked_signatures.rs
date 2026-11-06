@@ -31,15 +31,33 @@ pub(super) fn lower(
             .std_registry
             .lookup_qualified(&fact.qualified_path)
             .ok_or("checked std method descriptor is absent from the canonical registry")?;
-        let StdDecl::Flow(_) = &symbol.decl else {
-            return Err("checked std method is not a flow".into());
+        let (source, declared_type_params) = match &symbol.decl {
+            StdDecl::Flow(_) => {
+                let flow = project
+                    .std_registry
+                    .flow_declarations(symbol.id)
+                    .nth(fact.overload)
+                    .ok_or("checked standard call refers to an absent overload")?;
+                (
+                    flow.source_method.as_ref(),
+                    flow.type_params
+                        .iter()
+                        .map(|param| &param.name)
+                        .collect::<Vec<_>>(),
+                )
+            }
+            StdDecl::Type(declaration) if fact.overload == 0 => (
+                None,
+                declaration.params.iter().map(|param| &param.name).collect(),
+            ),
+            StdDecl::Requirement(_) if fact.overload == 0 => (None, Vec::new()),
+            _ => {
+                return Err(format!(
+                    "checked std intrinsic `{}` has no callable declaration",
+                    fact.qualified_path.join(".")
+                ));
+            }
         };
-        let flow = project
-            .std_registry
-            .flow_declarations(symbol.id)
-            .nth(fact.overload)
-            .ok_or("checked standard call refers to an absent overload")?;
-        let source = flow.source_method.as_ref();
         let descriptor = symbol
             .intrinsic
             .as_ref()
@@ -50,7 +68,7 @@ pub(super) fn lower(
         };
         let type_member =
             source.is_some_and(|source| source.kind == etas_std::FlowSourceMethodKind::TypeMember);
-        let (receiver, method, args) = match project.hir.exprs.get(*expr) {
+        let (receiver, args) = match project.hir.exprs.get(*expr) {
             Some(HirExpr::MethodCall {
                 receiver,
                 method,
@@ -72,7 +90,7 @@ pub(super) fn lower(
                         validate_collection_subject(project, collection, subject)?;
                     }
                 }
-                ((!type_member).then_some(*receiver), method, args)
+                ((!type_member).then_some(*receiver), args)
             }
             Some(HirExpr::Call { callee, args, .. }) if type_member => {
                 let Some(HirExpr::Path(path)) = project.hir.exprs.get(*callee) else {
@@ -84,6 +102,9 @@ pub(super) fn lower(
                 let [method] = partial.remaining.as_slice() else {
                     return Err("checked type member call has an invalid member path".into());
                 };
+                if source.is_none_or(|source| source.name != *method) {
+                    return Err("checked type member name differs from its selected declaration".into());
+                }
                 if method_fact.is_none() {
                     validate_collection_subject(
                         project,
@@ -93,18 +114,22 @@ pub(super) fn lower(
                             .ok_or("checked type member has no resolved subject")?,
                     )?;
                 }
-                (None, method, args)
+                (None, args)
             }
-            Some(HirExpr::Call { args, .. }) if !type_member => (None, &symbol.name, args),
+            Some(HirExpr::Call { args, .. }) if !type_member => (None, args),
             _ => {
                 return Err(
                     "checked std method does not refer to its checked call expression".into(),
                 );
             }
         };
-        if descriptor.id.0 != fact.intrinsic || source.is_some_and(|source| source.name != *method)
-        {
-            return Err("checked std method identity differs from its registry descriptor".into());
+        if descriptor.id.0 != fact.intrinsic {
+            return Err(format!(
+                "checked std method `{}` identity differs from its registry descriptor: checked intrinsic {}, registry intrinsic {}",
+                fact.qualified_path.join("."),
+                fact.intrinsic,
+                descriptor.id.0,
+            ));
         }
         handlers.validate_descriptor(descriptor)?;
         let Some(etas_types::Type::Function(signature)) =
@@ -121,16 +146,13 @@ pub(super) fn lower(
                 .iter()
                 .map(|param| &param.name)
                 .collect::<Vec<_>>()
-                != flow
-                    .type_params
-                    .iter()
+                != declared_type_params
+                    .into_iter()
                     .filter(|param| {
                         method_fact.is_none()
-                            || source.is_none_or(|method| {
-                                !method.owner_type_params.contains(&param.name)
-                            })
+                            || source
+                                .is_none_or(|method| !method.owner_type_params.contains(*param))
                     })
-                    .map(|param| &param.name)
                     .collect::<Vec<_>>()
         {
             return Err(

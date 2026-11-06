@@ -22,6 +22,7 @@ mod callee;
 mod checked_type;
 mod checkpoint;
 mod code;
+pub(crate) use code::CompilerInvocation;
 mod const_expr;
 mod continuation;
 mod existential;
@@ -59,7 +60,7 @@ mod reflection;
 pub(crate) mod replay;
 pub(crate) mod residual;
 mod run_state;
-pub use run_state::EvalRunState;
+pub(crate) use run_state::{EvalRunState, TaskLocalState};
 mod collection_call;
 mod safe_point;
 mod session_context;
@@ -77,6 +78,7 @@ mod stmt_value;
 mod storage;
 mod stream;
 mod support_call;
+mod task;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
@@ -128,13 +130,16 @@ use etas_host::{
     TcpStreamRef, TlsConnectOperation, TlsConnectRequest, TraceContext, WriteCondition,
 };
 
-pub struct EvalContext<'a> {
+pub(crate) struct EvalContext<'a> {
     pub(crate) handler_floor: usize,
     pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     code_syntax: std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
-    runtime: &'a mut EvalRunState,
+    runtime: &'a mut run_state::EvalSharedState,
+    pub(crate) task: &'a mut run_state::TaskLocalState,
+    pub(crate) scheduler: &'a mut crate::driver::scheduler::TaskScheduler,
+    pub(crate) current_task: crate::driver::scheduler::TaskIdentity,
     plan_owner: std::cell::OnceCell<std::sync::Arc<InterpreterPlan>>,
     pub checked: &'a CheckedProject,
     pub view: HirTreeView<'a>,
@@ -145,7 +150,7 @@ pub struct EvalContext<'a> {
 }
 
 impl std::ops::Deref for EvalContext<'_> {
-    type Target = EvalRunState;
+    type Target = run_state::EvalSharedState;
     fn deref(&self) -> &Self::Target {
         self.runtime
     }
@@ -257,12 +262,14 @@ impl<'a> EvalContextInput<'a> {
 }
 
 impl<'a> EvalContext<'a> {
-    pub(crate) fn scoped_context<'b>(
+    pub(crate) fn scheduled_task_context<'b>(
         &'b mut self,
         program: &'b crate::value::CheckedExecutionProgram,
+        task: &'b mut run_state::TaskLocalState,
+        task_id: crate::driver::scheduler::TaskId,
         handler_floor: usize,
     ) -> EvalContext<'b> {
-        let mut scoped = EvalContext::new(
+        let mut scoped = EvalContext::from_parts(
             EvalProgramInput {
                 code_definitions: program.definitions.clone(),
                 syntax_limits: self.syntax_limits,
@@ -272,8 +279,37 @@ impl<'a> EvalContext<'a> {
                 entry_args: &[],
             },
             &mut *self.runtime,
+            task,
+            &mut *self.scheduler,
         );
         scoped.handler_floor = handler_floor;
+        scoped.current_task = crate::driver::scheduler::TaskIdentity::Scheduled(task_id);
+        scoped.revision = program.revision.as_ref();
+        scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
+        scoped
+    }
+
+    pub(crate) fn scoped_context<'b>(
+        &'b mut self,
+        program: &'b crate::value::CheckedExecutionProgram,
+        handler_floor: usize,
+    ) -> EvalContext<'b> {
+        let current_task = self.current_task;
+        let mut scoped = EvalContext::from_parts(
+            EvalProgramInput {
+                code_definitions: program.definitions.clone(),
+                syntax_limits: self.syntax_limits,
+                checked: &program.checked,
+                plan: &program.plan,
+                entry_item: program.plan.entry.item,
+                entry_args: &[],
+            },
+            &mut *self.runtime,
+            &mut *self.task,
+            &mut *self.scheduler,
+        );
+        scoped.handler_floor = handler_floor;
+        scoped.current_task = current_task;
         scoped.revision = program.revision.as_ref();
         scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
         scoped
@@ -291,7 +327,7 @@ impl<'a> EvalContext<'a> {
         }
     }
     pub(crate) fn scheduling_decision(&mut self, span: Span) -> safe_point::SafePointDecision {
-        match self.execution.signal() {
+        match self.task.execution.signal() {
             Ok(signal) => {
                 self.runtime
                     .safe_points
@@ -307,13 +343,32 @@ impl<'a> EvalContext<'a> {
         }
     }
     pub(crate) fn cancellation_signal(&self, span: etas_core::Span) -> Option<ControlSignal> {
-        match self.execution.signal().and_then(|signal| signal.cause()) {
+        match self
+            .task
+            .execution
+            .signal()
+            .and_then(|signal| signal.cause())
+        {
             Ok(Some(cause)) => Some(ControlSignal::Cancelled(cause)),
             Ok(None) => None,
             Err(error) => Some(ControlSignal::missing_checked_fact(error.to_string(), span)),
         }
     }
     pub fn new(input: EvalProgramInput<'a>, runtime: &'a mut EvalRunState) -> Self {
+        Self::from_parts(
+            input,
+            &mut runtime.shared,
+            &mut runtime.root_task,
+            &mut runtime.scheduler,
+        )
+    }
+
+    fn from_parts(
+        input: EvalProgramInput<'a>,
+        runtime: &'a mut run_state::EvalSharedState,
+        task: &'a mut run_state::TaskLocalState,
+        scheduler: &'a mut crate::driver::scheduler::TaskScheduler,
+    ) -> Self {
         let EvalProgramInput {
             code_definitions,
             syntax_limits,
@@ -338,6 +393,9 @@ impl<'a> EvalContext<'a> {
             code_definitions,
             syntax_limits,
             runtime,
+            task,
+            scheduler,
+            current_task: crate::driver::scheduler::TaskIdentity::Root,
             plan_owner: std::cell::OnceCell::new(),
             checked,
             view: HirTreeView::new(&checked.hir),
@@ -515,6 +573,7 @@ fn is_pending_host_boundary_signal(signal: &ControlSignal) -> bool {
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
             | ControlSignal::Host(_)
+            | ControlSignal::Task(_)
     )
 }
 
@@ -564,6 +623,7 @@ fn compose_signal_continuation(signal: ControlSignal, continuation: Continuation
             pending.continuation = compose_continuation(pending.continuation, continuation);
             ControlSignal::Host(pending)
         }
+        ControlSignal::Task(pending) => ControlSignal::Task(pending),
         signal => signal,
     }
 }

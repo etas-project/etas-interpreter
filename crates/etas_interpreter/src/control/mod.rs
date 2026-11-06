@@ -33,5 +33,6 @@ pub use signal::{
     CallPurity, CommandDecode, ConsoleDecode, ContinuationInput, ControlSignal, HostBoundaryDecode,
     HostBoundaryRequest, MemoryDecode, ModelDecode, PendingBlock, PendingCall, PendingCheckpoint,
     PendingCommand, PendingConsole, PendingContinuation, PendingExpr, PendingHostBoundary,
-    PendingMemory, PendingModel, PendingPerform, PendingSession, SessionDecode, SourceToolBinding,
+    PendingMemory, PendingModel, PendingPerform, PendingSession, PendingTaskControl, SessionDecode,
+    SourceToolBinding,
 };

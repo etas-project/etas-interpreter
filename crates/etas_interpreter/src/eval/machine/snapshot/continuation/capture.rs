@@ -34,12 +34,23 @@ impl ContinuationSnapshot {
         let mut pending = Vec::new();
         loop {
             let mut value = match current {
+                Continuation::HandlerDispatch {
+                    deferred: Some(_), ..
+                } => {
+                    return Err(
+                        "live deferred continuation cannot be captured outside the task scheduler"
+                            .into(),
+                    );
+                }
                 Continuation::RestoreModelPolicy { inner, .. }
                 | Continuation::ReenterHandler { boundary: inner }
                 | Continuation::HandleBoundary { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. }
                 | Continuation::CallBoundary { outer: inner, .. }
-                | Continuation::HandlerDispatch { outer: inner } => {
+                | Continuation::HandlerDispatch {
+                    outer: inner,
+                    deferred: None,
+                } => {
                     if let Some(saved) = saved_link(inner, context) {
                         capture_parent(current, saved, context)?
                     } else {
@@ -144,7 +155,14 @@ fn capture_parent(
             span: *span,
             outer: child,
         },
-        Continuation::HandlerDispatch { .. } => {
+        Continuation::HandlerDispatch {
+            deferred: Some(_), ..
+        } => {
+            return Err(
+                "live deferred continuation cannot be captured outside the task scheduler".into(),
+            );
+        }
+        Continuation::HandlerDispatch { deferred: None, .. } => {
             ContinuationSnapshot::HandlerDispatch { outer: child }
         }
         Continuation::ReenterHandler { .. } => {

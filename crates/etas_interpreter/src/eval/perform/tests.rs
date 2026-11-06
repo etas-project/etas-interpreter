@@ -275,10 +275,10 @@ fn abortive_errors_restore_model_policy_but_resumable_actions_keep_the_scope() {
             panic!("pending action")
         };
         if abortive {
-            assert_eq!(eval.model_policy, previous);
+            assert_eq!(eval.task.model_policy, previous);
             assert!(matches!(pending.continuation, Continuation::Return));
         } else {
-            assert_eq!(eval.model_policy, active);
+            assert_eq!(eval.task.model_policy, active);
             assert!(matches!(
                 pending.continuation,
                 Continuation::RestoreModelPolicy { .. }

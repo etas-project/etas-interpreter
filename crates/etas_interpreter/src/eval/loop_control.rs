@@ -54,7 +54,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => {
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => {
                 return compose_signal_continuation(
                     signal,
                     Continuation::ForLoop {
@@ -183,7 +184,8 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
                 | ControlSignal::Model(_)
-                | ControlSignal::Host(_)) => {
+                | ControlSignal::Host(_)
+                | ControlSignal::Task(_)) => {
                     return self.wrap_loop_body_signal(
                         signal,
                         Continuation::ForLoop {
@@ -257,7 +259,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => self.wrap_loop_body_signal(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => self.wrap_loop_body_signal(
                 signal,
                 Continuation::ForLoop {
                     pat: state.pat,
@@ -320,7 +323,8 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
                 | ControlSignal::Model(_)
-                | ControlSignal::Host(_)) => {
+                | ControlSignal::Host(_)
+                | ControlSignal::Task(_)) => {
                     return compose_signal_continuation(
                         signal,
                         Continuation::WhileLoop {
@@ -370,7 +374,8 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
                 | ControlSignal::Model(_)
-                | ControlSignal::Host(_)) => {
+                | ControlSignal::Host(_)
+                | ControlSignal::Task(_)) => {
                     return self.wrap_loop_body_signal(
                         signal,
                         Continuation::WhileLoop {
@@ -438,7 +443,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => self.wrap_loop_body_signal(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => self.wrap_loop_body_signal(
                 signal,
                 Continuation::WhileLoop {
                     cond: state.cond,

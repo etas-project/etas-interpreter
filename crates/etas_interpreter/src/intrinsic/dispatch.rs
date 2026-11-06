@@ -167,6 +167,7 @@ pub enum AgentSupportCallable {
 pub enum StdCallable {
     AgentSupport(AgentSupportCallable),
     Collection(etas_std::StdCollectionIntrinsic),
+    Task(etas_std::StdTaskIntrinsic),
     ForwardAction,
     CodeSyntax(CodeSyntaxCallable),
     SessionHistoryPage,
@@ -194,6 +195,9 @@ pub enum StdCallable {
 }
 
 pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> Option<StdCallable> {
+    if let etas_std::LoweringHint::Task(operation) = descriptor.lowering {
+        return Some(StdCallable::Task(operation));
+    }
     if let etas_std::LoweringHint::Collection(operation) = descriptor.lowering {
         return (operation.is_supported()
             && descriptor.id == operation.id()
@@ -272,6 +276,9 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         }
         intrinsic::pure::LIMIT_ATTEMPTS => {
             StdCallable::RuntimeLimitConstructor(StdLimitKind::Attempts)
+        }
+        intrinsic::pure::LIMIT_CONCURRENCY => {
+            StdCallable::RuntimeLimitConstructor(StdLimitKind::Concurrency)
         }
         intrinsic::runtime::APPROVE => StdCallable::Approval,
         intrinsic::runtime::CHECKPOINT => StdCallable::Checkpoint,

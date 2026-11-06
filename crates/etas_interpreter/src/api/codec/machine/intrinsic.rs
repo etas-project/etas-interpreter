@@ -45,6 +45,7 @@ pub(super) fn std_limit_kind_name(kind: etas_std::StdLimitKind) -> &'static str 
         etas_std::StdLimitKind::Cost => "cost",
         etas_std::StdLimitKind::WallTime => "wall_time",
         etas_std::StdLimitKind::Attempts => "attempts",
+        etas_std::StdLimitKind::Concurrency => "concurrency",
     }
 }
 
@@ -56,6 +57,7 @@ pub(super) fn std_limit_kind_from_name(name: &str) -> Result<etas_std::StdLimitK
         "cost" => Ok(etas_std::StdLimitKind::Cost),
         "wall_time" => Ok(etas_std::StdLimitKind::WallTime),
         "attempts" => Ok(etas_std::StdLimitKind::Attempts),
+        "concurrency" => Ok(etas_std::StdLimitKind::Concurrency),
         _ => Err(format!("unknown machine std limit kind `{name}`")),
     }
 }

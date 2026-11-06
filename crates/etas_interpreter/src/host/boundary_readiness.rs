@@ -14,6 +14,7 @@ pub(crate) fn validate_boundary_readiness(
 ) -> Option<Diagnostic> {
     let (ready, service, span) = match boundary {
         PendingBoundary::Perform(_) => return None,
+        PendingBoundary::Task(_) => return None,
         PendingBoundary::Console(pending) => (available.console, "Console", pending.span),
         PendingBoundary::Command(pending) => (available.command, "Command", pending.span),
         PendingBoundary::Memory(pending) => (available.memory, "DurableMemory", pending.span),

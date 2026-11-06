@@ -47,6 +47,7 @@ pub(crate) mod record;
 mod resource;
 mod std_constant;
 mod storage;
+mod task;
 pub use std_constant::StdConstantValue;
 mod support;
 mod text;
@@ -77,3 +78,4 @@ pub use support::{
     ModelToolCallValue, ModelUsageValue, PromptMessage, PromptRole, ProvenanceValue, RangeBounds,
     RangeValue, SessionConfigValue,
 };
+pub use task::{ContinuationTokenValue, SchedulerHandleValue, TaskHandleValue};

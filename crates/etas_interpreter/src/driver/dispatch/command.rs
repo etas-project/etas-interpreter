@@ -1,4 +1,6 @@
-use etas_host::{CommandRequest, HostRequestKind, HostTraceRequest, HostValue, PolicySubject};
+use etas_host::{
+    CommandRequest, CommandResponse, HostRequestKind, HostTraceRequest, HostValue, PolicySubject,
+};
 
 use crate::{
     control::{ControlSignal, PendingCommand},
@@ -7,18 +9,42 @@ use crate::{
 };
 
 use super::{
-    error::retry_or_report, host_dispatch::HostDispatch, policy::evaluate_before_boundary,
+    error::retry_or_report,
+    host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation},
+    policy::evaluate_before_boundary,
 };
 
-pub(in crate::driver) async fn dispatch(
+type CommandCall<'host> =
+    crate::host::HostFuture<'host, Result<CommandResponse, etas_host::HostError>>;
+
+pub(in crate::driver) enum CommandDispatchStart<'host> {
+    Complete(Option<ControlSignal>),
+    Pending(PendingCommandDispatch<'host>),
+}
+
+pub(in crate::driver) struct PendingCommandDispatch<'host> {
+    command: PendingCommand,
+    key: etas_host::replay::ReplayFingerprint,
+    pending: PendingHostOperation<CommandResponse, CommandCall<'host>>,
+}
+
+pub(in crate::driver) struct CompletedCommandDispatch {
+    command: PendingCommand,
+    key: etas_host::replay::ReplayFingerprint,
+    completion: HostCompletion<CommandResponse>,
+}
+
+pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
     command: PendingCommand,
     machine: &mut EvalMachine,
-) -> Option<ControlSignal> {
+) -> CommandDispatchStart<'host> {
     let key = match eval.command_boundary_key(&command) {
         Ok(key) => key,
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(fault) => {
+            return CommandDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(fault))));
+        }
     };
     match eval.completed_host_boundary_result(
         &crate::orchestration::BoundaryOccurrenceId::HostRequest(command.request.id),
@@ -26,18 +52,24 @@ pub(in crate::driver) async fn dispatch(
         &key,
         command.span,
     ) {
-        Ok(Some(value)) => return Some(eval.resume_command_signal(command, value)),
+        Ok(Some(value)) => {
+            return CommandDispatchStart::Complete(Some(
+                eval.resume_command_signal(command, value),
+            ));
+        }
         Ok(None) => (),
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(fault) => {
+            return CommandDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(fault))));
+        }
     }
     if let Err(error) = command.request.budget.check_time() {
-        return retry_or_report(
+        return CommandDispatchStart::Complete(retry_or_report(
             eval,
             machine,
             command.continuation,
             command.span,
             format!("command host boundary failed: {}", error.message),
-        );
+        ));
     }
     let request_id = command.request.id;
     let trace_subject = policy_subject(&command.request);
@@ -51,9 +83,9 @@ pub(in crate::driver) async fn dispatch(
     )
     .await
     {
-        return None;
+        return CommandDispatchStart::Complete(None);
     }
-    match HostDispatch::execute(
+    match HostDispatch::begin(
         eval,
         request_id,
         HostRequestKind::Command,
@@ -61,9 +93,34 @@ pub(in crate::driver) async fn dispatch(
         command.request.authority.clone(),
         command.request.trace.clone(),
         |operation| host.command(operation, command.request.clone()),
-    )
-    .await
-    {
+    ) {
+        Ok(pending) => CommandDispatchStart::Pending(PendingCommandDispatch {
+            command,
+            key,
+            pending,
+        }),
+        Err(error) => CommandDispatchStart::Complete(retry_or_report(
+            eval,
+            machine,
+            command.continuation,
+            command.span,
+            format!("command host boundary failed: {}", error.message),
+        )),
+    }
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    completed: CompletedCommandDispatch,
+) -> Option<ControlSignal> {
+    let CompletedCommandDispatch {
+        command,
+        key,
+        completion,
+    } = completed;
+    let request_id = command.request.id;
+    match HostDispatch::finish(eval, completion) {
         Ok(response) => match response.result {
             Ok(output) => {
                 let value = eval.command_result_value(&command, output)?;
@@ -93,6 +150,20 @@ pub(in crate::driver) async fn dispatch(
             command.span,
             format!("command host boundary failed: {}", error.message),
         ),
+    }
+}
+
+impl PendingCommandDispatch<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.pending.operation_id()
+    }
+
+    pub(in crate::driver) async fn poll(self) -> CompletedCommandDispatch {
+        CompletedCommandDispatch {
+            command: self.command,
+            key: self.key,
+            completion: HostDispatch::poll(self.pending).await,
+        }
     }
 }
 
