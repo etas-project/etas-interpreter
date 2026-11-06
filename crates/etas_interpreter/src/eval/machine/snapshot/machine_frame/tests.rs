@@ -159,6 +159,7 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
         action: "probe".into(),
         action_symbol: Some(SymbolId(8)),
         patterns: vec![],
+        continuation: None,
         body: HirBlockId(9),
         scope: ScopeId(2),
         span: span(),

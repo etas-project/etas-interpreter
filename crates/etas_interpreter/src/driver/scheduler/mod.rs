@@ -1,3 +1,4 @@
+mod continuation;
 mod task;
 
 use std::{
@@ -5,9 +6,10 @@ use std::{
     num::NonZeroUsize,
 };
 
+pub(crate) use continuation::{ConsumedContinuation, ContinuationTransfer};
 pub(crate) use task::{
-    ContinuationId, ScheduledTask, TaskHandle, TaskId, TaskOutcome, TaskScopeId, TaskState,
-    TaskWait, TaskWaiter,
+    ContinuationId, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome, TaskResume,
+    TaskScopeId, TaskState, TaskWait, TaskWaiter,
 };
 
 pub(crate) const MAX_CONCURRENCY: usize = 65_536;
@@ -19,6 +21,9 @@ pub(crate) enum SchedulerError {
     Host(etas_host::HostError),
     WrongOwner,
     UnknownTask,
+    UnknownContinuation,
+    ContinuationConsumed,
+    WrongTask,
     InvalidTransition,
 }
 
@@ -34,6 +39,9 @@ impl std::fmt::Display for SchedulerError {
             Self::Host(error) => write!(f, "task execution scope: {error}"),
             Self::WrongOwner => f.write_str("task handle belongs to another scheduler scope"),
             Self::UnknownTask => f.write_str("task handle is stale"),
+            Self::UnknownContinuation => f.write_str("continuation token is stale"),
+            Self::ContinuationConsumed => f.write_str("continuation token was already consumed"),
+            Self::WrongTask => f.write_str("continuation token belongs to another task"),
             Self::InvalidTransition => f.write_str("task state transition is invalid"),
         }
     }
@@ -70,6 +78,7 @@ pub(crate) struct TaskScheduler {
     tasks: BTreeMap<TaskId, ScheduledTask>,
     ready: VecDeque<TaskId>,
     wakeups: BTreeMap<TaskId, VecDeque<TaskWakeup>>,
+    continuations: continuation::ContinuationArena,
 }
 
 impl TaskScheduler {
@@ -82,11 +91,38 @@ impl TaskScheduler {
             tasks: BTreeMap::new(),
             ready: VecDeque::new(),
             wakeups: BTreeMap::new(),
+            continuations: continuation::ContinuationArena::new(owner),
         }
     }
 
     pub(crate) fn owner(&self) -> TaskScopeId {
         self.owner
+    }
+
+    pub(crate) fn allocate_continuation(
+        &mut self,
+        origin: TaskIdentity,
+        continuation: crate::control::Continuation,
+        output: etas_types::TypeId,
+    ) -> crate::value::ContinuationTokenValue {
+        self.continuations.allocate(origin, continuation, output)
+    }
+
+    pub(crate) fn consume_continuation(
+        &mut self,
+        token: crate::value::ContinuationTokenValue,
+        origin: TaskIdentity,
+        transfer: ContinuationTransfer,
+    ) -> Result<ConsumedContinuation, SchedulerError> {
+        self.continuations.consume(token, origin, transfer)
+    }
+
+    pub(crate) fn dispose_continuation(
+        &mut self,
+        token: crate::value::ContinuationTokenValue,
+        origin: TaskIdentity,
+    ) -> Result<(), SchedulerError> {
+        self.continuations.dispose(token, origin)
     }
 
     pub(crate) fn spawn(

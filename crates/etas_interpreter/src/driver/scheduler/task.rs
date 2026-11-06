@@ -15,6 +15,12 @@ pub(crate) struct TaskId(pub(crate) u64);
 pub(crate) struct ContinuationId(pub(crate) u64);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(crate) enum TaskIdentity {
+    Root,
+    Scheduled(TaskId),
+}
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) struct TaskHandle {
     pub(crate) owner: TaskScopeId,
     pub(crate) task: TaskId,
@@ -65,6 +71,16 @@ pub(crate) enum TaskWaiter {
     Continuation(ContinuationId),
 }
 
+pub(crate) enum TaskResume {
+    Await(Continuation),
+    Transfer {
+        token: crate::value::ContinuationTokenValue,
+        continuation: Continuation,
+        output: etas_types::TypeId,
+        span: etas_core::Span,
+    },
+}
+
 pub(crate) struct ScheduledTask {
     pub(crate) machine: EvalMachine,
     pub(crate) local: TaskLocalState,
@@ -73,7 +89,7 @@ pub(crate) struct ScheduledTask {
     pub(crate) state: TaskState,
     pub(crate) outcome: Option<TaskOutcome>,
     pub(crate) waiters: Vec<TaskWaiter>,
-    pub(crate) waiting_continuation: Option<Continuation>,
+    pub(crate) waiting_continuation: Option<TaskResume>,
     pub(crate) source_index: usize,
 }
 

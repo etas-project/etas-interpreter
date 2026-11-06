@@ -16,10 +16,8 @@ impl EvalContext<'_> {
             StdTaskIntrinsic::Run => self.execute_task_run(call_args, span),
             StdTaskIntrinsic::Start => self.execute_task_start(call_args, span),
             StdTaskIntrinsic::Await => self.execute_task_await(checked_call, call_args, span),
-            StdTaskIntrinsic::Requeue | StdTaskIntrinsic::Park => ControlSignal::invalid_arguments(
-                "deferred continuation transfer requires an active scheduler handler arm",
-                span,
-            ),
+            StdTaskIntrinsic::Requeue => self.execute_task_requeue(checked_call, call_args, span),
+            StdTaskIntrinsic::Park => self.execute_task_park(call_args, span),
             StdTaskIntrinsic::JoinTuple
             | StdTaskIntrinsic::JoinArray
             | StdTaskIntrinsic::TryJoin
@@ -31,6 +29,99 @@ impl EvalContext<'_> {
                 span,
             ),
         }
+    }
+
+    fn execute_task_requeue(
+        &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [scheduler, continuation, value]: [InterpValue; 3] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!(
+                        "std.task.scheduler.requeue expects three arguments, got {}",
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+        };
+        let InterpValue::Scheduler(scheduler) = scheduler else {
+            return ControlSignal::invalid_arguments("requeue requires a Scheduler", span);
+        };
+        let InterpValue::Continuation(token) = continuation else {
+            return ControlSignal::invalid_arguments("requeue requires a continuation", span);
+        };
+        if scheduler.owner != self.scheduler.owner() || token.owner != scheduler.owner {
+            return ControlSignal::runtime_fault(
+                "requeue scheduler and continuation owners do not match",
+                span,
+            );
+        }
+        let Some(expected) = checked_call.parameter_types.get(2).copied() else {
+            return ControlSignal::missing_checked_fact(
+                "requeue is missing its checked value type",
+                span,
+            );
+        };
+        if let Err(reason) = crate::value::contract::runtime::validate_value(
+            self.checked,
+            self.plan,
+            &value,
+            expected,
+            &self.storage_limits,
+        ) {
+            return ControlSignal::runtime_fault(
+                format!("requeue value violates its checked continuation type: {reason}"),
+                span,
+            );
+        }
+        ControlSignal::pending_task(crate::control::PendingTaskControl::Requeue {
+            token,
+            value,
+            span,
+        })
+    }
+
+    fn execute_task_park(&mut self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+        let [scheduler, task, continuation]: [InterpValue; 3] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!(
+                        "std.task.scheduler.park expects three arguments, got {}",
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+        };
+        let InterpValue::Scheduler(scheduler) = scheduler else {
+            return ControlSignal::invalid_arguments("park requires a Scheduler", span);
+        };
+        let InterpValue::Task(task) = task else {
+            return ControlSignal::invalid_arguments("park requires a Task", span);
+        };
+        let InterpValue::Continuation(token) = continuation else {
+            return ControlSignal::invalid_arguments("park requires a continuation", span);
+        };
+        if scheduler.owner != self.scheduler.owner()
+            || task.handle.owner != scheduler.owner
+            || token.owner != scheduler.owner
+        {
+            return ControlSignal::runtime_fault(
+                "park scheduler, task, and continuation owners do not match",
+                span,
+            );
+        }
+        ControlSignal::pending_task(crate::control::PendingTaskControl::Park {
+            task: task.handle,
+            token,
+            span,
+        })
     }
 
     fn execute_task_run(&mut self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {

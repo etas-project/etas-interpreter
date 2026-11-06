@@ -175,8 +175,10 @@ fn restored_shared_links_preserve_frames_and_validate_every_parent() {
     let mut context = RestoreContext::default();
     let first = first.restore_with(&mut context).unwrap();
     let second = second.restore_with(&mut context).unwrap();
-    let (Continuation::CallBoundary { outer: a, .. }, Continuation::HandlerDispatch { outer: b }) =
-        (&first, &second)
+    let (
+        Continuation::CallBoundary { outer: a, .. },
+        Continuation::HandlerDispatch { outer: b, .. },
+    ) = (&first, &second)
     else {
         panic!("parent kind changed")
     };
@@ -308,7 +310,7 @@ fn mixed_restore_preserves_metadata_frame_aliases_and_retained_definitions() {
         for i in (0..depth).rev() {
             cursor = match (i % 5, cursor) {
                 (0, Continuation::CallBoundary { outer, .. })
-                | (1, Continuation::HandlerDispatch { outer }) => outer,
+                | (1, Continuation::HandlerDispatch { outer, .. }) => outer,
                 (
                     2,
                     Continuation::HandleBoundary {

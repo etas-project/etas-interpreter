@@ -70,7 +70,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => Some(compose_signal_continuation(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => Some(compose_signal_continuation(
                 signal,
                 Continuation::ContinueBlock {
                     block,
@@ -112,7 +113,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => compose_signal_continuation(signal, continuation),
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => compose_signal_continuation(signal, continuation),
             ControlSignal::Return(value) => ControlSignal::Return(value),
             ControlSignal::Resume(value) => ControlSignal::Resume(value),
             ControlSignal::Finish(value) => ControlSignal::Finish(value),

@@ -318,6 +318,15 @@ async fn drive_scope(
                 };
                 signal
             }
+            PendingBoundary::Task(control) => {
+                match super::task::control_from_root(eval, host, machine, *control).await {
+                    Ok(()) => {
+                        *machine_has_input = true;
+                        continue;
+                    }
+                    Err(outcome) => return ScopeOutcome::Finished(outcome),
+                }
+            }
         };
     }
 }

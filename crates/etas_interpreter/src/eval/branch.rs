@@ -26,7 +26,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => compose_signal_continuation(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => compose_signal_continuation(
                 signal,
                 Continuation::IfExpr {
                     then_block,
@@ -66,7 +67,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => compose_signal_continuation(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => compose_signal_continuation(
                 signal,
                 Continuation::MatchExpr {
                     arms: arms.to_vec(),
@@ -144,7 +146,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => compose_signal_continuation(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => compose_signal_continuation(
                 signal,
                 Continuation::ContinueBlock {
                     block: resume.block,
@@ -185,7 +188,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => compose_signal_continuation(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => compose_signal_continuation(
                 signal,
                 Continuation::ContinueBlock {
                     block,

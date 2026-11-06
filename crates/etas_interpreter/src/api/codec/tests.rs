@@ -459,6 +459,7 @@ flow main(seed: i32) -> unit {
         action: hir_arm.action.action.clone(),
         action_symbol,
         patterns: hir_arm.patterns.clone(),
+        continuation: None,
         body: hir_arm.body,
         scope: hir_arm.scope,
         span: hir_arm.span,

@@ -3,7 +3,7 @@ use etas_core::Span;
 use crate::{
     control::{
         ControlSignal, ExecutionFault, PendingCommand, PendingConsole, PendingHostBoundary,
-        PendingMemory, PendingModel, PendingPerform, PendingSession,
+        PendingMemory, PendingModel, PendingPerform, PendingSession, PendingTaskControl,
     },
     value::InterpValue,
 };
@@ -21,6 +21,7 @@ pub(crate) enum PendingBoundary {
     Model(Box<PendingModel>),
     Tool(Box<PendingTool>),
     Host(Box<PendingHostBoundary>),
+    Task(Box<PendingTaskControl>),
 }
 
 #[derive(Clone, Debug)]

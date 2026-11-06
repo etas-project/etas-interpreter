@@ -162,6 +162,7 @@ impl<'a> EvalContext<'a> {
                 pending.continuation = compose_continuation(pending.continuation, outer);
                 ControlSignal::Host(pending)
             }
+            ControlSignal::Task(pending) => ControlSignal::Task(pending),
             ControlSignal::Call(mut pending) => {
                 pending.continuation = compose_continuation(pending.continuation, outer);
                 ControlSignal::Call(pending)
@@ -259,9 +260,12 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::HandlerDispatch { outer } => {
-                self.apply_continuation(outer.into_value(), value)
-            }
+            Continuation::HandlerDispatch { outer, deferred } => self.resume_handler_continuation(
+                outer.into_value(),
+                deferred,
+                value,
+                crate::diagnostics::item_span(self.checked, self.entry_item),
+            ),
             Continuation::HandleBoundary {
                 scope_id,
                 inner,
@@ -321,7 +325,20 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::HandlerDispatch { .. } => ControlSignal::Finish(value),
+            Continuation::HandlerDispatch { deferred, .. } => {
+                if let Some(token) = deferred
+                    && let Err(error) = self
+                        .scheduler
+                        .dispose_continuation(token, self.current_task)
+                {
+                    ControlSignal::runtime_fault(
+                        error.to_string(),
+                        crate::diagnostics::item_span(self.checked, self.entry_item),
+                    )
+                } else {
+                    ControlSignal::Finish(value)
+                }
+            }
             Continuation::HandleBoundary { scope_id, span, .. } => {
                 match self.close_handler_scope(scope_id, span) {
                     Ok(()) => ControlSignal::Value(value),
@@ -928,8 +945,20 @@ impl<'a> EvalContext<'a> {
                 next_index,
                 span,
             ),
-            Continuation::HandlerDispatch { outer } => {
-                self.apply_continuation(outer.into_value(), value)
+            Continuation::HandlerDispatch { outer, deferred } => {
+                if deferred.is_some() {
+                    if let Some(token) = deferred {
+                        let _ = self
+                            .scheduler
+                            .dispose_continuation(token, self.current_task);
+                    }
+                    ControlSignal::runtime_fault(
+                        "handler arm completed without resume, finish, or continuation transfer",
+                        crate::diagnostics::item_span(self.checked, self.entry_item),
+                    )
+                } else {
+                    self.apply_continuation(outer.into_value(), value)
+                }
             }
             Continuation::ReenterHandler { boundary } => self.reenter_handler(boundary, value),
             Continuation::HandleBoundary {

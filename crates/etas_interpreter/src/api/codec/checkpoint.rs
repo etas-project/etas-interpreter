@@ -1281,6 +1281,7 @@ pub(super) fn handler_arm_json(handler: &ActiveHandlerArmRecord) -> Value {
         "action": handler.action,
         "action_symbol": handler.action_symbol.map(|symbol| symbol.0),
         "patterns": handler.patterns.iter().map(|pat| pat.0).collect::<Vec<_>>(),
+        "continuation": handler.continuation.map(|symbol| symbol.0),
         "body": handler.body.0,
         "scope": handler.scope.0,
         "span": span_json(handler.span),
@@ -1313,6 +1314,7 @@ pub(super) fn handler_arm_from_json(
             .into_iter()
             .map(HirPatId)
             .collect(),
+        continuation: optional_u32(value, "continuation")?.map(SymbolId),
         body: HirBlockId(required_u32(value, "body")?),
         scope: ScopeId(required_u32(value, "scope")?),
         span: span_from_json(required_obj(value, "span")?)?,

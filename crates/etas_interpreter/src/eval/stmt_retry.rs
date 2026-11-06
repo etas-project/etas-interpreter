@@ -154,7 +154,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => Some(self.pending_retry_signal(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => Some(self.pending_retry_signal(
                 signal,
                 RetryResumeState {
                     retry,

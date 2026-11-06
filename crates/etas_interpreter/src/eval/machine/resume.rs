@@ -12,6 +12,45 @@ impl EvalMachine {
         );
     }
 
+    pub(crate) fn transfer_from(
+        &mut self,
+        token: crate::value::ContinuationTokenValue,
+        continuation: crate::control::Continuation,
+        value: crate::value::InterpValue,
+    ) {
+        let boundary = self.stack.iter().rposition(|frame| {
+            matches!(
+                frame,
+                super::frame::EvalFrame::Continuation(frame)
+                    if matches!(
+                        frame.continuation,
+                        crate::control::Continuation::HandlerDispatch {
+                            deferred: Some(candidate), ..
+                        } if candidate == token
+                    )
+            )
+                || matches!(
+                    frame,
+                    super::frame::EvalFrame::Handler(frame)
+                        if matches!(
+                            &*frame.inner,
+                            crate::control::Continuation::HandlerDispatch {
+                                deferred: Some(candidate), ..
+                            } if *candidate == token
+                        )
+                )
+        });
+        self.truncate_to(
+            boundary.expect("deferred continuation transfer must retain its handler boundary"),
+        );
+        self.resume(ControlSignal::pending_continuation(
+            crate::control::PendingContinuation {
+                continuation,
+                input: crate::control::ContinuationInput::Value(value),
+            },
+        ));
+    }
+
     pub(crate) fn resume_model_result(
         &mut self,
         result: Result<etas_host::ModelResponse, etas_host::HostError>,

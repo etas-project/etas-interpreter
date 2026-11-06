@@ -70,7 +70,7 @@ impl Drop for Node {
         while let Some(node) = next.take().or_else(|| pending.pop()) {
             match node {
                 Continuation::CallBoundary { outer, .. }
-                | Continuation::HandlerDispatch { outer } => {
+                | Continuation::HandlerDispatch { outer, .. } => {
                     next = outer.into_unique();
                 }
                 Continuation::RestoreModelPolicy { inner, .. }

@@ -138,6 +138,7 @@ pub(crate) struct EvalContext<'a> {
     runtime: &'a mut run_state::EvalSharedState,
     pub(crate) task: &'a mut run_state::TaskLocalState,
     pub(crate) scheduler: &'a mut crate::driver::scheduler::TaskScheduler,
+    pub(crate) current_task: crate::driver::scheduler::TaskIdentity,
     plan_owner: std::cell::OnceCell<std::sync::Arc<InterpreterPlan>>,
     pub checked: &'a CheckedProject,
     pub view: HirTreeView<'a>,
@@ -264,6 +265,7 @@ impl<'a> EvalContext<'a> {
         &'b mut self,
         program: &'b crate::value::CheckedExecutionProgram,
         task: &'b mut run_state::TaskLocalState,
+        task_id: crate::driver::scheduler::TaskId,
         handler_floor: usize,
     ) -> EvalContext<'b> {
         let mut scoped = EvalContext::from_parts(
@@ -280,6 +282,7 @@ impl<'a> EvalContext<'a> {
             &mut *self.scheduler,
         );
         scoped.handler_floor = handler_floor;
+        scoped.current_task = crate::driver::scheduler::TaskIdentity::Scheduled(task_id);
         scoped.revision = program.revision.as_ref();
         scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
         scoped
@@ -290,6 +293,7 @@ impl<'a> EvalContext<'a> {
         program: &'b crate::value::CheckedExecutionProgram,
         handler_floor: usize,
     ) -> EvalContext<'b> {
+        let current_task = self.current_task;
         let mut scoped = EvalContext::from_parts(
             EvalProgramInput {
                 code_definitions: program.definitions.clone(),
@@ -304,6 +308,7 @@ impl<'a> EvalContext<'a> {
             &mut *self.scheduler,
         );
         scoped.handler_floor = handler_floor;
+        scoped.current_task = current_task;
         scoped.revision = program.revision.as_ref();
         scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
         scoped
@@ -389,6 +394,7 @@ impl<'a> EvalContext<'a> {
             runtime,
             task,
             scheduler,
+            current_task: crate::driver::scheduler::TaskIdentity::Root,
             plan_owner: std::cell::OnceCell::new(),
             checked,
             view: HirTreeView::new(&checked.hir),
@@ -566,6 +572,7 @@ fn is_pending_host_boundary_signal(signal: &ControlSignal) -> bool {
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
             | ControlSignal::Host(_)
+            | ControlSignal::Task(_)
     )
 }
 
@@ -615,6 +622,7 @@ fn compose_signal_continuation(signal: ControlSignal, continuation: Continuation
             pending.continuation = compose_continuation(pending.continuation, continuation);
             ControlSignal::Host(pending)
         }
+        ControlSignal::Task(pending) => ControlSignal::Task(pending),
         signal => signal,
     }
 }

@@ -156,7 +156,26 @@ impl<'a> EvalContext<'a> {
             if !self.checked.types.handler_actions.contains_key(handler_id) {
                 return Err(missing_handler_value_fault(span));
             }
-            records.push(active_handler_arm(*handler_id, handler, body));
+            let continuation = match handler.continuation {
+                None => None,
+                Some(pattern) => {
+                    let HirPat::Binding { symbol, .. } = self.checked.hir.pats[pattern] else {
+                        return Err(missing_handler_value_fault(span));
+                    };
+                    let Some(binding) = self.checked.types.continuation_bindings.get(&symbol)
+                    else {
+                        return Err(missing_handler_value_fault(span));
+                    };
+                    if binding.arm != *handler_id
+                        || binding.symbol != symbol
+                        || binding.owner_scope != handler.scope
+                    {
+                        return Err(missing_handler_value_fault(span));
+                    }
+                    Some(symbol)
+                }
+            };
+            records.push(active_handler_arm(*handler_id, handler, body, continuation));
         }
         Ok(records)
     }
@@ -306,6 +325,7 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
+                ControlSignal::Task(task) => return ControlSignal::Task(task),
                 other => {
                     if let Err(fault) = self.close_handler_scope(scope_id, span) {
                         return ControlSignal::Fault(Box::new(fault));
@@ -391,6 +411,27 @@ impl<'a> EvalContext<'a> {
             Some(guard) => compose_continuation(guard, perform.continuation),
             None => perform.continuation,
         };
+        let (outer_continuation, deferred) = match handler.continuation {
+            None => (outer_continuation, None),
+            Some(symbol) => {
+                let Some(fact) = self.checked.types.continuation_bindings.get(&symbol) else {
+                    return Some(ControlSignal::missing_checked_fact(
+                        "continuation binder is missing its checked ownership fact",
+                        handler.span,
+                    ));
+                };
+                let token = self.scheduler.allocate_continuation(
+                    self.current_task,
+                    outer_continuation,
+                    perform
+                        .checked_action
+                        .as_ref()
+                        .map_or(fact.action_output, |action| action.output),
+                );
+                handler_frame.insert(symbol, InterpValue::Continuation(token));
+                (Continuation::BlockValue, Some(token))
+            }
+        };
         let signal = self.execute_block(handler.body, &mut handler_frame);
         Some(match signal {
             ControlSignal::Apply(mut pending) => {
@@ -398,13 +439,26 @@ impl<'a> EvalContext<'a> {
                     pending.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Apply(pending)
             }
             ControlSignal::Checkpoint(pending) => ControlSignal::Checkpoint(pending),
-            ControlSignal::Resume(value) => self.apply_continuation(outer_continuation, value),
-            ControlSignal::Finish(value) => ControlSignal::Value(value),
+            ControlSignal::Resume(value) => {
+                self.resume_handler_continuation(outer_continuation, deferred, value, handler.span)
+            }
+            ControlSignal::Finish(value) => {
+                if let Some(token) = deferred
+                    && let Err(error) = self
+                        .scheduler
+                        .dispose_continuation(token, self.current_task)
+                {
+                    ControlSignal::runtime_fault(error.to_string(), handler.span)
+                } else {
+                    ControlSignal::Value(value)
+                }
+            }
             ControlSignal::Value(_) => ControlSignal::runtime_fault(
                 "handler arm completed without resume, finish, or never control flow",
                 handler.span,
@@ -419,6 +473,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Block(nested)
@@ -428,6 +483,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Expr(nested)
@@ -437,6 +493,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Call(nested)
@@ -447,6 +504,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Memory(nested)
@@ -456,6 +514,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Session(nested)
@@ -465,6 +524,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Perform(nested)
@@ -474,6 +534,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Console(nested)
@@ -483,6 +544,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Command(nested)
@@ -492,6 +554,7 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Model(nested)
@@ -501,11 +564,50 @@ impl<'a> EvalContext<'a> {
                     nested.continuation,
                     Continuation::HandlerDispatch {
                         outer: outer_continuation.into(),
+                        deferred,
                     },
                 );
                 ControlSignal::Host(nested)
             }
+            ControlSignal::Task(pending) => ControlSignal::Task(pending),
         })
+    }
+
+    pub(super) fn resume_handler_continuation(
+        &mut self,
+        outer: Continuation,
+        deferred: Option<crate::value::ContinuationTokenValue>,
+        value: InterpValue,
+        span: Span,
+    ) -> ControlSignal {
+        let continuation = match deferred {
+            None => outer,
+            Some(token) => match self.scheduler.consume_continuation(
+                token,
+                self.current_task,
+                crate::driver::scheduler::ContinuationTransfer::Resume,
+            ) {
+                Ok(consumed) => {
+                    if let Err(reason) = crate::value::contract::runtime::validate_value(
+                        self.checked,
+                        self.plan,
+                        &value,
+                        consumed.output,
+                        &self.storage_limits,
+                    ) {
+                        return ControlSignal::runtime_fault(
+                            format!(
+                                "continuation resume value violates its checked type: {reason}"
+                            ),
+                            span,
+                        );
+                    }
+                    consumed.continuation
+                }
+                Err(error) => return ControlSignal::runtime_fault(error.to_string(), span),
+            },
+        };
+        self.apply_continuation(continuation, value)
     }
 
     pub(super) fn continue_handle_signal(
@@ -621,6 +723,7 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
+                ControlSignal::Task(task) => return ControlSignal::Task(task),
                 other => {
                     if let Err(fault) = self.close_handler_scope(scope_id, span) {
                         return ControlSignal::Fault(Box::new(fault));
@@ -963,6 +1066,7 @@ fn active_handler_arm(
     arm: HirHandlerArmId,
     handler: &HirHandlerArm,
     body: HirBlockId,
+    continuation: Option<SymbolId>,
 ) -> ActiveHandlerArmRecord {
     ActiveHandlerArmRecord {
         arm,
@@ -977,6 +1081,7 @@ fn active_handler_arm(
         action: handler.action.action.clone(),
         action_symbol: resolved_symbol(&handler.action.action_symbol),
         patterns: handler.patterns.clone(),
+        continuation,
         body,
         scope: handler.scope,
         span: handler.span,

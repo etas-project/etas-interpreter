@@ -19,7 +19,7 @@ impl Drop for ProgramContinuation {
                     work.extend(outer.into_unique());
                 }
                 Continuation::CallBoundary { outer, .. }
-                | Continuation::HandlerDispatch { outer } => work.extend(outer.into_unique()),
+                | Continuation::HandlerDispatch { outer, .. } => work.extend(outer.into_unique()),
                 Continuation::HandleBoundary { inner, .. }
                 | Continuation::ReenterHandler { boundary: inner }
                 | Continuation::RestoreModelPolicy { inner, .. }

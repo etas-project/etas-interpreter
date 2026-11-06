@@ -27,7 +27,8 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Console(_)
             | ControlSignal::Command(_)
             | ControlSignal::Model(_)
-            | ControlSignal::Host(_)) => compose_signal_continuation(
+            | ControlSignal::Host(_)
+            | ControlSignal::Task(_)) => compose_signal_continuation(
                 signal,
                 Continuation::FieldReceiver {
                     expr,

@@ -77,7 +77,8 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
                 | ControlSignal::Model(_)
-                | ControlSignal::Host(_)) => {
+                | ControlSignal::Host(_)
+                | ControlSignal::Task(_)) => {
                     return compose_signal_continuation(
                         signal,
                         Continuation::CalleeEval {
@@ -146,7 +147,8 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
                 | ControlSignal::Model(_)
-                | ControlSignal::Host(_)) => {
+                | ControlSignal::Host(_)
+                | ControlSignal::Task(_)) => {
                     return compose_signal_continuation(
                         signal,
                         Continuation::CallArgs {
@@ -234,7 +236,8 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Console(_)
                 | ControlSignal::Command(_)
                 | ControlSignal::Model(_)
-                | ControlSignal::Host(_)) => {
+                | ControlSignal::Host(_)
+                | ControlSignal::Task(_)) => {
                     compose_signal_continuation(signal, Continuation::BlockValue)
                 }
                 ControlSignal::Resume(value) => ControlSignal::Resume(value),

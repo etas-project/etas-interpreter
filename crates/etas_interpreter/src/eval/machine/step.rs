@@ -475,6 +475,9 @@ impl EvalMachine {
                 ControlSignal::Host(pending) => {
                     return MachinePoll::Yield(PendingBoundary::Host(pending));
                 }
+                ControlSignal::Task(pending) => {
+                    return MachinePoll::Yield(PendingBoundary::Task(pending));
+                }
                 ControlSignal::Fault(fault) => return MachinePoll::Fault(*fault),
                 ControlSignal::Cancelled(cause) => return MachinePoll::Cancelled(cause),
                 ControlSignal::Resume(value) => {

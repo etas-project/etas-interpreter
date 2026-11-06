@@ -3,6 +3,7 @@ use etas_core::AnalysisDiagnosticCode;
 use crate::{
     control::{
         Continuation, ContinuationInput, ControlSignal, PendingContinuation, PendingPerform,
+        PendingTaskControl,
     },
     eval::{
         EvalContext,
@@ -16,7 +17,8 @@ use super::{
     dispatch,
     drive::{EvaluationOutcome, evaluation_failure},
     scheduler::{
-        AwaitDecision, ScheduledTask, SchedulerError, TaskHandle, TaskOutcome, TaskWakeup,
+        AwaitDecision, ScheduledTask, SchedulerError, TaskHandle, TaskOutcome, TaskResume,
+        TaskWakeup,
     },
 };
 
@@ -46,6 +48,50 @@ pub(super) async fn await_from_root(
 ) -> Result<ControlSignal, EvaluationOutcome> {
     let outcome = await_outcome(eval, host, target).await?;
     signal_from_outcome(outcome, continuation)
+}
+
+pub(super) async fn control_from_root(
+    eval: &mut EvalContext<'_>,
+    host: &dyn HostServices,
+    machine: &mut crate::eval::machine::EvalMachine,
+    control: PendingTaskControl,
+) -> Result<(), EvaluationOutcome> {
+    match control {
+        PendingTaskControl::Requeue { token, value, span } => {
+            let consumed = eval
+                .scheduler
+                .consume_continuation(
+                    token,
+                    crate::driver::scheduler::TaskIdentity::Root,
+                    crate::driver::scheduler::ContinuationTransfer::Requeue,
+                )
+                .map_err(|error| scheduler_failure(eval, error))?;
+            validate_continuation_value(eval, &value, consumed.output, span)?;
+            machine.transfer_from(token, consumed.continuation, value);
+            tokio::task::yield_now().await;
+            Ok(())
+        }
+        PendingTaskControl::Park { task, token, span } => {
+            let consumed = eval
+                .scheduler
+                .consume_continuation(
+                    token,
+                    crate::driver::scheduler::TaskIdentity::Root,
+                    crate::driver::scheduler::ContinuationTransfer::Park,
+                )
+                .map_err(|error| scheduler_failure(eval, error))?;
+            let outcome = await_outcome(eval, host, task).await?;
+            match outcome {
+                TaskOutcome::Completed(value) => {
+                    validate_continuation_value(eval, &value, consumed.output, span)?;
+                    machine.transfer_from(token, consumed.continuation, value);
+                    Ok(())
+                }
+                TaskOutcome::Failed(failure) => Err(EvaluationOutcome::Failed(failure)),
+                TaskOutcome::Cancelled(cause) => Err(EvaluationOutcome::Cancelled(cause)),
+            }
+        }
+    }
 }
 
 pub(super) async fn settle(
@@ -132,12 +178,38 @@ async fn drive_one(
             .waiting_continuation
             .take()
             .ok_or_else(|| task_fault(eval, "awakened task has no saved await continuation"))?;
-        match signal_from_outcome(outcome, continuation) {
-            Ok(signal) => task.machine.resume(signal),
-            Err(outcome) => {
-                finish_task(eval, handle, task, outcome)?;
-                return Ok(true);
-            }
+        match continuation {
+            TaskResume::Await(continuation) => match signal_from_outcome(outcome, continuation) {
+                Ok(signal) => task.machine.resume(signal),
+                Err(outcome) => {
+                    finish_task(eval, handle, task, outcome)?;
+                    return Ok(true);
+                }
+            },
+            TaskResume::Transfer {
+                token,
+                continuation,
+                output,
+                span,
+            } => match outcome {
+                TaskOutcome::Completed(value) => {
+                    if let Err(outcome) =
+                        validate_continuation_value(eval, &value, output, span)
+                    {
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    task.machine.transfer_from(token, continuation, value);
+                }
+                TaskOutcome::Failed(failure) => {
+                    finish_task(eval, handle, task, EvaluationOutcome::Failed(failure))?;
+                    return Ok(true);
+                }
+                TaskOutcome::Cancelled(cause) => {
+                    finish_task(eval, handle, task, EvaluationOutcome::Cancelled(cause))?;
+                    return Ok(true);
+                }
+            },
         }
     }
 
@@ -152,7 +224,8 @@ async fn drive_one(
                 task.handler_floor,
             ),
         };
-        let mut child = eval.scheduled_task_context(&program, &mut task.local, handler_floor);
+        let mut child =
+            eval.scheduled_task_context(&program, &mut task.local, handle.task, handler_floor);
         let span = crate::diagnostics::item_span(child.checked, child.entry_item);
         let readiness = if handler_floor == 0 {
             crate::host::validate_host_readiness(&child.plan, host.availability(), span)
@@ -202,6 +275,128 @@ async fn drive_one(
             MachinePoll::Yield(boundary) => boundary,
         };
 
+        if let PendingBoundary::Task(control) = boundary {
+            match *control {
+                PendingTaskControl::Requeue { token, value, span } => {
+                    let consumed = match child.scheduler.consume_continuation(
+                        token,
+                        crate::driver::scheduler::TaskIdentity::Scheduled(handle.task),
+                        crate::driver::scheduler::ContinuationTransfer::Requeue,
+                    ) {
+                        Ok(consumed) => consumed,
+                        Err(error) => {
+                            task.machine
+                                .resume(ControlSignal::runtime_fault(error.to_string(), span));
+                            continue;
+                        }
+                    };
+                    if let Err(outcome) =
+                        validate_continuation_value(&mut child, &value, consumed.output, span)
+                    {
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    task.machine
+                        .transfer_from(token, consumed.continuation, value);
+                    drop(child);
+                    eval.scheduler
+                        .restore_running(handle, task)
+                        .and_then(|()| eval.scheduler.requeue(handle))
+                        .map_err(|error| scheduler_failure(eval, error))?;
+                    tokio::task::yield_now().await;
+                    return Ok(true);
+                }
+                PendingTaskControl::Park {
+                    task: target,
+                    token,
+                    span,
+                } => {
+                    let consumed = match child.scheduler.consume_continuation(
+                        token,
+                        crate::driver::scheduler::TaskIdentity::Scheduled(handle.task),
+                        crate::driver::scheduler::ContinuationTransfer::Park,
+                    ) {
+                        Ok(consumed) => consumed,
+                        Err(error) => {
+                            task.machine
+                                .resume(ControlSignal::runtime_fault(error.to_string(), span));
+                            continue;
+                        }
+                    };
+                    task.waiting_continuation = Some(TaskResume::Transfer {
+                        token,
+                        continuation: consumed.continuation,
+                        output: consumed.output,
+                        span,
+                    });
+                    drop(child);
+                    eval.scheduler
+                        .restore_running(handle, task)
+                        .map_err(|error| scheduler_failure(eval, error))?;
+                    match eval
+                        .scheduler
+                        .await_task(handle, target)
+                        .map_err(|error| scheduler_failure(eval, error))?
+                    {
+                        AwaitDecision::Parked => return Ok(true),
+                        AwaitDecision::Ready(outcome) => {
+                            task = eval
+                                .scheduler
+                                .take_running(handle)
+                                .map_err(|error| scheduler_failure(eval, error))?;
+                            let continuation =
+                                task.waiting_continuation.take().ok_or_else(|| {
+                                    task_fault(eval, "ready parked task has no saved continuation")
+                                })?;
+                            let TaskResume::Transfer {
+                                token,
+                                continuation,
+                                output,
+                                span,
+                            } = continuation
+                            else {
+                                return Err(task_fault(
+                                    eval,
+                                    "ready parked task has an await continuation",
+                                ));
+                            };
+                            match outcome {
+                                TaskOutcome::Completed(value) => {
+                                    if let Err(outcome) =
+                                        validate_continuation_value(eval, &value, output, span)
+                                    {
+                                        finish_task(eval, handle, task, outcome)?;
+                                        return Ok(true);
+                                    }
+                                    task.machine.transfer_from(token, continuation, value);
+                                    continue;
+                                }
+                                TaskOutcome::Failed(failure) => {
+                                    finish_task(
+                                        eval,
+                                        handle,
+                                        task,
+                                        EvaluationOutcome::Failed(failure),
+                                    )?;
+                                    return Ok(true);
+                                }
+                                TaskOutcome::Cancelled(cause) => {
+                                    finish_task(
+                                        eval,
+                                        handle,
+                                        task,
+                                        EvaluationOutcome::Cancelled(cause),
+                                    )?;
+                                    return Ok(true);
+                                }
+                            }
+                        }
+                    }
+                }
+            }
+        }
+
         if let Some(diagnostic) =
             crate::host::validate_boundary_readiness(&boundary, host.availability())
         {
@@ -238,7 +433,7 @@ async fn drive_one(
                         continue;
                     }
                     Ok(None) => {
-                        task.waiting_continuation = Some(perform.continuation);
+                        task.waiting_continuation = Some(TaskResume::Await(perform.continuation));
                         drop(child);
                         eval.scheduler
                             .restore_running(handle, task)
@@ -353,6 +548,7 @@ async fn drive_one(
                 signal
             }
             PendingBoundary::Perform(_) => unreachable!("perform handled above"),
+            PendingBoundary::Task(_) => unreachable!("task control handled above"),
         };
         task.machine.resume(signal);
     }
@@ -408,6 +604,30 @@ fn scheduler_deadlock(eval: &mut EvalContext<'_>) -> EvaluationOutcome {
 
 fn scheduler_failure(eval: &mut EvalContext<'_>, error: SchedulerError) -> EvaluationOutcome {
     task_fault(eval, error.to_string())
+}
+
+fn validate_continuation_value(
+    eval: &mut EvalContext<'_>,
+    value: &InterpValue,
+    expected: etas_types::TypeId,
+    span: etas_core::Span,
+) -> Result<(), EvaluationOutcome> {
+    crate::value::contract::runtime::validate_value(
+        eval.checked,
+        eval.plan,
+        value,
+        expected,
+        &eval.storage_limits,
+    )
+    .map_err(|reason| {
+        let fault = crate::control::ExecutionFault::new(
+            AnalysisDiagnosticCode::InvalidArguments,
+            span,
+            format!("continuation transfer value violates its checked type: {reason}"),
+        );
+        eval.diagnostics.push(fault.clone().into_diagnostic());
+        EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+    })
 }
 
 fn task_fault(eval: &mut EvalContext<'_>, message: impl Into<String>) -> EvaluationOutcome {

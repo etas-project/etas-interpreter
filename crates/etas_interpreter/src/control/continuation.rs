@@ -318,6 +318,7 @@ pub enum Continuation {
     },
     HandlerDispatch {
         outer: ContinuationLink,
+        deferred: Option<crate::value::ContinuationTokenValue>,
     },
     ReenterHandler {
         boundary: ContinuationLink,
@@ -383,7 +384,7 @@ impl Continuation {
                 Self::RestoreModelPolicy { inner, .. }
                 | Self::ReenterHandler { boundary: inner }
                 | Self::ScopedModelPolicy { inner, .. } => pending.push(inner),
-                Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer } => {
+                Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer, .. } => {
                     pending.push(outer);
                 }
                 Self::Chain { inner, outer } => {
@@ -407,7 +408,7 @@ impl Continuation {
                 Self::HandleBoundary { inner, .. }
                 | Self::RestoreModelPolicy { inner, .. }
                 | Self::ScopedModelPolicy { inner, .. } => pending.push(inner),
-                Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer } => {
+                Self::CallBoundary { outer, .. } | Self::HandlerDispatch { outer, .. } => {
                     pending.push(outer);
                 }
                 Self::Chain { inner, outer } => {

@@ -28,7 +28,10 @@ fn chain(depth: usize, mode: usize) -> Continuation {
             span: crate::testing::synthetic_span(),
             outer: node.into(),
         },
-        1 => Continuation::HandlerDispatch { outer: node.into() },
+        1 => Continuation::HandlerDispatch {
+            outer: node.into(),
+            deferred: None,
+        },
         _ => Continuation::Chain {
             inner: node.into(),
             outer: Continuation::Finish.into(),
@@ -51,7 +54,7 @@ fn runtime_continuation_clone_shares_structure_without_recursive_copy() {
             for _ in 0..depth {
                 cursor = match cursor {
                     Continuation::CallBoundary { outer, .. }
-                    | Continuation::HandlerDispatch { outer } => outer,
+                    | Continuation::HandlerDispatch { outer, .. } => outer,
                     Continuation::Chain { inner, outer } => {
                         assert!(matches!(**outer, Continuation::Finish));
                         inner

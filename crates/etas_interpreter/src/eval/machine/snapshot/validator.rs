@@ -516,9 +516,17 @@ impl<'a> SnapshotValidator<'a> {
                 "{context} is missing checked handler selector facts"
             ));
         };
+        let expected_continuation =
+            expected
+                .continuation
+                .and_then(|pat| match self.checked.hir.pats[pat] {
+                    etas_hir::HirPat::Binding { symbol, .. } => Some(symbol),
+                    _ => None,
+                });
         if arm.body != expected.body
             || arm.scope != expected.scope
             || arm.patterns != expected.patterns
+            || arm.continuation != expected_continuation
             || arm.action_symbol != Some(fact.action_symbol)
             || arm.action != expected.action.action
             || arm.span != expected.span
@@ -539,6 +547,9 @@ impl<'a> SnapshotValidator<'a> {
         }
         for pat in &arm.patterns {
             self.pat(*pat, &format!("{context} pattern"))?;
+        }
+        if let Some(symbol) = arm.continuation {
+            self.symbol(symbol, &format!("{context} continuation symbol"))?;
         }
         self.block(arm.body, &format!("{context} body"))?;
         self.scope(arm.scope, &format!("{context} scope"))
@@ -1764,6 +1775,7 @@ flow main() -> unit { perform Gate.request() with { Gate.request() => resume; };
                     action: "request".to_owned(),
                     action_symbol: Some(checked.types.handler_actions[&arm].action_symbol),
                     patterns: handler.patterns.clone(),
+                    continuation: None,
                     body: handler.body,
                     scope: ScopeId(u32::MAX),
                     span: handler.span,

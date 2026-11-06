@@ -24,7 +24,10 @@ fn shared_capture_preserves_parent_identity_and_freezes_live_frames() {
         span: crate::testing::synthetic_span(),
         outer: leaf.clone(),
     };
-    let second = Continuation::HandlerDispatch { outer: leaf };
+    let second = Continuation::HandlerDispatch {
+        outer: leaf,
+        deferred: None,
+    };
     let (saved_first, saved_second) = {
         let mut context = CaptureContext::default();
         (
@@ -337,7 +340,10 @@ fn mixed_capture_preserves_wrapper_metadata_and_detaches_live_frames() {
                 span: crate::testing::synthetic_span(),
                 outer: node.into(),
             },
-            1 => Continuation::HandlerDispatch { outer: node.into() },
+            1 => Continuation::HandlerDispatch {
+                outer: node.into(),
+                deferred: None,
+            },
             2 => Continuation::HandleBoundary {
                 scope_id: HandlerScopeId(i as u32),
                 inner: node.into(),

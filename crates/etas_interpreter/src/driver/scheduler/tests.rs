@@ -103,3 +103,41 @@ fn dropped_handles_do_not_detach_tasks_and_primary_failure_uses_source_order() {
     assert_eq!(scheduler.primary_failure(), Some(primary));
     assert!(!scheduler.has_unsettled_tasks());
 }
+
+#[test]
+fn continuation_tokens_are_owned_and_consumed_once() {
+    let mut scheduler = TaskScheduler::new(TaskScopeId(12), NonZeroUsize::new(1).unwrap());
+    let token = scheduler.allocate_continuation(
+        TaskIdentity::Root,
+        crate::control::Continuation::Return,
+        etas_types::TypeId(0),
+    );
+    let consumed = scheduler
+        .consume_continuation(token, TaskIdentity::Root, ContinuationTransfer::Resume)
+        .unwrap();
+    assert!(matches!(
+        consumed.continuation,
+        crate::control::Continuation::Return
+    ));
+    assert!(matches!(
+        scheduler.consume_continuation(
+            token,
+            TaskIdentity::Root,
+            ContinuationTransfer::Resume
+        ),
+        Err(SchedulerError::ContinuationConsumed)
+    ));
+
+    let foreign = crate::value::ContinuationTokenValue::new(
+        TaskScopeId(99),
+        ContinuationId(token.continuation.0),
+    );
+    assert!(matches!(
+        scheduler.consume_continuation(
+            foreign,
+            TaskIdentity::Root,
+            ContinuationTransfer::Resume
+        ),
+        Err(SchedulerError::WrongOwner)
+    ));
+}
