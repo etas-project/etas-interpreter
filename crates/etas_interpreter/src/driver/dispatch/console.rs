@@ -34,20 +34,6 @@ pub(in crate::driver) struct CompletedConsoleDispatch {
     completion: HostCompletion<ConsoleResponse>,
 }
 
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    console: PendingConsole,
-) -> Option<ControlSignal> {
-    match begin(eval, host, console).await {
-        ConsoleDispatchStart::Complete(signal) => signal,
-        ConsoleDispatchStart::Pending(pending) => {
-            let completion = pending.poll().await;
-            finish(eval, completion)
-        }
-    }
-}
-
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,

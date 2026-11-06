@@ -18,7 +18,7 @@ use super::{
     dispatch,
     drive::{EvaluationOutcome, evaluation_failure},
     scheduler::{
-        AwaitDecision, CompletedTaskHost, ScheduledTask, SchedulerError, TaskHandle,
+        AwaitDecision, CompletedTaskHost, HostOwner, ScheduledTask, SchedulerError, TaskHandle,
         TaskHostReactor, TaskOutcome, TaskResume, TaskWakeup,
     },
 };
@@ -145,6 +145,29 @@ pub(super) async fn settle<'host>(
     primary_failure(eval).unwrap_or(root)
 }
 
+pub(super) async fn await_root_host<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    reactor: &mut TaskHostReactor<'host>,
+) -> Result<CompletedTaskHost, EvaluationOutcome> {
+    loop {
+        if let Some(completed) = reactor.take_root_completed() {
+            return Ok(completed);
+        }
+        if let Some(failure) = primary_failure(eval) {
+            eval.scheduler
+                .cancel_unsettled(etas_host::execution::CancellationReason::ChildFailed)
+                .map_err(|error| scheduler_failure(eval, error))?;
+            return Err(failure);
+        }
+        match drive_one(eval, host, reactor).await {
+            Ok(true) => {}
+            Ok(false) => return Err(scheduler_deadlock(eval)),
+            Err(outcome) => return Err(outcome),
+        }
+    }
+}
+
 async fn await_outcome<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,
@@ -179,14 +202,19 @@ async fn drive_one<'host>(
     host: &'host dyn HostServices,
     reactor: &mut TaskHostReactor<'host>,
 ) -> Result<bool, EvaluationOutcome> {
-    if let Some((handle, operation)) = reactor.poll_ready().await {
-        wake_from_host(eval, handle, operation)?;
+    if let Some((owner, operation)) = reactor.poll_ready().await {
+        match owner {
+            HostOwner::Root => return Ok(true),
+            HostOwner::Task(handle) => wake_from_host(eval, handle, operation)?,
+        }
     }
     let Some(handle) = eval.scheduler.dispatch_ready() else {
-        let Some((handle, operation)) = reactor.wait_next().await else {
+        let Some((owner, operation)) = reactor.wait_next().await else {
             return Ok(false);
         };
-        wake_from_host(eval, handle, operation)?;
+        if let HostOwner::Task(handle) = owner {
+            wake_from_host(eval, handle, operation)?;
+        }
         return Ok(true);
     };
     let wakeup = eval
@@ -605,7 +633,7 @@ async fn drive_one<'host>(
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_model(handle, pending);
+                        let registered = reactor.start_model(HostOwner::Task(handle), pending);
                         assert_eq!(
                             registered, operation,
                             "registered host operation changed id"
@@ -630,7 +658,7 @@ async fn drive_one<'host>(
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_tool(handle, pending);
+                        let registered = reactor.start_tool(HostOwner::Task(handle), pending);
                         assert_eq!(
                             registered, operation,
                             "registered host operation changed id"
@@ -669,7 +697,7 @@ async fn drive_one<'host>(
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_console(handle, pending);
+                        let registered = reactor.start_console(HostOwner::Task(handle), pending);
                         assert_eq!(
                             registered, operation,
                             "registered host operation changed id"
@@ -695,7 +723,7 @@ async fn drive_one<'host>(
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_command(handle, pending);
+                        let registered = reactor.start_command(HostOwner::Task(handle), pending);
                         assert_eq!(
                             registered, operation,
                             "registered host operation changed id"
@@ -720,7 +748,7 @@ async fn drive_one<'host>(
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_host(handle, pending);
+                        let registered = reactor.start_host(HostOwner::Task(handle), pending);
                         assert_eq!(
                             registered, operation,
                             "registered host operation changed id"

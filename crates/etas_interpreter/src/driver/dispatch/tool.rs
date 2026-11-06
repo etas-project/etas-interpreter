@@ -29,21 +29,6 @@ pub(in crate::driver) struct CompletedToolHostDispatch {
     completion: HostCompletion<ToolResponse>,
 }
 
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    pending: PendingTool,
-    machine: &mut EvalMachine,
-) -> bool {
-    match begin(eval, host, pending, machine).await {
-        ToolDispatchStart::Complete(complete) => complete,
-        ToolDispatchStart::Pending(pending) => {
-            finish(eval, machine, pending.poll().await);
-            true
-        }
-    }
-}
-
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,

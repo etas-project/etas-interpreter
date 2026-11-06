@@ -7,6 +7,12 @@ use std::{
 
 use super::{TaskHandle, TaskId};
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub(in crate::driver) enum HostOwner {
+    Root,
+    Task(TaskHandle),
+}
+
 pub(in crate::driver) enum CompletedTaskHost {
     Console(crate::driver::dispatch::console::CompletedConsoleDispatch),
     Command(crate::driver::dispatch::command::CompletedCommandDispatch),
@@ -16,7 +22,7 @@ pub(in crate::driver) enum CompletedTaskHost {
 }
 
 struct PendingTaskHost<'host> {
-    handle: TaskHandle,
+    owner: HostOwner,
     operation: etas_host::execution::OperationId,
     future: Pin<Box<dyn Future<Output = CompletedTaskHost> + 'host>>,
 }
@@ -24,6 +30,7 @@ struct PendingTaskHost<'host> {
 pub(in crate::driver) struct TaskHostReactor<'host> {
     pending: VecDeque<PendingTaskHost<'host>>,
     completed: BTreeMap<TaskId, CompletedTaskHost>,
+    root_completed: Option<CompletedTaskHost>,
 }
 
 impl<'host> TaskHostReactor<'host> {
@@ -31,17 +38,18 @@ impl<'host> TaskHostReactor<'host> {
         Self {
             pending: VecDeque::new(),
             completed: BTreeMap::new(),
+            root_completed: None,
         }
     }
 
     pub(in crate::driver) fn start_console(
         &mut self,
-        handle: TaskHandle,
+        owner: HostOwner,
         pending: crate::driver::dispatch::console::PendingConsoleDispatch<'host>,
     ) -> etas_host::execution::OperationId {
         let operation = pending.operation_id();
         self.pending.push_back(PendingTaskHost {
-            handle,
+            owner,
             operation,
             future: Box::pin(async move { CompletedTaskHost::Console(pending.poll().await) }),
         });
@@ -50,12 +58,12 @@ impl<'host> TaskHostReactor<'host> {
 
     pub(in crate::driver) fn start_command(
         &mut self,
-        handle: TaskHandle,
+        owner: HostOwner,
         pending: crate::driver::dispatch::command::PendingCommandDispatch<'host>,
     ) -> etas_host::execution::OperationId {
         let operation = pending.operation_id();
         self.pending.push_back(PendingTaskHost {
-            handle,
+            owner,
             operation,
             future: Box::pin(async move { CompletedTaskHost::Command(pending.poll().await) }),
         });
@@ -64,12 +72,12 @@ impl<'host> TaskHostReactor<'host> {
 
     pub(in crate::driver) fn start_host(
         &mut self,
-        handle: TaskHandle,
+        owner: HostOwner,
         pending: crate::driver::dispatch::host::PendingHostBoundaryDispatch<'host>,
     ) -> etas_host::execution::OperationId {
         let operation = pending.operation_id();
         self.pending.push_back(PendingTaskHost {
-            handle,
+            owner,
             operation,
             future: Box::pin(async move { CompletedTaskHost::Host(pending.poll().await) }),
         });
@@ -78,12 +86,12 @@ impl<'host> TaskHostReactor<'host> {
 
     pub(in crate::driver) fn start_tool(
         &mut self,
-        handle: TaskHandle,
+        owner: HostOwner,
         pending: crate::driver::dispatch::tool::PendingToolHostDispatch<'host>,
     ) -> etas_host::execution::OperationId {
         let operation = pending.operation_id();
         self.pending.push_back(PendingTaskHost {
-            handle,
+            owner,
             operation,
             future: Box::pin(async move { CompletedTaskHost::Tool(pending.poll().await) }),
         });
@@ -92,12 +100,12 @@ impl<'host> TaskHostReactor<'host> {
 
     pub(in crate::driver) fn start_model(
         &mut self,
-        handle: TaskHandle,
+        owner: HostOwner,
         pending: crate::driver::dispatch::model::PendingModelHostDispatch<'host>,
     ) -> etas_host::execution::OperationId {
         let operation = pending.operation_id();
         self.pending.push_back(PendingTaskHost {
-            handle,
+            owner,
             operation,
             future: Box::pin(async move { CompletedTaskHost::Model(pending.poll().await) }),
         });
@@ -111,15 +119,19 @@ impl<'host> TaskHostReactor<'host> {
         self.completed.remove(&handle.task)
     }
 
+    pub(in crate::driver) fn take_root_completed(&mut self) -> Option<CompletedTaskHost> {
+        self.root_completed.take()
+    }
+
     pub(in crate::driver) async fn poll_ready(
         &mut self,
-    ) -> Option<(TaskHandle, etas_host::execution::OperationId)> {
+    ) -> Option<(HostOwner, etas_host::execution::OperationId)> {
         std::future::poll_fn(|cx| Poll::Ready(self.poll_one(cx))).await
     }
 
     pub(in crate::driver) async fn wait_next(
         &mut self,
-    ) -> Option<(TaskHandle, etas_host::execution::OperationId)> {
+    ) -> Option<(HostOwner, etas_host::execution::OperationId)> {
         std::future::poll_fn(|cx| {
             if let Some(completed) = self.poll_one(cx) {
                 Poll::Ready(Some(completed))
@@ -135,19 +147,27 @@ impl<'host> TaskHostReactor<'host> {
     fn poll_one(
         &mut self,
         cx: &mut Context<'_>,
-    ) -> Option<(TaskHandle, etas_host::execution::OperationId)> {
+    ) -> Option<(HostOwner, etas_host::execution::OperationId)> {
         let pending = self.pending.len();
         for _ in 0..pending {
             let mut operation = self.pending.pop_front().expect("pending host operation");
             match operation.future.as_mut().poll(cx) {
                 Poll::Ready(completed) => {
-                    assert!(
-                        self.completed
-                            .insert(operation.handle.task, completed)
-                            .is_none(),
-                        "task cannot own two completed host operations"
-                    );
-                    return Some((operation.handle, operation.operation));
+                    match operation.owner {
+                        HostOwner::Root => {
+                            assert!(
+                                self.root_completed.replace(completed).is_none(),
+                                "root cannot own two completed host operations"
+                            );
+                        }
+                        HostOwner::Task(handle) => {
+                            assert!(
+                                self.completed.insert(handle.task, completed).is_none(),
+                                "task cannot own two completed host operations"
+                            );
+                        }
+                    }
+                    return Some((operation.owner, operation.operation));
                 }
                 Poll::Pending => self.pending.push_back(operation),
             }

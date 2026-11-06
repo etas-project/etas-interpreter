@@ -59,21 +59,6 @@ enum HostBoundaryCompletion {
     Browser(HostCompletion<BrowserProtocolResponse>),
 }
 
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    boundary: PendingHostBoundary,
-    machine: &mut EvalMachine,
-) -> Option<ControlSignal> {
-    match begin(eval, host, boundary, machine).await {
-        HostBoundaryDispatchStart::Complete(signal) => signal,
-        HostBoundaryDispatchStart::Pending(pending) => {
-            let completed = pending.poll().await;
-            finish(eval, machine, completed)
-        }
-    }
-}
-
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,

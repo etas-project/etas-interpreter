@@ -38,21 +38,6 @@ pub(in crate::driver) struct CompletedModelHostDispatch {
     completion: HostCompletion<ModelResponse>,
 }
 
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    pending: &crate::control::PendingModel,
-    machine: &mut EvalMachine,
-) -> bool {
-    match begin(eval, host, pending.clone(), machine).await {
-        ModelDispatchStart::Complete(complete) => complete,
-        ModelDispatchStart::Pending(pending) => {
-            finish(eval, machine, pending.poll().await);
-            true
-        }
-    }
-}
-
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,

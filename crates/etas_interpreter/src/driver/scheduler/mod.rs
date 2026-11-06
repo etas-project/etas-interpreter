@@ -8,7 +8,7 @@ use std::{
 };
 
 pub(crate) use continuation::{ConsumedContinuation, ContinuationTransfer};
-pub(in crate::driver) use host::{CompletedTaskHost, TaskHostReactor};
+pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, TaskHostReactor};
 pub(crate) use task::{
     ContinuationId, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome, TaskResume,
     TaskScopeId, TaskState, TaskWait, TaskWaiter,

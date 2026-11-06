@@ -262,3 +262,62 @@ flow main() -> i32 {
     assert_eq!(host.console_call_count(), 2);
     assert_eq!(host.stdout_text(), "first\nsecond\n");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn the_root_waiting_on_console_keeps_driving_its_children() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.task.{run, start, await, Scheduler};
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let child = start(() => {
+            println("child")?;
+            return 2;
+        });
+        println("root")?;
+        return await(child) + 1;
+    });
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let gate = host.pause_console_completion();
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+
+    let (result, both_started) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            let both_started = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                while host.console_call_count() < 2 {
+                    gate.started.notified().await;
+                }
+            })
+            .await
+            .is_ok();
+            gate.release.add_permits(2);
+            both_started
+        })
+    })
+    .await
+    .expect("the child Host operation should start while the root operation is pending");
+    let result = result.unwrap();
+
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert!(
+        both_started,
+        "expected root and child Console calls, observed {}",
+        host.console_call_count()
+    );
+    assert_eq!(result.value(), Some(&InterpValue::i32(3)));
+    assert_eq!(host.console_call_count(), 2);
+    assert_eq!(host.stdout_text(), "root\nchild\n");
+}
