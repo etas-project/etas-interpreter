@@ -340,6 +340,15 @@ async fn drive_one<'host>(
                     dispatch::model::finish(&mut child, &mut task.machine, completed);
                     continue;
                 }
+                CompletedTaskHost::Approval(completed) => {
+                    let Some(signal) = dispatch::approval::finish(&mut child, completed) else {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    };
+                    signal
+                }
             };
             task.machine.resume(signal);
             continue;
@@ -595,20 +604,37 @@ async fn drive_one<'host>(
                 match dispatch::compiler::dispatch(&mut child, host, *perform).await {
                     Ok(signal) => signal,
                     Err(perform) => {
-                        let Some(signal) = dispatch::approval::dispatch(
+                        match dispatch::approval::begin(
                             &mut child,
                             host,
                             *perform,
                             &mut task.machine,
-                        )
-                        .await
-                        else {
-                            let outcome = evaluation_failure(&mut child);
-                            drop(child);
-                            finish_task(eval, handle, task, outcome)?;
-                            return Ok(true);
-                        };
-                        signal
+                        ) {
+                            dispatch::approval::ApprovalDispatchStart::Complete(Some(signal)) => {
+                                signal
+                            }
+                            dispatch::approval::ApprovalDispatchStart::Complete(None) => {
+                                let outcome = evaluation_failure(&mut child);
+                                drop(child);
+                                finish_task(eval, handle, task, outcome)?;
+                                return Ok(true);
+                            }
+                            dispatch::approval::ApprovalDispatchStart::Pending(pending) => {
+                                let operation = pending.operation_id();
+                                drop(child);
+                                eval.scheduler
+                                    .restore_running(handle, task)
+                                    .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                                    .map_err(|error| scheduler_failure(eval, error))?;
+                                let registered =
+                                    reactor.start_approval(HostOwner::Task(handle), pending);
+                                assert_eq!(
+                                    registered, operation,
+                                    "registered host operation changed id"
+                                );
+                                return Ok(true);
+                            }
+                        }
                     }
                 }
             };

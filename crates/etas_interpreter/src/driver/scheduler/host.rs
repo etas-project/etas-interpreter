@@ -19,6 +19,7 @@ pub(in crate::driver) enum CompletedTaskHost {
     Host(crate::driver::dispatch::host::CompletedHostBoundaryDispatch),
     Tool(crate::driver::dispatch::tool::CompletedToolHostDispatch),
     Model(crate::driver::dispatch::model::CompletedModelHostDispatch),
+    Approval(crate::driver::dispatch::approval::CompletedApprovalDispatch),
 }
 
 struct PendingTaskHost<'host> {
@@ -108,6 +109,20 @@ impl<'host> TaskHostReactor<'host> {
             owner,
             operation,
             future: Box::pin(async move { CompletedTaskHost::Model(pending.poll().await) }),
+        });
+        operation
+    }
+
+    pub(in crate::driver) fn start_approval(
+        &mut self,
+        owner: HostOwner,
+        pending: crate::driver::dispatch::approval::PendingApprovalDispatch<'host>,
+    ) -> etas_host::execution::OperationId {
+        let operation = pending.operation_id();
+        self.pending.push_back(PendingTaskHost {
+            owner,
+            operation,
+            future: Box::pin(async move { CompletedTaskHost::Approval(pending.poll().await) }),
         });
         operation
     }

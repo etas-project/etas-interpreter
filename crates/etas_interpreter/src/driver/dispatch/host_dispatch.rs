@@ -12,6 +12,9 @@ use crate::{eval::EvalContext, orchestration::WorkflowEvent};
 
 pub(super) struct HostDispatch;
 
+pub(in crate::driver) type ApprovalCall<'host> =
+    crate::host::HostFuture<'host, Result<ApprovalResponse, HostError>>;
+
 pub(in crate::driver) struct PendingHostOperation<Response, Call> {
     request_id: HostRequestId,
     operation: etas_host::execution::OperationRegistration,
@@ -203,7 +206,22 @@ impl HostDispatch {
         call: Dispatch,
     ) -> Result<ApprovalResponse, HostError>
     where
-        Call: Future<Output = Result<ApprovalResponse, HostError>>,
+        Call: Future<Output = Result<ApprovalResponse, HostError>> + Send,
+        Dispatch: FnOnce(etas_host::execution::OperationContext) -> Call,
+    {
+        let pending = Self::begin_approval(eval, request, authority, call)?;
+        let completion = Self::poll(pending).await;
+        Self::finish(eval, completion)
+    }
+
+    pub(in crate::driver) fn begin_approval<'host, Call, Dispatch>(
+        eval: &mut EvalContext<'_>,
+        request: etas_host::ApprovalRequest,
+        authority: etas_host::AuthorityContext,
+        call: Dispatch,
+    ) -> Result<PendingHostOperation<ApprovalResponse, ApprovalCall<'host>>, HostError>
+    where
+        Call: Future<Output = Result<ApprovalResponse, HostError>> + Send + 'host,
         Dispatch: FnOnce(etas_host::execution::OperationContext) -> Call,
     {
         let id = request.id;
@@ -219,12 +237,15 @@ impl HostDispatch {
             }));
         let expected = request;
         let budget = eval.host_budget();
-        let checked_call = |operation| async move {
-            let response = await_approval_response(call(operation), budget).await?;
-            validate_approval_response(&expected, &response)?;
-            Ok(response)
+        let checked_call = move |operation| {
+            let call = call(operation);
+            Box::pin(async move {
+                let response = await_approval_response(call, budget).await?;
+                validate_approval_response(&expected, &response)?;
+                Ok(response)
+            }) as ApprovalCall<'host>
         };
-        Self::execute(
+        Self::begin(
             eval,
             id,
             HostRequestKind::Approval,
@@ -233,7 +254,6 @@ impl HostDispatch {
             trace,
             checked_call,
         )
-        .await
     }
 }
 

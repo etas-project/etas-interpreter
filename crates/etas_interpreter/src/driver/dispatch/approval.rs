@@ -7,14 +7,33 @@ use crate::{
     value::InterpValue,
 };
 
-use super::host_dispatch::HostDispatch;
+use super::host_dispatch::{ApprovalCall, HostCompletion, HostDispatch, PendingHostOperation};
 
-pub(in crate::driver) async fn dispatch(
+pub(in crate::driver) enum ApprovalDispatchStart<'host> {
+    Complete(Option<ControlSignal>),
+    Pending(PendingApprovalDispatch<'host>),
+}
+
+pub(in crate::driver) struct PendingApprovalDispatch<'host> {
+    perform: PendingPerform,
+    key: etas_host::replay::ReplayFingerprint,
+    request_id: etas_host::HostRequestId,
+    pending: PendingHostOperation<etas_host::ApprovalResponse, ApprovalCall<'host>>,
+}
+
+pub(in crate::driver) struct CompletedApprovalDispatch {
+    perform: PendingPerform,
+    key: etas_host::replay::ReplayFingerprint,
+    request_id: etas_host::HostRequestId,
+    completion: HostCompletion<etas_host::ApprovalResponse>,
+}
+
+pub(in crate::driver) fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
     perform: PendingPerform,
     machine: &mut EvalMachine,
-) -> Option<ControlSignal> {
+) -> ApprovalDispatchStart<'host> {
     if perform.error_type.is_some() {
         let diagnostic = crate::diagnostics::unhandled_error_perform(eval.checked, &perform);
         if let Some(signal) = machine.retry_boundary_failure(
@@ -23,19 +42,21 @@ pub(in crate::driver) async fn dispatch(
             perform.span,
             diagnostic.message.clone(),
         ) {
-            return Some(signal);
+            return ApprovalDispatchStart::Complete(Some(signal));
         }
         eval.diagnostics.push(diagnostic);
-        return None;
+        return ApprovalDispatchStart::Complete(None);
     }
     let (key, request) = match eval.approval_request_for(&perform) {
         Ok(Some(request)) => request,
         Ok(None) => {
             eval.diagnostics
                 .push(crate::diagnostics::unhandled_effect_action(&perform));
-            return None;
+            return ApprovalDispatchStart::Complete(None);
         }
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(fault) => {
+            return ApprovalDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(fault))));
+        }
     };
     match eval.completed_host_boundary_result(
         &crate::orchestration::BoundaryOccurrenceId::HostRequest(request.id),
@@ -43,9 +64,15 @@ pub(in crate::driver) async fn dispatch(
         &key,
         perform.span,
     ) {
-        Ok(Some(value)) => return Some(eval.resume_perform_signal(perform, value)),
+        Ok(Some(value)) => {
+            return ApprovalDispatchStart::Complete(Some(
+                eval.resume_perform_signal(perform, value),
+            ));
+        }
         Ok(None) => (),
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(fault) => {
+            return ApprovalDispatchStart::Complete(Some(ControlSignal::Fault(Box::new(fault))));
+        }
     }
     let request_id = request.id;
     if let Err(error) = eval.host_budget().check_time() {
@@ -54,14 +81,33 @@ pub(in crate::driver) async fn dispatch(
             perform.span,
             format!("approval host boundary failed: {}", error.message),
         ));
-        return None;
+        return ApprovalDispatchStart::Complete(None);
     }
     let authority = eval.host_authority();
-    match HostDispatch::execute_approval(eval, request.clone(), authority, |operation| {
+    match HostDispatch::begin_approval(eval, request.clone(), authority, |operation| {
         host.approval(operation, request)
-    })
-    .await
-    {
+    }) {
+        Ok(pending) => ApprovalDispatchStart::Pending(PendingApprovalDispatch {
+            perform,
+            key,
+            request_id,
+            pending,
+        }),
+        Err(error) => ApprovalDispatchStart::Complete(finish_error(eval, perform, error)),
+    }
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    completed: CompletedApprovalDispatch,
+) -> Option<ControlSignal> {
+    let CompletedApprovalDispatch {
+        perform,
+        key,
+        request_id,
+        completion,
+    } = completed;
+    match HostDispatch::finish(eval, completion) {
         Ok(response) => {
             let approved = matches!(
                 response.decision,
@@ -82,16 +128,37 @@ pub(in crate::driver) async fn dispatch(
             }
             Some(eval.resume_perform_signal(perform, value))
         }
-        Err(error) => {
-            if let Some(signal) = eval.cancellation_signal(perform.span) {
-                return Some(signal);
-            }
-            eval.diagnostics.push(Diagnostic::analysis(
-                AnalysisDiagnosticCode::UnhandledRuntimeError,
-                perform.span,
-                format!("approval host boundary failed: {}", error.message),
-            ));
-            None
+        Err(error) => finish_error(eval, perform, error),
+    }
+}
+
+fn finish_error(
+    eval: &mut EvalContext<'_>,
+    perform: PendingPerform,
+    error: etas_host::HostError,
+) -> Option<ControlSignal> {
+    if let Some(signal) = eval.cancellation_signal(perform.span) {
+        return Some(signal);
+    }
+    eval.diagnostics.push(Diagnostic::analysis(
+        AnalysisDiagnosticCode::UnhandledRuntimeError,
+        perform.span,
+        format!("approval host boundary failed: {}", error.message),
+    ));
+    None
+}
+
+impl PendingApprovalDispatch<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.pending.operation_id()
+    }
+
+    pub(in crate::driver) async fn poll(self) -> CompletedApprovalDispatch {
+        CompletedApprovalDispatch {
+            perform: self.perform,
+            key: self.key,
+            request_id: self.request_id,
+            completion: HostDispatch::poll(self.pending).await,
         }
     }
 }

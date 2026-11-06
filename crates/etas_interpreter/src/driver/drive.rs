@@ -333,12 +333,41 @@ async fn drive_scope<'host>(
                     match dispatch::compiler::dispatch(eval, host, *perform).await {
                         Ok(signal) => signal,
                         Err(perform) => {
-                            let Some(signal) =
-                                dispatch::approval::dispatch(eval, host, *perform, machine).await
-                            else {
-                                return ScopeOutcome::Finished(evaluation_failure(eval));
-                            };
-                            signal
+                            match dispatch::approval::begin(eval, host, *perform, machine) {
+                                dispatch::approval::ApprovalDispatchStart::Complete(Some(
+                                    signal,
+                                )) => signal,
+                                dispatch::approval::ApprovalDispatchStart::Complete(None) => {
+                                    return ScopeOutcome::Finished(evaluation_failure(eval));
+                                }
+                                dispatch::approval::ApprovalDispatchStart::Pending(pending) => {
+                                    let operation = pending.operation_id();
+                                    let registered =
+                                        task_hosts.start_approval(HostOwner::Root, pending);
+                                    assert_eq!(
+                                        registered, operation,
+                                        "registered host operation changed id"
+                                    );
+                                    let completed = match super::task::await_root_host(
+                                        eval, host, task_hosts,
+                                    )
+                                    .await
+                                    {
+                                        Ok(CompletedTaskHost::Approval(completed)) => completed,
+                                        Ok(_) => {
+                                            panic!(
+                                                "root approval wait received another host boundary"
+                                            )
+                                        }
+                                        Err(outcome) => return ScopeOutcome::Finished(outcome),
+                                    };
+                                    let Some(signal) = dispatch::approval::finish(eval, completed)
+                                    else {
+                                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                                    };
+                                    signal
+                                }
+                            }
                         }
                     }
                 }
