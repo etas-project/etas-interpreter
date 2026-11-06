@@ -10,7 +10,7 @@ pub(crate) enum RegisteredStdIntrinsicHandler {
     PureKernel,
     Runtime(StdCallable),
     Host(StdCallable),
-    LoweringOnly,
+    LoweringOnly(Option<StdCallable>),
 }
 
 #[derive(Clone, Debug, Default)]
@@ -39,7 +39,9 @@ impl StdIntrinsicHandlerRegistry {
                     std_callable_for_descriptor(descriptor).map(RegisteredStdIntrinsicHandler::Host)
                 }
                 IntrinsicDispatch::LoweringOnly => {
-                    Some(RegisteredStdIntrinsicHandler::LoweringOnly)
+                    Some(RegisteredStdIntrinsicHandler::LoweringOnly(
+                        std_callable_for_descriptor(descriptor),
+                    ))
                 }
                 IntrinsicDispatch::PureKernel => None,
             };
@@ -109,7 +111,10 @@ impl StdIntrinsicHandlerRegistry {
                 "standard intrinsic {} is a pure kernel and requires checked ABI facts",
                 intrinsic.0
             )),
-            RegisteredStdIntrinsicHandler::LoweringOnly => Err(format!(
+            RegisteredStdIntrinsicHandler::LoweringOnly(Some(StdCallable::Task(callable))) => {
+                Ok(StdCallable::Task(*callable))
+            }
+            RegisteredStdIntrinsicHandler::LoweringOnly(_) => Err(format!(
                 "standard intrinsic {} is lowering-only and cannot execute as a runtime call",
                 intrinsic.0
             )),
@@ -129,7 +134,7 @@ impl RegisteredStdIntrinsicHandler {
             Self::PureKernel => IntrinsicDispatch::PureKernel,
             Self::Runtime(_) => IntrinsicDispatch::Runtime,
             Self::Host(_) => IntrinsicDispatch::Host,
-            Self::LoweringOnly => IntrinsicDispatch::LoweringOnly,
+            Self::LoweringOnly(_) => IntrinsicDispatch::LoweringOnly,
         }
     }
 }

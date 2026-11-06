@@ -14,6 +14,7 @@ mod collection_conformance;
 mod command_results;
 mod compiler_definitions;
 mod compiler_syntax;
+mod concurrency;
 mod container_limits;
 mod conversation;
 mod entry_validation;

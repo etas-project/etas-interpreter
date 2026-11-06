@@ -59,6 +59,21 @@ impl Pass<PlanContext<'_>> for ComputeEntryActionMediationPass {
         };
         let mut table = ActionMediationTable::default();
         table.include_summary(summary);
+        let standard_actions = context
+            .project
+            .effects
+            .std_action_calls
+            .values()
+            .filter_map(|fact| match &fact.invocation {
+                Effect::Action(action) => Some(action.clone()),
+                Effect::AppliedAction(instance) => Some(instance.action.clone()),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        table
+            .requested_actions
+            .extend(standard_actions.iter().cloned());
+        table.default_actions.extend(standard_actions);
         for (item, hir_item) in context.project.hir.items.iter() {
             if !matches!(hir_item, HirItem::TopLevelLet(_)) {
                 continue;

@@ -16,6 +16,7 @@ mod tests;
 pub(crate) struct EvalRunState {
     pub(crate) shared: EvalSharedState,
     pub(crate) root_task: TaskLocalState,
+    pub(crate) scheduler: crate::driver::scheduler::TaskScheduler,
 }
 
 /// State shared by every task in one invocation.
@@ -57,6 +58,36 @@ pub(crate) struct TaskLocalState {
     pub(crate) residual: crate::eval::residual::ResidualRunState,
 }
 
+impl TaskLocalState {
+    pub(crate) fn root(
+        execution: etas_host::execution::ExecutionScope,
+        model_policy: ModelExecutionPolicy,
+    ) -> Self {
+        Self {
+            execution,
+            model_policy,
+            retry_stack: Vec::new(),
+            handler_stack: Vec::new(),
+            residual: Default::default(),
+        }
+    }
+
+    /// Fork task-local dynamic state while keeping authority and budgets under
+    /// the existing host execution tree. The child owns its stacks after this
+    /// point; later handler/retry mutations cannot leak into its parent.
+    pub(crate) fn child(&self) -> Result<Self, etas_host::HostError> {
+        let execution = self.execution.child()?;
+        execution.claim_body()?;
+        Ok(Self {
+            execution,
+            model_policy: self.model_policy.clone(),
+            retry_stack: self.retry_stack.clone(),
+            handler_stack: self.handler_stack.clone(),
+            residual: Default::default(),
+        })
+    }
+}
+
 impl std::ops::Deref for EvalRunState {
     type Target = EvalSharedState;
 
@@ -79,13 +110,7 @@ impl EvalRunState {
             .model_policy
             .model_locked
             .then(|| input.model_policy.model.clone());
-        let root_task = TaskLocalState {
-            execution: input.execution,
-            model_policy: input.model_policy,
-            retry_stack: Vec::new(),
-            handler_stack: Vec::new(),
-            residual: Default::default(),
-        };
+        let root_task = TaskLocalState::root(input.execution, input.model_policy);
         let shared = EvalSharedState {
             replay_keys: input.replay_keys,
             storage_limits: limits,
@@ -112,7 +137,16 @@ impl EvalRunState {
             storage_writes: Vec::new(),
             storage_operations: Default::default(),
         };
-        Self { shared, root_task }
+        let scheduler = crate::driver::scheduler::TaskScheduler::new(
+            crate::driver::scheduler::TaskScopeId(0),
+            std::num::NonZeroUsize::new(crate::driver::scheduler::MAX_CONCURRENCY)
+                .expect("scheduler ceiling is non-zero"),
+        );
+        Self {
+            shared,
+            root_task,
+            scheduler,
+        }
     }
 }
 

@@ -12,7 +12,7 @@ use crate::{
 
 use super::dispatch;
 
-fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcome {
+pub(super) fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcome {
     if let Some(diagnostic) = eval
         .diagnostics
         .iter()
@@ -185,6 +185,7 @@ async fn drive_eval_signal(
             .await
         };
         if let ScopeOutcome::Finished(outcome) = result {
+            let outcome = super::task::settle(eval, host, outcome).await;
             return super::residual_exit::finish(eval, Some(machine), outcome);
         }
     }
@@ -264,7 +265,14 @@ async fn drive_scope(
                         crate::api::RunFailure::ExecutionFault(fault),
                     ));
                 }
-                if let Some(signal) = eval.default_agent_inference(&perform) {
+                if let Some(target) = super::task::awaited_task(&perform) {
+                    match super::task::await_from_root(eval, host, target, perform.continuation)
+                        .await
+                    {
+                        Ok(signal) => signal,
+                        Err(outcome) => return ScopeOutcome::Finished(outcome),
+                    }
+                } else if let Some(signal) = eval.default_agent_inference(&perform) {
                     signal
                 } else {
                     match dispatch::compiler::dispatch(eval, host, *perform).await {

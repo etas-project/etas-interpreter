@@ -179,6 +179,9 @@ fn display_type_name(ty: Type, store: &TypeStore) -> String {
         Type::Enum(enum_ref) => enum_ref.name,
         Type::Function(_) => "Function".to_owned(),
         Type::Handler(_) => "Handler".to_owned(),
+        Type::Task(_) => "Task".to_owned(),
+        Type::SchedulerHandle => "Scheduler".to_owned(),
+        Type::Continuation(_) => "Continuation".to_owned(),
         Type::Named(named) => named.name,
         Type::Nominal(nominal) => {
             let representation = nominal

@@ -88,6 +88,9 @@ impl<'a> EvalContext<'a> {
             StdCallable::Collection(operation) => {
                 self.execute_collection_intrinsic(operation, checked_call, call_args, span)
             }
+            StdCallable::Task(operation) => {
+                self.execute_task_callable(operation, checked_call, call_args, span)
+            }
             StdCallable::ForwardAction => {
                 self.execute_action_forwarder(checked_call, call_args, span)
             }
@@ -353,6 +356,28 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        if kind == StdLimitKind::Concurrency {
+            let Some(value) = call_args
+                .as_slice()
+                .first()
+                .and_then(InterpValue::as_number)
+                .and_then(crate::value::NumericValue::as_usize)
+            else {
+                return ControlSignal::invalid_arguments(
+                    "Concurrency expects one positive usize argument",
+                    span,
+                );
+            };
+            if call_args.len() != 1
+                || value == 0
+                || value > crate::driver::scheduler::MAX_CONCURRENCY
+            {
+                return ControlSignal::invalid_arguments(
+                    "Concurrency must be positive and within the runtime implementation ceiling",
+                    span,
+                );
+            }
+        }
         let value = InterpValue::Variant {
             name: runtime_limit_constructor_name(kind).to_owned().into(),
             fields: call_args.into(),
@@ -1850,6 +1875,7 @@ fn runtime_limit_constructor_name(kind: StdLimitKind) -> &'static str {
         StdLimitKind::Cost => "Cost",
         StdLimitKind::WallTime => "WallTime",
         StdLimitKind::Attempts => "Attempts",
+        StdLimitKind::Concurrency => "Concurrency",
     }
 }
 

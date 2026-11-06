@@ -59,7 +59,7 @@ mod reflection;
 pub(crate) mod replay;
 pub(crate) mod residual;
 mod run_state;
-pub(crate) use run_state::EvalRunState;
+pub(crate) use run_state::{EvalRunState, TaskLocalState};
 mod collection_call;
 mod safe_point;
 mod session_context;
@@ -77,6 +77,7 @@ mod stmt_value;
 mod storage;
 mod stream;
 mod support_call;
+mod task;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
@@ -136,6 +137,7 @@ pub(crate) struct EvalContext<'a> {
     code_syntax: std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
     runtime: &'a mut run_state::EvalSharedState,
     pub(crate) task: &'a mut run_state::TaskLocalState,
+    pub(crate) scheduler: &'a mut crate::driver::scheduler::TaskScheduler,
     plan_owner: std::cell::OnceCell<std::sync::Arc<InterpreterPlan>>,
     pub checked: &'a CheckedProject,
     pub view: HirTreeView<'a>,
@@ -258,6 +260,31 @@ impl<'a> EvalContextInput<'a> {
 }
 
 impl<'a> EvalContext<'a> {
+    pub(crate) fn scheduled_task_context<'b>(
+        &'b mut self,
+        program: &'b crate::value::CheckedExecutionProgram,
+        task: &'b mut run_state::TaskLocalState,
+        handler_floor: usize,
+    ) -> EvalContext<'b> {
+        let mut scoped = EvalContext::from_parts(
+            EvalProgramInput {
+                code_definitions: program.definitions.clone(),
+                syntax_limits: self.syntax_limits,
+                checked: &program.checked,
+                plan: &program.plan,
+                entry_item: program.plan.entry.item,
+                entry_args: &[],
+            },
+            &mut *self.runtime,
+            task,
+            &mut *self.scheduler,
+        );
+        scoped.handler_floor = handler_floor;
+        scoped.revision = program.revision.as_ref();
+        scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
+        scoped
+    }
+
     pub(crate) fn scoped_context<'b>(
         &'b mut self,
         program: &'b crate::value::CheckedExecutionProgram,
@@ -274,6 +301,7 @@ impl<'a> EvalContext<'a> {
             },
             &mut *self.runtime,
             &mut *self.task,
+            &mut *self.scheduler,
         );
         scoped.handler_floor = handler_floor;
         scoped.revision = program.revision.as_ref();
@@ -321,13 +349,19 @@ impl<'a> EvalContext<'a> {
         }
     }
     pub fn new(input: EvalProgramInput<'a>, runtime: &'a mut EvalRunState) -> Self {
-        Self::from_parts(input, &mut runtime.shared, &mut runtime.root_task)
+        Self::from_parts(
+            input,
+            &mut runtime.shared,
+            &mut runtime.root_task,
+            &mut runtime.scheduler,
+        )
     }
 
     fn from_parts(
         input: EvalProgramInput<'a>,
         runtime: &'a mut run_state::EvalSharedState,
         task: &'a mut run_state::TaskLocalState,
+        scheduler: &'a mut crate::driver::scheduler::TaskScheduler,
     ) -> Self {
         let EvalProgramInput {
             code_definitions,
@@ -354,6 +388,7 @@ impl<'a> EvalContext<'a> {
             syntax_limits,
             runtime,
             task,
+            scheduler,
             plan_owner: std::cell::OnceCell::new(),
             checked,
             view: HirTreeView::new(&checked.hir),

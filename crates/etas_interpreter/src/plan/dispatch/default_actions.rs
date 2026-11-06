@@ -34,12 +34,33 @@ pub(super) fn lower(
             continue;
         };
         let (stable_id, payload, reducer) = match &descriptor.lowering {
-            LoweringHint::DefaultAction { stable_id, payload } => (stable_id, payload, None),
+            LoweringHint::DefaultAction { stable_id, payload } => {
+                (*stable_id, payload.clone(), None)
+            }
             LoweringHint::ActionReducer {
                 stable_id,
                 payload,
                 reducer,
-            } => (stable_id, payload, Some(reducer.clone())),
+            } => (*stable_id, payload.clone(), Some(reducer.clone())),
+            LoweringHint::Task(etas_std::StdTaskIntrinsic::Await) => {
+                let action = project.std_registry.symbols().find(|symbol| {
+                    matches!(
+                        &symbol.decl,
+                        StdDecl::EffectAction(action)
+                            if action.compiler_role == Some(etas_std::CompilerActionRole::TaskAwait)
+                    )
+                });
+                let Some(StdDecl::EffectAction(action)) = action.map(|symbol| &symbol.decl) else {
+                    return Err("task await adapter has no canonical action declaration".into());
+                };
+                (
+                    action
+                        .stable_id
+                        .ok_or("task await action has no stable identity")?,
+                    vec![0],
+                    None,
+                )
+            }
             _ => continue,
         };
         if !imported.contains_key(&descriptor.id) {
@@ -50,12 +71,12 @@ pub(super) fn lower(
         };
         let signature = project
             .effect_registry
-            .standard_action(etas_effects::EffectActionId(*stable_id))
+            .standard_action(etas_effects::EffectActionId(stable_id))
             .ok_or("standard action adapter has no checked registry declaration")?;
         if !signature.has_default_handler {
             return Err("standard action adapter has no checked default handler".into());
         }
-        let declaration = project.std_registry.symbols().find(|symbol| matches!(&symbol.decl, StdDecl::EffectAction(action) if action.stable_id == Some(*stable_id))).ok_or("standard action adapter has no canonical declaration")?;
+        let declaration = project.std_registry.symbols().find(|symbol| matches!(&symbol.decl, StdDecl::EffectAction(action) if action.stable_id == Some(stable_id))).ok_or("standard action adapter has no canonical declaration")?;
         let typed = project
             .types
             .qualified_action_signatures
@@ -75,7 +96,7 @@ pub(super) fn lower(
         };
         let adapter = Adapter {
             action,
-            payload: payload.clone(),
+            payload,
             selectors: requested.args.clone(),
             action_parameters: typed.params.clone(),
             action_output: typed.output,

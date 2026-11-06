@@ -83,6 +83,22 @@ pub(crate) fn standard_action(
                 ),
             }
         }
+        StdCallable::Task(etas_std::StdTaskIntrinsic::Await) => {
+            let action = checked
+                .effect_registry
+                .action_by_name("Async.await")
+                .ok_or("standard task await has no checked Async.await action")?;
+            let signature = checked
+                .effect_registry
+                .action_signature(&action)
+                .ok_or("standard task await action has no checked registry signature")?;
+            CheckedActionAbi {
+                effect: Effect::Action(action),
+                parameters: call.parameter_types.clone(),
+                output: call.result_type,
+                returns_never: signature.returns_never,
+            }
+        }
         _ => {
             let adapter = execution
                 .plan

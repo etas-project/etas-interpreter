@@ -359,7 +359,9 @@ impl<'a> EvalContext<'a> {
             for limit in limits {
                 let limit = self.resolve_limit_expr(limit)?;
                 match limit.kind {
-                    StdLimitKind::Attempts | StdLimitKind::Iterations => {
+                    StdLimitKind::Attempts
+                    | StdLimitKind::Iterations
+                    | StdLimitKind::Concurrency => {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             limit.span,
