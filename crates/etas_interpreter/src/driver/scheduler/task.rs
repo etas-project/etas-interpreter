@@ -1,6 +1,6 @@
 use crate::{
     api::RunFailure,
-    control::Continuation,
+    control::{Continuation, PendingPerform},
     eval::{TaskLocalState, machine::EvalMachine},
     value::{CheckedExecutionProgram, InterpValue},
 };
@@ -39,19 +39,24 @@ pub(crate) enum TaskState {
     Running,
     Waiting(TaskWait),
     Completed,
+    Raised,
     Failed,
     Cancelled,
 }
 
 impl TaskState {
     pub(crate) fn is_terminal(self) -> bool {
-        matches!(self, Self::Completed | Self::Failed | Self::Cancelled)
+        matches!(
+            self,
+            Self::Completed | Self::Raised | Self::Failed | Self::Cancelled
+        )
     }
 }
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskOutcome {
     Completed(InterpValue),
+    Raised(Box<PendingPerform>),
     Failed(RunFailure),
     Cancelled(etas_host::execution::CancellationCause),
 }
@@ -60,6 +65,7 @@ impl TaskOutcome {
     pub(crate) fn state(&self) -> TaskState {
         match self {
             Self::Completed(_) => TaskState::Completed,
+            Self::Raised(_) => TaskState::Raised,
             Self::Failed(_) => TaskState::Failed,
             Self::Cancelled(_) => TaskState::Cancelled,
         }

@@ -9,6 +9,7 @@ use std::{
 };
 
 pub(crate) use continuation::{ConsumedContinuation, ContinuationTransfer};
+pub(crate) use group::TaskGroupPolicy;
 pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, TaskHostReactor};
 pub(crate) use task::{
     ContinuationId, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome, TaskResume,
@@ -91,7 +92,10 @@ pub(crate) struct TaskScheduler {
 impl TaskScheduler {
     pub(crate) fn new(owner: TaskScopeId, concurrency: NonZeroUsize) -> Self {
         let mut groups = BTreeMap::new();
-        groups.insert(owner, group::TaskGroup::new(None, concurrency));
+        groups.insert(
+            owner,
+            group::TaskGroup::new(None, concurrency, TaskGroupPolicy::Run),
+        );
         Self {
             next_scope: owner.0.checked_add(1).expect("task scope id exhausted"),
             next_task: 0,
@@ -108,6 +112,15 @@ impl TaskScheduler {
         parent: TaskScopeId,
         concurrency: NonZeroUsize,
     ) -> TaskScopeId {
+        self.create_scope_with_policy(parent, concurrency, TaskGroupPolicy::Run)
+    }
+
+    pub(crate) fn create_scope_with_policy(
+        &mut self,
+        parent: TaskScopeId,
+        concurrency: NonZeroUsize,
+        policy: TaskGroupPolicy,
+    ) -> TaskScopeId {
         assert!(
             self.groups.contains_key(&parent),
             "parent task scope must exist"
@@ -119,7 +132,7 @@ impl TaskScheduler {
             .expect("task scope id exhausted");
         assert!(
             self.groups
-                .insert(id, group::TaskGroup::new(Some(parent), concurrency))
+                .insert(id, group::TaskGroup::new(Some(parent), concurrency, policy))
                 .is_none(),
             "task scope id must be unique"
         );
@@ -369,11 +382,104 @@ impl TaskScheduler {
         {
             return Ok(None);
         }
-        if let Some(primary) = group.primary_failure {
-            return Ok(self.tasks[&primary].outcome.clone());
-        }
-        let owner = group.owner.ok_or(SchedulerError::InvalidTransition)?;
-        Ok(self.tasks[&owner].outcome.clone())
+        let ordered = self.ordered_tasks(group);
+        let first_cancelled = || {
+            ordered
+                .iter()
+                .find_map(|task| match &self.tasks[task].outcome {
+                    Some(TaskOutcome::Cancelled(cause)) => {
+                        Some(TaskOutcome::Cancelled(cause.clone()))
+                    }
+                    _ => None,
+                })
+        };
+        let output = match group.policy {
+            TaskGroupPolicy::Run => {
+                if let Some(primary) = group.primary_failure {
+                    self.tasks[&primary].outcome.clone()
+                } else {
+                    let owner = group.owner.ok_or(SchedulerError::InvalidTransition)?;
+                    self.tasks[&owner].outcome.clone()
+                }
+            }
+            TaskGroupPolicy::JoinTuple | TaskGroupPolicy::JoinArray | TaskGroupPolicy::Map => {
+                if let Some(primary) = group.primary_failure {
+                    self.tasks[&primary].outcome.clone()
+                } else if let Some(cancelled) = first_cancelled() {
+                    Some(cancelled)
+                } else {
+                    let values = self.completed_values(&ordered)?;
+                    let value = if group.policy == TaskGroupPolicy::JoinTuple {
+                        InterpValue::Tuple(crate::value::SharedFields::new(values))
+                    } else {
+                        InterpValue::Array(crate::value::ArrayValue::new(values))
+                    };
+                    Some(TaskOutcome::Completed(value))
+                }
+            }
+            TaskGroupPolicy::TryJoin => {
+                if let Some(primary) = group.primary_failure {
+                    match self.tasks[&primary].outcome.as_ref() {
+                        Some(TaskOutcome::Raised(perform)) => Some(TaskOutcome::Completed(
+                            result_value("Err", error_payload(perform)),
+                        )),
+                        outcome => outcome.cloned(),
+                    }
+                } else if let Some(cancelled) = first_cancelled() {
+                    Some(cancelled)
+                } else {
+                    Some(TaskOutcome::Completed(result_value(
+                        "Ok",
+                        InterpValue::Array(crate::value::ArrayValue::new(
+                            self.completed_values(&ordered)?,
+                        )),
+                    )))
+                }
+            }
+            TaskGroupPolicy::Collect | TaskGroupPolicy::MapCollect => {
+                if let Some(failure) = ordered.iter().find_map(|task| {
+                    matches!(self.tasks[task].outcome, Some(TaskOutcome::Failed(_)))
+                        .then_some(*task)
+                }) {
+                    self.tasks[&failure].outcome.clone()
+                } else if ordered.iter().all(|task| {
+                    matches!(
+                        self.tasks[task].outcome,
+                        Some(TaskOutcome::Completed(_) | TaskOutcome::Raised(_))
+                    )
+                }) {
+                    let values = ordered
+                        .iter()
+                        .map(|task| {
+                            match self.tasks[task].outcome.as_ref().expect("settled task") {
+                                TaskOutcome::Completed(value) => result_value("Ok", value.clone()),
+                                TaskOutcome::Raised(perform) => {
+                                    result_value("Err", error_payload(perform))
+                                }
+                                _ => unreachable!(
+                                    "collect accepts completed values and typed errors"
+                                ),
+                            }
+                        })
+                        .collect();
+                    Some(TaskOutcome::Completed(InterpValue::Array(
+                        crate::value::ArrayValue::new(values),
+                    )))
+                } else {
+                    first_cancelled()
+                }
+            }
+            TaskGroupPolicy::Race => {
+                if let Some(winner) = group.winner {
+                    self.tasks[&winner].outcome.clone()
+                } else if let Some(primary) = group.primary_failure {
+                    self.tasks[&primary].outcome.clone()
+                } else {
+                    first_cancelled()
+                }
+            }
+        };
+        output.ok_or(SchedulerError::InvalidTransition).map(Some)
     }
 
     pub(crate) fn wait_for_host(
@@ -412,7 +518,25 @@ impl TaskScheduler {
         handle: TaskHandle,
         value: InterpValue,
     ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let scope = self.tasks[&id].scope;
+        let race_winner = self.groups[&scope].policy == TaskGroupPolicy::Race
+            && self.groups[&scope].winner.is_none();
+        if race_winner {
+            self.groups.get_mut(&scope).expect("task scope").winner = Some(id);
+        }
         self.terminal(handle, TaskOutcome::Completed(value))
+    }
+
+    pub(crate) fn raise(
+        &mut self,
+        handle: TaskHandle,
+        perform: crate::control::PendingPerform,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let scope = self.tasks[&id].scope;
+        self.record_primary_failure(scope, id);
+        self.terminal(handle, TaskOutcome::Raised(Box::new(perform)))
     }
 
     pub(crate) fn fail(
@@ -422,20 +546,43 @@ impl TaskScheduler {
     ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
         let scope = self.tasks[&id].scope;
-        let source_index = self.tasks[&id].source_index;
-        let replace = self.groups[&scope]
-            .primary_failure
-            .is_none_or(|primary_id| {
-                let primary = &self.tasks[&primary_id];
-                (source_index, id) < (primary.source_index, primary_id)
-            });
-        if replace {
-            self.groups
-                .get_mut(&scope)
-                .expect("task scope must exist")
-                .primary_failure = Some(id);
-        }
+        self.record_primary_failure(scope, id);
         self.terminal(handle, TaskOutcome::Failed(failure))
+    }
+
+    pub(crate) fn apply_group_policy(&mut self, handle: TaskHandle) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let scope = self.tasks[&id].scope;
+        let outcome = self.tasks[&id]
+            .outcome
+            .as_ref()
+            .ok_or(SchedulerError::InvalidTransition)?;
+        let reason = match outcome {
+            TaskOutcome::Completed(_)
+                if self.groups[&scope].policy == TaskGroupPolicy::Race
+                    && self.groups[&scope].winner == Some(id) =>
+            {
+                Some(etas_host::execution::CancellationReason::Requested)
+            }
+            TaskOutcome::Raised(_)
+                if matches!(
+                    self.groups[&scope].policy,
+                    TaskGroupPolicy::Run
+                        | TaskGroupPolicy::JoinTuple
+                        | TaskGroupPolicy::JoinArray
+                        | TaskGroupPolicy::TryJoin
+                        | TaskGroupPolicy::Map
+                ) =>
+            {
+                Some(etas_host::execution::CancellationReason::ChildFailed)
+            }
+            TaskOutcome::Failed(_) => Some(etas_host::execution::CancellationReason::ChildFailed),
+            _ => None,
+        };
+        if let Some(reason) = reason {
+            self.cancel_scope_unsettled(scope, reason)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn cancel(
@@ -548,9 +695,10 @@ impl TaskScheduler {
                 return Err(SchedulerError::InvalidTransition);
             }
             let was_running = task.state == TaskState::Running;
-            task.local
-                .execution
-                .finish_body(!matches!(outcome, TaskOutcome::Failed(_)))?;
+            task.local.execution.finish_body(!matches!(
+                outcome,
+                TaskOutcome::Raised(_) | TaskOutcome::Failed(_)
+            ))?;
             task.state = outcome.state();
             task.outcome = Some(outcome.clone());
             (std::mem::take(&mut task.waiters), was_running)
@@ -586,6 +734,38 @@ impl TaskScheduler {
         self.tasks
             .get(&handle.task)
             .ok_or(SchedulerError::UnknownTask)
+    }
+
+    fn record_primary_failure(&mut self, scope: TaskScopeId, id: TaskId) {
+        let source_index = self.tasks[&id].source_index;
+        let replace = self.groups[&scope]
+            .primary_failure
+            .is_none_or(|primary_id| {
+                let primary = &self.tasks[&primary_id];
+                (source_index, id) < (primary.source_index, primary_id)
+            });
+        if replace {
+            self.groups
+                .get_mut(&scope)
+                .expect("task scope must exist")
+                .primary_failure = Some(id);
+        }
+    }
+
+    fn ordered_tasks(&self, group: &group::TaskGroup) -> Vec<TaskId> {
+        let mut tasks = group.tasks.iter().copied().collect::<Vec<_>>();
+        tasks.sort_by_key(|id| (self.tasks[id].source_index, *id));
+        tasks
+    }
+
+    fn completed_values(&self, tasks: &[TaskId]) -> Result<Vec<InterpValue>, SchedulerError> {
+        tasks
+            .iter()
+            .map(|task| match self.tasks[task].outcome.as_ref() {
+                Some(TaskOutcome::Completed(value)) => Ok(value.clone()),
+                _ => Err(SchedulerError::InvalidTransition),
+            })
+            .collect()
     }
 
     fn resolve_id(&self, handle: TaskHandle) -> Result<TaskId, SchedulerError> {
@@ -625,9 +805,6 @@ impl TaskScheduler {
     }
 
     fn wake_scope_if_settled(&mut self, scope: TaskScopeId) -> Result<(), SchedulerError> {
-        if self.groups[&scope].owner.is_none() {
-            return Ok(());
-        }
         let Some(outcome) = self.scope_outcome(scope)? else {
             return Ok(());
         };
@@ -675,6 +852,21 @@ impl TaskScheduler {
             scope = parent;
         }
     }
+}
+
+fn result_value(name: &str, value: InterpValue) -> InterpValue {
+    InterpValue::Variant {
+        name: name.to_owned().into(),
+        fields: crate::value::SharedFields::new(vec![value]),
+    }
+}
+
+fn error_payload(perform: &crate::control::PendingPerform) -> InterpValue {
+    perform
+        .args
+        .first()
+        .expect("checked Error.raise carries one payload")
+        .clone()
 }
 
 #[cfg(test)]

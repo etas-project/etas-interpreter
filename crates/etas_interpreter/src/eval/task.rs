@@ -18,17 +18,211 @@ impl EvalContext<'_> {
             StdTaskIntrinsic::Await => self.execute_task_await(checked_call, call_args, span),
             StdTaskIntrinsic::Requeue => self.execute_task_requeue(checked_call, call_args, span),
             StdTaskIntrinsic::Park => self.execute_task_park(call_args, span),
-            StdTaskIntrinsic::JoinTuple
-            | StdTaskIntrinsic::JoinArray
-            | StdTaskIntrinsic::TryJoin
-            | StdTaskIntrinsic::Collect
-            | StdTaskIntrinsic::Race
-            | StdTaskIntrinsic::MapConcurrent
-            | StdTaskIntrinsic::MapConcurrentCollect => ControlSignal::missing_checked_fact(
-                "task combinator is not registered in the current standard task ABI",
+            StdTaskIntrinsic::JoinTuple | StdTaskIntrinsic::JoinArray => {
+                self.execute_task_join(checked_call, call_args, span)
+            }
+            StdTaskIntrinsic::TryJoin => self.execute_task_job_array(
+                checked_call,
+                call_args,
+                crate::driver::scheduler::TaskGroupPolicy::TryJoin,
+                "try_join",
+                span,
+            ),
+            StdTaskIntrinsic::Collect => self.execute_task_job_array(
+                checked_call,
+                call_args,
+                crate::driver::scheduler::TaskGroupPolicy::Collect,
+                "collect",
+                span,
+            ),
+            StdTaskIntrinsic::Race => self.execute_task_job_array(
+                checked_call,
+                call_args,
+                crate::driver::scheduler::TaskGroupPolicy::Race,
+                "race",
+                span,
+            ),
+            StdTaskIntrinsic::MapConcurrent => self.execute_task_map(
+                checked_call,
+                call_args,
+                crate::driver::scheduler::TaskGroupPolicy::Map,
+                "map_concurrent",
+                span,
+            ),
+            StdTaskIntrinsic::MapConcurrentCollect => self.execute_task_map(
+                checked_call,
+                call_args,
+                crate::driver::scheduler::TaskGroupPolicy::MapCollect,
+                "map_concurrent_collect",
                 span,
             ),
         }
+    }
+
+    fn execute_task_join(
+        &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [jobs]: [InterpValue; 1] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!("std.task.join expects one aggregate, got {}", args.len()),
+                    span,
+                );
+            }
+        };
+        let (jobs, policy) = match jobs {
+            InterpValue::Tuple(jobs) => (
+                jobs.into_values(),
+                crate::driver::scheduler::TaskGroupPolicy::JoinTuple,
+            ),
+            InterpValue::Array(jobs) => (
+                jobs.into_values(),
+                crate::driver::scheduler::TaskGroupPolicy::JoinArray,
+            ),
+            _ => {
+                return ControlSignal::invalid_arguments(
+                    "std.task.join requires a tuple or array of jobs",
+                    span,
+                );
+            }
+        };
+        let calls = match job_calls(jobs, "join", span) {
+            Ok(calls) => calls,
+            Err(signal) => return signal,
+        };
+        self.start_task_group(checked_call, calls, policy, span)
+    }
+
+    fn execute_task_job_array(
+        &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        policy: crate::driver::scheduler::TaskGroupPolicy,
+        name: &str,
+        span: Span,
+    ) -> ControlSignal {
+        let [jobs]: [InterpValue; 1] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!("std.task.{name} expects one array, got {}", args.len()),
+                    span,
+                );
+            }
+        };
+        let InterpValue::Array(jobs) = jobs else {
+            return ControlSignal::invalid_arguments(
+                format!("std.task.{name} requires an array of jobs"),
+                span,
+            );
+        };
+        if policy == crate::driver::scheduler::TaskGroupPolicy::Race && jobs.borrow().is_empty() {
+            return ControlSignal::invalid_arguments(
+                "std.task.race requires at least one job",
+                span,
+            );
+        }
+        let calls = match job_calls(jobs.into_values(), name, span) {
+            Ok(calls) => calls,
+            Err(signal) => return signal,
+        };
+        self.start_task_group(checked_call, calls, policy, span)
+    }
+
+    fn execute_task_map(
+        &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        policy: crate::driver::scheduler::TaskGroupPolicy,
+        name: &str,
+        span: Span,
+    ) -> ControlSignal {
+        let [inputs, mapper]: [InterpValue; 2] = match call_args.try_into() {
+            Ok(args) => args,
+            Err(args) => {
+                return ControlSignal::invalid_arguments(
+                    format!(
+                        "std.task.{name} expects an array and mapper, got {}",
+                        args.len()
+                    ),
+                    span,
+                );
+            }
+        };
+        let InterpValue::Array(inputs) = inputs else {
+            return ControlSignal::invalid_arguments(
+                format!("std.task.{name} requires an input array"),
+                span,
+            );
+        };
+        let InterpValue::Callable(mapper) = mapper else {
+            return ControlSignal::invalid_arguments(
+                format!("std.task.{name} mapper is not callable"),
+                span,
+            );
+        };
+        let calls = inputs
+            .into_values()
+            .into_iter()
+            .map(|input| (mapper.clone(), vec![input]))
+            .collect();
+        self.start_task_group(checked_call, calls, policy, span)
+    }
+
+    fn start_task_group(
+        &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        calls: Vec<(crate::control::CallTarget, Vec<InterpValue>)>,
+        policy: crate::driver::scheduler::TaskGroupPolicy,
+        span: Span,
+    ) -> ControlSignal {
+        let concurrency = checked_concurrency(self.checked, checked_call);
+        let parent_scope = self.task.task_scope;
+        let scope = self
+            .scheduler
+            .create_scope_with_policy(parent_scope, concurrency, policy);
+        let program = self.checked_execution_program();
+        for (index, (target, args)) in calls.into_iter().enumerate() {
+            let mut machine = crate::eval::machine::EvalMachine::new();
+            machine.resume(ControlSignal::pending_call(PendingCall {
+                purity: crate::control::CallPurity::Ordinary,
+                site: None,
+                target,
+                args,
+                span,
+                continuation: Continuation::BlockValue,
+            }));
+            let source_index = (span.range.start.0 as usize).saturating_add(index);
+            let handle = match self.scheduler.spawn_in_scope(
+                self.task,
+                scope,
+                machine,
+                Some(program.clone()),
+                self.handler_floor,
+                source_index,
+            ) {
+                Ok(handle) => handle,
+                Err(error) => return ControlSignal::runtime_fault(error.to_string(), span),
+            };
+            self.events
+                .push(crate::orchestration::WorkflowEvent::TaskStarted {
+                    scope: handle.owner.0,
+                    task: handle.task.0,
+                    source_index,
+                });
+        }
+        self.events
+            .push(crate::orchestration::WorkflowEvent::ScopeEntered {
+                scope: scope.0,
+                parent: parent_scope.0,
+                concurrency: u32::try_from(concurrency.get())
+                    .expect("checked concurrency limit fits trace ABI"),
+            });
+        ControlSignal::pending_task(crate::control::PendingTaskControl::Run { scope, span })
     }
 
     fn execute_task_requeue(
@@ -145,16 +339,7 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = body else {
             return ControlSignal::invalid_arguments("std.task.run callback is not callable", span);
         };
-        let concurrency = self
-            .checked
-            .concurrency
-            .sites
-            .get(&checked_call.origin)
-            .and_then(|site| site.concurrency_limit)
-            .map(|limit| usize::try_from(limit).expect("u32 concurrency limit fits usize"))
-            .unwrap_or(crate::driver::scheduler::MAX_CONCURRENCY);
-        let concurrency = std::num::NonZeroUsize::new(concurrency)
-            .expect("checked concurrency limit is non-zero");
+        let concurrency = checked_concurrency(self.checked, checked_call);
         let parent_scope = self.task.task_scope;
         let scope = self.scheduler.create_scope(parent_scope, concurrency);
         let mut machine = crate::eval::machine::EvalMachine::new();
@@ -292,4 +477,34 @@ impl EvalContext<'_> {
             residual: None,
         })
     }
+}
+
+fn job_calls(
+    jobs: Vec<InterpValue>,
+    name: &str,
+    span: Span,
+) -> Result<Vec<(crate::control::CallTarget, Vec<InterpValue>)>, ControlSignal> {
+    jobs.into_iter()
+        .map(|job| match job {
+            InterpValue::Callable(target) => Ok((target, Vec::new())),
+            _ => Err(ControlSignal::invalid_arguments(
+                format!("std.task.{name} requires callable jobs"),
+                span,
+            )),
+        })
+        .collect()
+}
+
+fn checked_concurrency(
+    checked: &etas_frontend::CheckedProject,
+    checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+) -> std::num::NonZeroUsize {
+    let concurrency = checked
+        .concurrency
+        .sites
+        .get(&checked_call.origin)
+        .and_then(|site| site.concurrency_limit)
+        .map(|limit| usize::try_from(limit).expect("u32 concurrency limit fits usize"))
+        .unwrap_or(crate::driver::scheduler::MAX_CONCURRENCY);
+    std::num::NonZeroUsize::new(concurrency).expect("checked concurrency limit is non-zero")
 }

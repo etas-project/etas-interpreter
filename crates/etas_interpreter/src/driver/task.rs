@@ -108,6 +108,13 @@ pub(super) async fn control_from_root<'host>(
                     });
                     Ok(())
                 }
+                TaskOutcome::Raised(perform) => {
+                    machine.resume(signal_from_outcome(
+                        TaskOutcome::Raised(perform),
+                        consumed.continuation,
+                    )?);
+                    Ok(())
+                }
                 TaskOutcome::Failed(failure) => Err(EvaluationOutcome::Failed(failure)),
                 TaskOutcome::Cancelled(cause) => Err(EvaluationOutcome::Cancelled(cause)),
             }
@@ -301,6 +308,14 @@ async fn drive_one<'host>(
                             return Ok(true);
                         }
                         task.machine.transfer_from(token, continuation, value);
+                    }
+                    TaskOutcome::Raised(perform) => {
+                        let Ok(signal) =
+                            signal_from_outcome(TaskOutcome::Raised(perform), continuation)
+                        else {
+                            unreachable!("typed error produces a control signal")
+                        };
+                        task.machine.resume(signal);
                     }
                     TaskOutcome::Failed(failure) => {
                         finish_task(eval, handle, task, EvaluationOutcome::Failed(failure))?;
@@ -621,6 +636,16 @@ async fn drive_one<'host>(
                                     });
                                     continue;
                                 }
+                                TaskOutcome::Raised(perform) => {
+                                    let Ok(signal) = signal_from_outcome(
+                                        TaskOutcome::Raised(perform),
+                                        continuation,
+                                    ) else {
+                                        unreachable!("typed error produces a control signal")
+                                    };
+                                    task.machine.resume(signal);
+                                    continue;
+                                }
                                 TaskOutcome::Failed(failure) => {
                                     finish_task(
                                         eval,
@@ -706,6 +731,12 @@ async fn drive_one<'host>(
                         continue;
                     }
                 }
+            }
+
+            if perform.error_type.is_some() {
+                drop(child);
+                finish_raised_task(eval, handle, task, *perform)?;
+                return Ok(true);
             }
 
             let signal = if let Some(signal) = child.default_agent_inference(&perform) {
@@ -940,6 +971,10 @@ fn signal_from_outcome(
                 input: ContinuationInput::Value(value),
             }))
         }
+        TaskOutcome::Raised(mut perform) => {
+            perform.continuation = continuation;
+            Ok(ControlSignal::pending_perform(*perform))
+        }
         TaskOutcome::Failed(failure) => Err(EvaluationOutcome::Failed(failure)),
         TaskOutcome::Cancelled(cause) => Err(EvaluationOutcome::Cancelled(cause)),
     }
@@ -964,19 +999,32 @@ fn finish_task(
         EvaluationOutcome::Failed(failure) => eval.scheduler.fail(handle, failure),
         EvaluationOutcome::Cancelled(cause) => eval.scheduler.cancelled(handle, cause),
     };
-    result.map_err(|error| scheduler_failure(eval, error))?;
-    if outcome_name == "failed" {
-        eval.scheduler
-            .cancel_scope_unsettled(
-                handle.owner,
-                etas_host::execution::CancellationReason::ChildFailed,
-            )
-            .map_err(|error| scheduler_failure(eval, error))?;
-    }
+    result
+        .and_then(|()| eval.scheduler.apply_group_policy(handle))
+        .map_err(|error| scheduler_failure(eval, error))?;
     eval.events.push(WorkflowEvent::TaskSettled {
         scope: handle.owner.0,
         task: handle.task.0,
         outcome: outcome_name.to_owned(),
+    });
+    Ok(())
+}
+
+fn finish_raised_task(
+    eval: &mut EvalContext<'_>,
+    handle: TaskHandle,
+    task: ScheduledTask,
+    perform: PendingPerform,
+) -> Result<(), EvaluationOutcome> {
+    eval.scheduler
+        .restore_running(handle, task)
+        .and_then(|()| eval.scheduler.raise(handle, perform))
+        .and_then(|()| eval.scheduler.apply_group_policy(handle))
+        .map_err(|error| scheduler_failure(eval, error))?;
+    eval.events.push(WorkflowEvent::TaskSettled {
+        scope: handle.owner.0,
+        task: handle.task.0,
+        outcome: "raised".to_owned(),
     });
     Ok(())
 }
@@ -988,6 +1036,7 @@ fn record_scope_exit(
 ) {
     let outcome = match outcome {
         TaskOutcome::Completed(_) => "completed",
+        TaskOutcome::Raised(_) => "raised",
         TaskOutcome::Failed(_) => "failed",
         TaskOutcome::Cancelled(_) => "cancelled",
     };

@@ -55,6 +55,118 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn task_join_and_map_concurrent_preserve_input_order() {
+    let result = run(r#"
+module app.main;
+import std.task.{run, join, map_concurrent, Scheduler};
+flow main() -> bool {
+    return run((scheduler: Scheduler) => {
+        let (number, text) = join((
+            () => { return 41; },
+            () => { return "ok"; }
+        ));
+        let mapped = map_concurrent([1, 2, 3], (value: i32) => {
+            return value * 2;
+        });
+        let joined = join([() => { return 2; }, () => { return 4; }]);
+        return number == 41
+            && text == "ok"
+            && mapped == [2, 4, 6]
+            && joined == [2, 4];
+    });
+}
+"#)
+    .await;
+
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn task_error_combinators_keep_typed_errors_as_data() {
+    let result = run(r#"
+module app.main;
+import std.task.{run, try_join, collect, race, map_concurrent_collect, Scheduler};
+
+flow one() -> i32 ![Error<i32>] {
+    if 1 == 0 { return perform Error<i32>.raise(1); }
+    return 1;
+}
+flow fail_seven() -> i32 ![Error<i32>] { return perform Error<i32>.raise(7); }
+flow fail_three() -> i32 ![Error<i32>] { return perform Error<i32>.raise(3); }
+flow nine() -> i32 ![Error<i32>] {
+    if 9 == 0 { return perform Error<i32>.raise(9); }
+    return 9;
+}
+flow race_job(value: i32, fails: bool) -> () -> i32 ![Error<i32>] {
+    return () => {
+        if fails { return perform Error<i32>.raise(value); }
+        return value;
+    };
+}
+
+flow map_value(value: i32) -> i32 ![Error<i32>] {
+    if value < 0 { return perform Error<i32>.raise(0 - value); }
+    return value * 10;
+}
+
+flow main() -> (Result<Array<i32>, i32>, Array<Result<i32, i32>>, i32, Array<Result<i32, i32>>) ![Error<i32>] {
+    return run((scheduler: Scheduler) => {
+        let failed = try_join([one, fail_seven]);
+        let collected = collect([fail_three, nine]);
+        let winner = race<i32, i32>([race_job(5, true), race_job(11, false)]);
+        let mapped = map_concurrent_collect<i32, i32, i32>([1, -2, 3], map_value);
+        return (failed, collected, winner, mapped);
+    });
+}
+"#)
+    .await;
+
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    let expected = InterpValue::Tuple(
+        vec![
+            InterpValue::Variant {
+                name: "Err".into(),
+                fields: vec![InterpValue::i32(7)].into(),
+            },
+            InterpValue::Array(
+                vec![
+                    InterpValue::Variant {
+                        name: "Err".into(),
+                        fields: vec![InterpValue::i32(3)].into(),
+                    },
+                    InterpValue::Variant {
+                        name: "Ok".into(),
+                        fields: vec![InterpValue::i32(9)].into(),
+                    },
+                ]
+                .into(),
+            ),
+            InterpValue::i32(11),
+            InterpValue::Array(
+                vec![
+                    InterpValue::Variant {
+                        name: "Ok".into(),
+                        fields: vec![InterpValue::i32(10)].into(),
+                    },
+                    InterpValue::Variant {
+                        name: "Err".into(),
+                        fields: vec![InterpValue::i32(2)].into(),
+                    },
+                    InterpValue::Variant {
+                        name: "Ok".into(),
+                        fields: vec![InterpValue::i32(30)].into(),
+                    },
+                ]
+                .into(),
+            ),
+        ]
+        .into(),
+    );
+    assert_eq!(result.value(), Some(&expected));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn task_run_settles_unawaited_children_before_returning() {
     let checked = checked_project(
         r#"
