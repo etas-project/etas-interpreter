@@ -31,15 +31,33 @@ pub(super) fn lower(
             .std_registry
             .lookup_qualified(&fact.qualified_path)
             .ok_or("checked std method descriptor is absent from the canonical registry")?;
-        let StdDecl::Flow(_) = &symbol.decl else {
-            return Err("checked std method is not a flow".into());
+        let (source, declared_type_params) = match &symbol.decl {
+            StdDecl::Flow(_) => {
+                let flow = project
+                    .std_registry
+                    .flow_declarations(symbol.id)
+                    .nth(fact.overload)
+                    .ok_or("checked standard call refers to an absent overload")?;
+                (
+                    flow.source_method.as_ref(),
+                    flow.type_params
+                        .iter()
+                        .map(|param| &param.name)
+                        .collect::<Vec<_>>(),
+                )
+            }
+            StdDecl::Type(declaration) if fact.overload == 0 => (
+                None,
+                declaration.params.iter().map(|param| &param.name).collect(),
+            ),
+            StdDecl::Requirement(_) if fact.overload == 0 => (None, Vec::new()),
+            _ => {
+                return Err(format!(
+                    "checked std intrinsic `{}` has no callable declaration",
+                    fact.qualified_path.join(".")
+                ));
+            }
         };
-        let flow = project
-            .std_registry
-            .flow_declarations(symbol.id)
-            .nth(fact.overload)
-            .ok_or("checked standard call refers to an absent overload")?;
-        let source = flow.source_method.as_ref();
         let descriptor = symbol
             .intrinsic
             .as_ref()
@@ -121,16 +139,13 @@ pub(super) fn lower(
                 .iter()
                 .map(|param| &param.name)
                 .collect::<Vec<_>>()
-                != flow
-                    .type_params
-                    .iter()
+                != declared_type_params
+                    .into_iter()
                     .filter(|param| {
                         method_fact.is_none()
-                            || source.is_none_or(|method| {
-                                !method.owner_type_params.contains(&param.name)
-                            })
+                            || source
+                                .is_none_or(|method| !method.owner_type_params.contains(*param))
                     })
-                    .map(|param| &param.name)
                     .collect::<Vec<_>>()
         {
             return Err(
