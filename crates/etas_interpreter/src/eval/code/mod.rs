@@ -6,6 +6,7 @@ mod definition_fields;
 mod diagnostic;
 mod diff;
 mod execution;
+pub(crate) use execution::CompilerInvocation;
 mod project;
 mod report;
 mod signature;

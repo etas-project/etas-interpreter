@@ -349,6 +349,9 @@ async fn drive_one<'host>(
                     };
                     signal
                 }
+                CompletedTaskHost::Compiler(completed) => {
+                    dispatch::compiler::finish(&mut child, completed)
+                }
             };
             task.machine.resume(signal);
             continue;
@@ -601,9 +604,9 @@ async fn drive_one<'host>(
             let signal = if let Some(signal) = child.default_agent_inference(&perform) {
                 signal
             } else {
-                match dispatch::compiler::dispatch(&mut child, host, *perform).await {
-                    Ok(signal) => signal,
-                    Err(perform) => {
+                match dispatch::compiler::begin(&mut child, host, *perform).await {
+                    dispatch::compiler::CompilerDispatchStart::Complete(signal) => signal,
+                    dispatch::compiler::CompilerDispatchStart::NotCompiler(perform) => {
                         match dispatch::approval::begin(
                             &mut child,
                             host,
@@ -635,6 +638,20 @@ async fn drive_one<'host>(
                                 return Ok(true);
                             }
                         }
+                    }
+                    dispatch::compiler::CompilerDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        drop(child);
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        let registered = reactor.start_compiler(HostOwner::Task(handle), pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        return Ok(true);
                     }
                 }
             };

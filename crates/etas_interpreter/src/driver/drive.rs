@@ -330,9 +330,9 @@ async fn drive_scope<'host>(
                 } else if let Some(signal) = eval.default_agent_inference(&perform) {
                     signal
                 } else {
-                    match dispatch::compiler::dispatch(eval, host, *perform).await {
-                        Ok(signal) => signal,
-                        Err(perform) => {
+                    match dispatch::compiler::begin(eval, host, *perform).await {
+                        dispatch::compiler::CompilerDispatchStart::Complete(signal) => signal,
+                        dispatch::compiler::CompilerDispatchStart::NotCompiler(perform) => {
                             match dispatch::approval::begin(eval, host, *perform, machine) {
                                 dispatch::approval::ApprovalDispatchStart::Complete(Some(
                                     signal,
@@ -368,6 +368,23 @@ async fn drive_scope<'host>(
                                     signal
                                 }
                             }
+                        }
+                        dispatch::compiler::CompilerDispatchStart::Pending(pending) => {
+                            let operation = pending.operation_id();
+                            let registered = task_hosts.start_compiler(HostOwner::Root, pending);
+                            assert_eq!(
+                                registered, operation,
+                                "registered host operation changed id"
+                            );
+                            let completed =
+                                match super::task::await_root_host(eval, host, task_hosts).await {
+                                    Ok(CompletedTaskHost::Compiler(completed)) => completed,
+                                    Ok(_) => {
+                                        panic!("root compiler wait received another host boundary")
+                                    }
+                                    Err(outcome) => return ScopeOutcome::Finished(outcome),
+                                };
+                            dispatch::compiler::finish(eval, completed)
                         }
                     }
                 }

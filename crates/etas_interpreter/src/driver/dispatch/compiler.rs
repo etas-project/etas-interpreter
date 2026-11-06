@@ -1,5 +1,5 @@
 use super::{
-    host_dispatch::{HostDispatch, TraceableHostResponse},
+    host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation, TraceableHostResponse},
     policy::authorize_before_boundary,
 };
 use crate::{
@@ -11,48 +11,62 @@ use etas_host::{
     HostError, HostErrorCode, HostRequestKind, HostTraceRequest, HostValue, PolicySubject,
 };
 
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+type CompilerCall<'host> = std::pin::Pin<
+    Box<dyn std::future::Future<Output = Result<PreparedCompilerReply, HostError>> + 'host>,
+>;
+
+pub(in crate::driver) enum CompilerDispatchStart<'host> {
+    NotCompiler(Box<PendingPerform>),
+    Complete(ControlSignal),
+    Pending(PendingCompilerDispatch<'host>),
+}
+
+pub(in crate::driver) struct PendingCompilerDispatch<'host> {
+    invocation: crate::eval::CompilerInvocation,
     perform: PendingPerform,
-) -> Result<ControlSignal, Box<PendingPerform>> {
+    pending: PendingHostOperation<PreparedCompilerReply, CompilerCall<'host>>,
+}
+
+pub(in crate::driver) struct CompletedCompilerDispatch {
+    invocation: crate::eval::CompilerInvocation,
+    perform: PendingPerform,
+    completion: HostCompletion<PreparedCompilerReply>,
+}
+
+pub(in crate::driver) async fn begin<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    perform: PendingPerform,
+) -> CompilerDispatchStart<'host> {
     let invocation = match eval.compiler_invocation(&perform) {
         Ok(Some(invocation)) => invocation,
-        Ok(None) => return Err(Box::new(perform)),
-        Err(fault) => return Ok(ControlSignal::Fault(Box::new(fault))),
+        Ok(None) => return CompilerDispatchStart::NotCompiler(Box::new(perform)),
+        Err(fault) => {
+            return CompilerDispatchStart::Complete(ControlSignal::Fault(Box::new(fault)));
+        }
     };
     if !host.availability().compiler {
-        return Ok(ControlSignal::fault(
+        return CompilerDispatchStart::Complete(ControlSignal::fault(
             etas_core::AnalysisDiagnosticCode::MissingHostHandler,
             perform.span,
             "missing Phase 1 host service for Compiler support",
         ));
     }
-    let dispatched = execute_request(
+    match begin_request(
         eval,
         host,
         invocation.request.clone(),
         invocation.definitions.clone(),
     )
-    .await;
-    Ok(match dispatched {
-        Ok(response) => eval.resume_compiler_result(
-            &invocation,
+    .await
+    {
+        Ok(pending) => CompilerDispatchStart::Pending(PendingCompilerDispatch {
+            invocation,
             perform,
-            response.response.result,
-            response.prepared,
-        ),
-        Err(error) => eval.cancellation_signal(perform.span).unwrap_or_else(|| {
-            ControlSignal::runtime_fault(
-                format!(
-                    "compiler boundary failed: {}: {}",
-                    error.code.as_str(),
-                    error.message
-                ),
-                perform.span,
-            )
+            pending,
         }),
-    })
+        Err(error) => CompilerDispatchStart::Complete(compiler_error(eval, perform, error)),
+    }
 }
 
 pub(in crate::driver) async fn execute_request(
@@ -61,6 +75,17 @@ pub(in crate::driver) async fn execute_request(
     request: etas_host::compiler::CompilerRequest,
     definitions: std::sync::Arc<etas_frontend::code::definition::NativeDefinitionStore>,
 ) -> Result<PreparedCompilerReply, HostError> {
+    let pending = begin_request(eval, host, request, definitions).await?;
+    let completion = HostDispatch::poll(pending).await;
+    HostDispatch::finish(eval, completion)
+}
+
+async fn begin_request<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    request: etas_host::compiler::CompilerRequest,
+    definitions: std::sync::Arc<etas_frontend::code::definition::NativeDefinitionStore>,
+) -> Result<PendingHostOperation<PreparedCompilerReply, CompilerCall<'host>>, HostError> {
     if !host.availability().compiler {
         return Err(HostError::new(
             HostErrorCode::ProviderUnavailable,
@@ -109,21 +134,73 @@ pub(in crate::driver) async fn execute_request(
             ));
         }
         let expected = request.clone();
-        HostDispatch::execute(
+        HostDispatch::begin(
             eval,
             request.id,
             HostRequestKind::Compiler,
             request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
-            |operation| async move {
-                let response = host.compiler(operation, request).await?;
-                prepare_response(host, &expected, definitions, response)
+            |operation| {
+                Box::pin(async move {
+                    let response = host.compiler(operation, request).await?;
+                    prepare_response(host, &expected, definitions, response)
+                }) as CompilerCall<'host>
             },
         )
-        .await
     }
     .await
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    completed: CompletedCompilerDispatch,
+) -> ControlSignal {
+    let CompletedCompilerDispatch {
+        invocation,
+        perform,
+        completion,
+    } = completed;
+    match HostDispatch::finish(eval, completion) {
+        Ok(response) => eval.resume_compiler_result(
+            &invocation,
+            perform,
+            response.response.result,
+            response.prepared,
+        ),
+        Err(error) => compiler_error(eval, perform, error),
+    }
+}
+
+fn compiler_error(
+    eval: &mut EvalContext<'_>,
+    perform: PendingPerform,
+    error: HostError,
+) -> ControlSignal {
+    eval.cancellation_signal(perform.span).unwrap_or_else(|| {
+        ControlSignal::runtime_fault(
+            format!(
+                "compiler boundary failed: {}: {}",
+                error.code.as_str(),
+                error.message
+            ),
+            perform.span,
+        )
+    })
+}
+
+impl PendingCompilerDispatch<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.pending.operation_id()
+    }
+
+    pub(in crate::driver) async fn poll(self) -> CompletedCompilerDispatch {
+        CompletedCompilerDispatch {
+            invocation: self.invocation,
+            perform: self.perform,
+            completion: HostDispatch::poll(self.pending).await,
+        }
+    }
 }
 
 fn prepare_response(

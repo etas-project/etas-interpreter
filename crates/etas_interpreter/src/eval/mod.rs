@@ -22,6 +22,7 @@ mod callee;
 mod checked_type;
 mod checkpoint;
 mod code;
+pub(crate) use code::CompilerInvocation;
 mod const_expr;
 mod continuation;
 mod existential;
