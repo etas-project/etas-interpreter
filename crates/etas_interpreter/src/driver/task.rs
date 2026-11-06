@@ -75,6 +75,12 @@ pub(super) async fn control_from_root<'host>(
                     crate::driver::scheduler::ContinuationTransfer::Requeue,
                 )
                 .map_err(|error| scheduler_failure(eval, error))?;
+            eval.events.push(WorkflowEvent::ContinuationConsumed {
+                scope: token.owner.0,
+                continuation: token.continuation.0,
+                task: None,
+                kind: "requeue".to_owned(),
+            });
             validate_continuation_value(eval, &value, consumed.output, span)?;
             machine.transfer_from(token, consumed.continuation, value);
             eval.events.push(WorkflowEvent::ContinuationTransferred {
@@ -95,6 +101,12 @@ pub(super) async fn control_from_root<'host>(
                     crate::driver::scheduler::ContinuationTransfer::Park,
                 )
                 .map_err(|error| scheduler_failure(eval, error))?;
+            eval.events.push(WorkflowEvent::ContinuationConsumed {
+                scope: token.owner.0,
+                continuation: token.continuation.0,
+                task: None,
+                kind: "park".to_owned(),
+            });
             let outcome = await_outcome(eval, host, reactor, task).await?;
             match outcome {
                 TaskOutcome::Completed(value) => {
@@ -180,6 +192,7 @@ async fn cancel_and_drain<'host>(
     eval.scheduler
         .cancel_unsettled(etas_host::execution::CancellationReason::ChildFailed)
         .map_err(|error| scheduler_failure(eval, error))?;
+    record_cancellation_events(eval);
     while eval.scheduler.has_unsettled_tasks() {
         match drive_one(eval, host, reactor).await {
             Ok(true) => {}
@@ -203,6 +216,7 @@ pub(super) async fn await_root_host<'host>(
             eval.scheduler
                 .cancel_unsettled(etas_host::execution::CancellationReason::ChildFailed)
                 .map_err(|error| scheduler_failure(eval, error))?;
+            record_cancellation_events(eval);
             return Err(failure);
         }
         match drive_one(eval, host, reactor).await {
@@ -227,6 +241,7 @@ async fn await_outcome<'host>(
             {
                 return Err(scheduler_failure(eval, error));
             }
+            record_cancellation_events(eval);
             return Err(failure);
         }
         match eval.scheduler.outcome(target) {
@@ -529,6 +544,12 @@ async fn drive_one<'host>(
                             continue;
                         }
                     };
+                    child.events.push(WorkflowEvent::ContinuationConsumed {
+                        scope: token.owner.0,
+                        continuation: token.continuation.0,
+                        task: Some(handle.task.0),
+                        kind: "requeue".to_owned(),
+                    });
                     if let Err(outcome) =
                         validate_continuation_value(&mut child, &value, consumed.output, span)
                     {
@@ -569,6 +590,12 @@ async fn drive_one<'host>(
                             continue;
                         }
                     };
+                    child.events.push(WorkflowEvent::ContinuationConsumed {
+                        scope: token.owner.0,
+                        continuation: token.continuation.0,
+                        task: Some(handle.task.0),
+                        kind: "park".to_owned(),
+                    });
                     task.waiting_continuation = Some(TaskResume::Transfer {
                         token,
                         continuation: consumed.continuation,
@@ -1002,10 +1029,15 @@ fn finish_task(
     result
         .and_then(|()| eval.scheduler.apply_group_policy(handle))
         .map_err(|error| scheduler_failure(eval, error))?;
+    record_cancellation_events(eval);
     eval.events.push(WorkflowEvent::TaskSettled {
         scope: handle.owner.0,
         task: handle.task.0,
         outcome: outcome_name.to_owned(),
+    });
+    eval.events.push(WorkflowEvent::TaskCleanupCompleted {
+        scope: handle.owner.0,
+        task: handle.task.0,
     });
     Ok(())
 }
@@ -1021,10 +1053,15 @@ fn finish_raised_task(
         .and_then(|()| eval.scheduler.raise(handle, perform))
         .and_then(|()| eval.scheduler.apply_group_policy(handle))
         .map_err(|error| scheduler_failure(eval, error))?;
+    record_cancellation_events(eval);
     eval.events.push(WorkflowEvent::TaskSettled {
         scope: handle.owner.0,
         task: handle.task.0,
         outcome: "raised".to_owned(),
+    });
+    eval.events.push(WorkflowEvent::TaskCleanupCompleted {
+        scope: handle.owner.0,
+        task: handle.task.0,
     });
     Ok(())
 }
@@ -1034,6 +1071,25 @@ fn record_scope_exit(
     scope: crate::driver::scheduler::TaskScopeId,
     outcome: &TaskOutcome,
 ) {
+    let (decision, task) = eval
+        .scheduler
+        .scope_resolution(scope)
+        .expect("completed task scope has a resolution");
+    eval.events.push(WorkflowEvent::ScopeResolved {
+        scope: scope.0,
+        decision: decision.to_owned(),
+        task: task.map(|task| task.0),
+    });
+    let budget = eval
+        .host_context
+        .budget
+        .snapshot()
+        .expect("task scope budget observation succeeds");
+    eval.events.push(WorkflowEvent::ScopeBudgetObserved {
+        scope: scope.0,
+        consumed_tokens: budget.consumed_tokens,
+        consumed_cost_micros: budget.consumed_cost_micros,
+    });
     let outcome = match outcome {
         TaskOutcome::Completed(_) => "completed",
         TaskOutcome::Raised(_) => "raised",
@@ -1044,6 +1100,16 @@ fn record_scope_exit(
         scope: scope.0,
         outcome: outcome.to_owned(),
     });
+}
+
+fn record_cancellation_events(eval: &mut EvalContext<'_>) {
+    for (handle, reason) in eval.scheduler.take_cancellation_events() {
+        eval.events.push(WorkflowEvent::TaskCancellationRequested {
+            scope: handle.owner.0,
+            task: handle.task.0,
+            reason: format!("{reason:?}"),
+        });
+    }
 }
 
 fn primary_failure(eval: &mut EvalContext<'_>) -> Option<EvaluationOutcome> {

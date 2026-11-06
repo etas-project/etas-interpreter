@@ -242,6 +242,31 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "scope": scope,
             "outcome": outcome,
         }),
+        WorkflowEvent::ScopePolicy { scope, policy } => json!({
+            "kind": "task_scope_policy",
+            "scope": scope,
+            "policy": policy,
+        }),
+        WorkflowEvent::ScopeResolved {
+            scope,
+            decision,
+            task,
+        } => json!({
+            "kind": "task_scope_resolved",
+            "scope": scope,
+            "decision": decision,
+            "task": task,
+        }),
+        WorkflowEvent::ScopeBudgetObserved {
+            scope,
+            consumed_tokens,
+            consumed_cost_micros,
+        } => json!({
+            "kind": "task_scope_budget_observed",
+            "scope": scope,
+            "consumed_tokens": consumed_tokens,
+            "consumed_cost_micros": consumed_cost_micros.to_string(),
+        }),
         WorkflowEvent::TaskStarted {
             scope,
             task,
@@ -276,6 +301,33 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "kind": "task_ready",
             "scope": scope,
             "task": task,
+        }),
+        WorkflowEvent::TaskCancellationRequested {
+            scope,
+            task,
+            reason,
+        } => json!({
+            "kind": "task_cancellation_requested",
+            "scope": scope,
+            "task": task,
+            "reason": reason,
+        }),
+        WorkflowEvent::TaskCleanupCompleted { scope, task } => json!({
+            "kind": "task_cleanup_completed",
+            "scope": scope,
+            "task": task,
+        }),
+        WorkflowEvent::ContinuationConsumed {
+            scope,
+            continuation,
+            task,
+            kind,
+        } => json!({
+            "kind": "continuation_consumed",
+            "scope": scope,
+            "continuation": continuation,
+            "task": task,
+            "consume_kind": kind,
         }),
         WorkflowEvent::ContinuationTransferred {
             scope,

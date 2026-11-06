@@ -14,6 +14,21 @@ pub(crate) enum TaskGroupPolicy {
     MapCollect,
 }
 
+impl TaskGroupPolicy {
+    pub(crate) const fn as_str(self) -> &'static str {
+        match self {
+            Self::Run => "run",
+            Self::JoinTuple => "join_tuple",
+            Self::JoinArray => "join_array",
+            Self::TryJoin => "try_join",
+            Self::Collect => "collect",
+            Self::Race => "race",
+            Self::Map => "map_concurrent",
+            Self::MapCollect => "map_concurrent_collect",
+        }
+    }
+}
+
 pub(super) struct TaskGroup {
     pub(super) parent: Option<TaskScopeId>,
     pub(super) concurrency: NonZeroUsize,

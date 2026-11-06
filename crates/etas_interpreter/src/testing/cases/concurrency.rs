@@ -264,6 +264,16 @@ flow main() -> i32 {
         event,
         WorkflowEvent::ScopeExited { outcome, .. } if outcome == "failed"
     )));
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::TaskCancellationRequested { reason, .. } if reason == "ChildFailed"
+    )));
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::TaskCleanupCompleted { .. }))
+    );
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -296,6 +306,30 @@ flow main() -> i32 {
         .collect::<Vec<_>>();
     assert_eq!(entered.len(), 2);
     assert_eq!(entered[1].1, entered[0].0);
+    assert_eq!(
+        result
+            .events
+            .iter()
+            .filter(|event| matches!(event, WorkflowEvent::ScopePolicy { policy, .. } if policy == "run"))
+            .count(),
+        2
+    );
+    assert_eq!(
+        result
+            .events
+            .iter()
+            .filter(|event| matches!(event, WorkflowEvent::ScopeResolved { .. }))
+            .count(),
+        2
+    );
+    assert_eq!(
+        result
+            .events
+            .iter()
+            .filter(|event| matches!(event, WorkflowEvent::ScopeBudgetObserved { .. }))
+            .count(),
+        2
+    );
     let exited = result
         .events
         .iter()
@@ -415,6 +449,16 @@ flow main() -> i32 {
     assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
     assert_eq!(result.value(), Some(&InterpValue::i32(7)));
 
+    let consumed = result
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                WorkflowEvent::ContinuationConsumed { kind, .. } if kind == "park"
+            )
+        })
+        .expect("waiter task should consume its one-shot continuation");
     let (transferred, waiter_task) = result
         .events
         .iter()
@@ -466,7 +510,7 @@ flow main() -> i32 {
             )
         })
         .expect("waiter task should settle after resumption");
-    assert!(parked < transferred && transferred < ready && ready < settled);
+    assert!(consumed < parked && parked < transferred && transferred < ready && ready < settled);
     assert_ne!(waiter_task, slow_task);
 }
 

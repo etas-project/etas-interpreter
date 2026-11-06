@@ -16,6 +16,20 @@ pub enum WorkflowEvent {
         scope: u64,
         outcome: String,
     },
+    ScopePolicy {
+        scope: u64,
+        policy: String,
+    },
+    ScopeResolved {
+        scope: u64,
+        decision: String,
+        task: Option<u64>,
+    },
+    ScopeBudgetObserved {
+        scope: u64,
+        consumed_tokens: u64,
+        consumed_cost_micros: u128,
+    },
     TaskStarted {
         scope: u64,
         task: u64,
@@ -34,6 +48,21 @@ pub enum WorkflowEvent {
     TaskReady {
         scope: u64,
         task: u64,
+    },
+    TaskCancellationRequested {
+        scope: u64,
+        task: u64,
+        reason: String,
+    },
+    TaskCleanupCompleted {
+        scope: u64,
+        task: u64,
+    },
+    ContinuationConsumed {
+        scope: u64,
+        continuation: u64,
+        task: Option<u64>,
+        kind: String,
     },
     ContinuationTransferred {
         scope: u64,

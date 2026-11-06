@@ -222,6 +222,11 @@ impl EvalContext<'_> {
                 concurrency: u32::try_from(concurrency.get())
                     .expect("checked concurrency limit fits trace ABI"),
             });
+        self.events
+            .push(crate::orchestration::WorkflowEvent::ScopePolicy {
+                scope: scope.0,
+                policy: policy.as_str().to_owned(),
+            });
         ControlSignal::pending_task(crate::control::PendingTaskControl::Run { scope, span })
     }
 
@@ -374,6 +379,13 @@ impl EvalContext<'_> {
                 parent: parent_scope.0,
                 concurrency: u32::try_from(concurrency.get())
                     .expect("checked concurrency limit fits trace ABI"),
+            });
+        self.events
+            .push(crate::orchestration::WorkflowEvent::ScopePolicy {
+                scope: scope.0,
+                policy: crate::driver::scheduler::TaskGroupPolicy::Run
+                    .as_str()
+                    .to_owned(),
             });
         self.events
             .push(crate::orchestration::WorkflowEvent::TaskStarted {

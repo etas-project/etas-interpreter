@@ -86,6 +86,7 @@ pub(crate) struct TaskScheduler {
     tasks: BTreeMap<TaskId, ScheduledTask>,
     ready: VecDeque<TaskId>,
     wakeups: BTreeMap<TaskId, VecDeque<TaskWakeup>>,
+    cancellation_events: Vec<(TaskHandle, etas_host::execution::CancellationReason)>,
     continuations: continuation::ContinuationArena,
 }
 
@@ -103,6 +104,7 @@ impl TaskScheduler {
             tasks: BTreeMap::new(),
             ready: VecDeque::new(),
             wakeups: BTreeMap::new(),
+            cancellation_events: Vec::new(),
             continuations: continuation::ContinuationArena::new(),
         }
     }
@@ -248,6 +250,36 @@ impl TaskScheduler {
         handle: TaskHandle,
     ) -> Result<Option<&TaskOutcome>, SchedulerError> {
         Ok(self.resolve(handle)?.outcome.as_ref())
+    }
+
+    pub(crate) fn scope_resolution(
+        &self,
+        scope: TaskScopeId,
+    ) -> Result<(&'static str, Option<TaskId>), SchedulerError> {
+        let group = self.groups.get(&scope).ok_or(SchedulerError::WrongOwner)?;
+        if let Some(winner) = group.winner {
+            return Ok(("first_success", Some(winner)));
+        }
+        if let Some(primary) = group.primary_failure {
+            let decision = if group.policy == TaskGroupPolicy::TryJoin
+                && matches!(self.tasks[&primary].outcome, Some(TaskOutcome::Raised(_)))
+            {
+                "captured_primary_error"
+            } else {
+                "primary_failure"
+            };
+            return Ok((decision, Some(primary)));
+        }
+        if let Some(owner) = group.owner {
+            return Ok(("owner_completed", Some(owner)));
+        }
+        Ok(("all_completed", None))
+    }
+
+    pub(crate) fn take_cancellation_events(
+        &mut self,
+    ) -> Vec<(TaskHandle, etas_host::execution::CancellationReason)> {
+        std::mem::take(&mut self.cancellation_events)
     }
 
     /// FIFO admission. Stale queue entries from cancellation are skipped.
@@ -595,7 +627,11 @@ impl TaskScheduler {
         if task.state.is_terminal() {
             return Ok(());
         }
-        task.local.execution.cancel_source().stop(reason)?;
+        let already_cancelled = task.local.execution.signal()?.cause()?.is_some();
+        task.local.execution.cancel_source().stop(reason.clone())?;
+        if !already_cancelled {
+            self.cancellation_events.push((handle, reason));
+        }
         if matches!(task.state, TaskState::Waiting(TaskWait::Host(_))) {
             return Ok(());
         }
