@@ -227,6 +227,53 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
     let event = match event {
         WorkflowEvent::StepStarted(id) => json!({ "kind": "step_started", "id": id.0 }),
         WorkflowEvent::StepCompleted(id) => json!({ "kind": "step_completed", "id": id.0 }),
+        WorkflowEvent::TaskStarted {
+            scope,
+            task,
+            source_index,
+        } => json!({
+            "kind": "task_started",
+            "scope": scope,
+            "task": task,
+            "source_index": source_index,
+        }),
+        WorkflowEvent::TaskSettled {
+            scope,
+            task,
+            outcome,
+        } => json!({
+            "kind": "task_settled",
+            "scope": scope,
+            "task": task,
+            "outcome": outcome,
+        }),
+        WorkflowEvent::TaskParked {
+            scope,
+            task,
+            waiting_on,
+        } => json!({
+            "kind": "task_parked",
+            "scope": scope,
+            "task": task,
+            "waiting_on": waiting_on,
+        }),
+        WorkflowEvent::TaskReady { scope, task } => json!({
+            "kind": "task_ready",
+            "scope": scope,
+            "task": task,
+        }),
+        WorkflowEvent::ContinuationTransferred {
+            scope,
+            continuation,
+            task,
+            kind,
+        } => json!({
+            "kind": "continuation_transferred",
+            "scope": scope,
+            "continuation": continuation,
+            "task": task,
+            "transfer_kind": kind,
+        }),
         WorkflowEvent::HostTrace(event) => host_trace_event_json(event),
         WorkflowEvent::StorageWrite { request, evidence } => {
             json!({ "kind": "storage_write", "request": request.0, "evidence": evidence })

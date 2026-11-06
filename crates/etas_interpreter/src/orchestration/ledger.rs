@@ -7,6 +7,31 @@ pub struct WorkflowStepId(pub u32);
 pub enum WorkflowEvent {
     StepStarted(WorkflowStepId),
     StepCompleted(WorkflowStepId),
+    TaskStarted {
+        scope: u64,
+        task: u64,
+        source_index: usize,
+    },
+    TaskSettled {
+        scope: u64,
+        task: u64,
+        outcome: String,
+    },
+    TaskParked {
+        scope: u64,
+        task: u64,
+        waiting_on: u64,
+    },
+    TaskReady {
+        scope: u64,
+        task: u64,
+    },
+    ContinuationTransferred {
+        scope: u64,
+        continuation: u64,
+        task: Option<u64>,
+        kind: String,
+    },
     HostTrace(etas_host::TraceEvent),
     StorageWrite {
         request: etas_host::HostRequestId,

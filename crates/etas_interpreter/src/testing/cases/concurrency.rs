@@ -124,3 +124,79 @@ flow main() -> i32 {
     assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
     assert_eq!(result.value(), Some(&InterpValue::i32(19)));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn structured_task_trace_records_park_wakeup_and_transfer_order() {
+    let result = run(r#"
+module app.main;
+import std.task.{run, start, await, Scheduler};
+import std.task.scheduler.{park, requeue};
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let slow = start(() => {
+            handle { perform Async.yield() } with {
+                Async.yield() as k => {
+                    requeue(scheduler, k, ());
+                }
+            };
+            return 7;
+        });
+        let waiter = start(() => {
+            return handle { await(slow) } with {
+                Async.await(waited) as k => {
+                    park(scheduler, waited, k);
+                }
+            };
+        });
+        return await(waiter);
+    });
+}
+"#)
+    .await;
+
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(7)));
+
+    let parked = result
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                WorkflowEvent::TaskParked {
+                    task: 1,
+                    waiting_on: 0,
+                    ..
+                }
+            )
+        })
+        .expect("waiter task should park on the slow task");
+    let ready = result
+        .events
+        .iter()
+        .position(|event| matches!(event, WorkflowEvent::TaskReady { task: 1, .. }))
+        .expect("waiter task should become ready after the slow task settles");
+    let settled = result
+        .events
+        .iter()
+        .position(|event| {
+            matches!(
+                event,
+                WorkflowEvent::TaskSettled {
+                    task: 1,
+                    outcome,
+                    ..
+                } if outcome == "completed"
+            )
+        })
+        .expect("waiter task should settle after resumption");
+    assert!(parked < ready && ready < settled);
+    assert!(result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::ContinuationTransferred {
+            task: Some(1),
+            kind,
+            ..
+        } if kind == "park"
+    )));
+}

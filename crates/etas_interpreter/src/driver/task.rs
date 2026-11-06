@@ -10,6 +10,7 @@ use crate::{
         machine::{MachinePoll, PendingBoundary},
     },
     host::HostServices,
+    orchestration::WorkflowEvent,
     value::InterpValue,
 };
 
@@ -68,6 +69,12 @@ pub(super) async fn control_from_root(
                 .map_err(|error| scheduler_failure(eval, error))?;
             validate_continuation_value(eval, &value, consumed.output, span)?;
             machine.transfer_from(token, consumed.continuation, value);
+            eval.events.push(WorkflowEvent::ContinuationTransferred {
+                scope: token.owner.0,
+                continuation: token.continuation.0,
+                task: None,
+                kind: "requeue".to_owned(),
+            });
             tokio::task::yield_now().await;
             Ok(())
         }
@@ -85,6 +92,12 @@ pub(super) async fn control_from_root(
                 TaskOutcome::Completed(value) => {
                     validate_continuation_value(eval, &value, consumed.output, span)?;
                     machine.transfer_from(token, consumed.continuation, value);
+                    eval.events.push(WorkflowEvent::ContinuationTransferred {
+                        scope: token.owner.0,
+                        continuation: token.continuation.0,
+                        task: None,
+                        kind: "park".to_owned(),
+                    });
                     Ok(())
                 }
                 TaskOutcome::Failed(failure) => Err(EvaluationOutcome::Failed(failure)),
@@ -173,7 +186,15 @@ async fn drive_one(
         .take_running(handle)
         .map_err(|error| scheduler_failure(eval, error))?;
 
-    if let Some(TaskWakeup::Task { outcome, .. }) = wakeup {
+    if let Some(TaskWakeup::Task {
+        completed: _,
+        outcome,
+    }) = wakeup
+    {
+        eval.events.push(WorkflowEvent::TaskReady {
+            scope: handle.owner.0,
+            task: handle.task.0,
+        });
         let continuation = task
             .waiting_continuation
             .take()
@@ -193,9 +214,7 @@ async fn drive_one(
                 span,
             } => match outcome {
                 TaskOutcome::Completed(value) => {
-                    if let Err(outcome) =
-                        validate_continuation_value(eval, &value, output, span)
-                    {
+                    if let Err(outcome) = validate_continuation_value(eval, &value, output, span) {
                         finish_task(eval, handle, task, outcome)?;
                         return Ok(true);
                     }
@@ -304,6 +323,12 @@ async fn drive_one(
                         .restore_running(handle, task)
                         .and_then(|()| eval.scheduler.requeue(handle))
                         .map_err(|error| scheduler_failure(eval, error))?;
+                    eval.events.push(WorkflowEvent::ContinuationTransferred {
+                        scope: token.owner.0,
+                        continuation: token.continuation.0,
+                        task: Some(handle.task.0),
+                        kind: "requeue".to_owned(),
+                    });
                     tokio::task::yield_now().await;
                     return Ok(true);
                 }
@@ -339,7 +364,20 @@ async fn drive_one(
                         .await_task(handle, target)
                         .map_err(|error| scheduler_failure(eval, error))?
                     {
-                        AwaitDecision::Parked => return Ok(true),
+                        AwaitDecision::Parked => {
+                            eval.events.push(WorkflowEvent::TaskParked {
+                                scope: handle.owner.0,
+                                task: handle.task.0,
+                                waiting_on: target.task.0,
+                            });
+                            eval.events.push(WorkflowEvent::ContinuationTransferred {
+                                scope: token.owner.0,
+                                continuation: token.continuation.0,
+                                task: Some(handle.task.0),
+                                kind: "park".to_owned(),
+                            });
+                            return Ok(true);
+                        }
                         AwaitDecision::Ready(outcome) => {
                             task = eval
                                 .scheduler
@@ -370,6 +408,12 @@ async fn drive_one(
                                         return Ok(true);
                                     }
                                     task.machine.transfer_from(token, continuation, value);
+                                    eval.events.push(WorkflowEvent::ContinuationTransferred {
+                                        scope: token.owner.0,
+                                        continuation: token.continuation.0,
+                                        task: Some(handle.task.0),
+                                        kind: "park".to_owned(),
+                                    });
                                     continue;
                                 }
                                 TaskOutcome::Failed(failure) => {
@@ -442,6 +486,11 @@ async fn drive_one(
                                 AwaitDecision::Ready(_) => Err(SchedulerError::InvalidTransition),
                             })
                             .map_err(|error| scheduler_failure(eval, error))?;
+                        eval.events.push(WorkflowEvent::TaskParked {
+                            scope: handle.owner.0,
+                            task: handle.task.0,
+                            waiting_on: target.task.0,
+                        });
                         return Ok(true);
                     }
                     Err(error) => {
@@ -576,6 +625,11 @@ fn finish_task(
     task: ScheduledTask,
     outcome: EvaluationOutcome,
 ) -> Result<(), EvaluationOutcome> {
+    let outcome_name = match &outcome {
+        EvaluationOutcome::Completed(_) => "completed",
+        EvaluationOutcome::Failed(_) => "failed",
+        EvaluationOutcome::Cancelled(_) => "cancelled",
+    };
     eval.scheduler
         .restore_running(handle, task)
         .map_err(|error| scheduler_failure(eval, error))?;
@@ -584,7 +638,13 @@ fn finish_task(
         EvaluationOutcome::Failed(failure) => eval.scheduler.fail(handle, failure),
         EvaluationOutcome::Cancelled(cause) => eval.scheduler.cancelled(handle, cause),
     };
-    result.map_err(|error| scheduler_failure(eval, error))
+    result.map_err(|error| scheduler_failure(eval, error))?;
+    eval.events.push(WorkflowEvent::TaskSettled {
+        scope: handle.owner.0,
+        task: handle.task.0,
+        outcome: outcome_name.to_owned(),
+    });
+    Ok(())
 }
 
 fn primary_failure(eval: &mut EvalContext<'_>) -> Option<EvaluationOutcome> {

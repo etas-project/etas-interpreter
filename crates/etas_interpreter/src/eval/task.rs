@@ -182,9 +182,17 @@ impl EvalContext<'_> {
             self.handler_floor,
             span.range.start.0 as usize,
         ) {
-            Ok(handle) => ControlSignal::Value(InterpValue::Task(
-                crate::value::TaskHandleValue::new(handle),
-            )),
+            Ok(handle) => {
+                self.events
+                    .push(crate::orchestration::WorkflowEvent::TaskStarted {
+                        scope: handle.owner.0,
+                        task: handle.task.0,
+                        source_index: span.range.start.0 as usize,
+                    });
+                ControlSignal::Value(InterpValue::Task(crate::value::TaskHandleValue::new(
+                    handle,
+                )))
+            }
             Err(error) => ControlSignal::runtime_fault(error.to_string(), span),
         }
     }
