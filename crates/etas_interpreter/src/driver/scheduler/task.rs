@@ -29,6 +29,7 @@ pub(crate) struct TaskHandle {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TaskWait {
     Task(TaskId),
+    Scope(TaskScopeId),
     Host(etas_host::execution::OperationId),
 }
 
@@ -68,11 +69,11 @@ impl TaskOutcome {
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum TaskWaiter {
     Task(TaskId),
-    Continuation(ContinuationId),
 }
 
 pub(crate) enum TaskResume {
     Await(Continuation),
+    Run(Continuation),
     Transfer {
         token: crate::value::ContinuationTokenValue,
         continuation: Continuation,
@@ -82,6 +83,7 @@ pub(crate) enum TaskResume {
 }
 
 pub(crate) struct ScheduledTask {
+    pub(crate) scope: TaskScopeId,
     pub(crate) machine: EvalMachine,
     pub(crate) local: TaskLocalState,
     pub(crate) program: Option<CheckedExecutionProgram>,
@@ -95,6 +97,7 @@ pub(crate) struct ScheduledTask {
 
 impl ScheduledTask {
     pub(crate) fn new(
+        scope: TaskScopeId,
         machine: EvalMachine,
         local: TaskLocalState,
         program: Option<CheckedExecutionProgram>,
@@ -102,6 +105,7 @@ impl ScheduledTask {
         source_index: usize,
     ) -> Self {
         Self {
+            scope,
             machine,
             local,
             program,

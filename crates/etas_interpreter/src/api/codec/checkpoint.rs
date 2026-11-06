@@ -227,6 +227,21 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
     let event = match event {
         WorkflowEvent::StepStarted(id) => json!({ "kind": "step_started", "id": id.0 }),
         WorkflowEvent::StepCompleted(id) => json!({ "kind": "step_completed", "id": id.0 }),
+        WorkflowEvent::ScopeEntered {
+            scope,
+            parent,
+            concurrency,
+        } => json!({
+            "kind": "task_scope_entered",
+            "scope": scope,
+            "parent": parent,
+            "concurrency": concurrency,
+        }),
+        WorkflowEvent::ScopeExited { scope, outcome } => json!({
+            "kind": "task_scope_exited",
+            "scope": scope,
+            "outcome": outcome,
+        }),
         WorkflowEvent::TaskStarted {
             scope,
             task,

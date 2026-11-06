@@ -7,6 +7,15 @@ pub struct WorkflowStepId(pub u32);
 pub enum WorkflowEvent {
     StepStarted(WorkflowStepId),
     StepCompleted(WorkflowStepId),
+    ScopeEntered {
+        scope: u64,
+        parent: u64,
+        concurrency: u32,
+    },
+    ScopeExited {
+        scope: u64,
+        outcome: String,
+    },
     TaskStarted {
         scope: u64,
         task: u64,

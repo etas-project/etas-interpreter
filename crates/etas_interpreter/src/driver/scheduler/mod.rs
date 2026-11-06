@@ -1,4 +1,5 @@
 mod continuation;
+mod group;
 mod host;
 mod task;
 
@@ -57,9 +58,8 @@ pub(crate) enum TaskWakeup {
         completed: TaskHandle,
         outcome: TaskOutcome,
     },
-    Continuation {
-        continuation: ContinuationId,
-        completed: TaskHandle,
+    Scope {
+        scope: TaskScopeId,
         outcome: TaskOutcome,
     },
 }
@@ -70,13 +70,18 @@ pub(crate) enum AwaitDecision {
     Parked,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum ScopeDecision {
+    Ready(TaskOutcome),
+    Parked,
+}
+
 /// One structured task scope. Tasks remain owned here after their language
 /// handles are dropped, and terminal outcomes remain cached for repeat awaits.
 pub(crate) struct TaskScheduler {
-    owner: TaskScopeId,
-    concurrency: NonZeroUsize,
+    next_scope: u64,
     next_task: u64,
-    active: usize,
+    groups: BTreeMap<TaskScopeId, group::TaskGroup>,
     tasks: BTreeMap<TaskId, ScheduledTask>,
     ready: VecDeque<TaskId>,
     wakeups: BTreeMap<TaskId, VecDeque<TaskWakeup>>,
@@ -85,29 +90,55 @@ pub(crate) struct TaskScheduler {
 
 impl TaskScheduler {
     pub(crate) fn new(owner: TaskScopeId, concurrency: NonZeroUsize) -> Self {
+        let mut groups = BTreeMap::new();
+        groups.insert(owner, group::TaskGroup::new(None, concurrency));
         Self {
-            owner,
-            concurrency,
+            next_scope: owner.0.checked_add(1).expect("task scope id exhausted"),
             next_task: 0,
-            active: 0,
+            groups,
             tasks: BTreeMap::new(),
             ready: VecDeque::new(),
             wakeups: BTreeMap::new(),
-            continuations: continuation::ContinuationArena::new(owner),
+            continuations: continuation::ContinuationArena::new(),
         }
     }
 
-    pub(crate) fn owner(&self) -> TaskScopeId {
-        self.owner
+    pub(crate) fn create_scope(
+        &mut self,
+        parent: TaskScopeId,
+        concurrency: NonZeroUsize,
+    ) -> TaskScopeId {
+        assert!(
+            self.groups.contains_key(&parent),
+            "parent task scope must exist"
+        );
+        let id = TaskScopeId(self.next_scope);
+        self.next_scope = self
+            .next_scope
+            .checked_add(1)
+            .expect("task scope id exhausted");
+        assert!(
+            self.groups
+                .insert(id, group::TaskGroup::new(Some(parent), concurrency))
+                .is_none(),
+            "task scope id must be unique"
+        );
+        id
     }
 
     pub(crate) fn allocate_continuation(
         &mut self,
+        owner: TaskScopeId,
         origin: TaskIdentity,
         continuation: crate::control::Continuation,
         output: etas_types::TypeId,
     ) -> crate::value::ContinuationTokenValue {
-        self.continuations.allocate(origin, continuation, output)
+        assert!(
+            self.groups.contains_key(&owner),
+            "continuation scope must exist"
+        );
+        self.continuations
+            .allocate(owner, origin, continuation, output)
     }
 
     pub(crate) fn consume_continuation(
@@ -135,18 +166,64 @@ impl TaskScheduler {
         handler_floor: usize,
         source_index: usize,
     ) -> Result<TaskHandle, SchedulerError> {
-        let local = parent.child()?;
+        self.spawn_in_scope(
+            parent,
+            parent.task_scope,
+            machine,
+            program,
+            handler_floor,
+            source_index,
+        )
+    }
+
+    pub(crate) fn spawn_in_scope(
+        &mut self,
+        parent: &crate::eval::TaskLocalState,
+        scope: TaskScopeId,
+        machine: EvalMachine,
+        program: Option<crate::value::CheckedExecutionProgram>,
+        handler_floor: usize,
+        source_index: usize,
+    ) -> Result<TaskHandle, SchedulerError> {
+        if !self.groups.contains_key(&scope) {
+            return Err(SchedulerError::WrongOwner);
+        }
+        let local = parent.child_in_scope(scope)?;
         let id = TaskId(self.next_task);
         self.next_task = self.next_task.checked_add(1).expect("task id exhausted");
         self.tasks.insert(
             id,
-            ScheduledTask::new(machine, local, program, handler_floor, source_index),
+            ScheduledTask::new(scope, machine, local, program, handler_floor, source_index),
         );
+        self.groups
+            .get_mut(&scope)
+            .expect("validated task scope")
+            .tasks
+            .insert(id);
         self.ready.push_back(id);
         Ok(TaskHandle {
-            owner: self.owner,
+            owner: scope,
             task: id,
         })
+    }
+
+    pub(crate) fn set_scope_owner(
+        &mut self,
+        scope: TaskScopeId,
+        owner: TaskHandle,
+    ) -> Result<(), SchedulerError> {
+        self.resolve_id(owner)?;
+        if owner.owner != scope {
+            return Err(SchedulerError::WrongOwner);
+        }
+        let group = self
+            .groups
+            .get_mut(&scope)
+            .ok_or(SchedulerError::WrongOwner)?;
+        if group.owner.replace(owner.task).is_some() {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        Ok(())
     }
 
     pub(crate) fn state(&self, handle: TaskHandle) -> Result<TaskState, SchedulerError> {
@@ -162,32 +239,29 @@ impl TaskScheduler {
 
     /// FIFO admission. Stale queue entries from cancellation are skipped.
     pub(crate) fn dispatch_ready(&mut self) -> Option<TaskHandle> {
-        if self.active >= self.concurrency.get() {
-            return None;
-        }
-        while let Some(id) = self.ready.pop_front() {
-            let task = self.tasks.get_mut(&id).expect("ready task must exist");
+        let queued = self.ready.len();
+        for _ in 0..queued {
+            let id = self.ready.pop_front().expect("bounded ready queue scan");
+            let task = self.tasks.get(&id).expect("ready task must exist");
             if task.state != TaskState::Ready {
                 continue;
             }
-            task.state = TaskState::Running;
-            self.active += 1;
+            let scope = task.scope;
+            if !self.can_admit(scope) {
+                self.ready.push_back(id);
+                continue;
+            }
+            self.tasks
+                .get_mut(&id)
+                .expect("ready task must exist")
+                .state = TaskState::Running;
+            self.change_active(scope, true);
             return Some(TaskHandle {
-                owner: self.owner,
+                owner: scope,
                 task: id,
             });
         }
         None
-    }
-
-    pub(crate) fn task_mut(
-        &mut self,
-        handle: TaskHandle,
-    ) -> Result<&mut ScheduledTask, SchedulerError> {
-        self.resolve_id(handle)?;
-        self.tasks
-            .get_mut(&handle.task)
-            .ok_or(SchedulerError::UnknownTask)
     }
 
     pub(crate) fn take_running(
@@ -206,7 +280,7 @@ impl TaskScheduler {
         handle: TaskHandle,
         task: ScheduledTask,
     ) -> Result<(), SchedulerError> {
-        if handle.owner != self.owner || task.state != TaskState::Running {
+        if handle.owner != task.scope || task.state != TaskState::Running {
             return Err(SchedulerError::InvalidTransition);
         }
         if self.tasks.insert(handle.task, task).is_some() {
@@ -222,7 +296,8 @@ impl TaskScheduler {
             return Err(SchedulerError::InvalidTransition);
         }
         task.state = TaskState::Ready;
-        self.active -= 1;
+        let scope = task.scope;
+        self.change_active(scope, false);
         self.ready.push_back(id);
         Ok(())
     }
@@ -251,8 +326,54 @@ impl TaskScheduler {
             .get_mut(&waiter_id)
             .expect("resolved waiter")
             .state = TaskState::Waiting(TaskWait::Task(target_id));
-        self.active -= 1;
+        let scope = self.tasks[&waiter_id].scope;
+        self.change_active(scope, false);
         Ok(AwaitDecision::Parked)
+    }
+
+    pub(crate) fn await_scope(
+        &mut self,
+        waiter: TaskHandle,
+        scope: TaskScopeId,
+    ) -> Result<ScopeDecision, SchedulerError> {
+        let waiter_id = self.resolve_id(waiter)?;
+        if self.tasks[&waiter_id].state != TaskState::Running {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        if let Some(outcome) = self.scope_outcome(scope)? {
+            return Ok(ScopeDecision::Ready(outcome));
+        }
+        self.groups
+            .get_mut(&scope)
+            .ok_or(SchedulerError::WrongOwner)?
+            .waiters
+            .push(waiter_id);
+        self.tasks
+            .get_mut(&waiter_id)
+            .expect("resolved waiter")
+            .state = TaskState::Waiting(TaskWait::Scope(scope));
+        let waiter_scope = self.tasks[&waiter_id].scope;
+        self.change_active(waiter_scope, false);
+        Ok(ScopeDecision::Parked)
+    }
+
+    pub(crate) fn scope_outcome(
+        &self,
+        scope: TaskScopeId,
+    ) -> Result<Option<TaskOutcome>, SchedulerError> {
+        let group = self.groups.get(&scope).ok_or(SchedulerError::WrongOwner)?;
+        if group
+            .tasks
+            .iter()
+            .any(|task| !self.tasks[task].state.is_terminal())
+        {
+            return Ok(None);
+        }
+        if let Some(primary) = group.primary_failure {
+            return Ok(self.tasks[&primary].outcome.clone());
+        }
+        let owner = group.owner.ok_or(SchedulerError::InvalidTransition)?;
+        Ok(self.tasks[&owner].outcome.clone())
     }
 
     pub(crate) fn wait_for_host(
@@ -266,7 +387,8 @@ impl TaskScheduler {
             return Err(SchedulerError::InvalidTransition);
         }
         task.state = TaskState::Waiting(TaskWait::Host(operation));
-        self.active -= 1;
+        let scope = task.scope;
+        self.change_active(scope, false);
         Ok(())
     }
 
@@ -285,23 +407,6 @@ impl TaskScheduler {
         Ok(())
     }
 
-    pub(crate) fn wait_with_continuation(
-        &mut self,
-        target: TaskHandle,
-        continuation: ContinuationId,
-    ) -> Result<Option<TaskOutcome>, SchedulerError> {
-        let target_id = self.resolve_id(target)?;
-        if let Some(outcome) = self.tasks[&target_id].outcome.clone() {
-            return Ok(Some(outcome));
-        }
-        self.tasks
-            .get_mut(&target_id)
-            .expect("resolved target")
-            .waiters
-            .push(TaskWaiter::Continuation(continuation));
-        Ok(None)
-    }
-
     pub(crate) fn complete(
         &mut self,
         handle: TaskHandle,
@@ -315,6 +420,21 @@ impl TaskScheduler {
         handle: TaskHandle,
         failure: RunFailure,
     ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let scope = self.tasks[&id].scope;
+        let source_index = self.tasks[&id].source_index;
+        let replace = self.groups[&scope]
+            .primary_failure
+            .is_none_or(|primary_id| {
+                let primary = &self.tasks[&primary_id];
+                (source_index, id) < (primary.source_index, primary_id)
+            });
+        if replace {
+            self.groups
+                .get_mut(&scope)
+                .expect("task scope must exist")
+                .primary_failure = Some(id);
+        }
         self.terminal(handle, TaskOutcome::Failed(failure))
     }
 
@@ -329,6 +449,9 @@ impl TaskScheduler {
             return Ok(());
         }
         task.local.execution.cancel_source().stop(reason)?;
+        if matches!(task.state, TaskState::Waiting(TaskWait::Host(_))) {
+            return Ok(());
+        }
         let cause = task
             .local
             .execution
@@ -367,8 +490,37 @@ impl TaskScheduler {
             .iter()
             .filter(|(_, task)| !task.state.is_terminal())
             .map(|(id, _)| TaskHandle {
-                owner: self.owner,
+                owner: self.tasks[id].scope,
                 task: *id,
+            })
+            .collect::<Vec<_>>();
+        for handle in handles {
+            self.cancel(handle, reason.clone())?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn cancel_scope_unsettled(
+        &mut self,
+        scope: TaskScopeId,
+        reason: etas_host::execution::CancellationReason,
+    ) -> Result<(), SchedulerError> {
+        if !self.groups.contains_key(&scope) {
+            return Err(SchedulerError::WrongOwner);
+        }
+        let scopes = self
+            .groups
+            .keys()
+            .copied()
+            .filter(|candidate| self.is_descendant_of(*candidate, scope))
+            .collect::<Vec<_>>();
+        let handles = scopes
+            .iter()
+            .flat_map(|scope| self.groups[scope].tasks.iter())
+            .filter(|task| !self.tasks[task].state.is_terminal())
+            .map(|task| TaskHandle {
+                owner: self.tasks[task].scope,
+                task: *task,
             })
             .collect::<Vec<_>>();
         for handle in handles {
@@ -383,7 +535,7 @@ impl TaskScheduler {
             .filter(|(_, task)| matches!(task.outcome, Some(TaskOutcome::Failed(_))))
             .min_by_key(|(id, task)| (task.source_index, **id))
             .map(|(id, _)| TaskHandle {
-                owner: self.owner,
+                owner: self.tasks[id].scope,
                 task: *id,
             })
     }
@@ -404,7 +556,8 @@ impl TaskScheduler {
             (std::mem::take(&mut task.waiters), was_running)
         };
         if was_running {
-            self.active -= 1;
+            let scope = self.tasks[&id].scope;
+            self.change_active(scope, false);
         }
         for waiter in waiters {
             match waiter {
@@ -422,18 +575,9 @@ impl TaskScheduler {
                             });
                     }
                 }
-                TaskWaiter::Continuation(continuation) => {
-                    self.wakeups
-                        .entry(id)
-                        .or_default()
-                        .push_back(TaskWakeup::Continuation {
-                            continuation,
-                            completed: handle,
-                            outcome: outcome.clone(),
-                        });
-                }
             }
         }
+        self.wake_scope_if_settled(self.tasks[&id].scope)?;
         Ok(())
     }
 
@@ -445,13 +589,91 @@ impl TaskScheduler {
     }
 
     fn resolve_id(&self, handle: TaskHandle) -> Result<TaskId, SchedulerError> {
-        if handle.owner != self.owner {
+        let task = self
+            .tasks
+            .get(&handle.task)
+            .ok_or(SchedulerError::UnknownTask)?;
+        if handle.owner != task.scope {
             return Err(SchedulerError::WrongOwner);
         }
-        if !self.tasks.contains_key(&handle.task) {
-            return Err(SchedulerError::UnknownTask);
-        }
         Ok(handle.task)
+    }
+
+    fn can_admit(&self, mut scope: TaskScopeId) -> bool {
+        loop {
+            let group = self.groups.get(&scope).expect("task scope must exist");
+            if group.active >= group.concurrency.get() {
+                return false;
+            }
+            let Some(parent) = group.parent else {
+                return true;
+            };
+            scope = parent;
+        }
+    }
+
+    fn is_descendant_of(&self, mut scope: TaskScopeId, ancestor: TaskScopeId) -> bool {
+        loop {
+            if scope == ancestor {
+                return true;
+            }
+            let Some(parent) = self.groups[&scope].parent else {
+                return false;
+            };
+            scope = parent;
+        }
+    }
+
+    fn wake_scope_if_settled(&mut self, scope: TaskScopeId) -> Result<(), SchedulerError> {
+        if self.groups[&scope].owner.is_none() {
+            return Ok(());
+        }
+        let Some(outcome) = self.scope_outcome(scope)? else {
+            return Ok(());
+        };
+        let waiters = std::mem::take(
+            &mut self
+                .groups
+                .get_mut(&scope)
+                .expect("settled task scope must exist")
+                .waiters,
+        );
+        for waiter in waiters {
+            let task = self
+                .tasks
+                .get_mut(&waiter)
+                .expect("registered scope waiter");
+            if task.state == TaskState::Waiting(TaskWait::Scope(scope)) {
+                task.state = TaskState::Ready;
+                self.ready.push_back(waiter);
+                self.wakeups
+                    .entry(waiter)
+                    .or_default()
+                    .push_back(TaskWakeup::Scope {
+                        scope,
+                        outcome: outcome.clone(),
+                    });
+            }
+        }
+        Ok(())
+    }
+
+    fn change_active(&mut self, mut scope: TaskScopeId, increment: bool) {
+        loop {
+            let group = self.groups.get_mut(&scope).expect("task scope must exist");
+            if increment {
+                group.active += 1;
+            } else {
+                group.active = group
+                    .active
+                    .checked_sub(1)
+                    .expect("active task slot underflow");
+            }
+            let Some(parent) = group.parent else {
+                return;
+            };
+            scope = parent;
+        }
     }
 }
 

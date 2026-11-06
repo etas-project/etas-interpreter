@@ -13,7 +13,7 @@ impl EvalContext<'_> {
         span: Span,
     ) -> ControlSignal {
         match operation {
-            StdTaskIntrinsic::Run => self.execute_task_run(call_args, span),
+            StdTaskIntrinsic::Run => self.execute_task_run(checked_call, call_args, span),
             StdTaskIntrinsic::Start => self.execute_task_start(call_args, span),
             StdTaskIntrinsic::Await => self.execute_task_await(checked_call, call_args, span),
             StdTaskIntrinsic::Requeue => self.execute_task_requeue(checked_call, call_args, span),
@@ -55,7 +55,7 @@ impl EvalContext<'_> {
         let InterpValue::Continuation(token) = continuation else {
             return ControlSignal::invalid_arguments("requeue requires a continuation", span);
         };
-        if scheduler.owner != self.scheduler.owner() || token.owner != scheduler.owner {
+        if scheduler.owner != self.task.task_scope || token.owner != scheduler.owner {
             return ControlSignal::runtime_fault(
                 "requeue scheduler and continuation owners do not match",
                 span,
@@ -108,7 +108,7 @@ impl EvalContext<'_> {
         let InterpValue::Continuation(token) = continuation else {
             return ControlSignal::invalid_arguments("park requires a continuation", span);
         };
-        if scheduler.owner != self.scheduler.owner()
+        if scheduler.owner != self.task.task_scope
             || task.handle.owner != scheduler.owner
             || token.owner != scheduler.owner
         {
@@ -124,7 +124,12 @@ impl EvalContext<'_> {
         })
     }
 
-    fn execute_task_run(&mut self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+    fn execute_task_run(
+        &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
         let [body]: [InterpValue; 1] = match call_args.try_into() {
             Ok(args) => args,
             Err(args) => {
@@ -140,16 +145,58 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = body else {
             return ControlSignal::invalid_arguments("std.task.run callback is not callable", span);
         };
-        ControlSignal::pending_call(PendingCall {
+        let concurrency = self
+            .checked
+            .concurrency
+            .sites
+            .get(&checked_call.origin)
+            .and_then(|site| site.concurrency_limit)
+            .map(|limit| usize::try_from(limit).expect("u32 concurrency limit fits usize"))
+            .unwrap_or(crate::driver::scheduler::MAX_CONCURRENCY);
+        let concurrency = std::num::NonZeroUsize::new(concurrency)
+            .expect("checked concurrency limit is non-zero");
+        let parent_scope = self.task.task_scope;
+        let scope = self.scheduler.create_scope(parent_scope, concurrency);
+        let mut machine = crate::eval::machine::EvalMachine::new();
+        machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
             site: None,
             target,
             args: vec![InterpValue::Scheduler(
-                crate::value::SchedulerHandleValue::new(self.scheduler.owner()),
+                crate::value::SchedulerHandleValue::new(scope),
             )],
             span,
             continuation: Continuation::BlockValue,
-        })
+        }));
+        let program = self.checked_execution_program();
+        let owner = match self.scheduler.spawn_in_scope(
+            self.task,
+            scope,
+            machine,
+            Some(program),
+            self.handler_floor,
+            span.range.start.0 as usize,
+        ) {
+            Ok(owner) => owner,
+            Err(error) => return ControlSignal::runtime_fault(error.to_string(), span),
+        };
+        if let Err(error) = self.scheduler.set_scope_owner(scope, owner) {
+            return ControlSignal::runtime_fault(error.to_string(), span);
+        }
+        self.events
+            .push(crate::orchestration::WorkflowEvent::ScopeEntered {
+                scope: scope.0,
+                parent: parent_scope.0,
+                concurrency: u32::try_from(concurrency.get())
+                    .expect("checked concurrency limit fits trace ABI"),
+            });
+        self.events
+            .push(crate::orchestration::WorkflowEvent::TaskStarted {
+                scope: owner.owner.0,
+                task: owner.task.0,
+                source_index: span.range.start.0 as usize,
+            });
+        ControlSignal::pending_task(crate::control::PendingTaskControl::Run { scope, span })
     }
 
     fn execute_task_start(&mut self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {

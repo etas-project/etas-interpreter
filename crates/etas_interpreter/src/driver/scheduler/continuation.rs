@@ -28,6 +28,7 @@ pub(crate) struct ConsumedContinuation {
 }
 
 struct ContinuationEntry {
+    owner: TaskScopeId,
     origin: TaskIdentity,
     continuation: Option<Continuation>,
     output: TypeId,
@@ -35,15 +36,13 @@ struct ContinuationEntry {
 }
 
 pub(super) struct ContinuationArena {
-    owner: TaskScopeId,
     next: u64,
     entries: BTreeMap<ContinuationId, ContinuationEntry>,
 }
 
 impl ContinuationArena {
-    pub(super) fn new(owner: TaskScopeId) -> Self {
+    pub(super) fn new() -> Self {
         Self {
-            owner,
             next: 0,
             entries: BTreeMap::new(),
         }
@@ -51,6 +50,7 @@ impl ContinuationArena {
 
     pub(super) fn allocate(
         &mut self,
+        owner: TaskScopeId,
         origin: TaskIdentity,
         continuation: Continuation,
         output: TypeId,
@@ -60,13 +60,14 @@ impl ContinuationArena {
         self.entries.insert(
             id,
             ContinuationEntry {
+                owner,
                 origin,
                 continuation: Some(continuation),
                 output,
                 state: ContinuationState::ArmOwned,
             },
         );
-        ContinuationTokenValue::new(self.owner, id)
+        ContinuationTokenValue::new(owner, id)
     }
 
     pub(super) fn consume(
@@ -75,13 +76,13 @@ impl ContinuationArena {
         origin: TaskIdentity,
         transfer: ContinuationTransfer,
     ) -> Result<ConsumedContinuation, SchedulerError> {
-        if token.owner != self.owner {
-            return Err(SchedulerError::WrongOwner);
-        }
         let entry = self
             .entries
             .get_mut(&token.continuation)
             .ok_or(SchedulerError::UnknownContinuation)?;
+        if token.owner != entry.owner {
+            return Err(SchedulerError::WrongOwner);
+        }
         if entry.origin != origin {
             return Err(SchedulerError::WrongTask);
         }
@@ -107,13 +108,13 @@ impl ContinuationArena {
         token: ContinuationTokenValue,
         origin: TaskIdentity,
     ) -> Result<(), SchedulerError> {
-        if token.owner != self.owner {
-            return Err(SchedulerError::WrongOwner);
-        }
         let entry = self
             .entries
             .get_mut(&token.continuation)
             .ok_or(SchedulerError::UnknownContinuation)?;
+        if token.owner != entry.owner {
+            return Err(SchedulerError::WrongOwner);
+        }
         if entry.origin != origin {
             return Err(SchedulerError::WrongTask);
         }

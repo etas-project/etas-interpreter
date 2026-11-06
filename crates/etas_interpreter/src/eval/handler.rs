@@ -421,6 +421,7 @@ impl<'a> EvalContext<'a> {
                     ));
                 };
                 let token = self.scheduler.allocate_continuation(
+                    self.task.task_scope,
                     self.current_task,
                     outer_continuation,
                     perform

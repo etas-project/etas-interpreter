@@ -50,6 +50,7 @@ pub(crate) struct EvalSharedState {
 
 /// Execution stacks owned by one cooperatively scheduled task.
 pub(crate) struct TaskLocalState {
+    pub(crate) task_scope: crate::driver::scheduler::TaskScopeId,
     pub(crate) execution: etas_host::execution::ExecutionScope,
     pub(crate) model_policy: ModelExecutionPolicy,
     pub(super) retry_stack: Vec<RetryAttemptRecord>,
@@ -60,10 +61,12 @@ pub(crate) struct TaskLocalState {
 
 impl TaskLocalState {
     pub(crate) fn root(
+        task_scope: crate::driver::scheduler::TaskScopeId,
         execution: etas_host::execution::ExecutionScope,
         model_policy: ModelExecutionPolicy,
     ) -> Self {
         Self {
+            task_scope,
             execution,
             model_policy,
             retry_stack: Vec::new(),
@@ -75,10 +78,14 @@ impl TaskLocalState {
     /// Fork task-local dynamic state while keeping authority and budgets under
     /// the existing host execution tree. The child owns its stacks after this
     /// point; later handler/retry mutations cannot leak into its parent.
-    pub(crate) fn child(&self) -> Result<Self, etas_host::HostError> {
+    pub(crate) fn child_in_scope(
+        &self,
+        task_scope: crate::driver::scheduler::TaskScopeId,
+    ) -> Result<Self, etas_host::HostError> {
         let execution = self.execution.child()?;
         execution.claim_body()?;
         Ok(Self {
+            task_scope,
             execution,
             model_policy: self.model_policy.clone(),
             retry_stack: self.retry_stack.clone(),
@@ -110,7 +117,8 @@ impl EvalRunState {
             .model_policy
             .model_locked
             .then(|| input.model_policy.model.clone());
-        let root_task = TaskLocalState::root(input.execution, input.model_policy);
+        let root_scope = crate::driver::scheduler::TaskScopeId(0);
+        let root_task = TaskLocalState::root(root_scope, input.execution, input.model_policy);
         let shared = EvalSharedState {
             replay_keys: input.replay_keys,
             storage_limits: limits,
@@ -138,7 +146,7 @@ impl EvalRunState {
             storage_operations: Default::default(),
         };
         let scheduler = crate::driver::scheduler::TaskScheduler::new(
-            crate::driver::scheduler::TaskScopeId(0),
+            root_scope,
             std::num::NonZeroUsize::new(crate::driver::scheduler::MAX_CONCURRENCY)
                 .expect("scheduler ceiling is non-zero"),
         );
