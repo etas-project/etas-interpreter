@@ -639,7 +639,7 @@ impl<'a> EvalContext<'a> {
         mut target: CallTarget,
         mut continuation: Continuation,
     ) -> Result<(CallTarget, Continuation), Box<ControlSignal>> {
-        let mut policy = self.model_policy.clone();
+        let mut policy = self.task.model_policy.clone();
         let mut has_limits = false;
         while let CallTarget::Limited {
             target: inner,
@@ -655,7 +655,7 @@ impl<'a> EvalContext<'a> {
             target = inner.into_value();
         }
         if has_limits {
-            let previous = std::mem::replace(&mut self.model_policy, policy);
+            let previous = std::mem::replace(&mut self.task.model_policy, policy);
             continuation = Continuation::RestoreModelPolicy {
                 previous: Box::new(previous),
                 inner: continuation.into(),
@@ -672,15 +672,15 @@ impl<'a> EvalContext<'a> {
         span: Span,
         site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
-        let mut policy = self.model_policy.clone();
+        let mut policy = self.task.model_policy.clone();
         for limit in &limits {
             if let Err(fault) = self.apply_runtime_limit_to_model_policy(limit, &mut policy) {
                 return ControlSignal::Fault(Box::new(fault));
             }
         }
-        let previous = std::mem::replace(&mut self.model_policy, policy.clone());
+        let previous = std::mem::replace(&mut self.task.model_policy, policy.clone());
         let signal = self.execute_call_target_at(target, call_args, span, site);
-        self.model_policy = previous;
+        self.task.model_policy = previous;
         self.scope_model_policy_signal(signal, policy)
     }
 }

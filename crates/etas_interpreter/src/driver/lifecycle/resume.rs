@@ -236,8 +236,8 @@ pub(super) fn finish(
     mut diagnostics: Vec<etas_core::Diagnostic>,
 ) -> BodyResult {
     let (events, checkpoints) = if let Some(state) = state {
-        diagnostics.extend(state.diagnostics);
-        (state.events.into_events(), state.checkpoints)
+        diagnostics.extend(state.shared.diagnostics);
+        (state.shared.events.into_events(), state.shared.checkpoints)
     } else {
         (vec![], vec![])
     };

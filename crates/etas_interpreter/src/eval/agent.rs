@@ -1105,7 +1105,7 @@ impl<'a> EvalContext<'a> {
     }
 
     fn agent_model_decode(&self, output_type: TypeId) -> ModelDecode {
-        match self.model_policy.response_decode {
+        match self.task.model_policy.response_decode {
             crate::api::ModelResponseDecodePolicy::ModelResponse => ModelDecode::ModelResponse,
             crate::api::ModelResponseDecodePolicy::String => {
                 if self.type_is_string(output_type) {

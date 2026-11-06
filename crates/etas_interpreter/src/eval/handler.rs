@@ -186,7 +186,7 @@ impl<'a> EvalContext<'a> {
     ) -> ControlSignal {
         let scope_id = HandlerScopeId(self.next_handler_scope);
         self.next_handler_scope += 1;
-        self.handler_stack.push(ActiveHandlerRecord {
+        self.task.handler_stack.push(ActiveHandlerRecord {
             id: scope_id,
             handled_actions: handler_records
                 .iter()
@@ -322,10 +322,10 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         loop {
-            if self.handler_stack.len() <= self.handler_floor {
+            if self.task.handler_stack.len() <= self.handler_floor {
                 return signal;
             }
-            let Some(record) = self.handler_stack.last().cloned() else {
+            let Some(record) = self.task.handler_stack.last().cloned() else {
                 return signal;
             };
             match signal {
@@ -679,13 +679,14 @@ impl<'a> EvalContext<'a> {
             );
         };
         if self
+            .task
             .handler_stack
             .last()
             .is_some_and(|active| active.id >= *scope_id)
         {
             return ControlSignal::runtime_fault("handler reentry scope order is invalid", *span);
         }
-        self.handler_stack.push(ActiveHandlerRecord {
+        self.task.handler_stack.push(ActiveHandlerRecord {
             id: *scope_id,
             handled_actions: handlers
                 .iter()
@@ -747,14 +748,14 @@ impl<'a> EvalContext<'a> {
         scope_id: HandlerScopeId,
         span: Span,
     ) -> Result<(), ExecutionFault> {
-        if self.handler_floor != 0 && self.handler_stack.len() <= self.handler_floor {
+        if self.handler_floor != 0 && self.task.handler_stack.len() <= self.handler_floor {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
                 "handler scope does not belong to the active checked program",
             ));
         }
-        let Some(active) = self.handler_stack.last() else {
+        let Some(active) = self.task.handler_stack.last() else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
                 span,
@@ -774,7 +775,7 @@ impl<'a> EvalContext<'a> {
                 ),
             ));
         }
-        self.handler_stack.pop();
+        self.task.handler_stack.pop();
         Ok(())
     }
 

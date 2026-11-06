@@ -64,7 +64,7 @@ impl<'a> EvalContext<'a> {
                             Continuation::RestoreModelPolicy { previous, .. }
                                 if pending.error_type.is_some() =>
                             {
-                                self.model_policy = *previous;
+                                self.task.model_policy = *previous;
                                 ControlSignal::Perform(pending)
                             }
                             Continuation::TryExpr { expr, span } => {
@@ -222,11 +222,11 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Return(value),
             ),
             Continuation::RestoreModelPolicy { previous, inner } => {
-                self.model_policy = *previous;
+                self.task.model_policy = *previous;
                 self.propagate_return_to_continuation(value, inner.into_value())
             }
             Continuation::ScopedModelPolicy { policy, inner } => {
-                let previous = std::mem::replace(&mut self.model_policy, *policy);
+                let previous = std::mem::replace(&mut self.task.model_policy, *policy);
                 self.propagate_return_to_continuation(
                     value,
                     compose_continuation(
@@ -292,7 +292,7 @@ impl<'a> EvalContext<'a> {
                 }
             }
             Continuation::RestoreModelPolicy { previous, inner } => {
-                self.model_policy = *previous;
+                self.task.model_policy = *previous;
                 self.propagate_resume_to_continuation(value, inner.into_value())
             }
             Continuation::ResidualScope(scope) => self.residual_exit_signal(
@@ -333,7 +333,7 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Finish(value)
             }
             Continuation::RestoreModelPolicy { previous, inner } => {
-                self.model_policy = *previous;
+                self.task.model_policy = *previous;
                 self.propagate_finish_to_continuation(value, inner.into_value())
             }
             Continuation::ResidualScope(scope) => self.residual_exit_signal(
@@ -818,7 +818,7 @@ impl<'a> EvalContext<'a> {
                 site,
             } => self.resume_composed_call(value, remaining, next_index, span, site),
             Continuation::RestoreModelPolicy { previous, inner } => {
-                self.model_policy = *previous;
+                self.task.model_policy = *previous;
                 self.apply_continuation(inner.into_value(), value)
             }
             Continuation::CallBoundary { outer, .. } => {
@@ -876,11 +876,12 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => {
                 if self
+                    .task
                     .retry_stack
                     .last()
                     .is_some_and(|current| current.id == retry.id)
                 {
-                    self.retry_stack.pop();
+                    self.task.retry_stack.pop();
                 }
                 self.events
                     .push(WorkflowEvent::RetryAttemptSucceeded(retry.id));
@@ -968,7 +969,7 @@ impl<'a> EvalContext<'a> {
                 this.perform_agent_inference(expr, value, span)
             }),
             Continuation::ScopedModelPolicy { policy, inner } => {
-                let previous = std::mem::replace(&mut self.model_policy, *policy);
+                let previous = std::mem::replace(&mut self.task.model_policy, *policy);
                 self.apply_continuation(
                     compose_continuation(
                         inner.into_value(),
@@ -1019,11 +1020,12 @@ impl<'a> EvalContext<'a> {
         retry: &crate::orchestration::RetryAttemptRecord,
     ) {
         if self
+            .task
             .retry_stack
             .last()
             .is_some_and(|current| current.id == retry.id)
         {
-            self.retry_stack.pop();
+            self.task.retry_stack.pop();
         }
         self.events
             .push(WorkflowEvent::RetryAttemptSucceeded(retry.id));
@@ -1034,9 +1036,9 @@ impl<'a> EvalContext<'a> {
         policy: crate::api::ModelExecutionPolicy,
         f: impl FnOnce(&mut Self) -> ControlSignal,
     ) -> ControlSignal {
-        let previous = std::mem::replace(&mut self.model_policy, policy.clone());
+        let previous = std::mem::replace(&mut self.task.model_policy, policy.clone());
         let signal = f(self);
-        self.model_policy = previous;
+        self.task.model_policy = previous;
         self.scope_model_policy_signal(signal, policy)
     }
 

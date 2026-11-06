@@ -32,6 +32,7 @@ impl HostDispatch {
         let started_at_unix_micros = unix_timestamp_micros()?;
         let started = Instant::now();
         let operation = eval
+            .task
             .execution
             .register(None, Some(request_id), trace.clone())?;
         if let Err(error) = operation.begin_dispatch() {
@@ -104,7 +105,7 @@ impl HostDispatch {
                 finished_at_unix_micros,
                 duration_micros,
             }));
-        eval.execution.signal()?.check()?;
+        eval.task.execution.signal()?.check()?;
         result
     }
 

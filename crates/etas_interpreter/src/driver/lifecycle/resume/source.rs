@@ -175,7 +175,10 @@ async fn restore_draft(
         .code_syntax_control(origin)
         .map_err(|error| HostError::new(HostErrorCode::InvalidRequest, error.message))?;
     let budget = eval.host_budget();
-    let registration = eval.execution.register(None, None, eval.host_trace())?;
+    let registration = eval
+        .task
+        .execution
+        .register(None, None, eval.host_trace())?;
     registration.begin_dispatch()?;
     let result = registration
         .context()

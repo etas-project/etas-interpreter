@@ -80,7 +80,7 @@ fn program_scopes_share_fuel_grants_digest_budget_and_cancellation() {
         ..Default::default()
     };
     let (input, mut state) = initialize(&original, &original_plan, options, 40);
-    let scope = state.execution.clone();
+    let scope = state.root_task.execution.clone();
     let trace = state.host_context.trace.clone();
     let digest = state.host_trace_digest_key.clone().unwrap();
     let replay_key_id = state.replay_keys.id();
@@ -176,8 +176,8 @@ async fn checked_program_scopes_execute_without_reinitializing_the_invocation() 
         );
         assert!(ctx.safe_points.consumed_steps() > first_steps);
     }
-    assert!(state.diagnostics.is_empty());
-    let events = state.events.into_events();
+    assert!(state.shared.diagnostics.is_empty());
+    let events = state.shared.events.into_events();
     let started: Vec<_> = events
         .iter()
         .filter_map(|event| match event {

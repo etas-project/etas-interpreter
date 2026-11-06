@@ -87,14 +87,14 @@ impl EvalContext<'_> {
                 "residual scope activation is not installed in the executing program".into(),
             ));
         }
-        let limits = self.runtime.residual.limits;
-        self.runtime
+        let limits = self.task.residual.limits;
+        self.task
             .residual
             .log
             .check_activation_capacity(limits.max_active_scopes)
             .map_err(fail)?;
-        let invocation = self.runtime.residual.next_invocation().map_err(fail)?;
-        let log = self.runtime.residual.log.clone();
+        let invocation = self.task.residual.next_invocation().map_err(fail)?;
+        let log = self.task.residual.log.clone();
         let instance = ResidualScopeInstance::activate(
             activation.scope,
             activation.application,

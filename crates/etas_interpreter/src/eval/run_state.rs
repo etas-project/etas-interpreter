@@ -13,12 +13,16 @@ mod tests;
 
 /// One invocation owns this state. Program/revision evaluation scopes borrow it;
 /// changing checked code must not create fresh fuel, grants, IDs, or ledgers.
-pub struct EvalRunState {
+pub(crate) struct EvalRunState {
+    pub(crate) shared: EvalSharedState,
+    pub(crate) root_task: TaskLocalState,
+}
+
+/// State shared by every task in one invocation.
+pub(crate) struct EvalSharedState {
     pub(crate) replay_keys: super::replay::RunReplayKeys,
     pub storage_limits: etas_host::StorageLimits,
-    pub execution: etas_host::execution::ExecutionScope,
     pub host_context: HostExecutionContext,
-    pub model_policy: ModelExecutionPolicy,
     pub(crate) locked_model: Option<etas_host::ModelName>,
     pub execution_limits: ExecutionLimits,
     pub current_session: Option<String>,
@@ -33,8 +37,6 @@ pub struct EvalRunState {
     pub(super) next_message: u32,
     pub(super) safe_points: super::safe_point::ExecutionSafePointScheduler,
     pub(super) host_trace_digest_key: Result<etas_host::HostTraceDigestKey, etas_host::HostError>,
-    pub(super) retry_stack: Vec<RetryAttemptRecord>,
-    pub(super) handler_stack: Vec<ActiveHandlerRecord>,
     pub(super) completed_host_boundaries: std::collections::BTreeMap<
         crate::orchestration::BoundaryOccurrenceId,
         CompletedHostBoundary,
@@ -43,24 +45,52 @@ pub struct EvalRunState {
     pub(crate) storage_identity: Result<etas_host::StorageOperationKey, etas_host::HostError>,
     pub(crate) storage_writes: Vec<StorageWriteRecord>,
     pub(crate) storage_operations: std::collections::BTreeMap<u32, StorageOperationRef>,
-    /// Live residual monitor bookkeeping shared by every program scope.
+}
+
+/// Execution stacks owned by one cooperatively scheduled task.
+pub(crate) struct TaskLocalState {
+    pub(crate) execution: etas_host::execution::ExecutionScope,
+    pub(crate) model_policy: ModelExecutionPolicy,
+    pub(super) retry_stack: Vec<RetryAttemptRecord>,
+    pub(super) handler_stack: Vec<ActiveHandlerRecord>,
+    /// Live residual monitor bookkeeping for this task's program scopes.
     pub(crate) residual: crate::eval::residual::ResidualRunState,
+}
+
+impl std::ops::Deref for EvalRunState {
+    type Target = EvalSharedState;
+
+    fn deref(&self) -> &Self::Target {
+        &self.shared
+    }
+}
+
+impl std::ops::DerefMut for EvalRunState {
+    fn deref_mut(&mut self) -> &mut Self::Target {
+        &mut self.shared
+    }
 }
 
 impl EvalRunState {
     pub(super) fn from_input(input: super::EvalRunStateInput) -> Self {
         let limits = input.storage_limits;
         let receipt_retention = limits.max_receipt_retention_seconds;
-        Self {
+        let locked_model = input
+            .model_policy
+            .model_locked
+            .then(|| input.model_policy.model.clone());
+        let root_task = TaskLocalState {
+            execution: input.execution,
+            model_policy: input.model_policy,
+            retry_stack: Vec::new(),
+            handler_stack: Vec::new(),
+            residual: Default::default(),
+        };
+        let shared = EvalSharedState {
             replay_keys: input.replay_keys,
             storage_limits: limits,
-            execution: input.execution,
             host_context: input.host_context,
-            locked_model: input
-                .model_policy
-                .model_locked
-                .then(|| input.model_policy.model.clone()),
-            model_policy: input.model_policy,
+            locked_model,
             execution_limits: input.execution_limits,
             current_session: input.current_session,
             diagnostics: Vec::new(),
@@ -74,8 +104,6 @@ impl EvalRunState {
             next_message: 0,
             safe_points: super::safe_point::ExecutionSafePointScheduler::new(input.consumed_steps),
             host_trace_digest_key: etas_host::HostTraceDigestKey::generate(),
-            retry_stack: Vec::new(),
-            handler_stack: Vec::new(),
             completed_host_boundaries: Default::default(),
             resource_versions: Vec::new(),
             storage_identity: etas_host::StorageOperationKey::new(std::time::Duration::from_secs(
@@ -83,10 +111,12 @@ impl EvalRunState {
             )),
             storage_writes: Vec::new(),
             storage_operations: Default::default(),
-            residual: Default::default(),
-        }
+        };
+        Self { shared, root_task }
     }
+}
 
+impl EvalSharedState {
     pub(super) fn next_request_id(&mut self) -> HostRequestId {
         let id = HostRequestId(self.next_host_request);
         self.next_host_request += 1;

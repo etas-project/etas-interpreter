@@ -104,8 +104,8 @@ pub async fn execute_entry_from_snapshot(
             ordering: Some(ordering.clone()),
             residual: Some(crate::eval::machine::snapshot::ResidualRestoreInput {
                 prepared: eval.plan.residual.clone(),
-                log: eval.residual.log.clone(),
-                limits: eval.residual.limits,
+                log: eval.task.residual.log.clone(),
+                limits: eval.task.residual.limits,
             }),
         },
     ) {
@@ -122,7 +122,7 @@ pub async fn execute_entry_from_snapshot(
         }
     };
     let residual = &checkpoint.machine.residual;
-    eval.residual.restore_counters((
+    eval.task.residual.restore_counters((
         residual.next_cursor,
         residual.next_attempt,
         residual.next_invocation,

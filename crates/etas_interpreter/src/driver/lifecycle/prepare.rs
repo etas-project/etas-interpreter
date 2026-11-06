@@ -173,9 +173,9 @@ pub(crate) async fn run_checked_inner(
         .await
         .into_outcome();
     eval_span.finish(outcome_profile_status(&outcome));
-    diagnostics.extend(run_state.diagnostics);
-    events.extend(run_state.events.into_events());
-    checkpoints.append(&mut run_state.checkpoints);
+    diagnostics.extend(run_state.shared.diagnostics);
+    events.extend(run_state.shared.events.into_events());
+    checkpoints.append(&mut run_state.shared.checkpoints);
     BodyResult {
         outcome,
         diagnostics,
