@@ -109,12 +109,14 @@ impl std::ops::DerefMut for EvalRunState {
     }
 }
 
-impl EvalRunState {
+impl EvalSharedState {
     #[cfg(test)]
     pub(crate) fn consumed_steps(&self) -> u64 {
         self.safe_points.consumed_steps()
     }
+}
 
+impl EvalRunState {
     pub(super) fn from_input(input: super::EvalRunStateInput) -> Self {
         let limits = input.storage_limits;
         let receipt_retention = limits.max_receipt_retention_seconds;
