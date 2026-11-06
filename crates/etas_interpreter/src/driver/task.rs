@@ -304,6 +304,14 @@ async fn drive_one<'host>(
                     };
                     signal
                 }
+                CompletedTaskHost::Tool(completed) => {
+                    dispatch::tool::finish(&mut child, &mut task.machine, completed);
+                    continue;
+                }
+                CompletedTaskHost::Model(completed) => {
+                    dispatch::model::finish(&mut child, &mut task.machine, completed);
+                    continue;
+                }
             };
             task.machine.resume(signal);
             continue;
@@ -582,22 +590,54 @@ async fn drive_one<'host>(
 
         let signal = match boundary {
             PendingBoundary::Model(model) => {
-                if !dispatch::model::dispatch(&mut child, host, &model, &mut task.machine).await {
-                    let outcome = evaluation_failure(&mut child);
-                    drop(child);
-                    finish_task(eval, handle, task, outcome)?;
-                    return Ok(true);
+                match dispatch::model::begin(&mut child, host, *model, &mut task.machine).await {
+                    dispatch::model::ModelDispatchStart::Complete(true) => continue,
+                    dispatch::model::ModelDispatchStart::Complete(false) => {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    dispatch::model::ModelDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        drop(child);
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        let registered = reactor.start_model(handle, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        return Ok(true);
+                    }
                 }
-                continue;
             }
             PendingBoundary::Tool(tool) => {
-                if !dispatch::tool::dispatch(&mut child, host, *tool, &mut task.machine).await {
-                    let outcome = evaluation_failure(&mut child);
-                    drop(child);
-                    finish_task(eval, handle, task, outcome)?;
-                    return Ok(true);
+                match dispatch::tool::begin(&mut child, host, *tool, &mut task.machine).await {
+                    dispatch::tool::ToolDispatchStart::Complete(true) => continue,
+                    dispatch::tool::ToolDispatchStart::Complete(false) => {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    dispatch::tool::ToolDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        drop(child);
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        let registered = reactor.start_tool(handle, pending);
+                        assert_eq!(
+                            registered, operation,
+                            "registered host operation changed id"
+                        );
+                        return Ok(true);
+                    }
                 }
-                continue;
             }
             PendingBoundary::Memory(memory) => {
                 let Some(signal) =
