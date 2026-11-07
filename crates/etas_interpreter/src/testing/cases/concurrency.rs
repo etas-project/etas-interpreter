@@ -72,6 +72,52 @@ async fn concurrency_speedup_demo() {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn handler_scheduler_speedup_demo() {
+    let checked = checked_project(include_str!(
+        "../../../examples/handler_scheduler_speedup.es"
+    ));
+    let operation_delay = std::time::Duration::from_millis(120);
+
+    let (serial, serial_elapsed, serial_calls) =
+        run_delayed_console_demo(&checked, false, operation_delay).await;
+    let (scheduled, scheduled_elapsed, scheduled_calls) =
+        run_delayed_console_demo(&checked, true, operation_delay).await;
+
+    assert!(serial.diagnostics.is_empty(), "{:#?}", serial.diagnostics);
+    assert!(
+        scheduled.diagnostics.is_empty(),
+        "{:#?}",
+        scheduled.diagnostics
+    );
+    assert_eq!(serial.value(), Some(&InterpValue::i32(4)));
+    assert_eq!(scheduled.value(), Some(&InterpValue::i32(4)));
+    assert_eq!((serial_calls, scheduled_calls), (4, 4));
+
+    let speedup = serial_elapsed.as_secs_f64() / scheduled_elapsed.as_secs_f64();
+    println!(
+        "handler scheduler demo: serial={:.1}ms handler={:.1}ms speedup={speedup:.2}x",
+        serial_elapsed.as_secs_f64() * 1000.0,
+        scheduled_elapsed.as_secs_f64() * 1000.0,
+    );
+    assert!(
+        scheduled_elapsed.as_secs_f64() < serial_elapsed.as_secs_f64() / 2.0,
+        "expected at least 2x speedup, measured {speedup:.2}x"
+    );
+    assert_eq!(
+        scheduled
+            .events
+            .iter()
+            .filter(|event| matches!(
+                event,
+                WorkflowEvent::ContinuationConsumed { kind, .. } if kind == "park"
+            ))
+            .count(),
+        4,
+        "each await must be scheduled by the Handler"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn structured_task_start_and_await_execute_through_the_scheduler() {
     let result = run(r#"
 module app.main;
