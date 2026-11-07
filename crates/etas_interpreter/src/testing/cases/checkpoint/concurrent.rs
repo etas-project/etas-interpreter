@@ -170,10 +170,11 @@ import std.task.scheduler.park;
 flow main() -> i32 {
     return run((scheduler: Scheduler) => {
         let task = start(() => { checkpoint("child"); return 7; });
+        let other = start(() => { return 1; });
         let resumed = handle { await(task) } with {
             Async.await(waited) as k => { park(scheduler, waited, k); }
         };
-        return resumed + 1;
+        return resumed + await(other);
     });
 }
 
