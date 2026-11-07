@@ -16,6 +16,61 @@ async fn run(source: &str) -> api::RunResult {
         .unwrap()
 }
 
+async fn run_delayed_console_demo(
+    checked: &etas_frontend::CheckedProject,
+    use_concurrency: bool,
+    delay: std::time::Duration,
+) -> (api::RunResult, std::time::Duration, usize) {
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    host.delay_console_completion(delay);
+    let started = std::time::Instant::now();
+    let result = Interpreter
+        .run_checked(
+            checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![InterpValue::Bool(use_concurrency)],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    (result, started.elapsed(), host.console_call_count())
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn concurrency_speedup_demo() {
+    let checked = checked_project(include_str!("../../../examples/concurrency_speedup.es"));
+    let operation_delay = std::time::Duration::from_millis(120);
+
+    let (serial, serial_elapsed, serial_calls) =
+        run_delayed_console_demo(&checked, false, operation_delay).await;
+    let (concurrent, concurrent_elapsed, concurrent_calls) =
+        run_delayed_console_demo(&checked, true, operation_delay).await;
+
+    assert!(serial.diagnostics.is_empty(), "{:#?}", serial.diagnostics);
+    assert!(
+        concurrent.diagnostics.is_empty(),
+        "{:#?}",
+        concurrent.diagnostics
+    );
+    assert_eq!(serial.value(), Some(&InterpValue::i32(4)));
+    assert_eq!(concurrent.value(), Some(&InterpValue::i32(4)));
+    assert_eq!((serial_calls, concurrent_calls), (4, 4));
+
+    let speedup = serial_elapsed.as_secs_f64() / concurrent_elapsed.as_secs_f64();
+    println!(
+        "concurrency demo: serial={:.1}ms concurrent={:.1}ms speedup={speedup:.2}x",
+        serial_elapsed.as_secs_f64() * 1000.0,
+        concurrent_elapsed.as_secs_f64() * 1000.0,
+    );
+    assert!(
+        concurrent_elapsed.as_secs_f64() < serial_elapsed.as_secs_f64() / 2.0,
+        "expected at least 2x speedup, measured {speedup:.2}x"
+    );
+}
+
 #[tokio::test(flavor = "current_thread")]
 async fn structured_task_start_and_await_execute_through_the_scheduler() {
     let result = run(r#"

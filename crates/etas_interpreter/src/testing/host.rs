@@ -18,6 +18,7 @@ use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, AtomicUsize, Ordering},
 };
+use std::time::Duration;
 
 #[derive(Clone, Debug)]
 struct FakeMemoryEntry {
@@ -49,6 +50,7 @@ pub(crate) struct FakeHost {
     pub(super) session_context_fault: Option<SessionContextFault>,
     pub(super) storage: Option<TestMemoryBackend>,
     console_gate: Option<Arc<ConsoleGate>>,
+    console_delay: Option<Duration>,
     availability: HostServiceAvailability,
     approval_calls: Arc<AtomicUsize>,
     approval_decisions: Arc<Mutex<VecDeque<ApprovalDecision>>>,
@@ -98,6 +100,7 @@ impl FakeHost {
         Self {
             storage: None,
             console_gate: None,
+            console_delay: None,
             availability,
             approval_calls: Arc::new(AtomicUsize::new(0)),
             approval_decisions: Arc::new(Mutex::new(VecDeque::new())),
@@ -164,6 +167,10 @@ impl FakeHost {
         });
         self.console_gate = Some(gate.clone());
         gate
+    }
+
+    pub(super) fn delay_console_completion(&mut self, delay: Duration) {
+        self.console_delay = Some(delay);
     }
 
     pub(super) fn seed_approval_decision(&self, decision: ApprovalDecision) {
@@ -1314,7 +1321,11 @@ impl HostServices for FakeHost {
         let stdout = Arc::clone(&self.stdout);
         let stderr = Arc::clone(&self.stderr);
         let gate = self.console_gate.clone();
+        let delay = self.console_delay;
         Box::pin(async move {
+            if let Some(delay) = delay {
+                tokio::time::sleep(delay).await;
+            }
             let result = match request.operation {
                 ConsoleOperation::ReadAllStdin => {
                     ConsoleResult::Input(std::mem::take(&mut *stdin.lock().expect("stdin lock")))
