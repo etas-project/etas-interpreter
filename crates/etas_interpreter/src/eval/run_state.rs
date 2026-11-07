@@ -26,6 +26,9 @@ pub(crate) struct EvalSharedState {
     pub host_context: HostExecutionContext,
     pub(crate) locked_model: Option<etas_host::ModelName>,
     pub execution_limits: ExecutionLimits,
+    // Shared budgets report the invocation site, independent of which task
+    // happens to observe exhaustion first.
+    pub(crate) limit_span: etas_core::Span,
     pub(crate) cpu_executor: std::sync::Arc<dyn crate::driver::cpu::CpuExecutor>,
     pub(crate) cpu_min_work: u64,
     pub(crate) cpu_programs: std::collections::HashMap<
@@ -170,6 +173,7 @@ impl EvalRunState {
             host_context: input.host_context,
             locked_model,
             execution_limits: input.execution_limits,
+            limit_span: input.limit_span,
             cpu_executor,
             cpu_min_work: input.cpu_min_work,
             cpu_programs: Default::default(),

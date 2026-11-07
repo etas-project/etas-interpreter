@@ -5,11 +5,6 @@ use crate::value::{ArrayValue, BytesValue, InterpValue, RecordValue, SharedField
 
 use super::{CpuJobId, CpuTaskCompletion};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub(crate) enum CpuCallableId {
-    Flow(etas_hir::HirItemId),
-}
-
 #[derive(Clone, Debug)]
 pub(crate) struct PreparedCpuProgram {
     pub(crate) checked: etas_frontend::CheckedProject,
@@ -45,6 +40,7 @@ pub(crate) struct CpuBudgetLease {
 #[derive(Clone, Debug)]
 pub(crate) struct CpuRuntimeContract {
     pub(crate) execution_limits: crate::api::ExecutionLimits,
+    pub(crate) limit_span: etas_core::Span,
     pub(crate) entry_item: etas_hir::HirItemId,
     pub(crate) storage_limits: etas_host::StorageLimits,
     pub(crate) syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
@@ -59,7 +55,7 @@ pub(crate) struct CpuTaskCapsule {
     pub(crate) job: CpuJobId,
     pub(crate) dispatch_sequence: u64,
     pub(crate) program: Arc<PreparedCpuProgram>,
-    pub(crate) callable: CpuCallableId,
+    pub(crate) callable: super::FrozenCpuCallable,
     pub(crate) arguments: Vec<FrozenValue>,
     pub(crate) budget: CpuBudgetLease,
     pub(crate) contract: CpuRuntimeContract,

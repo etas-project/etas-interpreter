@@ -1,9 +1,9 @@
 use std::sync::atomic::Ordering;
 
-use crate::control::{CallPurity, CallTarget, Continuation, ControlSignal, PendingCall};
+use crate::control::{CallPurity, Continuation, ControlSignal, PendingCall};
 use crate::driver::cpu::{
-    CpuBudgetDelta, CpuCallableId, CpuContractViolation, CpuExecutionFailure, CpuTaskCapsule,
-    CpuTaskCompletion, CpuTaskMetrics, FrozenValue,
+    CpuBudgetDelta, CpuContractViolation, CpuExecutionFailure, CpuTaskCapsule, CpuTaskCompletion,
+    CpuTaskMetrics, FrozenValue,
 };
 use crate::eval::machine::{EvalMachine, MachinePoll, PendingBoundary};
 
@@ -50,7 +50,6 @@ fn execute_inner(
             etas_host::execution::CancellationReason::Requested,
         ));
     }
-    let CpuCallableId::Flow(item) = capsule.callable;
     let started = std::time::Instant::now();
     let args = capsule
         .arguments
@@ -83,13 +82,14 @@ fn execute_inner(
     .into_parts();
     run_state.shared.safe_points =
         super::safe_point::ExecutionSafePointScheduler::with_ledger(capsule.budget.steps.clone());
+    run_state.shared.limit_span = contract.limit_span;
     let mut eval = super::EvalContext::new(program, &mut run_state);
     let span = capsule.call_span;
     let mut machine = EvalMachine::new();
     machine.resume(ControlSignal::pending_call(PendingCall {
         purity: CallPurity::Ordinary,
         site: None,
-        target: CallTarget::FlowItem(item),
+        target: capsule.callable.thaw(&capsule.program.checked),
         args: args.clone(),
         span,
         continuation: Continuation::BlockValue,

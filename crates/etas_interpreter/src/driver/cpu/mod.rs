@@ -1,4 +1,6 @@
+mod callable;
 mod capsule;
+pub(crate) use callable::FrozenCpuCallable;
 mod completion;
 mod inline;
 mod worker_pool;
@@ -8,8 +10,7 @@ use std::num::NonZeroUsize;
 #[cfg(test)]
 pub(crate) use capsule::program_build_count;
 pub(crate) use capsule::{
-    CpuBudgetLease, CpuCallableId, CpuRuntimeContract, CpuTaskCapsule, FrozenValue,
-    PreparedCpuProgram,
+    CpuBudgetLease, CpuRuntimeContract, CpuTaskCapsule, FrozenValue, PreparedCpuProgram,
 };
 pub(crate) use completion::{
     CpuBudgetDelta, CpuContractViolation, CpuExecutionFailure, CpuJobId, CpuTaskCompletion,
@@ -77,6 +78,7 @@ mod send_assertions {
     #[test]
     fn cpu_boundary_types_are_thread_safe_without_unsafe_impls() {
         assert_send::<CpuTaskCapsule>();
+        assert_send::<FrozenCpuCallable>();
         assert_send::<CpuTaskCompletion>();
         assert_sync::<WorkerPoolCpuExecutor>();
     }
