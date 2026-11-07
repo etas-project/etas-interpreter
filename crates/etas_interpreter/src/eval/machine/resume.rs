@@ -40,9 +40,20 @@ impl EvalMachine {
                         )
                 )
         });
-        self.truncate_to(
-            boundary.expect("deferred continuation transfer must retain its handler boundary"),
-        );
+        let boundary =
+            boundary.expect("deferred continuation transfer must retain its handler boundary");
+        let retained = match &mut self.stack[boundary] {
+            // Resume the captured body under its original lexical Handler.
+            // Only the arm's dispatch is replaced; the boundary still closes
+            // the dynamic scope when the resumed body returns.
+            super::frame::EvalFrame::Handler(frame) => {
+                frame.inner = crate::control::Continuation::BlockValue.into();
+                boundary + 1
+            }
+            super::frame::EvalFrame::Continuation(_) => boundary,
+            _ => unreachable!("selected deferred transfer has a dispatch boundary"),
+        };
+        self.truncate_to(retained);
         self.resume(ControlSignal::pending_continuation(
             crate::control::PendingContinuation {
                 continuation,
