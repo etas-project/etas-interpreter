@@ -55,6 +55,35 @@ pub(crate) struct RestoredMachineSnapshot {
 }
 
 impl RestoredMachineSnapshot {
+    pub(crate) fn restore_auxiliary(
+        &mut self,
+        snapshot: &crate::orchestration::MachineSnapshot,
+        index: u32,
+        source: &crate::value::CheckedExecutionProgram,
+        revisions: Option<&crate::api::code::PreparedRevisionSet>,
+    ) -> Result<crate::control::Continuation, String> {
+        let entry = snapshot
+            .auxiliary
+            .get(index as usize)
+            .ok_or("task continuation references a missing machine auxiliary entry")?;
+        let program = crate::value::CheckedExecutionProgram::restore_identity(
+            &entry.program,
+            source,
+            revisions,
+        )?;
+        let key = std::sync::Arc::as_ptr(&program.checked) as usize;
+        if !self.contexts.contains_key(&key) {
+            let context = self.active_context().related_program(program.clone());
+            self.contexts.insert(key, context);
+        }
+        let context = self
+            .contexts
+            .get_mut(&key)
+            .expect("auxiliary program context was inserted");
+        context.execution_program = Some(program);
+        entry.continuation.clone().restore_with(context)
+    }
+
     pub(crate) fn active_context(&mut self) -> &mut RestoreContext {
         let program = self
             .machine

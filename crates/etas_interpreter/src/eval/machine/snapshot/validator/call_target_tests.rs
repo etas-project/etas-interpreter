@@ -276,6 +276,7 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
             1,
         );
         let mut machine = MachineSnapshot {
+            auxiliary: Vec::new(),
             input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),

@@ -157,6 +157,12 @@ impl EvalMachine {
     ) -> Result<super::snapshot::RestoredMachineSnapshot, String> {
         let limits = resources.limits;
         super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, closures, limits)
+            .with_execution_revision(
+                resources
+                    .root
+                    .as_ref()
+                    .and_then(|root| root.program.revision.as_deref()),
+            )
             .with_revisions(resources.revisions.as_deref())
             .with_tasks(
                 resources.task.as_ref().map(|task| task.scheduler),
@@ -328,17 +334,47 @@ impl EvalMachine {
         })
     }
 
+    pub(crate) fn checkpoint_root(&self) -> Option<&super::snapshot::CheckpointRoot> {
+        self.checkpoint_root.as_ref()
+    }
+
+    pub(crate) fn pending_cpu_call(&self) -> Option<&crate::control::PendingCall> {
+        match self.input.as_ref()? {
+            MachineInput::Signal(crate::control::ControlSignal::Call(call))
+                if self.stack.is_empty()
+                    && matches!(
+                        call.continuation,
+                        crate::control::Continuation::Return
+                            | crate::control::Continuation::BlockValue
+                    ) =>
+            {
+                Some(call)
+            }
+            _ => None,
+        }
+    }
+
     pub(crate) fn capture_machine(
         &self,
         context: &mut super::snapshot::CaptureContext,
         residual_counters: (u64, u64, u64),
+    ) -> Result<MachineSnapshot, String> {
+        self.capture_machine_in_program(context, residual_counters, None)
+    }
+
+    pub(crate) fn capture_machine_in_program(
+        &self,
+        context: &mut super::snapshot::CaptureContext,
+        residual_counters: (u64, u64, u64),
+        program: Option<&crate::value::CheckedExecutionProgram>,
     ) -> Result<MachineSnapshot, String> {
         let input = self.capture_input(
             context,
             self.checkpoint_root
                 .as_ref()
                 .map(|root| &root.program)
-                .or_else(|| self.program_scope.as_ref().map(|scope| &scope.program)),
+                .or_else(|| self.program_scope.as_ref().map(|scope| &scope.program))
+                .or(program),
         )?;
         let scopes = super::snapshot::program::capture_scopes(self)?;
         let mut frames = Vec::with_capacity(self.stack.len());
@@ -367,7 +403,8 @@ impl EvalMachine {
                 .or(self
                     .program_scope
                     .as_ref()
-                    .map(|scope| &scope.program.checked)),
+                    .map(|scope| &scope.program.checked))
+                .or(program.map(|program| &program.checked)),
             residual_counters,
         )?;
         Ok(machine)

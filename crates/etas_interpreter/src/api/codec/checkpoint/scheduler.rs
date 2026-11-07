@@ -75,18 +75,14 @@ pub(in crate::api::codec) fn continuation_arena_json(
         .iter()
         .map(|(id, entry)| {
             budget.metadata(7, 0)?;
-            let continuation = entry
-                .continuation
-                .as_ref()
-                .map(|continuation| snapshot::continuation_json_with_budget(continuation, budget))
-                .transpose()?;
             Ok(json!({
                 "id": id.0,
                 "owner": entry.owner.0,
                 "origin": entry.origin,
                 "output": entry.output.0,
                 "state": entry.state,
-                "continuation": continuation,
+                "continuation": entry.continuation,
+                "program": entry.program,
             }))
         })
         .collect::<Result<Vec<_>, InterpreterCodecError>>()?;
@@ -94,9 +90,9 @@ pub(in crate::api::codec) fn continuation_arena_json(
 }
 
 pub(crate) fn continuation_arena_from_json(
-    limits: &etas_host::StorageLimits,
+    _limits: &etas_host::StorageLimits,
     value: &Value,
-    checked: &etas_frontend::CheckedProject,
+    _checked: &etas_frontend::CheckedProject,
 ) -> Result<ContinuationArenaSnapshot, InterpreterCodecError> {
     let mut entries = std::collections::BTreeMap::new();
     for entry in required_array(value, "entries")? {
@@ -109,20 +105,17 @@ pub(crate) fn continuation_arena_from_json(
             serde_json::from_value(required_obj(entry, "state")?.clone()).map_err(|error| {
                 InterpreterCodecError::new(format!("invalid continuation state: {error}"))
             })?;
-        let continuation = required_obj(entry, "continuation")?;
         let saved = ContinuationEntrySnapshot {
+            program: serde_json::from_value(required_obj(entry, "program")?.clone()).map_err(
+                |error| {
+                    InterpreterCodecError::new(format!("invalid continuation program: {error}"))
+                },
+            )?,
             owner: TaskScopeId(required_u64(entry, "owner")?),
             origin,
             output: etas_types::TypeId(required_u32(entry, "output")?),
             state,
-            continuation: if continuation.is_null() {
-                None
-            } else {
-                Some(
-                    machine::continuation_from_snapshot(limits, continuation, checked)
-                        .map_err(InterpreterCodecError::new)?,
-                )
-            },
+            continuation: optional_u32(entry, "continuation")?,
         };
         if entries.insert(id, saved).is_some() {
             return Err(InterpreterCodecError::new(
@@ -141,14 +134,26 @@ pub(crate) fn continuation_arena_from_json(
 #[cfg(test)]
 pub(crate) fn roundtrip_continuation_arena(
     arena: &ContinuationArenaSnapshot,
-) -> ContinuationArenaSnapshot {
+    continuations: &[ContinuationSnapshot],
+) -> (ContinuationArenaSnapshot, Vec<ContinuationSnapshot>) {
     let checked = crate::testing::project::checked_project(
         "module app.main; flow main() -> unit { return; }",
     );
     let value = continuation_arena_json(arena, &mut snapshot::EncodingBudget::default()).unwrap();
     let bytes = serde_json::to_vec(&value).unwrap();
     let value = serde_json::from_slice(&bytes).unwrap();
-    continuation_arena_from_json(&etas_host::StorageLimits::default(), &value, &checked).unwrap()
+    let limits = etas_host::StorageLimits::default();
+    let arena = continuation_arena_from_json(&limits, &value, &checked).unwrap();
+    let continuations = continuations
+        .iter()
+        .map(|continuation| {
+            let encoded = snapshot::continuation_json(continuation);
+            let bytes = serde_json::to_vec(&encoded).unwrap();
+            let encoded = serde_json::from_slice(&bytes).unwrap();
+            machine::continuation_from_snapshot(&limits, &encoded, &checked).unwrap()
+        })
+        .collect();
+    (arena, continuations)
 }
 
 #[cfg(test)]

@@ -302,6 +302,7 @@ impl<'a> SnapshotValidator<'a> {
         *self.residual_references.borrow_mut() = ResidualReferences::default();
         self.validate_program_frames(snapshot, boundary_scopes)?;
         self.validate_machine_input(snapshot)?;
+        self.validate_auxiliary(snapshot)?;
         self.validate_suspensions(snapshot, boundary_scopes)?;
         self.validate_residual_references(snapshot)
     }
@@ -1628,6 +1629,7 @@ flow main() -> unit {
             &etas_host::StorageLimits::default(),
         )
         .validate_machine(&MachineSnapshot {
+            auxiliary: Vec::new(),
             input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
@@ -1671,6 +1673,7 @@ flow main() -> unit {
             .unwrap();
             let frame = super::super::frame::capture_frame(&frame).unwrap();
             let machine = MachineSnapshot {
+                auxiliary: Vec::new(),
                 input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),

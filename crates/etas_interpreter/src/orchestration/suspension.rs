@@ -114,6 +114,7 @@ impl super::MachineSnapshot {
     pub(crate) fn handler_scope_ids(&self) -> Vec<super::HandlerScopeId> {
         let mut work = Vec::new();
         frame_roots(&self.frames, &mut work);
+        work.extend(self.auxiliary.iter().map(|entry| &entry.continuation));
         work.extend(
             self.input
                 .as_deref()
@@ -155,6 +156,7 @@ impl super::MachineSnapshot {
     pub(crate) fn suspension_order(&self) -> Result<Vec<usize>, String> {
         let mut roots = Vec::new();
         frame_roots(&self.frames, &mut roots);
+        roots.extend(self.auxiliary.iter().map(|entry| &entry.continuation));
         roots.extend(
             self.input
                 .as_deref()

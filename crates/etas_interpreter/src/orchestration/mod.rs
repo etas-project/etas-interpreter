@@ -6,6 +6,12 @@ pub(crate) use suspension::{
     ExecutionRootSnapshot, SuspendedProgramSnapshot,
 };
 mod checkpoint;
+mod task;
+pub(crate) use task::{
+    AuxiliaryContinuationSnapshot, ScheduledTaskSnapshot, ScheduledTaskStateSnapshot,
+    TaskCancellationSnapshot, TaskLocalSnapshot, TaskOutcomeSnapshot, TaskResumeSnapshot,
+    TaskRunCountersSnapshot, TaskSchedulerSnapshot,
+};
 mod cooperative;
 pub(crate) use call_target_storage::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 pub(crate) use callable::{

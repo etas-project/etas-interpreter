@@ -28,7 +28,7 @@ pub enum RunOutcome {
     Cancelled(etas_host::execution::CancellationCause),
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub enum RunFailure {
     PreparationRejected {
         origin: etas_core::Span,

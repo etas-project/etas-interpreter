@@ -64,6 +64,8 @@ pub(crate) struct CpuJobRecord {
 
 /// Execution stacks owned by one cooperatively scheduled task.
 pub(crate) struct TaskLocalState {
+    pub(crate) identity: crate::driver::scheduler::TaskIdentity,
+    pub(crate) parent: Option<crate::driver::scheduler::TaskIdentity>,
     pub(crate) task_scope: crate::driver::scheduler::TaskScopeId,
     pub(crate) execution: etas_host::execution::ExecutionScope,
     pub(crate) cancellation: Result<etas_host::execution::CancelSignal, etas_host::HostError>,
@@ -81,6 +83,8 @@ impl TaskLocalState {
         model_policy: ModelExecutionPolicy,
     ) -> Self {
         Self {
+            identity: crate::driver::scheduler::TaskIdentity::Root,
+            parent: None,
             task_scope,
             cancellation: execution.signal(),
             execution,
@@ -97,10 +101,13 @@ impl TaskLocalState {
     pub(crate) fn child_in_scope(
         &self,
         task_scope: crate::driver::scheduler::TaskScopeId,
+        identity: crate::driver::scheduler::TaskId,
     ) -> Result<Self, etas_host::HostError> {
         let execution = self.execution.child()?;
         execution.claim_body()?;
         Ok(Self {
+            identity: crate::driver::scheduler::TaskIdentity::Scheduled(identity),
+            parent: Some(self.identity),
             task_scope,
             cancellation: execution.signal(),
             execution,

@@ -5,7 +5,9 @@ mod resource;
 mod snapshot;
 mod task;
 
-pub(crate) use resource::{EffectIdentity, FrozenSelector, ResourceEvent, RuntimeResourceKey};
+pub(crate) use resource::{
+    EffectIdentity, FrozenSelector, ResourceEvent, ResourceGuardId, RuntimeResourceKey,
+};
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -160,13 +162,29 @@ impl TaskScheduler {
         origin: TaskIdentity,
         continuation: crate::control::Continuation,
         output: etas_types::TypeId,
+        program: Option<crate::value::CheckedExecutionProgram>,
     ) -> crate::value::ContinuationTokenValue {
         assert!(
             self.groups.contains_key(&owner),
             "continuation scope must exist"
         );
         self.continuations
-            .allocate(owner, origin, continuation, output)
+            .allocate(owner, origin, continuation, output, program)
+    }
+
+    pub(crate) fn capture_continuations(
+        &self,
+        revisions: &mut std::collections::BTreeMap<
+            etas_code::RevisionKey,
+            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
+        >,
+        capture: impl FnMut(
+            TaskIdentity,
+            Option<&crate::value::CheckedExecutionProgram>,
+            &crate::control::Continuation,
+        ) -> Result<u32, String>,
+    ) -> Result<ContinuationArenaSnapshot, String> {
+        self.continuations.capture(revisions, capture)
     }
 
     pub(crate) fn consume_continuation(
@@ -220,8 +238,8 @@ impl TaskScheduler {
         if !self.groups.contains_key(&scope) {
             return Err(SchedulerError::WrongOwner);
         }
-        let local = parent.child_in_scope(scope)?;
         let id = TaskId(self.next_task);
+        let local = parent.child_in_scope(scope, id)?;
         self.next_task = self.next_task.checked_add(1).expect("task id exhausted");
         self.tasks.insert(
             id,
@@ -936,6 +954,8 @@ impl TaskScheduler {
 
     fn terminal(&mut self, handle: TaskHandle, outcome: TaskOutcome) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        self.continuations
+            .dispose_origin(TaskIdentity::Scheduled(id));
         let (waiters, was_running) = {
             let task = self.tasks.get_mut(&id).expect("resolved task");
             if task.state.is_terminal() {

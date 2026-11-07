@@ -18,10 +18,14 @@ use crate::value::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CheckpointId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RetryAttemptId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct HandlerScopeId(pub u32);
 
 #[derive(Clone, Debug)]
@@ -188,6 +192,7 @@ impl CheckpointCodeRevision {
 
 #[derive(Clone, Debug, Default)]
 pub struct MachineSnapshot {
+    pub(crate) auxiliary: Vec<super::AuxiliaryContinuationSnapshot>,
     pub(crate) input: Option<Box<super::MachineInputSnapshot>>,
     pub(crate) frames: Vec<MachineFrameSnapshot>,
     pub(crate) program_owners: FrameProgramOwners,
@@ -210,6 +215,7 @@ impl MachineSnapshot {
             .any(|frame| matches!(frame, MachineFrameSnapshot::ProgramReturn(_)))
         {
             return Self {
+                auxiliary: Vec::new(),
                 input: None,
                 frames,
                 program_owners: FrameProgramOwners::Root,
@@ -229,6 +235,7 @@ impl MachineSnapshot {
             })
             .collect();
         Self {
+            auxiliary: Vec::new(),
             input: None,
             frames,
             program_owners: FrameProgramOwners::Scoped(program_owners),
@@ -1037,12 +1044,12 @@ pub(crate) struct ComposedInvocationSnapshot {
     pub path: Vec<usize>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HandlerSnapshot {
     pub handlers: Vec<ActiveHandlerRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveHandlerRecord {
     pub id: HandlerScopeId,
     pub handled_actions: Vec<String>,
@@ -1050,7 +1057,7 @@ pub struct ActiveHandlerRecord {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveHandlerArmRecord {
     pub arm: etas_hir::HirHandlerArmId,
     pub effect_segments: Vec<String>,
@@ -1063,12 +1070,12 @@ pub struct ActiveHandlerArmRecord {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RetrySnapshot {
     pub attempts: Vec<RetryAttemptRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RetryAttemptRecord {
     pub id: RetryAttemptId,
     pub ordinal: u32,

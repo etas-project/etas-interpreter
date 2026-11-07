@@ -200,6 +200,7 @@ fn continuation_tokens_are_owned_and_consumed_once() {
         TaskIdentity::Root,
         crate::control::Continuation::Return,
         etas_types::TypeId(0),
+        None,
     );
     let consumed = scheduler
         .consume_continuation(token, TaskIdentity::Root, ContinuationTransfer::Resume)

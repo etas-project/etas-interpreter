@@ -7,6 +7,41 @@ struct Boundary {
 }
 
 impl SnapshotValidator<'_> {
+    pub(super) fn validate_auxiliary(&self, snapshot: &MachineSnapshot) -> Result<(), String> {
+        for entry in &snapshot.auxiliary {
+            let mut scopes = BTreeSet::new();
+            if matches!(
+                entry.program.program,
+                crate::orchestration::CheckpointProgramReference::Source
+            ) && self.execution_revision.is_none()
+            {
+                self.continuation(&entry.continuation, "task continuation", &mut scopes)?;
+                continue;
+            }
+            let program = self
+                .revisions
+                .ok_or("task continuation requires prepared revisions")?
+                .execution_snapshot(&entry.program)?;
+            let mut validator = SnapshotValidator::new(
+                &program.checked,
+                &program.plan.slots,
+                &program.plan.dispatch,
+                &program.plan.closures,
+                self.limits,
+            )
+            .with_revisions(self.revisions);
+            validator.execution_revision = program.revision.as_deref();
+            validator.tasks = self.tasks;
+            validator.task_identity = self.task_identity;
+            validator.frame_definitions = self.frame_definitions.clone();
+            validator.frame_owners = self.frame_owners.clone();
+            validator.suspension_references = self.suspension_references.clone();
+            validator.residual_references = self.residual_references.clone();
+            validator.continuation(&entry.continuation, "task continuation", &mut scopes)?;
+        }
+        Ok(())
+    }
+
     pub(super) fn active_program(
         &self,
         snapshot: &MachineSnapshot,

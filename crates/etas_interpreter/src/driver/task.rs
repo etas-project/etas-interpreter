@@ -429,13 +429,13 @@ pub(super) async fn drive_one<'host>(
         eval.events.push(WorkflowEvent::TaskDispatched {
             scope: handle.owner.0,
             task: handle.task.0,
-            job: job.0,
+            job: dispatch_sequence,
             dispatch_sequence,
         });
         eval.events.push(WorkflowEvent::TaskWaitingCpu {
             scope: handle.owner.0,
             task: handle.task.0,
-            job: job.0,
+            job: dispatch_sequence,
         });
         return Ok(true);
     }
@@ -1070,7 +1070,7 @@ pub(super) fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, 
             .checked_add(1)
             .expect("CPU completion sequence exhausted");
         let mut telemetry = crate::api::CpuTaskTelemetry {
-            job: completion.job.0,
+            job: completion.metrics.dispatch_sequence,
             worker: completion.metrics.worker,
             dispatch_sequence: completion.metrics.dispatch_sequence,
             completion_sequence,
@@ -1083,7 +1083,7 @@ pub(super) fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, 
         eval.events.push(WorkflowEvent::TaskCpuCompleted {
             scope: record.task.owner.0,
             task: record.task.task.0,
-            job: completion.job.0,
+            job: completion.metrics.dispatch_sequence,
             worker: completion.metrics.worker,
             dispatch_sequence: completion.metrics.dispatch_sequence,
             completion_sequence,

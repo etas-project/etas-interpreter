@@ -86,6 +86,15 @@ mod tests {
         plan: &'a crate::plan::InterpreterPlan,
         options: RunOptions,
     ) -> (EvalProgramInput<'a>, EvalRunState) {
+        initialize_after_steps(checked, plan, options, 0)
+    }
+
+    fn initialize_after_steps<'a>(
+        checked: &'a crate::CheckedProject,
+        plan: &'a crate::plan::InterpreterPlan,
+        options: RunOptions,
+        consumed_steps: u64,
+    ) -> (EvalProgramInput<'a>, EvalRunState) {
         EvalContextInput {
             replay_keys: crate::eval::replay::RunReplayKeys::start(&options).unwrap(),
             code_definitions: options.code_definitions,
@@ -102,7 +111,7 @@ mod tests {
             execution_limits: options.execution_limits,
             cpu_threads: options.cpu_threads,
             cpu_min_work: options.cpu_min_work,
-            consumed_steps: 0,
+            consumed_steps,
             current_session: None,
         }
         .into_parts()
@@ -167,6 +176,13 @@ mod tests {
 
         enter(&mut eval, &mut reactor, &mut root).await.unwrap();
         assert_eq!(eval.consumed_steps(), first_charge);
+        let captured = eval.capture_task_checkpoint(&root).unwrap();
+        let saved_tasks =
+            crate::api::codec::checkpoint::task::roundtrip(&captured.scheduler, &checked);
+        let saved_root = crate::api::codec::checkpoint::input::roundtrip_machine(
+            &captured.root.machine,
+            &checked,
+        );
         eval.scheduler.end_checkpoint_barrier();
         assert!(matches!(
             task::drive_one(&mut eval, &host, &mut reactor).await,
@@ -188,6 +204,61 @@ mod tests {
             !events
                 .iter()
                 .any(|event| matches!(event, WorkflowEvent::HostTrace(_)))
+        );
+        let (input, mut fresh) = initialize_after_steps(
+            &checked,
+            &plan,
+            RunOptions {
+                cpu_threads: std::num::NonZeroUsize::new(4).unwrap(),
+                cpu_min_work: 0,
+                ..Default::default()
+            },
+            first_charge,
+        );
+        let mut resumed = EvalContext::new(input, &mut fresh);
+        let mut root = resumed
+            .restore_task_checkpoint(
+                &saved_tasks,
+                &saved_root,
+                captured.root.root.unwrap(),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(resumed.consumed_steps(), first_charge);
+        let mut reactor = TaskHostReactor::new();
+        assert!(
+            task::drive_one(&mut resumed, &host, &mut reactor)
+                .await
+                .unwrap()
+        );
+        assert_eq!(
+            resumed.cpu_jobs.len(),
+            1,
+            "unstarted pure task returns to a CPU worker"
+        );
+        enter(&mut resumed, &mut reactor, &mut root).await.unwrap();
+        resumed.scheduler.end_checkpoint_barrier();
+        assert_eq!(resumed.consumed_steps(), first_charge * 2);
+        assert!(!resumed.scheduler.has_unsettled_tasks());
+        drop(resumed);
+        let events = fresh.shared.events.into_events();
+        let completions = events
+            .iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::TaskCpuCompleted {
+                    job,
+                    dispatch_sequence,
+                    completion_sequence,
+                    ..
+                } => Some((*job, *dispatch_sequence, *completion_sequence)),
+                _ => None,
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(
+            completions,
+            vec![(1, 1, 1)],
+            "drained work is not replayed and logical CPU IDs keep advancing"
         );
     }
 
@@ -257,46 +328,19 @@ mod tests {
         assert_eq!(eval.consumed_steps(), 0);
         assert_eq!(host.console_call_count(), 1);
         assert_eq!(host.stdout_text(), "once\n");
-        let scheduler = eval
-            .scheduler
-            .capture_metadata(&mut crate::eval::machine::snapshot::CaptureContext::default())
-            .unwrap();
-        let mut scheduled = eval.scheduler.take_checkpoint_task(handle);
-        let saved = scheduled
-            .machine
-            .capture_snapshot(&[], (0, 0, 0))
-            .unwrap()
-            .machine;
-        let saved = crate::api::codec::checkpoint::input::roundtrip_machine(&saved, &checked);
-        scheduled.machine = EvalMachine::from_snapshot_with_resources(
-            &saved,
+        let captured = eval.capture_task_checkpoint(&root).unwrap();
+        let saved = crate::api::codec::checkpoint::task::roundtrip(&captured.scheduler, &checked);
+        let saved_root = crate::api::codec::checkpoint::input::roundtrip_machine(
+            &captured.root.machine,
             &checked,
-            plan.slots.clone(),
-            &plan.dispatch,
-            &plan.closures,
-            &eval.host_context,
-            crate::eval::machine::snapshot::SnapshotRestoreResources {
-                task: Some(
-                    crate::eval::machine::snapshot::TaskSnapshotRestoreResources {
-                        scheduler: &scheduler,
-                        identity: super::super::scheduler::TaskIdentity::Scheduled(handle.task),
-                        frames: Default::default(),
-                    },
-                ),
-                locked_model: None,
-                limits: &eval.storage_limits,
-                revisions: None,
-                root: Some(crate::eval::machine::snapshot::CheckpointRoot {
-                    program,
-                    args: Vec::new(),
-                }),
-                ordering: None,
-                residual: None,
-            },
-        )
-        .unwrap();
-        eval.scheduler.restore_checkpoint_task(handle, scheduled);
+        );
         eval.scheduler.end_checkpoint_barrier();
+        drop(eval);
+        let (program_input, mut fresh) = initialize(&checked, &plan, RunOptions::default());
+        let mut eval = EvalContext::new(program_input, &mut fresh);
+        root = eval
+            .restore_task_checkpoint(&saved, &saved_root, captured.root.root.unwrap(), None, None)
+            .unwrap();
 
         enter(&mut eval, &mut reactor, &mut root).await.unwrap();
         eval.scheduler.end_checkpoint_barrier();
@@ -395,10 +439,7 @@ flow main() -> i32 {
         }
         captured.insert(symbol, InterpValue::i32(99));
         eval.scheduler.begin_checkpoint_barrier();
-        let scheduler = eval
-            .scheduler
-            .capture_metadata(&mut CaptureContext::default())
-            .unwrap();
+        let scheduler = eval.scheduler.capture_metadata(Default::default()).unwrap();
         eval.scheduler.end_checkpoint_barrier();
         let frames = SharedFrameRestore::default();
         let limits = eval.storage_limits.clone();
@@ -494,5 +535,160 @@ flow main() -> i32 {
             panic!("model response input")
         };
         assert_eq!(restored.unwrap(), response);
+    }
+
+    #[tokio::test]
+    async fn full_task_json_roundtrip_restores_parent_scopes_waiters_and_root_continuations() {
+        use super::super::scheduler::{
+            ContinuationTransfer, TaskIdentity, TaskOutcome, TaskResume, TaskState,
+        };
+        let checked = checked_project(
+            "module app.main; flow work() -> i32 { return 42; } flow main() -> i32 { return work(); }",
+        );
+        let plan = crate::Interpreter.plan(&checked, PlanOptions).plan.unwrap();
+        let (input, mut state) = initialize(&checked, &plan, RunOptions::default());
+        let eval = EvalContext::new(input, &mut state);
+        let program = eval.checked_execution_program();
+        let span = crate::diagnostics::item_span(&checked, checked.entry.unwrap());
+        let work_symbol = checked
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "work")
+            .unwrap()
+            .id;
+        let work = checked
+            .hir
+            .items
+            .iter()
+            .find_map(|(id, item)| match item {
+                etas_hir::HirItem::Flow(flow) if flow.symbol == work_symbol => Some(id),
+                _ => None,
+            })
+            .unwrap();
+        let parent = eval
+            .scheduler
+            .spawn(eval.task, EvalMachine::new(), Some(program.clone()), 0, 0)
+            .unwrap();
+        assert_eq!(eval.scheduler.dispatch_ready(), Some(parent));
+        let parent_task = eval.scheduler.take_running(parent).unwrap();
+        let mut machine = EvalMachine::new();
+        machine.resume(ControlSignal::pending_call(PendingCall {
+            purity: CallPurity::Ordinary,
+            site: None,
+            target: CallTarget::FlowItem(work),
+            args: Vec::new(),
+            span,
+            continuation: Continuation::Return,
+        }));
+        let child = eval
+            .scheduler
+            .spawn(&parent_task.local, machine, Some(program.clone()), 0, 1)
+            .unwrap();
+        eval.scheduler.restore_running(parent, parent_task).unwrap();
+        eval.scheduler
+            .complete(parent, InterpValue::i32(17))
+            .unwrap();
+        let waiter = eval
+            .scheduler
+            .spawn(eval.task, EvalMachine::new(), Some(program.clone()), 0, 2)
+            .unwrap();
+        eval.scheduler
+            .set_scope_owner(waiter.owner, waiter)
+            .unwrap();
+        assert_eq!(eval.scheduler.dispatch_ready(), Some(child));
+        eval.scheduler.requeue(child).unwrap();
+        assert_eq!(eval.scheduler.dispatch_ready(), Some(waiter));
+        let mut waiting = eval.scheduler.take_running(waiter).unwrap();
+        waiting.waiting_continuation = Some(TaskResume::Await(Continuation::Return));
+        eval.scheduler.restore_running(waiter, waiting).unwrap();
+        eval.scheduler.await_task(waiter, child).unwrap();
+        let consumed = eval.scheduler.allocate_continuation(
+            parent.owner,
+            TaskIdentity::Root,
+            Continuation::Return,
+            etas_types::TypeId(0),
+            Some(program.clone()),
+        );
+        eval.scheduler
+            .consume_continuation(consumed, TaskIdentity::Root, ContinuationTransfer::Requeue)
+            .unwrap();
+        let retained = eval.scheduler.allocate_continuation(
+            parent.owner,
+            TaskIdentity::Root,
+            Continuation::Return,
+            etas_types::TypeId(0),
+            Some(program.clone()),
+        );
+        let mut root = EvalMachine::for_entry(program.clone(), Vec::new());
+        root.resume(ControlSignal::Value(InterpValue::Unit));
+        eval.scheduler.begin_checkpoint_barrier();
+        let captured = eval.capture_task_checkpoint(&root).unwrap();
+        eval.scheduler.end_checkpoint_barrier();
+        let snapshot =
+            crate::api::codec::checkpoint::task::roundtrip(&captured.scheduler, &checked);
+        let root_snapshot = crate::api::codec::checkpoint::input::roundtrip_machine(
+            &captured.root.machine,
+            &checked,
+        );
+        assert_eq!(eval.consumed_steps(), 0);
+
+        let (input, mut fresh) = initialize(&checked, &plan, RunOptions::default());
+        let mut restored = EvalContext::new(input, &mut fresh);
+        let mut root = restored
+            .restore_task_checkpoint(
+                &snapshot,
+                &root_snapshot,
+                captured.root.root.unwrap(),
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(restored.consumed_steps(), 0);
+        assert_eq!(
+            restored.scheduler.state(parent).unwrap(),
+            TaskState::Completed
+        );
+        assert_eq!(restored.scheduler.state(child).unwrap(), TaskState::Ready);
+        assert!(matches!(
+            restored.scheduler.consume_continuation(
+                consumed,
+                TaskIdentity::Root,
+                ContinuationTransfer::Resume
+            ),
+            Err(super::super::scheduler::SchedulerError::ContinuationConsumed)
+        ));
+        assert!(matches!(
+            restored
+                .scheduler
+                .consume_continuation(retained, TaskIdentity::Root, ContinuationTransfer::Resume)
+                .unwrap()
+                .continuation,
+            Continuation::Return
+        ));
+        assert!(
+            matches!(root.run_until_yield(&mut restored), crate::eval::machine::MachinePoll::Complete(value) if *value == InterpValue::Unit)
+        );
+        let host = FakeHost::new(Default::default());
+        let mut reactor = TaskHostReactor::new();
+        for _ in 0..8 {
+            if !restored.scheduler.has_unsettled_tasks() {
+                break;
+            }
+            assert!(
+                task::drive_one(&mut restored, &host, &mut reactor)
+                    .await
+                    .unwrap()
+            );
+        }
+        assert!(!restored.scheduler.has_unsettled_tasks());
+        for handle in [child, waiter] {
+            assert!(
+                matches!(restored.scheduler.outcome(handle).unwrap(), Some(TaskOutcome::Completed(value)) if *value == InterpValue::i32(42))
+            );
+        }
+        assert!(
+            matches!(restored.scheduler.outcome(parent).unwrap(), Some(TaskOutcome::Completed(value)) if *value == InterpValue::i32(17))
+        );
+        assert!(restored.consumed_steps() > 0);
     }
 }

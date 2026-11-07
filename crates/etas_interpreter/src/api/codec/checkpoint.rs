@@ -6,6 +6,7 @@ pub(crate) mod input;
 pub(crate) mod scheduler;
 mod source;
 mod suspension;
+pub(crate) mod task;
 pub(crate) use source::ResumeHeader;
 pub use source::SourceCheckpoint;
 #[cfg(test)]
@@ -888,7 +889,7 @@ fn machine_json_with_budget(
     }
     budget.register_suspensions(machine.suspended_programs.len());
     let mut object = CheckpointDocument::from_value(
-        json!({"frames":[], "suspended_programs":[], "residual": null, "input":null}),
+        json!({"frames":[], "suspended_programs":[], "auxiliary":[], "residual": null, "input":null}),
     );
     object.value_mut()["residual"] = serde_json::to_value(&machine.residual).map_err(|error| {
         InterpreterCodecError::new(format!("residual monitor state cannot be encoded: {error}"))
@@ -914,6 +915,13 @@ fn machine_json_with_budget(
         .map(|input| input::encode(input, budget))
         .transpose()?
         .unwrap_or(Value::Null);
+    object.value_mut()["auxiliary"] = machine.auxiliary.iter().map(|entry| {
+        budget.metadata(2, 0)?;
+        Ok(json!({
+            "program": entry.program,
+            "continuation": snapshot::continuation_json_with_budget(&entry.continuation, budget)?,
+        }))
+    }).collect::<Result<Vec<_>, InterpreterCodecError>>()?.into();
     Ok(object.into_value())
 }
 
@@ -990,6 +998,48 @@ fn machine_from_json_with_revisions(
         Value::Null => None,
         value => Some(Box::new(input::decode(limits, value, root)?)),
     };
+    machine.auxiliary = required_array(value, "auxiliary")?
+        .iter()
+        .map(|entry| {
+            let program: crate::orchestration::ExecutionProgramSnapshot = serde_json::from_value(
+                required_obj(entry, "program")?.clone(),
+            )
+            .map_err(|error| {
+                InterpreterCodecError::new(format!(
+                    "invalid auxiliary continuation program: {error}"
+                ))
+            })?;
+            let checked = match revisions {
+                Some(revisions) => Some(
+                    revisions
+                        .checked_program(&program.program)
+                        .map_err(InterpreterCodecError::new)?,
+                ),
+                None if matches!(
+                    program.program,
+                    crate::orchestration::CheckpointProgramReference::Source
+                ) =>
+                {
+                    None
+                }
+                None => {
+                    return Err(InterpreterCodecError::new(
+                        "auxiliary continuation requires prepared revisions",
+                    ));
+                }
+            };
+            let continuation = machine::continuation_from_snapshot(
+                limits,
+                required_obj(entry, "continuation")?,
+                checked.as_ref().unwrap_or(root),
+            )
+            .map_err(InterpreterCodecError::new)?;
+            Ok(crate::orchestration::AuxiliaryContinuationSnapshot {
+                program,
+                continuation,
+            })
+        })
+        .collect::<Result<_, InterpreterCodecError>>()?;
     machine
         .suspension_order()
         .map_err(InterpreterCodecError::new)?;
@@ -1135,6 +1185,7 @@ fn machine_frames_from_json(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(MachineSnapshot {
+        auxiliary: Vec::new(),
         input: None,
         frames,
         suspended_programs: Vec::new(),

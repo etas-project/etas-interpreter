@@ -1,5 +1,4 @@
 use super::*;
-use crate::eval::machine::snapshot::{CaptureContext, RestoreContext};
 
 /// The scheduling half of a checkpoint. Machine/local payloads are captured and
 /// restored by the evaluator, which owns checked programs and frame graphs.
@@ -23,9 +22,24 @@ pub(crate) enum TaskWakeupSnapshot {
 }
 
 impl TaskScheduler {
+    pub(crate) fn checkpoint_tasks(&self) -> &BTreeMap<TaskId, ScheduledTask> {
+        assert!(
+            self.checkpoint_barrier,
+            "task capture requires a checkpoint barrier"
+        );
+        &self.tasks
+    }
+
+    pub(crate) fn install_restored_machine(&mut self, id: TaskId, machine: EvalMachine) {
+        self.tasks
+            .get_mut(&id)
+            .expect("restored task belongs to scheduler")
+            .machine = machine;
+    }
+
     pub(crate) fn capture_metadata(
         &self,
-        context: &mut CaptureContext,
+        continuations: ContinuationArenaSnapshot,
     ) -> Result<TaskSchedulerMetadataSnapshot, String> {
         assert!(
             self.checkpoint_barrier,
@@ -64,7 +78,7 @@ impl TaskScheduler {
                     )
                 })
                 .collect(),
-            continuations: self.continuations.capture(context)?,
+            continuations,
             resources: self.resources.capture(),
         };
         snapshot.validate(&self.tasks)?;
@@ -74,7 +88,17 @@ impl TaskScheduler {
     pub(crate) fn restore_metadata(
         snapshot: TaskSchedulerMetadataSnapshot,
         tasks: BTreeMap<TaskId, ScheduledTask>,
-        context: &mut RestoreContext,
+        restore: impl FnMut(
+            TaskIdentity,
+            Option<&crate::orchestration::ExecutionProgramSnapshot>,
+            Option<u32>,
+        ) -> Result<
+            (
+                Option<crate::control::Continuation>,
+                Option<crate::value::CheckedExecutionProgram>,
+            ),
+            String,
+        >,
     ) -> Result<Self, String> {
         snapshot.validate(&tasks)?;
         let mut scheduler = Self {
@@ -91,7 +115,7 @@ impl TaskScheduler {
             cancellation_events: Vec::new(),
             continuations: continuation::ContinuationArena::restore(
                 snapshot.continuations,
-                context,
+                restore,
             )?,
             resources: resource::ResourceGuards::restore(snapshot.resources),
             checkpoint_barrier: false,
@@ -308,15 +332,15 @@ mod tests {
         ));
         scheduler.take_resource_events();
         scheduler.begin_checkpoint_barrier();
-        let metadata = scheduler
-            .capture_metadata(&mut CaptureContext::default())
-            .unwrap();
+        let metadata = scheduler.capture_metadata(Default::default()).unwrap();
         let metadata =
             crate::api::codec::checkpoint::scheduler::roundtrip_scheduler_metadata(&metadata);
         let payloads = std::mem::take(&mut scheduler.tasks);
-        let mut restored =
-            TaskScheduler::restore_metadata(metadata, payloads, &mut RestoreContext::default())
-                .unwrap();
+        let mut restored = TaskScheduler::restore_metadata(metadata, payloads, |_, _, index| {
+            assert!(index.is_none());
+            Ok((None, None))
+        })
+        .unwrap();
         assert_eq!(
             restored.state(parent).unwrap(),
             TaskState::Waiting(TaskWait::Scope(scope))
@@ -337,15 +361,15 @@ mod tests {
             "only the blocked task takes a new permit after restore"
         );
         restored.begin_checkpoint_barrier();
-        let metadata = restored
-            .capture_metadata(&mut CaptureContext::default())
-            .unwrap();
+        let metadata = restored.capture_metadata(Default::default()).unwrap();
         let metadata =
             crate::api::codec::checkpoint::scheduler::roundtrip_scheduler_metadata(&metadata);
         let payloads = std::mem::take(&mut restored.tasks);
-        let mut restored =
-            TaskScheduler::restore_metadata(metadata, payloads, &mut RestoreContext::default())
-                .unwrap();
+        let mut restored = TaskScheduler::restore_metadata(metadata, payloads, |_, _, index| {
+            assert!(index.is_none());
+            Ok((None, None))
+        })
+        .unwrap();
         assert_eq!(restored.dispatch_ready(), Some(parent));
         assert!(
             matches!(restored.take_wakeup(parent).unwrap(), Some(TaskWakeup::Scope {

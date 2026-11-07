@@ -301,6 +301,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
             entry_item: entry,
             args: vec![],
             machine: MachineSnapshot {
+                auxiliary: Vec::new(),
                 input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
