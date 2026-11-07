@@ -115,10 +115,16 @@ etas run program.es --cpu-threads 4
 
 CPU workers are opt-in (`--cpu-threads N|auto`, default `1`, CLI cap `64`).
 Checked pure named task functions with frozen data arguments/results run on a
-fixed OS worker pool. Closures, global captures, live handles, effects and
+fixed OS worker pool, including generic functions with concrete data types and
+dependency flows with checked package ownership. Generic type and effect-row
+bindings travel as data and are reconstructed inside the worker. Admission
+checks the instantiated input/output freeze contract.
+Closures, global captures, live handles, effects and
 Handlers use the cooperative coordinator. Language `Concurrency(n)` still limits
 each scope and its descendants independently of the host worker count.
 Cancellation and execution budgets belong to the original run.
+Step and wall-time exhaustion use the invocation entry span, so the task that
+first observes a shared limit cannot change the reported diagnostic location.
 Memory task scopes use coordinator-owned resource permits: distinct point keys
 can overlap Host requests, equal keys wait, and multi-resource tasks acquire all
 permits before starting. Permits remain held through Host waits and are released

@@ -220,6 +220,7 @@ struct EvalRunStateInput {
     host_context: HostExecutionContext,
     model_policy: ModelExecutionPolicy,
     execution_limits: ExecutionLimits,
+    limit_span: Span,
     cpu_threads: std::num::NonZeroUsize,
     cpu_min_work: u64,
     consumed_steps: u64,
@@ -264,6 +265,7 @@ impl<'a> EvalContextInput<'a> {
                 host_context,
                 model_policy,
                 execution_limits,
+                limit_span: item_span(checked, entry_item),
                 cpu_threads,
                 cpu_min_work,
                 consumed_steps,
@@ -340,11 +342,11 @@ impl<'a> EvalContext<'a> {
     }
     pub(crate) fn scheduling_decision(&mut self, span: Span) -> safe_point::SafePointDecision {
         match self.task.cancellation.as_ref() {
-            Ok(signal) => {
-                self.runtime
-                    .safe_points
-                    .observe(signal, &self.runtime.host_context.budget, span)
-            }
+            Ok(signal) => self.runtime.safe_points.observe(
+                signal,
+                &self.runtime.host_context.budget,
+                self.runtime.limit_span,
+            ),
             Err(error) => {
                 safe_point::SafePointDecision::Fault(crate::control::ExecutionFault::new(
                     AnalysisDiagnosticCode::MissingCheckedFact,
@@ -422,12 +424,12 @@ impl<'a> EvalContext<'a> {
 
     pub(crate) fn consume_execution_step(
         &mut self,
-        span: Span,
+        _span: Span,
     ) -> Result<(), crate::control::ExecutionFault> {
         self.runtime.safe_points.consume(
             self.runtime.execution_limits,
             &self.runtime.host_context.budget,
-            span,
+            self.runtime.limit_span,
         )
     }
 

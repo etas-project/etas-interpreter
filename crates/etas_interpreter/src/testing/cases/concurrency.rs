@@ -1,5 +1,7 @@
 use super::super::*;
 
+mod callables;
+
 async fn run(source: &str) -> api::RunResult {
     let checked = checked_project(source);
     Interpreter

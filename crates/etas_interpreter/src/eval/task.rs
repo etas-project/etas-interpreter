@@ -580,21 +580,15 @@ impl EvalContext<'_> {
         args: &[InterpValue],
         call_span: Span,
     ) -> Option<crate::driver::cpu::CpuTaskCapsule> {
-        if self.cpu_executor.capacity().get() == 1 {
+        // Frozen source callables do not carry a native revision's code owner.
+        if self.cpu_executor.capacity().get() == 1 || self.revision.is_some() {
             return None;
         }
-        let crate::control::CallTarget::FlowItem(item) = target else {
-            return None;
-        };
-        let fact = self.checked.cpu_parallel.callables.get(item)?;
-        if !fact.eligible
-            || (self.cpu_min_work != 0
-                && fact
-                    .estimated_work
-                    .is_none_or(|work| work < self.cpu_min_work))
-        {
-            return None;
-        }
+        let callable = crate::driver::cpu::FrozenCpuCallable::capture(
+            self.checked,
+            target,
+            self.cpu_min_work,
+        )?;
         let started = std::time::Instant::now();
         let arguments = args
             .iter()
@@ -623,13 +617,14 @@ impl EvalContext<'_> {
             job: crate::driver::cpu::CpuJobId(0),
             dispatch_sequence: 0,
             program,
-            callable: crate::driver::cpu::CpuCallableId::Flow(*item),
+            callable,
             arguments,
             budget: crate::driver::cpu::CpuBudgetLease {
                 steps: self.safe_points.ledger(),
             },
             contract: crate::driver::cpu::CpuRuntimeContract {
                 execution_limits: self.execution_limits,
+                limit_span: self.limit_span,
                 entry_item: self.entry_item,
                 storage_limits: self.storage_limits.clone(),
                 syntax_limits: self.syntax_limits,
