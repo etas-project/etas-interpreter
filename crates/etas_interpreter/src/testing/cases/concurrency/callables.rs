@@ -31,6 +31,7 @@ impl Counter<T> {
         return self.fallback;
     }
 }
+
 flow main() -> Array<i32> {
     let owner = Counter<i32> { fallback = 99, valid = true };
     let bound: (i32) -> i32 ![] = owner.keep;
@@ -38,6 +39,43 @@ flow main() -> Array<i32> {
 }
 "#,
     )
+}
+
+fn closure_mapper(inputs: &str, output: &str, fallback: &str) -> etas_frontend::CheckedProject {
+    checked_project(&format!(
+        r#"
+module app.main;
+import std.task.{{map_concurrent, run, Scheduler}};
+type Config<T> = {{ fallback: T, valid: bool }};
+flow make<T>(fallback: T) -> ((T) -> T ![]) {{
+    let config = Config<T> {{ fallback = fallback, valid = true }};
+    let values = [fallback];
+    return (value: T) => {{
+        let snapshot = values;
+        var step = 0;
+        while step < 20000 limit Iterations(20000) {{ step = step + 1; }}
+        if config.valid {{ return value; }}
+        return config.fallback;
+    }};
+}}
+flow main() -> Array<{output}> {{
+    let mapper = make({fallback});
+    return run((scheduler: Scheduler) => {{ return map_concurrent({inputs}, mapper); }});
+}}
+"#
+    ))
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn frozen_closure_cpu_preserves_generic_captures_order_and_worker_execution() {
+    crate::driver::cpu::take_test_pools();
+    for (inputs, output, fallback, nested) in [
+        ("[7, 3, 9, 1]", "i32", "99", false),
+        ("[[7], [3], [9], [1]]", "Array<i32>", "[99]", true),
+    ] {
+        assert_map_workers(&closure_mapper(inputs, output, fallback), nested).await;
+    }
+    assert_workers_released();
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -158,9 +196,13 @@ flow main() -> Array<i32> { return run((scheduler: Scheduler) => { return map_co
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn bound_method_and_generic_recipes_keep_the_shared_step_limit() {
+async fn frozen_callable_recipes_keep_the_shared_step_limit() {
     crate::driver::cpu::take_test_pools();
-    for checked in [generic_mapper("[7, 3, 9, 1]", "i32"), bound_mapper()] {
+    for checked in [
+        generic_mapper("[7, 3, 9, 1]", "i32"),
+        bound_mapper(),
+        closure_mapper("[7, 3, 9, 1]", "i32", "99"),
+    ] {
         let mut diagnostics = Vec::new();
         for threads in [1, 4] {
             let mut options = RunOptions::default();

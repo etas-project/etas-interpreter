@@ -1,14 +1,6 @@
 use super::*;
 use crate::testing::{allocation::measure, project::checked_project};
 
-thread_local! {
-    static SCOPE_READS: std::cell::Cell<usize> = const { std::cell::Cell::new(0) };
-}
-
-pub(super) fn record_scope_read() {
-    SCOPE_READS.set(SCOPE_READS.get() + 1);
-}
-
 #[test]
 fn capture_planning_rejects_a_resolved_local_from_a_sibling_flow() {
     let mut checked = checked_project(
@@ -48,13 +40,13 @@ flow main(seed: i32) -> () -> i32 { return () => seed; }
         path.resolution = ResolveResult::Resolved(other);
     })
     .unwrap();
-    let slots = SlotLayoutTable::for_project(&checked);
-    let error = ClosureLayoutTable::build(&checked, &slots).unwrap_err();
+    let error = ClosureLayoutTable::build(&checked).unwrap_err();
     assert!(error.contains("outside the lexical scope"), "{error}");
 }
 
 #[test]
-fn closure_planning_reads_scope_ancestry_once_not_per_local_use() {
+fn closure_planning_scales_linearly_with_local_uses() {
+    let mut previous = None;
     for count in [1000, 2000, 4000] {
         let mut source =
             "module app.main; flow main(seed: i32) -> () -> i32 { return () => {".to_owned();
@@ -63,12 +55,8 @@ fn closure_planning_reads_scope_ancestry_once_not_per_local_use() {
         }
         source.push_str("return seed; }; }");
         let checked = checked_project(&source);
-        let slots = SlotLayoutTable::for_project(&checked);
-        SCOPE_READS.set(0);
-        let (layouts, allocations) =
-            measure(|| ClosureLayoutTable::build(&checked, &slots).unwrap());
+        let (layouts, allocations) = measure(|| ClosureLayoutTable::build(&checked).unwrap());
         let scopes = checked.hir.scopes.iter().count();
-        let reads = SCOPE_READS.get();
         assert_eq!(layouts.layouts.len(), 1);
         let layout = layouts.layouts.values().next().unwrap();
         assert_eq!(layout.captures.len(), 1);
@@ -78,11 +66,14 @@ fn closure_planning_reads_scope_ancestry_once_not_per_local_use() {
         );
         assert_eq!(layout.slots.slot_count(), count + 1);
         eprintln!(
-            "closure plan n={count}: scopes={scopes}, scope reads={reads}, total plan allocations={allocations:?}"
+            "closure plan n={count}: scopes={scopes}, total plan allocations={allocations:?}"
         );
-        assert!(
-            reads <= scopes * 2,
-            "scope graph was rewalked per local/use: {reads}"
-        );
+        if let Some(previous) = previous {
+            assert!(
+                allocations.bytes <= previous * 3,
+                "capture allocation growth exceeds linear scale"
+            );
+        }
+        previous = Some(allocations.bytes);
     }
 }

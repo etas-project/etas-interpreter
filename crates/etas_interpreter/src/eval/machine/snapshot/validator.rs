@@ -1644,7 +1644,7 @@ flow main() -> unit {
         let slots = SlotLayoutTable::for_project(checked);
         let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
             .map_err(|errors| errors.join("; "))?;
-        let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)?;
+        let closures = crate::plan::ClosureLayoutTable::build(checked)?;
         SnapshotValidator::new(
             checked,
             &slots,
@@ -1825,7 +1825,7 @@ flow main() -> unit { perform Gate.request() with { Gate.request() => resume; };
         let dispatch = crate::plan::IntrinsicDispatchTable::for_project(&checked)
             .expect("test intrinsic dispatch");
         let limits = etas_host::StorageLimits::default();
-        let closures = crate::plan::ClosureLayoutTable::build(&checked, &slots).unwrap();
+        let closures = crate::plan::ClosureLayoutTable::build(&checked).unwrap();
         let validator = SnapshotValidator::new(&checked, &slots, &dispatch, &closures, &limits);
         let error = validator
             .handler_arm(
