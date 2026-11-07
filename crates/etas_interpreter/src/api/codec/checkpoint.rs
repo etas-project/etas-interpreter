@@ -283,6 +283,23 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "task": task,
             "source_index": source_index,
         }),
+        WorkflowEvent::TaskResourcesAcquired {
+            scope,
+            task,
+            permits,
+        } => json!({
+            "kind": "task_resources_acquired", "scope": scope, "task": task, "permits": permits,
+        }),
+        WorkflowEvent::TaskWaitingResource { scope, task, guard } => json!({
+            "kind": "task_waiting_resource", "scope": scope, "task": task, "guard": guard,
+        }),
+        WorkflowEvent::TaskResourcesReleased {
+            scope,
+            task,
+            permits,
+        } => json!({
+            "kind": "task_resources_released", "scope": scope, "task": task, "permits": permits,
+        }),
         WorkflowEvent::CpuWorkerFailed {
             worker,
             live_workers,

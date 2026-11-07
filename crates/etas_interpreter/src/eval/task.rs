@@ -189,6 +189,9 @@ impl EvalContext<'_> {
         let scope = self
             .scheduler
             .create_scope_with_policy(parent_scope, concurrency, policy);
+        if concurrency_plan.resource_guards {
+            self.scheduler.guard_scope(scope);
+        }
         if let Some(reason) = serialization_reason(&concurrency_plan.decision) {
             self.scheduler.serialize_scope(scope);
             self.events
@@ -199,6 +202,17 @@ impl EvalContext<'_> {
         }
         let program = self.checked_execution_program();
         for (index, (target, args)) in calls.into_iter().enumerate() {
+            let resources = if self.scheduler.requires_resource_guards(scope) {
+                match self.task_resource_keys(&target, &args) {
+                    Some(keys) => keys,
+                    None => {
+                        self.unresolved_resource_scope();
+                        Vec::new()
+                    }
+                }
+            } else {
+                Vec::new()
+            };
             let cpu_capsule = self.cpu_task_capsule(&target, &args, span);
             let mut machine = crate::eval::machine::EvalMachine::new();
             machine.resume(ControlSignal::pending_call(PendingCall {
@@ -224,6 +238,9 @@ impl EvalContext<'_> {
             if let Some(capsule) = cpu_capsule
                 && let Err(error) = self.scheduler.attach_cpu_capsule(handle, capsule)
             {
+                return ControlSignal::runtime_fault(error.to_string(), span);
+            }
+            if let Err(error) = self.scheduler.attach_resources(handle, resources) {
                 return ControlSignal::runtime_fault(error.to_string(), span);
             }
             self.events
@@ -369,6 +386,12 @@ impl EvalContext<'_> {
         let concurrency = concurrency_plan.effective_limit;
         let parent_scope = self.task.task_scope;
         let scope = self.scheduler.create_scope(parent_scope, concurrency);
+        if concurrency_plan.resource_guards {
+            self.scheduler.guard_scope(scope);
+        }
+        if self.resource_owner_needs_serial(&target) {
+            self.unresolved_resource_scope();
+        }
         if let Some(reason) = serialization_reason(&concurrency_plan.decision) {
             self.scheduler.serialize_scope(scope);
             self.events
@@ -439,6 +462,20 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = job else {
             return ControlSignal::invalid_arguments("std.task.start job is not callable", span);
         };
+        let resources = if self
+            .scheduler
+            .requires_resource_guards(self.task.task_scope)
+        {
+            match self.task_resource_keys(&target, &[]) {
+                Some(keys) => keys,
+                None => {
+                    self.unresolved_resource_scope();
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
         let cpu_capsule = self.cpu_task_capsule(&target, &[], span);
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
@@ -458,6 +495,9 @@ impl EvalContext<'_> {
             span.range.start.0 as usize,
         ) {
             Ok(handle) => {
+                if let Err(error) = self.scheduler.attach_resources(handle, resources) {
+                    return ControlSignal::runtime_fault(error.to_string(), span);
+                }
                 if let Some(capsule) = cpu_capsule
                     && let Err(error) = self.scheduler.attach_cpu_capsule(handle, capsule)
                 {
@@ -625,6 +665,7 @@ pub(crate) struct CheckedConcurrencyPlan {
     pub(crate) decision: etas_frontend::SchedulingDecision,
     pub(crate) requested_limit: Option<std::num::NonZeroUsize>,
     pub(crate) effective_limit: std::num::NonZeroUsize,
+    pub(crate) resource_guards: bool,
 }
 
 fn checked_concurrency(
@@ -643,16 +684,39 @@ fn checked_concurrency(
     let runtime_ceiling = std::num::NonZeroUsize::new(crate::driver::scheduler::MAX_CONCURRENCY)
         .expect("scheduler ceiling is non-zero");
     let effective_limit = match &site.decision {
-        etas_frontend::SchedulingDecision::Concurrent => requested_limit
+        etas_frontend::SchedulingDecision::Concurrent
+        | etas_frontend::SchedulingDecision::RuntimeGuard(_) => requested_limit
             .unwrap_or(runtime_ceiling)
             .min(runtime_ceiling),
-        etas_frontend::SchedulingDecision::Serialize
-        | etas_frontend::SchedulingDecision::RuntimeGuard(_) => std::num::NonZeroUsize::MIN,
+        etas_frontend::SchedulingDecision::Serialize => std::num::NonZeroUsize::MIN,
         etas_frontend::SchedulingDecision::Reject => {
             return Err("rejected structured task plan cannot enter execution");
         }
     };
     Ok(CheckedConcurrencyPlan {
+        resource_guards: matches!(
+            site.decision,
+            etas_frontend::SchedulingDecision::RuntimeGuard(_)
+        ) || site.branches.iter().any(|branch| {
+            branch
+                .actions
+                .iter()
+                .chain(branch.effects.effects.iter())
+                .any(|effect| match effect {
+                    etas_effects::Effect::AppliedAction(action) => {
+                        action.action.tag == etas_effects::MEMORY_TAG
+                            && action.action.action != etas_effects::MEMORY_READ_ACTION
+                    }
+                    etas_effects::Effect::Action(action) => {
+                        action.tag == etas_effects::MEMORY_TAG
+                            && action.action != etas_effects::MEMORY_READ_ACTION
+                    }
+                    etas_effects::Effect::Tag(tag) | etas_effects::Effect::Applied { tag, .. } => {
+                        *tag == etas_effects::MEMORY_TAG
+                    }
+                    _ => false,
+                })
+        }),
         decision: site.decision.clone(),
         requested_limit,
         effective_limit,
@@ -663,7 +727,7 @@ fn serialization_reason(decision: &etas_frontend::SchedulingDecision) -> Option<
     match decision {
         etas_frontend::SchedulingDecision::Concurrent => None,
         etas_frontend::SchedulingDecision::Serialize => Some("static_conflict"),
-        etas_frontend::SchedulingDecision::RuntimeGuard(_) => Some("runtime_guard_pending"),
+        etas_frontend::SchedulingDecision::RuntimeGuard(_) => None,
         etas_frontend::SchedulingDecision::Reject => Some("rejected"),
     }
 }

@@ -49,6 +49,7 @@ pub(crate) struct FakeHost {
     pub(super) session_context_fault: Option<SessionContextFault>,
     pub(super) storage: Option<TestMemoryBackend>,
     console_gate: Option<Arc<ConsoleGate>>,
+    memory_probe: Option<Arc<MemoryConcurrencyProbe>>,
     availability: HostServiceAvailability,
     approval_calls: Arc<AtomicUsize>,
     approval_decisions: Arc<Mutex<VecDeque<ApprovalDecision>>>,
@@ -98,6 +99,7 @@ impl FakeHost {
         Self {
             storage: None,
             console_gate: None,
+            memory_probe: None,
             availability,
             approval_calls: Arc::new(AtomicUsize::new(0)),
             approval_decisions: Arc::new(Mutex::new(VecDeque::new())),
@@ -182,6 +184,18 @@ impl FakeHost {
 
     pub(super) fn memory_call_count(&self) -> usize {
         self.memory_calls.load(Ordering::SeqCst)
+    }
+
+    pub(super) fn observe_memory_concurrency(
+        &mut self,
+        overlap: usize,
+    ) -> Arc<MemoryConcurrencyProbe> {
+        let probe = Arc::new(MemoryConcurrencyProbe {
+            overlap,
+            ..Default::default()
+        });
+        self.memory_probe = Some(probe.clone());
+        probe
     }
 
     pub(super) fn session_call_count(&self) -> usize {
@@ -669,12 +683,24 @@ impl HostServices for FakeHost {
             });
         }
         let memory = Arc::clone(&self.memory);
+        let probe = self.memory_probe.clone();
         let conflict = self
             .memory_conflicts
             .lock()
             .expect("memory conflicts lock")
             .pop_front();
         Box::pin(async move {
+            let _active = probe.map(|probe| {
+                let active = probe.active.fetch_add(1, Ordering::SeqCst) + 1;
+                probe.peak.fetch_max(active, Ordering::SeqCst);
+                if active >= probe.overlap {
+                    probe.release();
+                }
+                MemoryProbeRequest(probe)
+            });
+            if let Some(active) = &_active {
+                active.0.wait().await;
+            }
             if let Some(conflict) = conflict {
                 return Ok(MemoryResponse {
                     id: request.id,
@@ -1428,6 +1454,43 @@ impl HostServices for FakeHost {
 pub(super) struct ConsoleGate {
     pub started: tokio::sync::Notify,
     pub release: tokio::sync::Semaphore,
+}
+
+#[derive(Default)]
+pub(super) struct MemoryConcurrencyProbe {
+    active: AtomicUsize,
+    pub(super) peak: AtomicUsize,
+    overlap: usize,
+    open: AtomicBool,
+    ready: tokio::sync::Notify,
+}
+
+impl std::fmt::Debug for MemoryConcurrencyProbe {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("MemoryConcurrencyProbe")
+    }
+}
+
+impl MemoryConcurrencyProbe {
+    pub(super) fn release(&self) {
+        self.open.store(true, Ordering::Release);
+        self.ready.notify_waiters();
+    }
+    async fn wait(&self) {
+        let ready = self.ready.notified();
+        tokio::pin!(ready);
+        ready.as_mut().enable();
+        if !self.open.load(Ordering::Acquire) {
+            ready.await;
+        }
+    }
+}
+
+struct MemoryProbeRequest(Arc<MemoryConcurrencyProbe>);
+impl Drop for MemoryProbeRequest {
+    fn drop(&mut self) {
+        self.0.active.fetch_sub(1, Ordering::SeqCst);
+    }
 }
 
 pub(super) fn availability(kinds: &[HostRequirementKind]) -> HostServiceAvailability {

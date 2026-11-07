@@ -1,4 +1,4 @@
-use super::host_dispatch::HostDispatch;
+use super::host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation};
 use crate::{
     eval::EvalContext,
     host::HostServices,
@@ -6,7 +6,7 @@ use crate::{
 };
 use etas_host::memory::{
     MemoryMutation, MemoryMutationKind, MemoryNotCommitted, MemoryWriteOperation,
-    MemoryWriteRequest, MemoryWriteResult,
+    MemoryWriteRequest, MemoryWriteResponse, MemoryWriteResult,
 };
 use etas_host::{
     HostError, HostErrorCode, HostRequestKind, HostTraceRequest, MemoryOperation, MemoryRequest,
@@ -18,11 +18,39 @@ pub(super) enum WriteFailure {
     Terminal(HostError),
 }
 
-pub(super) async fn dispatch(
+pub(in crate::driver) struct PendingMemoryWrite<'host> {
+    pending: PendingHostOperation<
+        MemoryWriteResponse,
+        crate::host::HostFuture<'host, Result<MemoryWriteResponse, HostError>>,
+    >,
+    request_id: etas_host::HostRequestId,
+    expected: etas_host::StorageOperationRef,
+}
+
+pub(in crate::driver) struct CompletedMemoryWrite {
+    completion: HostCompletion<MemoryWriteResponse>,
+    request_id: etas_host::HostRequestId,
+    expected: etas_host::StorageOperationRef,
+}
+
+impl PendingMemoryWrite<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        self.pending.operation_id()
+    }
+    pub(in crate::driver) async fn poll(self) -> CompletedMemoryWrite {
+        CompletedMemoryWrite {
+            completion: HostDispatch::poll(self.pending).await,
+            request_id: self.request_id,
+            expected: self.expected,
+        }
+    }
+}
+
+pub(super) fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
+    host: &'host dyn HostServices,
     request: MemoryRequest,
-) -> Result<MemoryResult, WriteFailure> {
+) -> Result<PendingMemoryWrite<'host>, WriteFailure> {
     let mutation = match &request.operation {
         MemoryOperation::Put {
             key,
@@ -66,42 +94,65 @@ pub(super) async fn dispatch(
         trace: request.trace.clone(),
         budget: request.budget.clone(),
     };
-    let response = HostDispatch::execute(
+    let expected_response = expected.clone();
+    let pending = HostDispatch::begin(
         eval,
         request.id,
         HostRequestKind::Memory,
         request.trace_payload(),
         request.authority,
         request.trace,
-        |operation| async {
-            let response = host.memory_write(operation, write).await?;
-            if let Ok(result) = &response.result {
-                let operation = match result {
-                    MemoryWriteResult::Outcome(WriteOutcome::Committed(receipt))
-                        if receipt.change.kind() == kind && receipt.target == target =>
-                    {
-                        &receipt.operation
+        |operation| {
+            let call = host.memory_write(operation, write);
+            let call: crate::host::HostFuture<'host, Result<MemoryWriteResponse, HostError>> =
+                Box::pin(async move {
+                    let response = call.await?;
+                    if let Ok(result) = &response.result {
+                        let operation = match result {
+                            MemoryWriteResult::Outcome(WriteOutcome::Committed(receipt))
+                                if receipt.change.kind() == kind && receipt.target == target =>
+                            {
+                                &receipt.operation
+                            }
+                            MemoryWriteResult::Outcome(
+                                WriteOutcome::NotCommitted { operation, .. }
+                                | WriteOutcome::Unknown { operation, .. },
+                            ) => operation,
+                            _ => {
+                                return Err(invalid(
+                                    "memory write returned an inconsistent target or result kind",
+                                ));
+                            }
+                        };
+                        if operation != &expected_response {
+                            return Err(invalid(
+                                "memory write receipt belongs to a different operation",
+                            ));
+                        }
                     }
-                    MemoryWriteResult::Outcome(
-                        WriteOutcome::NotCommitted { operation, .. }
-                        | WriteOutcome::Unknown { operation, .. },
-                    ) => operation,
-                    _ => {
-                        return Err(invalid(
-                            "memory write returned an inconsistent target or result kind",
-                        ));
-                    }
-                };
-                if operation != &expected {
-                    return Err(invalid(
-                        "memory write receipt belongs to a different operation",
-                    ));
-                }
-            }
-            Ok(response)
+                    Ok(response)
+                });
+            call
         },
     )
-    .await;
+    .map_err(WriteFailure::NotCommitted)?;
+    Ok(PendingMemoryWrite {
+        pending,
+        request_id: request.id,
+        expected,
+    })
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    completed: CompletedMemoryWrite,
+) -> Result<MemoryResult, WriteFailure> {
+    let CompletedMemoryWrite {
+        completion,
+        request_id,
+        expected,
+    } = completed;
+    let response = HostDispatch::finish(eval, completion);
     match response.and_then(|response| response.result) {
         Ok(MemoryWriteResult::Outcome(WriteOutcome::Committed(receipt))) => {
             Ok(match receipt.change {
@@ -133,7 +184,7 @@ pub(super) async fn dispatch(
             if eval
                 .storage_writes
                 .iter()
-                .any(|write| write.request == request.id.0)
+                .any(|write| write.request == request_id.0)
             {
                 return Err(WriteFailure::Terminal(HostError::new(
                     error.code,
@@ -148,11 +199,11 @@ pub(super) async fn dispatch(
                 status: etas_host::CommitStatus::Unknown,
             };
             eval.storage_writes.push(StorageWriteRecord {
-                request: request.id.0,
+                request: request_id.0,
                 evidence: evidence.clone(),
             });
             eval.events.push(WorkflowEvent::StorageWrite {
-                request: request.id,
+                request: request_id,
                 evidence,
             });
             Err(WriteFailure::Terminal(unknown(error)))

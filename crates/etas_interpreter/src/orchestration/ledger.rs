@@ -54,6 +54,21 @@ pub enum WorkflowEvent {
         job: u64,
         dispatch_sequence: u64,
     },
+    TaskResourcesAcquired {
+        scope: u64,
+        task: u64,
+        permits: usize,
+    },
+    TaskWaitingResource {
+        scope: u64,
+        task: u64,
+        guard: u64,
+    },
+    TaskResourcesReleased {
+        scope: u64,
+        task: u64,
+        permits: usize,
+    },
     TaskWaitingCpu {
         scope: u64,
         task: u64,

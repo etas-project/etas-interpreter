@@ -1,7 +1,10 @@
 mod continuation;
 mod group;
 mod host;
+mod resource;
 mod task;
+
+pub(crate) use resource::{EffectIdentity, FrozenSelector, ResourceEvent, RuntimeResourceKey};
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -88,6 +91,7 @@ pub(crate) struct TaskScheduler {
     wakeups: BTreeMap<TaskId, VecDeque<TaskWakeup>>,
     cancellation_events: Vec<(TaskHandle, etas_host::execution::CancellationReason)>,
     continuations: continuation::ContinuationArena,
+    resources: resource::ResourceGuards,
 }
 
 impl TaskScheduler {
@@ -106,6 +110,7 @@ impl TaskScheduler {
             wakeups: BTreeMap::new(),
             cancellation_events: Vec::new(),
             continuations: continuation::ContinuationArena::new(),
+            resources: Default::default(),
         }
     }
 
@@ -259,6 +264,84 @@ impl TaskScheduler {
         Ok(self.resolve(handle)?.state)
     }
 
+    pub(crate) fn attach_resources(
+        &mut self,
+        handle: TaskHandle,
+        mut keys: Vec<RuntimeResourceKey>,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        keys.sort();
+        keys.dedup();
+        self.tasks
+            .get_mut(&id)
+            .expect("resolved task")
+            .resource_keys = keys;
+        Ok(())
+    }
+
+    pub(crate) fn guard_scope(&mut self, scope: TaskScopeId) {
+        self.groups
+            .get_mut(&scope)
+            .expect("created scope")
+            .guard_resources = true;
+    }
+
+    pub(crate) fn requires_resource_guards(&self, mut scope: TaskScopeId) -> bool {
+        loop {
+            let group = &self.groups[&scope];
+            if group.guard_resources {
+                return true;
+            }
+            let Some(parent) = group.parent else {
+                return false;
+            };
+            scope = parent;
+        }
+    }
+
+    /// Unknown selectors serialize the invocation, including already admitted
+    /// Host waits. Parent scope waits still release their slot for nested tasks.
+    pub(crate) fn serialize_invocation(&mut self) -> TaskScopeId {
+        let root = *self
+            .groups
+            .iter()
+            .find(|(_, group)| group.parent.is_none())
+            .expect("root scope")
+            .0;
+        let group = self.groups.get_mut(&root).unwrap();
+        group.concurrency = NonZeroUsize::MIN;
+        group.serialize_host_actions = true;
+        group.serial_task_admission = true;
+        let retain = self
+            .tasks
+            .iter()
+            .filter(|(id, task)| {
+                self.resources.holders.contains_key(id)
+                    && !task.active_slot
+                    && matches!(
+                        task.state,
+                        TaskState::Ready | TaskState::Waiting(TaskWait::Host(_))
+                    )
+            })
+            .map(|(id, _)| *id)
+            .collect::<Vec<_>>();
+        for id in retain {
+            let task = self.tasks.get_mut(&id).unwrap();
+            task.active_slot = true;
+            let scope = task.scope;
+            self.change_active(scope, true);
+        }
+        root
+    }
+
+    pub(crate) fn take_resource_events(&mut self) -> Vec<resource::ResourceEvent> {
+        std::mem::take(&mut self.resources.events)
+    }
+
+    pub(crate) fn task_scope(&self, id: TaskId) -> TaskScopeId {
+        self.tasks[&id].scope
+    }
+
     pub(crate) fn outcome(
         &self,
         handle: TaskHandle,
@@ -311,6 +394,16 @@ impl TaskScheduler {
                 self.ready.push_back(id);
                 continue;
             }
+            if !self.resources.acquire(id, &task.resource_keys) {
+                let guard = resource::ResourceGuardId(id.0);
+                self.tasks.get_mut(&id).unwrap().state =
+                    TaskState::Waiting(TaskWait::Resource(guard));
+                self.resources.waiting.push_back(id);
+                self.resources
+                    .events
+                    .push(resource::ResourceEvent::Waiting(id, guard));
+                continue;
+            }
             let task = self.tasks.get_mut(&id).expect("ready task must exist");
             task.state = TaskState::Running;
             if !active_slot {
@@ -352,13 +445,14 @@ impl TaskScheduler {
 
     pub(crate) fn requeue(&mut self, handle: TaskHandle) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        let retain_slot = self.serial_task_admission(self.tasks[&id].scope);
         let task = self.tasks.get_mut(&id).expect("resolved task");
         if task.state != TaskState::Running {
             return Err(SchedulerError::InvalidTransition);
         }
         task.state = TaskState::Ready;
         let scope = task.scope;
-        if task.active_slot {
+        if !retain_slot && task.active_slot {
             task.active_slot = false;
             self.change_active(scope, false);
         }
@@ -807,6 +901,21 @@ impl TaskScheduler {
             let scope = self.tasks[&id].scope;
             self.change_active(scope, false);
         }
+        self.resources.release(id);
+        let queued = self.resources.waiting.len();
+        for _ in 0..queued {
+            let waiting = self.resources.waiting.pop_front().unwrap();
+            let task = self.tasks.get_mut(&waiting).expect("resource waiter");
+            if !matches!(task.state, TaskState::Waiting(TaskWait::Resource(_))) {
+                continue;
+            }
+            if self.resources.acquire(waiting, &task.resource_keys) {
+                task.state = TaskState::Ready;
+                self.ready.push_back(waiting);
+            } else {
+                self.resources.waiting.push_back(waiting);
+            }
+        }
         for waiter in waiters {
             match waiter {
                 TaskWaiter::Task(waiter) => {
@@ -903,6 +1012,19 @@ impl TaskScheduler {
         loop {
             let group = self.groups.get(&scope).expect("task scope must exist");
             if group.serialize_host_actions {
+                return true;
+            }
+            let Some(parent) = group.parent else {
+                return false;
+            };
+            scope = parent;
+        }
+    }
+
+    fn serial_task_admission(&self, mut scope: TaskScopeId) -> bool {
+        loop {
+            let group = &self.groups[&scope];
+            if group.serial_task_admission {
                 return true;
             }
             let Some(parent) = group.parent else {

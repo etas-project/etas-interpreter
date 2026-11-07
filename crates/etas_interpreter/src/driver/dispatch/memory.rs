@@ -17,36 +17,149 @@ use super::{
     error::retry_or_report, host_dispatch::HostDispatch, policy::evaluate_before_boundary,
 };
 
+pub(in crate::driver) enum MemoryDispatchStart<'host> {
+    Complete(Option<ControlSignal>),
+    Pending(PendingMemoryDispatch<'host>),
+}
+
+pub(in crate::driver) struct PendingMemoryDispatch<'host> {
+    memory: PendingMemory,
+    key: etas_host::replay::ReplayFingerprint,
+    io: MemoryIo<'host>,
+}
+
+enum MemoryIo<'host> {
+    Read(
+        super::host_dispatch::PendingHostOperation<
+            MemoryResponse,
+            crate::host::HostFuture<'host, Result<MemoryResponse, HostError>>,
+        >,
+    ),
+    Write(super::memory_write::PendingMemoryWrite<'host>),
+}
+
+enum MemoryCompletion {
+    Read(super::host_dispatch::HostCompletion<MemoryResponse>),
+    Write(super::memory_write::CompletedMemoryWrite),
+}
+
+pub(in crate::driver) struct CompletedMemoryDispatch {
+    memory: PendingMemory,
+    key: etas_host::replay::ReplayFingerprint,
+    completion: MemoryCompletion,
+}
+
+impl PendingMemoryDispatch<'_> {
+    pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
+        match &self.io {
+            MemoryIo::Read(pending) => pending.operation_id(),
+            MemoryIo::Write(pending) => pending.operation_id(),
+        }
+    }
+    pub(in crate::driver) async fn poll(self) -> CompletedMemoryDispatch {
+        let completion = match self.io {
+            MemoryIo::Read(pending) => MemoryCompletion::Read(HostDispatch::poll(pending).await),
+            MemoryIo::Write(pending) => MemoryCompletion::Write(pending.poll().await),
+        };
+        CompletedMemoryDispatch {
+            memory: self.memory,
+            key: self.key,
+            completion,
+        }
+    }
+}
+
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
     memory: PendingMemory,
     machine: &mut EvalMachine,
 ) -> Option<ControlSignal> {
-    let key = match eval.memory_boundary_key(&memory) {
+    match begin(eval, host, memory, machine).await {
+        MemoryDispatchStart::Complete(signal) => signal,
+        MemoryDispatchStart::Pending(pending) => finish(eval, machine, pending.poll().await),
+    }
+}
+
+pub(in crate::driver) async fn begin<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    memory: PendingMemory,
+    machine: &mut EvalMachine,
+) -> MemoryDispatchStart<'host> {
+    let key = match prepare(eval, host, &memory, machine).await {
         Ok(key) => key,
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+        Err(signal) => return MemoryDispatchStart::Complete(signal),
     };
-    let replayed = match eval.replayed_memory_result(&memory, &key) {
-        Ok(value) => value,
-        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
-    };
-    if let Some(value) = replayed {
-        if !validate_replayed_memory_version(eval, host, &memory, &value).await {
-            return None;
+    let io = match memory.request.operation {
+        MemoryOperation::Put { .. } | MemoryOperation::Delete { .. } => {
+            match super::memory_write::begin(eval, host, memory.request.clone()) {
+                Ok(pending) => MemoryIo::Write(pending),
+                Err(failure) => {
+                    return MemoryDispatchStart::Complete(write_failure(
+                        eval, machine, memory, failure,
+                    ));
+                }
+            }
         }
-        return Some(eval.resume_memory_signal(memory, value));
+        MemoryOperation::Get { .. } => {
+            use etas_host::HostTraceRequest;
+            let request = memory.request.clone();
+            match HostDispatch::begin(
+                eval,
+                request.id,
+                HostRequestKind::Memory,
+                request.trace_payload(),
+                request.authority.clone(),
+                request.trace.clone(),
+                |operation| host.memory(operation, request),
+            ) {
+                Ok(pending) => MemoryIo::Read(pending),
+                Err(error) => {
+                    return MemoryDispatchStart::Complete(report_dispatched_error(
+                        eval, machine, memory, error,
+                    ));
+                }
+            }
+        }
+        _ => {
+            let response =
+                super::memory_pages::dispatch_read(eval, host, memory.request.clone()).await;
+            return MemoryDispatchStart::Complete(finish_response(
+                eval, machine, memory, key, response,
+            ));
+        }
+    };
+    MemoryDispatchStart::Pending(PendingMemoryDispatch { memory, key, io })
+}
+
+async fn prepare(
+    eval: &mut EvalContext<'_>,
+    host: &dyn HostServices,
+    memory: &PendingMemory,
+    machine: &mut EvalMachine,
+) -> Result<etas_host::replay::ReplayFingerprint, Option<ControlSignal>> {
+    let key = eval
+        .memory_boundary_key(memory)
+        .map_err(|fault| Some(ControlSignal::Fault(Box::new(fault))))?;
+    if let Some(value) = eval
+        .replayed_memory_result(memory, &key)
+        .map_err(|fault| Some(ControlSignal::Fault(Box::new(fault))))?
+    {
+        if !validate_replayed_memory_version(eval, host, memory, &value).await {
+            return Err(None);
+        }
+        return Err(Some(eval.resume_memory_signal(memory.clone(), value)));
     }
     if let Err(error) = memory.request.budget.check_time() {
-        return retry_or_report(
+        return Err(retry_or_report(
             eval,
             machine,
-            memory.continuation,
+            memory.continuation.clone(),
             memory.span,
             format!("memory host boundary failed: {}", error.message),
-        );
+        ));
     }
-    let request_id = memory.request.id;
     if !evaluate_before_boundary(
         eval,
         host,
@@ -57,37 +170,68 @@ pub(in crate::driver) async fn dispatch(
     )
     .await
     {
-        return None;
+        return Err(None);
     }
-    let response = if matches!(
-        memory.request.operation,
-        MemoryOperation::Put { .. } | MemoryOperation::Delete { .. }
-    ) {
-        let result = super::memory_write::dispatch(eval, host, memory.request.clone()).await;
-        if let Some(signal) = eval.cancellation_signal(memory.span) {
-            return Some(signal);
-        }
-        match result {
-            Ok(result) => Ok(MemoryResponse {
-                id: request_id,
-                result: Ok(result),
-            }),
-            Err(super::memory_write::WriteFailure::NotCommitted(error)) => {
-                return retry_or_report(
-                    eval,
-                    machine,
-                    memory.continuation,
-                    memory.span,
-                    format!("memory write was not committed: {}", error.message),
-                );
+    Ok(key)
+}
+
+pub(in crate::driver) fn finish(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    completed: CompletedMemoryDispatch,
+) -> Option<ControlSignal> {
+    let CompletedMemoryDispatch {
+        memory,
+        key,
+        completion,
+    } = completed;
+    let response = match completion {
+        MemoryCompletion::Read(completion) => HostDispatch::finish(eval, completion),
+        MemoryCompletion::Write(completion) => {
+            let result = super::memory_write::finish(eval, completion);
+            if let Some(signal) = eval.cancellation_signal(memory.span) {
+                return Some(signal);
             }
-            Err(super::memory_write::WriteFailure::Terminal(error)) => {
-                return Some(ControlSignal::runtime_fault(error.message, memory.span));
+            match result {
+                Ok(result) => Ok(MemoryResponse {
+                    id: memory.request.id,
+                    result: Ok(result),
+                }),
+                Err(failure) => return write_failure(eval, machine, memory, failure),
             }
         }
-    } else {
-        super::memory_pages::dispatch_read(eval, host, memory.request.clone()).await
     };
+    finish_response(eval, machine, memory, key, response)
+}
+
+fn write_failure(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    memory: PendingMemory,
+    failure: super::memory_write::WriteFailure,
+) -> Option<ControlSignal> {
+    match failure {
+        super::memory_write::WriteFailure::NotCommitted(error) => retry_or_report(
+            eval,
+            machine,
+            memory.continuation,
+            memory.span,
+            format!("memory write was not committed: {}", error.message),
+        ),
+        super::memory_write::WriteFailure::Terminal(error) => {
+            Some(ControlSignal::runtime_fault(error.message, memory.span))
+        }
+    }
+}
+
+fn finish_response(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    memory: PendingMemory,
+    key: etas_host::replay::ReplayFingerprint,
+    response: Result<MemoryResponse, HostError>,
+) -> Option<ControlSignal> {
+    let request_id = memory.request.id;
     match response {
         Ok(response) => match response.result {
             Ok(etas_host::MemoryResult::Conflict(conflict)) => {

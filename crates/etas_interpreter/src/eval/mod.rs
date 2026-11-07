@@ -81,6 +81,7 @@ mod storage;
 mod stream;
 mod support_call;
 mod task;
+mod task_resource;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{

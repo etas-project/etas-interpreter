@@ -21,6 +21,7 @@ pub(in crate::driver) enum CompletedTaskHost {
     Model(crate::driver::dispatch::model::CompletedModelHostDispatch),
     Approval(crate::driver::dispatch::approval::CompletedApprovalDispatch),
     Compiler(crate::driver::dispatch::compiler::CompletedCompilerDispatch),
+    Memory(crate::driver::dispatch::memory::CompletedMemoryDispatch),
 }
 
 struct PendingTaskHost<'host> {
@@ -147,6 +148,20 @@ impl<'host> TaskHostReactor<'host> {
         handle: TaskHandle,
     ) -> Option<CompletedTaskHost> {
         self.completed.remove(&handle.task)
+    }
+
+    pub(in crate::driver) fn start_memory(
+        &mut self,
+        owner: HostOwner,
+        pending: crate::driver::dispatch::memory::PendingMemoryDispatch<'host>,
+    ) -> etas_host::execution::OperationId {
+        let operation = pending.operation_id();
+        self.pending.push_back(PendingTaskHost {
+            owner,
+            operation,
+            future: Box::pin(async move { CompletedTaskHost::Memory(pending.poll().await) }),
+        });
+        operation
     }
 
     pub(in crate::driver) fn take_root_completed(&mut self) -> Option<CompletedTaskHost> {
