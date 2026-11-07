@@ -111,12 +111,20 @@ impl EvalMachine {
         let frames = self
             .handler_scope_frames(&pending.continuation)
             .map_err(fail)?;
+        let action = ctx.checked_perform_action(pending)?;
         for scope in scopes.iter().rev() {
-            let frame = frames
-                .get(&scope.id)
-                .copied()
-                .ok_or_else(|| fail("active handler scope has no owning lexical frame".into()))?;
             for handler in &scope.handlers {
+                // A task can retain an enclosing handler's dynamic record while
+                // its lexical continuation belongs to the parked parent. An
+                // unrelated action needs no frame or selector instantiation.
+                if let Some(actual) = action.as_ref().and_then(action_identity)
+                    && action_identity(ctx.checked_handler_action(handler)?) != Some(actual)
+                {
+                    continue;
+                }
+                let frame = frames.get(&scope.id).copied().ok_or_else(|| {
+                    fail("active handler scope has no owning lexical frame".into())
+                })?;
                 if ctx.handler_matches_perform(pending, handler, Some(frame))? {
                     return Ok(true);
                 }
@@ -402,6 +410,14 @@ impl EvalMachine {
             },
         )));
         MachinePoll::ProgramChanged
+    }
+}
+
+fn action_identity(effect: &etas_effects::Effect) -> Option<&etas_effects::ActionRef> {
+    match effect {
+        etas_effects::Effect::Action(action) => Some(action),
+        etas_effects::Effect::AppliedAction(instance) => Some(&instance.action),
+        _ => None,
     }
 }
 

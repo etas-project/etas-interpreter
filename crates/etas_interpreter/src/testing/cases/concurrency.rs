@@ -617,6 +617,82 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn model_task_inside_async_handler_resumes_its_parked_continuation() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.task.{run, start, await, Scheduler};
+import std.task.scheduler.park;
+agent Solver(input: string) -> string {
+    return perform infer(Prompt.new().data(input));
+}
+flow main() -> string {
+    return run((scheduler: Scheduler) => {
+        return handle {
+            let task = start(() => { return Solver.run("hello"); });
+            await(task)
+        } with {
+            Async.await(task) as k => { park(scheduler, task, k); }
+        };
+    });
+}
+"#,
+    );
+    for threads in [1, 4] {
+        let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+        host.seed_model_response_text("ok");
+        let mut options = RunOptions::default();
+        options.cpu_threads = std::num::NonZeroUsize::new(threads).unwrap();
+        options
+            .host_context
+            .authority
+            .grants
+            .push(HostActionGrant::allow("Agentic", "infer"));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &host,
+                options,
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.diagnostics.is_empty(),
+            "{threads} threads: {:#?}",
+            result.diagnostics
+        );
+        assert_eq!(result.value(), Some(&InterpValue::String("ok".into())));
+        assert_eq!(host.model_call_count(), 1);
+        for transfer in [false, true] {
+            assert_eq!(
+                result
+                    .events
+                    .iter()
+                    .filter(|event| match event {
+                        WorkflowEvent::ContinuationConsumed { kind, .. } if !transfer =>
+                            kind == "park",
+                        WorkflowEvent::ContinuationTransferred { kind, .. } if transfer =>
+                            kind == "park",
+                        _ => false,
+                    })
+                    .count(),
+                1
+            );
+        }
+        assert!(
+            !result
+                .events
+                .iter()
+                .any(|event| matches!(event, WorkflowEvent::TaskDispatched { .. }))
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn custom_scheduler_park_resumes_after_task_completion() {
     let result = run(r#"
 module app.main;
