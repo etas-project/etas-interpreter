@@ -119,6 +119,14 @@ fixed OS worker pool. Closures, global captures, live handles, effects and
 Handlers use the cooperative coordinator. Language `Concurrency(n)` still limits
 each scope and its descendants independently of the host worker count.
 Cancellation and execution budgets belong to the original run.
+Memory task scopes use coordinator-owned resource permits: distinct point keys
+can overlap Host requests, equal keys wait, and multi-resource tasks acquire all
+permits before starting. Permits remain held through Host waits and are released
+on task completion or cancellation. Checked plans support string/integer/boolean keys passed
+as arguments or captured by closures, including named helper calls. Scans acquire
+the whole Store. Selectors or higher-order callbacks that cannot be resolved use
+serial invocation admission; parent scope waits still allow nested tasks to run.
+Resource wait/acquire/release events contain IDs and permit counts, without keys.
 Workers use the parent's storage and syntax limits and preserve structured
 language diagnostics. A worker panic settles its jobs as an infrastructure
 failure. Small or unknown work stays on the coordinator; embedders can tune

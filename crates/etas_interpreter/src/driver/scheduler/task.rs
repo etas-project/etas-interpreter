@@ -32,6 +32,7 @@ pub(crate) enum TaskWait {
     Scope(TaskScopeId),
     Host(etas_host::execution::OperationId),
     Cpu(crate::driver::cpu::CpuJobId),
+    Resource(super::resource::ResourceGuardId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -102,6 +103,7 @@ pub(crate) struct ScheduledTask {
     pub(crate) source_index: usize,
     pub(crate) cpu_capsule: Option<crate::driver::cpu::CpuTaskCapsule>,
     pub(crate) active_slot: bool,
+    pub(crate) resource_keys: Vec<super::resource::RuntimeResourceKey>,
 }
 
 impl ScheduledTask {
@@ -126,6 +128,7 @@ impl ScheduledTask {
             source_index,
             cpu_capsule: None,
             active_slot: false,
+            resource_keys: Vec::new(),
         }
     }
 }

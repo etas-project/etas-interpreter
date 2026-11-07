@@ -271,7 +271,9 @@ async fn drive_one<'host>(
             HostOwner::Task(handle) => wake_from_host(eval, handle, operation)?,
         }
     }
-    let Some(handle) = eval.scheduler.dispatch_ready() else {
+    let ready = eval.scheduler.dispatch_ready();
+    record_resource_events(eval);
+    let Some(handle) = ready else {
         if !eval.cpu_jobs.is_empty() {
             wait_for_cpu_or_host(eval, reactor).await?;
             return Ok(true);
@@ -517,6 +519,17 @@ async fn drive_one<'host>(
                 }
                 CompletedTaskHost::Compiler(completed) => {
                     dispatch::compiler::finish(&mut child, completed)
+                }
+                CompletedTaskHost::Memory(completed) => {
+                    let Some(signal) =
+                        dispatch::memory::finish(&mut child, &mut task.machine, completed)
+                    else {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    };
+                    signal
                 }
             };
             task.machine.resume(signal);
@@ -944,15 +957,26 @@ async fn drive_one<'host>(
                 }
             }
             PendingBoundary::Memory(memory) => {
-                let Some(signal) =
-                    dispatch::memory::dispatch(&mut child, host, *memory, &mut task.machine).await
-                else {
-                    let outcome = evaluation_failure(&mut child);
-                    drop(child);
-                    finish_task(eval, handle, task, outcome)?;
-                    return Ok(true);
-                };
-                signal
+                match dispatch::memory::begin(&mut child, host, *memory, &mut task.machine).await {
+                    dispatch::memory::MemoryDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::memory::MemoryDispatchStart::Complete(None) => {
+                        let outcome = evaluation_failure(&mut child);
+                        drop(child);
+                        finish_task(eval, handle, task, outcome)?;
+                        return Ok(true);
+                    }
+                    dispatch::memory::MemoryDispatchStart::Pending(pending) => {
+                        let operation = pending.operation_id();
+                        drop(child);
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        let registered = reactor.start_memory(HostOwner::Task(handle), pending);
+                        assert_eq!(registered, operation);
+                        return Ok(true);
+                    }
+                }
             }
             PendingBoundary::Session(session) => {
                 dispatch::session::dispatch(&mut child, host, *session).await
@@ -1322,6 +1346,7 @@ fn record_scope_exit(
 }
 
 fn record_cancellation_events(eval: &mut EvalContext<'_>) {
+    record_resource_events(eval);
     for (handle, reason) in eval.scheduler.take_cancellation_events() {
         for (job, record) in &eval.cpu_jobs {
             if record.task == handle {
@@ -1335,6 +1360,35 @@ fn record_cancellation_events(eval: &mut EvalContext<'_>) {
             scope: handle.owner.0,
             task: handle.task.0,
             reason: format!("{reason:?}"),
+        });
+    }
+}
+
+fn record_resource_events(eval: &mut EvalContext<'_>) {
+    use crate::driver::scheduler::ResourceEvent;
+    for event in eval.scheduler.take_resource_events() {
+        let task = match event {
+            ResourceEvent::Acquired(task, _)
+            | ResourceEvent::Waiting(task, _)
+            | ResourceEvent::Released(task, _) => task,
+        };
+        let scope = eval.scheduler.task_scope(task).0;
+        eval.events.push(match event {
+            ResourceEvent::Acquired(task, permits) => WorkflowEvent::TaskResourcesAcquired {
+                scope,
+                task: task.0,
+                permits,
+            },
+            ResourceEvent::Waiting(task, guard) => WorkflowEvent::TaskWaitingResource {
+                scope,
+                task: task.0,
+                guard: guard.0,
+            },
+            ResourceEvent::Released(task, permits) => WorkflowEvent::TaskResourcesReleased {
+                scope,
+                task: task.0,
+                permits,
+            },
         });
     }
 }
