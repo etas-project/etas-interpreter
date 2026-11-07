@@ -97,11 +97,24 @@ impl Context for SnapshotValidator<'_> {
                         if scheduler.continuations.entries
                             [&crate::driver::scheduler::ContinuationId(*continuation)]
                             .output
-                            == ty.action_output =>
+                            == ty.action_output
+                            || scheduler.continuations.entries
+                                [&crate::driver::scheduler::ContinuationId(*continuation)]
+                                .binder
+                                .and_then(|symbol| {
+                                    self.checked.types.continuation_bindings.get(&symbol)
+                                })
+                                .is_some_and(|binding| {
+                                    binding.action_output == ty.action_output
+                                }) =>
                     {
                         Ok(())
                     }
-                    _ => Err("task snapshot value differs from its checked slot type".into()),
+                    _ => Err(format!(
+                        "task snapshot value {value:?} differs from checked slot type `{}` ({:?})",
+                        etas_types::ty::display_type(&self.checked.type_store, expected),
+                        self.checked.type_store.get(expected)
+                    )),
                 }
             }
             Value::Snapshot(crate::orchestration::ValueSnapshot::CodeIdentity { ty, identity })

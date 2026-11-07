@@ -8,9 +8,9 @@ pub(crate) use suspension::{
 mod checkpoint;
 mod task;
 pub(crate) use task::{
-    AuxiliaryContinuationSnapshot, ScheduledTaskSnapshot, ScheduledTaskStateSnapshot,
-    TaskCancellationSnapshot, TaskLocalSnapshot, TaskOutcomeSnapshot, TaskResumeSnapshot,
-    TaskRunCountersSnapshot, TaskSchedulerSnapshot,
+    AuxiliaryContinuationSnapshot, RootTaskWaitSnapshot, ScheduledTaskSnapshot,
+    ScheduledTaskStateSnapshot, TaskCancellationSnapshot, TaskLocalSnapshot, TaskOutcomeSnapshot,
+    TaskResumeSnapshot, TaskRunCountersSnapshot, TaskSchedulerSnapshot,
 };
 mod cooperative;
 pub(crate) use call_target_storage::{CallTargetSnapshotChildren, CallTargetSnapshotLink};

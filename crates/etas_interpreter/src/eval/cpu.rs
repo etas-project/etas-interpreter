@@ -142,6 +142,7 @@ fn failed(failure: CpuExecutionFailure) -> CpuRunResult {
 
 fn boundary_kind(boundary: &PendingBoundary) -> &'static str {
     match boundary {
+        PendingBoundary::Checkpoint { .. } => "checkpoint",
         PendingBoundary::Perform(_) => "effect",
         PendingBoundary::Memory(_) => "memory",
         PendingBoundary::Session(_) => "session",

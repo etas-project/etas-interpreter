@@ -43,7 +43,11 @@ impl EvalMachine {
             }
         }
         if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
-            return poll;
+            if !matches!(poll, MachinePoll::CooperativeYield)
+                || !matches!(self.input.as_ref(), Some(MachineInput::Signal(signal)) if !durable_yield_input(signal))
+            {
+                return poll;
+            }
         }
         let mirror = ctx.task.residual.mirror.clone();
         self.join_residual_mirror(&mirror);
@@ -76,8 +80,10 @@ impl EvalMachine {
                 return MachinePoll::Fault(*fault);
             }
             if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
-                self.input = Some(MachineInput::Signal(signal));
-                return poll;
+                if !matches!(poll, MachinePoll::CooperativeYield) || durable_yield_input(&signal) {
+                    self.input = Some(MachineInput::Signal(signal));
+                    return poll;
+                }
             }
             if let Some(span) = signal.requested_operation_span(step_span)
                 && self
@@ -145,20 +151,11 @@ impl EvalMachine {
                 ControlSignal::Checkpoint(pending) => {
                     let pending = *pending;
                     self.push_continuation_frames(pending.continuation);
-                    let counters = ctx.task.residual.counters();
-                    let machine = match self.capture_snapshot(ctx.entry_args, counters) {
-                        Ok(machine) => machine,
-                        Err(message) => {
-                            return machine_fault(
-                                format!("checkpoint cannot serialize evaluation stack: {message}"),
-                                crate::diagnostics::item_span(ctx.checked, ctx.entry_item),
-                            );
-                        }
-                    };
-                    if let Err(fault) = ctx.record_checkpoint(pending.label, machine) {
-                        return MachinePoll::Fault(fault);
-                    }
-                    ControlSignal::Value(crate::value::InterpValue::Unit)
+                    self.resume(ControlSignal::Value(crate::value::InterpValue::Unit));
+                    return MachinePoll::Yield(PendingBoundary::Checkpoint {
+                        label: pending.label,
+                        span: step_span,
+                    });
                 }
                 ControlSignal::Block(pending) => {
                     let mut pending = *pending;
@@ -665,6 +662,23 @@ impl EvalMachine {
         });
         first
     }
+}
+
+// Transient native/effect dispatch reaches a durable input or a Host boundary
+// before yielding. A checkpoint never has to persist an unissued Host request.
+fn durable_yield_input(signal: &ControlSignal) -> bool {
+    !matches!(
+        signal,
+        ControlSignal::Native(_)
+            | ControlSignal::Perform(_)
+            | ControlSignal::Memory(_)
+            | ControlSignal::Session(_)
+            | ControlSignal::Console(_)
+            | ControlSignal::Command(_)
+            | ControlSignal::Model(_)
+            | ControlSignal::Host(_)
+            | ControlSignal::Cancelled(_)
+    )
 }
 
 fn machine_fault(message: impl Into<String>, span: etas_core::Span) -> MachinePoll {

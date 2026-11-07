@@ -23,8 +23,8 @@ pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, TaskHostReactor};
 pub(crate) use resource::ResourceGuardsSnapshot;
 pub(crate) use snapshot::TaskSchedulerMetadataSnapshot;
 pub(crate) use task::{
-    ContinuationId, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome, TaskResume,
-    TaskScopeId, TaskState, TaskWait, TaskWaiter,
+    ContinuationId, RootTaskWait, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome,
+    TaskResume, TaskScopeId, TaskState, TaskWait, TaskWaiter,
 };
 
 pub(crate) const MAX_CONCURRENCY: usize = 65_536;
@@ -163,13 +163,14 @@ impl TaskScheduler {
         continuation: crate::control::Continuation,
         output: etas_types::TypeId,
         program: Option<crate::value::CheckedExecutionProgram>,
+        binder: Option<etas_hir::SymbolId>,
     ) -> crate::value::ContinuationTokenValue {
         assert!(
             self.groups.contains_key(&owner),
             "continuation scope must exist"
         );
         self.continuations
-            .allocate(owner, origin, continuation, output, program)
+            .allocate(owner, origin, continuation, output, program, binder)
     }
 
     pub(crate) fn capture_continuations(

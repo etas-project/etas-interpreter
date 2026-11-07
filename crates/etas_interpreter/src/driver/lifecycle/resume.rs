@@ -130,6 +130,10 @@ pub(super) async fn resume(
         )
         .with_execution_revision(prepared.map(Arc::as_ref))
         .with_revisions(options.checkpoint_revisions.as_deref())
+        .with_tasks(
+            checkpoint.tasks.as_deref().map(|tasks| &tasks.metadata),
+            Some(crate::driver::scheduler::TaskIdentity::Root),
+        )
         .validate_checkpoint(checkpoint)
         .map_err(|message| format!("checkpoint state validation failed: {message}"))?;
         diagnostics.extend(host::validate_host_readiness(

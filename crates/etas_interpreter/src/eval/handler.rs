@@ -430,6 +430,7 @@ impl<'a> EvalContext<'a> {
                         .as_ref()
                         .map_or(fact.action_output, |action| action.output),
                     Some(program),
+                    Some(symbol),
                 );
                 handler_frame.insert(symbol, InterpValue::Continuation(token));
                 (Continuation::BlockValue, Some(token))

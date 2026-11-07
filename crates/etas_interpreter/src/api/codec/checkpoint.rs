@@ -87,6 +87,15 @@ pub fn checkpoint_from_json_with_revisions(
         .map_err(|errors| InterpreterCodecError::new(errors.join("; ")))?;
     let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)
         .map_err(InterpreterCodecError::new)?;
+    let tasks = match required_obj(checkpoint, "tasks")? {
+        Value::Null => None,
+        value => Some(Box::new(task::decode(
+            limits,
+            value,
+            checked,
+            revisions.map(|set| set.as_ref()),
+        )?)),
+    };
     let validator = crate::eval::machine::snapshot::SnapshotValidator::new(
         checked, &slots, &dispatch, &closures, limits,
     )
@@ -99,6 +108,7 @@ pub fn checkpoint_from_json_with_revisions(
         .validate_arguments(entry_item, &arguments)
         .map_err(InterpreterCodecError::new)?;
     let checkpoint = InterpreterCheckpoint {
+        tasks,
         replay_key_id: required_str(checkpoint, "replay_key_id")?.parse().map_err(
             |error: etas_host::replay::ReplayKeyError| {
                 InterpreterCodecError::new(error.to_string())
@@ -198,6 +208,10 @@ pub fn checkpoint_from_json_with_revisions(
         },
     };
     validator
+        .with_tasks(
+            checkpoint.tasks.as_deref().map(|tasks| &tasks.metadata),
+            Some(crate::driver::scheduler::TaskIdentity::Root),
+        )
         .validate_checkpoint(&checkpoint)
         .map_err(InterpreterCodecError::new)?;
     Ok(checkpoint)
@@ -732,6 +746,12 @@ pub(super) fn checkpoint_json(
             .collect::<Result<Vec<_>, _>>()?,
     );
     artifact.value_mut()["machine"] = machine_json_with_budget(&checkpoint.machine, &mut budget)?;
+    artifact.value_mut()["tasks"] = checkpoint
+        .tasks
+        .as_deref()
+        .map(|tasks| task::encode(tasks, &mut budget))
+        .transpose()?
+        .unwrap_or(Value::Null);
     Ok(artifact.into_value())
 }
 

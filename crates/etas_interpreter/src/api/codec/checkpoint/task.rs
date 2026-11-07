@@ -1,6 +1,7 @@
 use super::*;
 use crate::orchestration::{
-    ScheduledTaskSnapshot, TaskLocalSnapshot, TaskOutcomeSnapshot, TaskSchedulerSnapshot,
+    RootTaskWaitSnapshot, ScheduledTaskSnapshot, TaskLocalSnapshot, TaskOutcomeSnapshot,
+    TaskSchedulerSnapshot,
 };
 
 pub(in crate::api::codec) fn encode(
@@ -39,10 +40,17 @@ pub(in crate::api::codec) fn encode(
             Ok(value)
         })
         .collect::<Result<Vec<_>, InterpreterCodecError>>()?;
-    let mut value = json!({"counters": scheduler.counters, "diagnostics": scheduler.diagnostics});
+    let mut value = json!({"counters": scheduler.counters, "diagnostics": scheduler.diagnostics,
+        "root_cancellation": scheduler.root_cancellation});
     budget.json_metadata(&value)?;
     value["metadata"] = scheduler::scheduler_metadata_json(&scheduler.metadata, budget)?;
     value["tasks"] = tasks.into();
+    value["root_wait"] = scheduler
+        .root_wait
+        .as_ref()
+        .map(|wait| root_wait_json(wait, budget))
+        .transpose()?
+        .unwrap_or(Value::Null);
     Ok(value)
 }
 
@@ -147,8 +155,68 @@ pub(in crate::api::codec) fn decode(
             source,
         )?,
         tasks,
+        root_cancellation: field(value, "root_cancellation")?,
+        root_wait: match required_obj(value, "root_wait")? {
+            Value::Null => None,
+            value => Some(root_wait_from_json(limits, value)?),
+        },
         counters: field(value, "counters")?,
         diagnostics: field(value, "diagnostics")?,
+    })
+}
+
+fn root_wait_json(
+    wait: &RootTaskWaitSnapshot,
+    budget: &mut snapshot::EncodingBudget,
+) -> Result<Value, InterpreterCodecError> {
+    Ok(match wait {
+        RootTaskWaitSnapshot::Await {
+            target,
+            continuation,
+        } => json!({"kind":"await", "target":target, "continuation":continuation}),
+        RootTaskWaitSnapshot::Run { scope } => json!({"kind":"run", "scope":scope}),
+        RootTaskWaitSnapshot::Transfer {
+            target,
+            token,
+            continuation,
+            output,
+            span,
+        } => json!({"kind":"transfer",
+            "target":target, "token":token, "continuation":continuation, "output":output, "span":span_json(*span)}),
+        RootTaskWaitSnapshot::Settling(outcome) => {
+            json!({"kind":"settling", "outcome":outcome_json(outcome, budget)?})
+        }
+    })
+}
+
+fn root_wait_from_json(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<RootTaskWaitSnapshot, InterpreterCodecError> {
+    Ok(match required_str(value, "kind")? {
+        "await" => RootTaskWaitSnapshot::Await {
+            target: field(value, "target")?,
+            continuation: required_u32(value, "continuation")?,
+        },
+        "run" => RootTaskWaitSnapshot::Run {
+            scope: field(value, "scope")?,
+        },
+        "transfer" => RootTaskWaitSnapshot::Transfer {
+            target: field(value, "target")?,
+            token: field(value, "token")?,
+            continuation: required_u32(value, "continuation")?,
+            output: field(value, "output")?,
+            span: span_from_json(required_obj(value, "span")?)?,
+        },
+        "settling" => RootTaskWaitSnapshot::Settling(outcome_from_json(
+            limits,
+            required_obj(value, "outcome")?,
+        )?),
+        kind => {
+            return Err(InterpreterCodecError::new(format!(
+                "unsupported checkpoint root wait `{kind}`"
+            )));
+        }
     })
 }
 

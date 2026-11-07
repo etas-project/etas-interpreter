@@ -2,15 +2,17 @@ use std::{collections::BTreeMap, sync::Arc};
 
 use crate::{
     control::{Continuation, PendingPerform},
-    driver::scheduler::{TaskIdentity, TaskOutcome, TaskResume, TaskState, TaskWait, TaskWaiter},
+    driver::scheduler::{
+        RootTaskWait, TaskIdentity, TaskOutcome, TaskResume, TaskState, TaskWait, TaskWaiter,
+    },
     eval::machine::{
         EvalMachine,
         snapshot::{CaptureContext, CapturedMachineSnapshot, CheckpointRoot, SharedFrameCapture},
     },
     orchestration::{
-        AuxiliaryContinuationSnapshot, HandlerSnapshot, RetrySnapshot, ScheduledTaskSnapshot,
-        ScheduledTaskStateSnapshot, TaskCancellationSnapshot, TaskLocalSnapshot,
-        TaskOutcomeSnapshot, TaskResumeSnapshot, TaskSchedulerSnapshot,
+        AuxiliaryContinuationSnapshot, HandlerSnapshot, RetrySnapshot, RootTaskWaitSnapshot,
+        ScheduledTaskSnapshot, ScheduledTaskStateSnapshot, TaskCancellationSnapshot,
+        TaskLocalSnapshot, TaskOutcomeSnapshot, TaskResumeSnapshot, TaskSchedulerSnapshot,
     },
     value::CheckedExecutionProgram,
 };
@@ -26,7 +28,48 @@ struct TaskCapture {
     auxiliary: Vec<AuxiliaryContinuationSnapshot>,
 }
 
+#[derive(Default)]
+struct RestoringTaskBodies(Option<Vec<etas_host::execution::ExecutionScope>>);
+
+impl Drop for RestoringTaskBodies {
+    fn drop(&mut self) {
+        if let Some(scopes) = self.0.take() {
+            for scope in scopes {
+                // Restoration did not publish these bodies to the scheduler.
+                // Already terminal scopes are finished; the rest must drain.
+                let _ = scope.finish_body(false);
+            }
+        }
+    }
+}
+
 impl TaskCapture {
+    fn outcome(
+        &mut self,
+        outcome: &TaskOutcome,
+        cancellation: &impl Fn(&etas_host::execution::CancellationCause) -> TaskCancellationSnapshot,
+    ) -> Result<TaskOutcomeSnapshot, String> {
+        Ok(match outcome {
+            TaskOutcome::Completed(value) => {
+                TaskOutcomeSnapshot::Completed(self.context.value(value)?)
+            }
+            TaskOutcome::Raised(perform) => TaskOutcomeSnapshot::Raised {
+                error_type: perform
+                    .error_type
+                    .ok_or("terminal task error has no checked error type")?,
+                payload: self.context.value(
+                    perform
+                        .args
+                        .first()
+                        .ok_or("terminal task error has no payload")?,
+                )?,
+                span: perform.span,
+            },
+            TaskOutcome::Failed(failure) => TaskOutcomeSnapshot::Failed(failure.clone()),
+            TaskOutcome::Cancelled(cause) => TaskOutcomeSnapshot::Cancelled(cancellation(cause)),
+        })
+    }
+
     fn continuation(
         &mut self,
         program: &CheckedExecutionProgram,
@@ -158,31 +201,7 @@ impl super::EvalContext<'_> {
             let outcome = task
                 .outcome
                 .as_ref()
-                .map(|outcome| {
-                    Ok::<_, String>(match outcome {
-                        TaskOutcome::Completed(value) => {
-                            TaskOutcomeSnapshot::Completed(capture.context.value(value)?)
-                        }
-                        TaskOutcome::Raised(perform) => TaskOutcomeSnapshot::Raised {
-                            error_type: perform
-                                .error_type
-                                .ok_or("terminal task error has no checked error type")?,
-                            payload: capture.context.value(
-                                perform
-                                    .args
-                                    .first()
-                                    .ok_or("terminal task error has no payload")?,
-                            )?,
-                            span: perform.span,
-                        },
-                        TaskOutcome::Failed(failure) => {
-                            TaskOutcomeSnapshot::Failed(failure.clone())
-                        }
-                        TaskOutcome::Cancelled(cause) => {
-                            TaskOutcomeSnapshot::Cancelled(cancellation(cause))
-                        }
-                    })
-                })
+                .map(|outcome| capture.outcome(outcome, &cancellation))
                 .transpose()?;
             let saved_machine = if task.state.is_terminal() {
                 if !capture.auxiliary.is_empty() {
@@ -265,6 +284,53 @@ impl super::EvalContext<'_> {
             );
             revisions.extend(capture.context.revisions);
         }
+        let active = machine
+            .program_scope()
+            .map_or_else(|| root.program.clone(), |scope| scope.program);
+        let root_wait = machine
+            .root_wait
+            .as_ref()
+            .map(|wait| {
+                Ok::<_, String>(match wait {
+                    RootTaskWait::Await {
+                        target,
+                        continuation,
+                    } => RootTaskWaitSnapshot::Await {
+                        target: *target,
+                        continuation: root_capture.continuation(&active, continuation)?,
+                    },
+                    RootTaskWait::Run { scope } => RootTaskWaitSnapshot::Run { scope: *scope },
+                    RootTaskWait::Transfer {
+                        target,
+                        token,
+                        continuation,
+                        output,
+                        span,
+                    } => RootTaskWaitSnapshot::Transfer {
+                        target: *target,
+                        token: *token,
+                        continuation: root_capture.continuation(&active, continuation)?,
+                        output: *output,
+                        span: *span,
+                    },
+                    RootTaskWait::Settling(outcome) => RootTaskWaitSnapshot::Settling(
+                        root_capture.outcome(outcome, &cancellation)?,
+                    ),
+                    RootTaskWait::Host => {
+                        return Err("root Host work has not reached the checkpoint barrier".into());
+                    }
+                })
+            })
+            .transpose()?;
+        let root_cancellation = self
+            .task
+            .cancellation
+            .as_ref()
+            .map_err(ToString::to_string)?
+            .cause()
+            .map_err(|error| error.to_string())?
+            .as_ref()
+            .map(cancellation);
         let args = root
             .args
             .iter()
@@ -304,6 +370,8 @@ impl super::EvalContext<'_> {
                     cpu_completion: self.next_cpu_completion,
                 },
                 diagnostics: self.diagnostics.clone(),
+                root_wait,
+                root_cancellation,
             },
         })
     }
@@ -324,6 +392,7 @@ impl super::EvalContext<'_> {
         // Parents always precede their children in the monotonic task ID space.
         // Build the entire execution tree before finishing any terminal body.
         let mut locals = BTreeMap::new();
+        let mut bodies = RestoringTaskBodies(Some(Vec::with_capacity(saved.tasks.len())));
         for (id, task) in &saved.tasks {
             let parent = match task.local.parent {
                 TaskIdentity::Root => &*self.task,
@@ -334,6 +403,11 @@ impl super::EvalContext<'_> {
             let mut local = parent
                 .child_in_scope(task.scope, *id)
                 .map_err(|error| error.to_string())?;
+            bodies
+                .0
+                .as_mut()
+                .expect("restore owns unpublished bodies")
+                .push(local.execution.clone());
             local.model_policy =
                 super::machine::snapshot::restore_model_policy(task.local.model_policy.clone());
             local.handler_stack = task.local.handlers.handlers.clone();
@@ -347,6 +421,12 @@ impl super::EvalContext<'_> {
                 .map(|local| local.execution.clone())
                 .ok_or("checkpoint cancellation origin has no task"),
         };
+        if let Some(cause) = &saved.root_cancellation {
+            execution(cause.source)?
+                .cancel_source()
+                .stop(cause.reason.into())
+                .map_err(|error| error.to_string())?;
+        }
         for task in saved.tasks.values() {
             if let Some(cause) = &task.local.cancellation {
                 execution(cause.source)?
@@ -593,7 +673,71 @@ impl super::EvalContext<'_> {
                 Ok((continuation, program))
             },
         )?;
+        root_restored.machine.root_wait = saved
+            .root_wait
+            .as_ref()
+            .map(|wait| {
+                Ok::<_, String>(match wait {
+                    RootTaskWaitSnapshot::Await {
+                        target,
+                        continuation,
+                    } => RootTaskWait::Await {
+                        target: *target,
+                        continuation: root_restored.restore_auxiliary(
+                            root_snapshot,
+                            *continuation,
+                            &root.program,
+                            revisions.as_deref(),
+                        )?,
+                    },
+                    RootTaskWaitSnapshot::Run { scope } => RootTaskWait::Run { scope: *scope },
+                    RootTaskWaitSnapshot::Transfer {
+                        target,
+                        token,
+                        continuation,
+                        output,
+                        span,
+                    } => RootTaskWait::Transfer {
+                        target: *target,
+                        token: *token,
+                        output: *output,
+                        span: *span,
+                        continuation: root_restored.restore_auxiliary(
+                            root_snapshot,
+                            *continuation,
+                            &root.program,
+                            revisions.as_deref(),
+                        )?,
+                    },
+                    RootTaskWaitSnapshot::Settling(outcome) => {
+                        RootTaskWait::Settling(match outcome {
+                            TaskOutcomeSnapshot::Completed(value) => TaskOutcome::Completed(
+                                value.clone().restore_with(root_restored.active_context())?,
+                            ),
+                            TaskOutcomeSnapshot::Failed(failure) => {
+                                TaskOutcome::Failed(failure.clone())
+                            }
+                            TaskOutcomeSnapshot::Cancelled(_) => TaskOutcome::Cancelled(
+                                self.task
+                                    .cancellation
+                                    .as_ref()
+                                    .map_err(ToString::to_string)?
+                                    .cause()
+                                    .map_err(|error| error.to_string())?
+                                    .ok_or("cancelled checkpoint root has no cancellation cause")?,
+                            ),
+                            TaskOutcomeSnapshot::Raised { .. } => {
+                                return Err(
+                                    "settled root cannot retain an unhandled task error".into()
+                                );
+                            }
+                        })
+                    }
+                })
+            })
+            .transpose()?;
         *self.scheduler = scheduler;
+        bodies.0 = None;
         // The scheduler owns machines only after its continuation arena and all
         // shared frame references have been restored successfully.
         for (id, machine) in restored {

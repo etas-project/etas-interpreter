@@ -13,6 +13,7 @@ use super::frame::EvalFrame;
 use crate::orchestration::{MachineFrameSnapshot, MachineSnapshot};
 
 pub(crate) enum PendingBoundary {
+    Checkpoint { label: Option<String>, span: Span },
     Perform(Box<PendingPerform>),
     Memory(Box<PendingMemory>),
     Session(Box<PendingSession>),
@@ -61,6 +62,7 @@ pub(crate) enum MachinePoll {
 
 #[derive(Default)]
 pub(crate) struct EvalMachine {
+    pub(crate) root_wait: Option<crate::driver::scheduler::RootTaskWait>,
     pub(super) checkpoint_root: Option<super::snapshot::CheckpointRoot>,
     pub(super) program_scope: Option<ProgramScope>,
     pub(super) stack: Vec<EvalFrame>,
@@ -85,6 +87,9 @@ impl ProgramScope {
 }
 
 impl EvalMachine {
+    pub(crate) fn has_input(&self) -> bool {
+        self.input.is_some()
+    }
     pub(crate) fn program_scope(&self) -> Option<ProgramScope> {
         self.program_scope.clone()
     }

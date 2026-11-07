@@ -83,6 +83,7 @@ pub(in crate::api::codec) fn continuation_arena_json(
                 "state": entry.state,
                 "continuation": entry.continuation,
                 "program": entry.program,
+                "binder": entry.binder,
             }))
         })
         .collect::<Result<Vec<_>, InterpreterCodecError>>()?;
@@ -106,6 +107,7 @@ pub(crate) fn continuation_arena_from_json(
                 InterpreterCodecError::new(format!("invalid continuation state: {error}"))
             })?;
         let saved = ContinuationEntrySnapshot {
+            binder: optional_u32(entry, "binder")?.map(etas_hir::SymbolId),
             program: serde_json::from_value(required_obj(entry, "program")?.clone()).map_err(
                 |error| {
                     InterpreterCodecError::new(format!("invalid continuation program: {error}"))

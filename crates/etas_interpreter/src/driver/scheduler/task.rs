@@ -96,6 +96,25 @@ pub(crate) enum TaskResume {
     },
 }
 
+pub(crate) enum RootTaskWait {
+    Await {
+        target: TaskHandle,
+        continuation: Continuation,
+    },
+    Run {
+        scope: TaskScopeId,
+    },
+    Transfer {
+        target: TaskHandle,
+        token: crate::value::ContinuationTokenValue,
+        continuation: Continuation,
+        output: etas_types::TypeId,
+        span: etas_core::Span,
+    },
+    Host,
+    Settling(TaskOutcome),
+}
+
 pub(crate) struct ScheduledTask {
     pub(crate) scope: TaskScopeId,
     pub(crate) machine: EvalMachine,

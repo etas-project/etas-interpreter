@@ -29,6 +29,7 @@ pub(crate) struct ConsumedContinuation {
 }
 
 struct ContinuationEntry {
+    binder: Option<etas_hir::SymbolId>,
     program: Option<crate::value::CheckedExecutionProgram>,
     owner: TaskScopeId,
     origin: TaskIdentity,
@@ -52,6 +53,7 @@ pub(crate) struct ContinuationArenaSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ContinuationEntrySnapshot {
+    pub(crate) binder: Option<etas_hir::SymbolId>,
     pub(crate) program: Option<crate::orchestration::ExecutionProgramSnapshot>,
     pub(crate) owner: TaskScopeId,
     pub(crate) origin: TaskIdentity,
@@ -80,6 +82,7 @@ impl ContinuationArena {
                 Ok((
                     *id,
                     ContinuationEntrySnapshot {
+                        binder: entry.binder,
                         program: entry
                             .program
                             .as_ref()
@@ -126,9 +129,23 @@ impl ContinuationArena {
             .map(|(id, entry)| {
                 let (continuation, program) =
                     restore(entry.origin, entry.program.as_ref(), entry.continuation)?;
+                if let Some(binder) = entry.binder {
+                    if !program.as_ref().is_some_and(|program| {
+                        program
+                            .checked
+                            .types
+                            .continuation_bindings
+                            .contains_key(&binder)
+                    }) {
+                        return Err(
+                            "continuation binder has no checked Handler ownership fact".into()
+                        );
+                    }
+                }
                 Ok((
                     id,
                     ContinuationEntry {
+                        binder: entry.binder,
                         program,
                         owner: entry.owner,
                         origin: entry.origin,
@@ -172,12 +189,14 @@ impl ContinuationArena {
         continuation: Continuation,
         output: TypeId,
         program: Option<crate::value::CheckedExecutionProgram>,
+        binder: Option<etas_hir::SymbolId>,
     ) -> ContinuationTokenValue {
         let id = ContinuationId(self.next);
         self.next = self.next.checked_add(1).expect("continuation id exhausted");
         self.entries.insert(
             id,
             ContinuationEntry {
+                binder,
                 program,
                 owner,
                 origin,
@@ -283,10 +302,10 @@ mod tests {
             next_stmt_index: 1,
             frame: frame.clone(),
         };
-        let resumed = arena.allocate(owner, origin, Continuation::Return, TypeId(0), None);
-        let requeued = arena.allocate(owner, origin, Continuation::Return, TypeId(0), None);
-        let parked = arena.allocate(owner, origin, leaf.clone(), TypeId(0), None);
-        let disposed = arena.allocate(owner, origin, Continuation::Return, TypeId(0), None);
+        let resumed = arena.allocate(owner, origin, Continuation::Return, TypeId(0), None, None);
+        let requeued = arena.allocate(owner, origin, Continuation::Return, TypeId(0), None, None);
+        let parked = arena.allocate(owner, origin, leaf.clone(), TypeId(0), None, None);
+        let disposed = arena.allocate(owner, origin, Continuation::Return, TypeId(0), None, None);
         for (token, transfer) in [
             (resumed, ContinuationTransfer::Resume),
             (requeued, ContinuationTransfer::Requeue),
@@ -295,7 +314,7 @@ mod tests {
             arena.consume(token, origin, transfer).unwrap();
         }
         arena.dispose(disposed, origin).unwrap();
-        let first = arena.allocate(owner, origin, leaf, TypeId(0), None);
+        let first = arena.allocate(owner, origin, leaf, TypeId(0), None, None);
         let second = arena.allocate(
             owner,
             origin,
@@ -309,6 +328,7 @@ mod tests {
                 deferred: Some(parked),
             },
             TypeId(0),
+            None,
             None,
         );
         let mut capture = CaptureContext::default();
@@ -384,7 +404,7 @@ mod tests {
         assert_eq!(a.get(SymbolId(0)), Some(InterpValue::i32(3)));
         a.insert(SymbolId(0), InterpValue::i32(42));
         assert_eq!(b.get(SymbolId(0)), Some(InterpValue::i32(42)));
-        let fresh = restored.allocate(owner, origin, Continuation::Return, TypeId(0), None);
+        let fresh = restored.allocate(owner, origin, Continuation::Return, TypeId(0), None, None);
         assert_eq!(fresh.continuation.0, second.continuation.0 + 1);
     }
 }

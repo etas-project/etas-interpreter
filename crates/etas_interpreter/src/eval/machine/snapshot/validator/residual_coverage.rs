@@ -30,6 +30,14 @@ impl SnapshotValidator<'_> {
         &self,
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<(), String> {
+        if checkpoint.tasks.as_deref().is_some_and(|tasks| {
+            matches!(
+                tasks.root_wait,
+                Some(crate::orchestration::RootTaskWaitSnapshot::Settling(_))
+            )
+        }) {
+            return Ok(());
+        }
         let item = checkpoint.entry_item;
         // An agent body can already have returned before its model loop runs.
         // A source flow's root invocation remains live until the run returns.

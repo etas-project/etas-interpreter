@@ -30,6 +30,7 @@ pub struct HandlerScopeId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct InterpreterCheckpoint {
+    pub(crate) tasks: Option<Box<super::TaskSchedulerSnapshot>>,
     pub replay_key_id: etas_host::replay::ReplayKeyId,
     /// Session-local immutable code pins. The codec never serializes these owners.
     pub(crate) retained_code: Option<std::sync::Arc<crate::api::code::CheckpointCodePins>>,

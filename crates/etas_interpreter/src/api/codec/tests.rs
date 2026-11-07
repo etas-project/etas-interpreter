@@ -259,6 +259,7 @@ fn checked_project() -> etas_frontend::CheckedProject {
 fn minimal_checkpoint_artifact(checked: &etas_frontend::CheckedProject) -> CheckpointDocument {
     let entry = checked.entry.expect("test entry");
     let checkpoint = InterpreterCheckpoint {
+        tasks: None,
         replay_key_id: etas_host::replay::ReplayKeyId::from_bytes([1; 32]),
         retained_code: None,
         model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),
@@ -481,6 +482,7 @@ flow main(seed: i32) -> unit {
         span: hir_arm.span,
     };
     let checkpoint = InterpreterCheckpoint {
+        tasks: None,
         replay_key_id: etas_host::replay::ReplayKeyId::from_bytes([1; 32]),
         retained_code: None,
         model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),

@@ -75,13 +75,13 @@ impl<'a> EvalContext<'a> {
         ControlSignal::Value(InterpValue::Unit)
     }
 
-    pub(super) fn record_checkpoint(
+    pub(crate) fn record_checkpoint(
         &mut self,
         label: Option<String>,
         mut captured: crate::eval::machine::snapshot::CapturedMachineSnapshot,
+        tasks: Option<crate::orchestration::TaskSchedulerSnapshot>,
     ) -> Result<(), crate::control::ExecutionFault> {
         if self.current_task != crate::driver::scheduler::TaskIdentity::Root
-            || self.scheduler.has_unsettled_tasks()
             || !self.cpu_jobs.is_empty()
         {
             return Err(crate::control::ExecutionFault::new(
@@ -166,6 +166,7 @@ impl<'a> EvalContext<'a> {
             None
         };
         let checkpoint = InterpreterCheckpoint {
+            tasks: tasks.map(Box::new),
             replay_key_id: self.replay_keys.id(),
             retained_code: Some(std::sync::Arc::new(
                 crate::api::code::CheckpointCodePins::new(captured.revisions),
@@ -223,6 +224,10 @@ impl<'a> EvalContext<'a> {
         )
         .with_execution_revision(root.program.revision.as_deref())
         .with_revisions(revisions.as_ref())
+        .with_tasks(
+            checkpoint.tasks.as_deref().map(|tasks| &tasks.metadata),
+            Some(crate::driver::scheduler::TaskIdentity::Root),
+        )
         .validate_checkpoint(&checkpoint)
         .map_err(|message| {
             crate::control::ExecutionFault::new(

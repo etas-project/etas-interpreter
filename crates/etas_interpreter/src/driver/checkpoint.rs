@@ -22,6 +22,33 @@ pub(super) async fn enter(
     result
 }
 
+pub(super) async fn create(
+    eval: &mut EvalContext<'_>,
+    reactor: &mut TaskHostReactor<'_>,
+    root: &mut EvalMachine,
+    label: Option<String>,
+    span: etas_core::Span,
+) -> Result<(), EvaluationOutcome> {
+    enter(eval, reactor, root).await?;
+    let result = eval
+        .capture_task_checkpoint(root)
+        .map_err(|message| {
+            crate::control::ExecutionFault::new(
+                etas_core::AnalysisDiagnosticCode::UnhandledRuntimeError,
+                span,
+                format!("checkpoint cannot serialize evaluation stack: {message}"),
+            )
+        })
+        .and_then(|captured| {
+            eval.record_checkpoint(label, captured.root, Some(captured.scheduler))
+        });
+    eval.scheduler.end_checkpoint_barrier();
+    result.map_err(|fault| {
+        eval.diagnostics.push(fault.clone().into_diagnostic());
+        EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+    })
+}
+
 async fn drain(
     eval: &mut EvalContext<'_>,
     reactor: &mut TaskHostReactor<'_>,
@@ -36,6 +63,7 @@ async fn drain(
             } else {
                 task::commit_host_completion(eval, root, completed)?;
             }
+            root.root_wait = None;
         }
         while let Some((id, completed)) = reactor.take_next_completed_task() {
             let handle = TaskHandle {
@@ -608,6 +636,7 @@ flow main() -> i32 {
             Continuation::Return,
             etas_types::TypeId(0),
             Some(program.clone()),
+            None,
         );
         eval.scheduler
             .consume_continuation(consumed, TaskIdentity::Root, ContinuationTransfer::Requeue)
@@ -618,6 +647,7 @@ flow main() -> i32 {
             Continuation::Return,
             etas_types::TypeId(0),
             Some(program.clone()),
+            None,
         );
         let mut root = EvalMachine::for_entry(program.clone(), Vec::new());
         root.resume(ControlSignal::Value(InterpValue::Unit));

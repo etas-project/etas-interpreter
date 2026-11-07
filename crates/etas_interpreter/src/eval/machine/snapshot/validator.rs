@@ -213,6 +213,22 @@ impl<'a> SnapshotValidator<'a> {
         let expected_boundaries = active_scopes.iter().rev().copied().collect::<Vec<_>>();
         let mut boundary_unwind_order = Vec::new();
         let mut retries = Vec::new();
+        let pending = checkpoint
+            .tasks
+            .as_deref()
+            .map(|tasks| tasks.root_continuation(&checkpoint.machine))
+            .transpose()?
+            .flatten()
+            .or_else(|| {
+                checkpoint
+                    .machine
+                    .input
+                    .as_deref()
+                    .and_then(|input| input.continuation_root())
+            });
+        if let Some(pending) = pending {
+            Self::continuation_unwind_order(pending, &mut boundary_unwind_order, &mut retries);
+        }
         Self::frame_unwind_order(
             &checkpoint.machine.frames,
             &mut boundary_unwind_order,

@@ -15,6 +15,51 @@ pub(crate) struct TaskSchedulerSnapshot {
     pub tasks: BTreeMap<TaskId, ScheduledTaskSnapshot>,
     pub counters: TaskRunCountersSnapshot,
     pub diagnostics: Vec<etas_core::Diagnostic>,
+    pub root_wait: Option<RootTaskWaitSnapshot>,
+    pub root_cancellation: Option<TaskCancellationSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum RootTaskWaitSnapshot {
+    Await {
+        target: crate::driver::scheduler::TaskHandle,
+        continuation: u32,
+    },
+    Run {
+        scope: TaskScopeId,
+    },
+    Transfer {
+        target: crate::driver::scheduler::TaskHandle,
+        token: crate::value::ContinuationTokenValue,
+        continuation: u32,
+        output: TypeId,
+        span: Span,
+    },
+    Settling(TaskOutcomeSnapshot),
+}
+
+impl TaskSchedulerSnapshot {
+    pub(crate) fn root_continuation<'a>(
+        &'a self,
+        machine: &'a MachineSnapshot,
+    ) -> Result<Option<&'a ContinuationSnapshot>, String> {
+        let index = match self.root_wait {
+            Some(
+                RootTaskWaitSnapshot::Await { continuation, .. }
+                | RootTaskWaitSnapshot::Transfer { continuation, .. },
+            ) => Some(continuation),
+            _ => None,
+        };
+        index
+            .map(|index| {
+                machine
+                    .auxiliary
+                    .get(index as usize)
+                    .map(|entry| &entry.continuation)
+                    .ok_or_else(|| "root wait refers to a missing continuation".to_owned())
+            })
+            .transpose()
+    }
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

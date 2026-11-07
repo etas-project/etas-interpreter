@@ -217,6 +217,21 @@ impl SnapshotValidator<'_> {
         expected: TypeId,
         bindings: &crate::control::GenericBindings,
     ) -> Result<(), String> {
+        // Handler payloads may retain an abstract Task effect row. The opaque
+        // handle is checked against the scheduler, without instantiating that
+        // compile-time row as a concrete runtime value representation.
+        if matches!(value, ValueSnapshot::TaskRuntime(_))
+            && matches!(
+                self.checked.type_store.get(expected),
+                Some(etas_types::Type::Task(_) | etas_types::Type::Continuation(_))
+            )
+        {
+            return crate::value::contract::Context::native(
+                self,
+                crate::value::contract::Value::Snapshot(value),
+                expected,
+            );
+        }
         crate::value::contract::validate(
             self,
             [crate::value::contract::Seed {
