@@ -2,6 +2,7 @@ use super::*;
 use crate::orchestration::BoundaryOccurrenceId;
 use std::num::{NonZeroU32, NonZeroU64};
 
+pub(crate) mod input;
 pub(crate) mod scheduler;
 mod source;
 mod suspension;
@@ -887,7 +888,7 @@ fn machine_json_with_budget(
     }
     budget.register_suspensions(machine.suspended_programs.len());
     let mut object = CheckpointDocument::from_value(
-        json!({"frames":[], "suspended_programs":[], "residual": null}),
+        json!({"frames":[], "suspended_programs":[], "residual": null, "input":null}),
     );
     object.value_mut()["residual"] = serde_json::to_value(&machine.residual).map_err(|error| {
         InterpreterCodecError::new(format!("residual monitor state cannot be encoded: {error}"))
@@ -907,6 +908,12 @@ fn machine_json_with_budget(
             .ok_or_else(|| InterpreterCodecError::new("suspended program array is missing"))?
             .push(node);
     }
+    object.value_mut()["input"] = machine
+        .input
+        .as_deref()
+        .map(|input| input::encode(input, budget))
+        .transpose()?
+        .unwrap_or(Value::Null);
     Ok(object.into_value())
 }
 
@@ -979,6 +986,10 @@ fn machine_from_json_with_revisions(
         .map(|node| suspension::decode(limits, node, revisions))
         .collect::<Result<_, _>>()?;
     machine.residual = residual_snapshot_from_json(limits, value)?;
+    machine.input = match required_obj(value, "input")? {
+        Value::Null => None,
+        value => Some(Box::new(input::decode(limits, value, root)?)),
+    };
     machine
         .suspension_order()
         .map_err(InterpreterCodecError::new)?;
@@ -1124,6 +1135,7 @@ fn machine_frames_from_json(
         })
         .collect::<Result<Vec<_>, _>>()?;
     Ok(MachineSnapshot {
+        input: None,
         frames,
         suspended_programs: Vec::new(),
         residual: Default::default(),

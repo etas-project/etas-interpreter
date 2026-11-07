@@ -98,6 +98,23 @@ impl ValueSnapshot {
                     handle.kind_name()
                 ));
             }
+            InterpValue::Task(value) if context.task_handles => {
+                Self::TaskRuntime(crate::orchestration::TaskValueSnapshot::Task {
+                    owner: value.handle.owner.0,
+                    task: value.handle.task.0,
+                })
+            }
+            InterpValue::Scheduler(value) if context.task_handles => {
+                Self::TaskRuntime(crate::orchestration::TaskValueSnapshot::Scheduler {
+                    owner: value.owner.0,
+                })
+            }
+            InterpValue::Continuation(value) if context.task_handles => {
+                Self::TaskRuntime(crate::orchestration::TaskValueSnapshot::Continuation {
+                    owner: value.owner.0,
+                    continuation: value.continuation.0,
+                })
+            }
             InterpValue::Task(_) | InterpValue::Scheduler(_) | InterpValue::Continuation(_) => {
                 return Err(
                     "live task, scheduler, and continuation values require a runtime checkpoint"
@@ -178,6 +195,31 @@ impl ValueSnapshot {
         context: &mut RestoreContext,
     ) -> Result<InterpValue, String> {
         Ok(match self {
+            Self::TaskRuntime(value) => {
+                if !context.task_handles {
+                    return Err("task values require their restored scheduler".into());
+                }
+                use crate::driver::scheduler::{ContinuationId, TaskHandle, TaskId, TaskScopeId};
+                use crate::orchestration::TaskValueSnapshot as T;
+                match value {
+                    T::Task { owner, task } => {
+                        InterpValue::Task(crate::value::TaskHandleValue::new(TaskHandle {
+                            owner: TaskScopeId(owner),
+                            task: TaskId(task),
+                        }))
+                    }
+                    T::Scheduler { owner } => InterpValue::Scheduler(
+                        crate::value::SchedulerHandleValue::new(TaskScopeId(owner)),
+                    ),
+                    T::Continuation {
+                        owner,
+                        continuation,
+                    } => InterpValue::Continuation(crate::value::ContinuationTokenValue::new(
+                        TaskScopeId(owner),
+                        ContinuationId(continuation),
+                    )),
+                }
+            }
             Self::MemoryWriteIntent(value) => InterpValue::MemoryWriteIntent(value),
             Self::Unit => InterpValue::Unit,
             Self::Bool(value) => InterpValue::Bool(value),

@@ -117,6 +117,7 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
                 &limits,
             );
             let machine = |continuation| crate::orchestration::MachineSnapshot {
+                input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: vec![crate::orchestration::MachineFrameSnapshot::Continuation {

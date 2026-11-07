@@ -84,6 +84,26 @@ impl Context for SnapshotValidator<'_> {
     }
     fn native(&self, value: Value<'_>, expected: TypeId) -> Result<(), String> {
         match value {
+            Value::Snapshot(crate::orchestration::ValueSnapshot::TaskRuntime(value)) => {
+                use crate::orchestration::TaskValueSnapshot as T;
+                let scheduler = self
+                    .tasks
+                    .ok_or("task value requires its scheduler snapshot")?;
+                scheduler.validate_value(*value)?;
+                match (value, self.checked.type_store.get(expected)) {
+                    (T::Task { .. }, Some(Type::Task(_)))
+                    | (T::Scheduler { .. }, Some(Type::SchedulerHandle)) => Ok(()),
+                    (T::Continuation { continuation, .. }, Some(Type::Continuation(ty)))
+                        if scheduler.continuations.entries
+                            [&crate::driver::scheduler::ContinuationId(*continuation)]
+                            .output
+                            == ty.action_output =>
+                    {
+                        Ok(())
+                    }
+                    _ => Err("task snapshot value differs from its checked slot type".into()),
+                }
+            }
             Value::Snapshot(crate::orchestration::ValueSnapshot::CodeIdentity { ty, identity })
                 if *ty == expected =>
             {

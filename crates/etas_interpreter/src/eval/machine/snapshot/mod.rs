@@ -9,6 +9,7 @@ mod frame;
 mod frame_dependencies;
 #[cfg(test)]
 mod frame_graph_tests;
+mod input;
 mod machine_frame;
 mod message;
 #[cfg(test)]
@@ -23,14 +24,15 @@ pub(crate) mod value_compare;
 mod value_membership;
 mod value_restore;
 
-pub(crate) use capture_context::CaptureContext;
-pub(crate) use frame::RestoreContext;
+pub(crate) use capture_context::{CaptureContext, SharedFrameCapture};
 pub(in crate::eval::machine) use frame::RestoredResidualState;
 pub(in crate::eval::machine) use frame::SuspensionRestoreTable;
+pub(crate) use frame::{RestoreContext, SharedFrameRestore};
 pub(crate) use model::{capture_model_policy, restore_model_policy};
 pub(crate) use validator::SnapshotValidator;
 
 pub(crate) struct SnapshotRestoreResources<'a> {
+    pub task: Option<TaskSnapshotRestoreResources<'a>>,
     pub locked_model: Option<etas_host::ModelName>,
     pub limits: &'a etas_host::StorageLimits,
     pub revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
@@ -39,6 +41,37 @@ pub(crate) struct SnapshotRestoreResources<'a> {
     /// Freshly prepared residual plans of the root program, required whenever
     /// the checkpoint carries live residual state.
     pub residual: Option<ResidualRestoreInput>,
+}
+
+pub(crate) struct TaskSnapshotRestoreResources<'a> {
+    pub scheduler: &'a crate::driver::scheduler::TaskSchedulerMetadataSnapshot,
+    pub identity: crate::driver::scheduler::TaskIdentity,
+    pub frames: SharedFrameRestore,
+}
+
+pub(crate) struct RestoredMachineSnapshot {
+    pub machine: super::EvalMachine,
+    pub contexts: std::collections::HashMap<usize, RestoreContext>,
+}
+
+impl RestoredMachineSnapshot {
+    pub(crate) fn active_context(&mut self) -> &mut RestoreContext {
+        let program = self
+            .machine
+            .program_scope
+            .as_ref()
+            .map(|scope| &scope.program)
+            .or_else(|| {
+                self.machine
+                    .checkpoint_root
+                    .as_ref()
+                    .map(|root| &root.program)
+            })
+            .expect("restored task machine has a checked root");
+        self.contexts
+            .get_mut(&(std::sync::Arc::as_ptr(&program.checked) as usize))
+            .expect("active task program has a restore context")
+    }
 }
 
 pub(crate) struct ResidualRestoreInput {

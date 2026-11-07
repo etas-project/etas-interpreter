@@ -16,6 +16,7 @@ fn deep_continuation(depth: usize) -> ContinuationSnapshot {
 #[test]
 fn machine_encoding_budget_is_shared_across_frames_and_releases_completed_frames() {
     let machine = MachineSnapshot {
+        input: None,
         program_owners: Default::default(),
         suspended_programs: Vec::new(),
         frames: vec![

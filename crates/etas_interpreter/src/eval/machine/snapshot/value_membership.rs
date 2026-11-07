@@ -38,6 +38,10 @@ impl StructuralPartition for ValueSnapshot {
     fn start(&self, state: &mut impl Hasher) -> Option<Cursor<'_>> {
         std::mem::discriminant(self).hash(state);
         let storage = match self {
+            Self::TaskRuntime(value) => {
+                value.hash(state);
+                return None;
+            }
             Self::Bool(value) => {
                 value.hash(state);
                 return None;

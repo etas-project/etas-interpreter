@@ -38,6 +38,7 @@ fn shared_continuation_edges_preserve_wire_and_checked_identity_validation() {
         &limits,
     );
     let machine = |continuation| MachineSnapshot {
+        input: None,
         program_owners: Default::default(),
         suspended_programs: Vec::new(),
         frames: vec![MachineFrameSnapshot::Continuation { continuation }],

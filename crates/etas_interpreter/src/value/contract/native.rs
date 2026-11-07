@@ -269,7 +269,7 @@ pub(super) fn validate<'a>(
             | R::AgentDefinition(_)
             | R::CallableDefinition(_),
         )
-        | Value::Snapshot(S::CodeIdentity { .. } | S::Handler { .. }) => {
+        | Value::Snapshot(S::CodeIdentity { .. } | S::Handler { .. } | S::TaskRuntime(_)) => {
             context.native(value, expected)
         }
         _ => Err("native input does not match its checked type identity".into()),

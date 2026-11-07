@@ -20,6 +20,11 @@ mod tests;
 
 type FrameIdentity = (*const (), u64);
 
+#[derive(Clone, Default)]
+pub(crate) struct SharedFrameCapture(
+    Rc<std::cell::RefCell<HashMap<FrameIdentity, LocalsSnapshot>>>,
+);
+
 /// One synchronous, read-only capture operation. All keyed runtime nodes remain
 /// owned by the borrowed root, including its captured frames. No cache escapes.
 #[derive(Default)]
@@ -44,9 +49,17 @@ pub(crate) struct CaptureContext {
     residual_attempt_ids: HashMap<*const (), u32>,
     residual_attempts: Vec<crate::control::residual::ResidualAttemptTag>,
     pub(crate) task_handles: bool,
+    shared_frames: Option<SharedFrameCapture>,
 }
 
 impl CaptureContext {
+    pub(crate) fn for_tasks(frames: &SharedFrameCapture) -> Self {
+        Self {
+            task_handles: true,
+            shared_frames: Some(frames.clone()),
+            ..Default::default()
+        }
+    }
     pub(super) fn suspension(
         &mut self,
         continuation: &super::super::suspension::ProgramContinuation,
@@ -199,7 +212,7 @@ impl CaptureContext {
     pub(super) fn frame(&mut self, frame: &Frame) -> Result<LocalsSnapshot, String> {
         let identity = frame.capture_identity();
         if let Some(saved) = self.saved_frame(identity) {
-            return Ok(saved.clone());
+            return Ok(saved);
         }
         if self.first_active.is_some() {
             return Err("cyclic captured frame definitions cannot enter a checkpoint".into());
@@ -229,7 +242,6 @@ impl CaptureContext {
             }
         }
         self.saved_frame(identity)
-            .cloned()
             .ok_or_else(|| "captured frame dependency graph did not produce its root".into())
     }
 
@@ -271,6 +283,9 @@ impl CaptureContext {
             self.active_frames.remove(&backing);
         }
         if let Ok(saved) = &result {
+            if let Some(shared) = &self.shared_frames {
+                shared.0.borrow_mut().insert(key, saved.clone());
+            }
             if self.first_frame.is_none() {
                 self.first_frame = Some((key, saved.clone()));
             } else {
@@ -282,13 +297,17 @@ impl CaptureContext {
 
     // A single captured frame needs neither a lookup table nor an active-set
     // allocation. Nested/shared graphs still use constant-time indexed lookup.
-    fn saved_frame(&self, key: FrameIdentity) -> Option<&LocalsSnapshot> {
+    fn saved_frame(&self, key: FrameIdentity) -> Option<LocalsSnapshot> {
         if let Some((first_key, saved)) = &self.first_frame {
             if *first_key == key {
-                return Some(saved);
+                return Some(saved.clone());
             }
         }
-        self.frames.get(&key)
+        self.frames.get(&key).cloned().or_else(|| {
+            self.shared_frames
+                .as_ref()
+                .and_then(|shared| shared.0.borrow().get(&key).cloned())
+        })
     }
 
     fn enter_frame(&mut self, backing: *const ()) -> bool {

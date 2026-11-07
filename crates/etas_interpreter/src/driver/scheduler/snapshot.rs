@@ -126,6 +126,48 @@ impl TaskScheduler {
 }
 
 impl TaskSchedulerMetadataSnapshot {
+    pub(crate) fn validate_value(
+        &self,
+        value: crate::orchestration::TaskValueSnapshot,
+    ) -> Result<(), String> {
+        use crate::orchestration::TaskValueSnapshot as T;
+        let valid = match value {
+            T::Scheduler { owner } => self.groups.contains_key(&TaskScopeId(owner)),
+            T::Task { owner, task } => self
+                .groups
+                .get(&TaskScopeId(owner))
+                .is_some_and(|group| group.0.tasks.contains(&TaskId(task))),
+            T::Continuation {
+                owner,
+                continuation,
+            } => self
+                .continuations
+                .entries
+                .get(&ContinuationId(continuation))
+                .is_some_and(|entry| entry.owner == TaskScopeId(owner)),
+        };
+        if valid {
+            Ok(())
+        } else {
+            Err("checkpoint task value has no matching scheduler owner".into())
+        }
+    }
+
+    pub(crate) fn validate_deferred(
+        &self,
+        token: crate::value::ContinuationTokenValue,
+        origin: TaskIdentity,
+    ) -> Result<(), String> {
+        self.validate_value(crate::orchestration::TaskValueSnapshot::Continuation {
+            owner: token.owner.0,
+            continuation: token.continuation.0,
+        })?;
+        if self.continuations.entries[&token.continuation].origin != origin {
+            return Err("checkpoint deferred continuation belongs to another task".into());
+        }
+        Ok(())
+    }
+
     fn validate(&self, tasks: &BTreeMap<TaskId, ScheduledTask>) -> Result<(), String> {
         self.continuations.validate()?;
         let mut active: BTreeMap<_, usize> = self.groups.keys().map(|id| (*id, 0)).collect();

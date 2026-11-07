@@ -98,6 +98,7 @@ pub async fn execute_entry_from_snapshot(
         &eval.plan.closures,
         &eval.host_context,
         crate::eval::machine::snapshot::SnapshotRestoreResources {
+            task: None,
             locked_model: eval.locked_model.clone(),
             limits: &eval.storage_limits,
             revisions,

@@ -6,6 +6,11 @@ pub(super) fn decode(
     value: &Value,
 ) -> Result<ValueSnapshot, InterpreterCodecError> {
     match required_str(value, "kind")? {
+        "task_runtime" => serde_json::from_value(required_obj(value, "value")?.clone())
+            .map(ValueSnapshot::TaskRuntime)
+            .map_err(|error| {
+                InterpreterCodecError::new(format!("invalid task value snapshot: {error}"))
+            }),
         "text_sequence" => Ok(ValueSnapshot::TextSequence {
             source: required_str(value, "source")?.into(),
             plan: text_sequence_plan_from_json(required_obj(value, "plan")?)?,

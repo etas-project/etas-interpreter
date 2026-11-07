@@ -188,6 +188,7 @@ impl CheckpointCodeRevision {
 
 #[derive(Clone, Debug, Default)]
 pub struct MachineSnapshot {
+    pub(crate) input: Option<Box<super::MachineInputSnapshot>>,
     pub(crate) frames: Vec<MachineFrameSnapshot>,
     pub(crate) program_owners: FrameProgramOwners,
     pub(crate) suspended_programs: Vec<super::SuspendedProgramSnapshot>,
@@ -209,6 +210,7 @@ impl MachineSnapshot {
             .any(|frame| matches!(frame, MachineFrameSnapshot::ProgramReturn(_)))
         {
             return Self {
+                input: None,
                 frames,
                 program_owners: FrameProgramOwners::Root,
                 suspended_programs: Vec::new(),
@@ -227,6 +229,7 @@ impl MachineSnapshot {
             })
             .collect();
         Self {
+            input: None,
             frames,
             program_owners: FrameProgramOwners::Scoped(program_owners),
             suspended_programs: Vec::new(),
@@ -342,6 +345,7 @@ impl Drop for LocalsSnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
+    TaskRuntime(TaskValueSnapshot),
     Existential {
         header: crate::value::ExistentialHeader,
         value: SnapshotBox,
@@ -452,6 +456,15 @@ pub(crate) enum ValueSnapshot {
         predicate: Option<SnapshotBox>,
         limit: Option<u32>,
     },
+}
+
+/// Coordinator handles have durable logical IDs, never a live execution owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum TaskValueSnapshot {
+    Task { owner: u64, task: u64 },
+    Scheduler { owner: u64 },
+    Continuation { owner: u64, continuation: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq)]

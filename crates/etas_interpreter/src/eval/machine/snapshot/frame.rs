@@ -4,8 +4,15 @@ use crate::orchestration::{
     ContinuationSnapshotLink, LocalsSnapshot,
 };
 
+#[derive(Clone, Default)]
+pub(crate) struct SharedFrameRestore(
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, (LocalsSnapshot, Frame)>>>,
+);
+
 #[derive(Default)]
 pub(crate) struct RestoreContext {
+    pub(crate) task_handles: bool,
+    pub(crate) shared_frames: Option<SharedFrameRestore>,
     pub(in crate::eval::machine) current_host: Option<crate::api::HostExecutionContext>,
     pub(in crate::eval::machine) locked_model: Option<etas_host::ModelName>,
     pub(in crate::eval::machine) suspensions: Option<SuspensionRestoreTable>,
@@ -254,6 +261,14 @@ impl RestoreContext {
             }
             return Ok(Some(frame.clone()));
         }
+        if let Some(shared) = &self.shared_frames
+            && let Some((definition, frame)) = shared.0.borrow().get(&snapshot.id)
+        {
+            if definition != snapshot {
+                return Err("conflicting definitions for snapshot frame identity".into());
+            }
+            return Ok(Some(frame.clone()));
+        }
         Ok(None)
     }
 
@@ -276,6 +291,12 @@ impl RestoreContext {
             frame.bind_residual_invocation(invocation)?;
         }
         self.active.remove(&snapshot.id);
+        if let Some(shared) = &self.shared_frames {
+            shared
+                .0
+                .borrow_mut()
+                .insert(snapshot.id, (snapshot.clone(), frame.clone()));
+        }
         self.frames.insert(snapshot.id, (snapshot, frame));
         Ok(())
     }

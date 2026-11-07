@@ -2,6 +2,7 @@ use super::*;
 
 fn machine(continuation: ContinuationSnapshot) -> MachineSnapshot {
     MachineSnapshot {
+        input: None,
         program_owners: Default::default(),
         suspended_programs: Vec::new(),
         frames: vec![MachineFrameSnapshot::Continuation { continuation }],

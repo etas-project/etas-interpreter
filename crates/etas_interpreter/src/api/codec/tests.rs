@@ -501,6 +501,7 @@ flow main(seed: i32) -> unit {
         entry_item: checked.entry.expect("test entry item"),
         args: vec![crate::orchestration::ValueSnapshot::capture(&InterpValue::i32(42)).unwrap()],
         machine: MachineSnapshot {
+            input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Handler {

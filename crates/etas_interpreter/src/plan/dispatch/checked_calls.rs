@@ -198,6 +198,7 @@ mod tests {
                 result_type: result,
             };
             let machine = MachineSnapshot {
+                input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: vec![MachineFrameSnapshot::Continuation {

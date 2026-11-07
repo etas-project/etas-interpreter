@@ -61,7 +61,7 @@ pub(super) fn handler_arm_from_snapshot(value: &Value) -> Result<ActiveHandlerAr
     })
 }
 
-pub(super) fn locals_from_snapshot(
+pub(in crate::api::codec) fn locals_from_snapshot(
     limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<LocalsSnapshot, String> {

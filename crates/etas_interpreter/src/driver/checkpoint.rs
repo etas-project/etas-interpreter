@@ -245,7 +245,7 @@ mod tests {
         eval.scheduler.wait_for_host(handle, operation).unwrap();
         let mut reactor = TaskHostReactor::new();
         reactor.start_console(super::super::scheduler::HostOwner::Task(handle), pending);
-        let mut root = EvalMachine::for_entry(program, Vec::new());
+        let mut root = EvalMachine::for_entry(program.clone(), Vec::new());
         enter(&mut eval, &mut reactor, &mut root).await.unwrap();
         assert!(!reactor.has_pending());
         assert!(reactor.take_next_completed_task().is_none());
@@ -257,6 +257,45 @@ mod tests {
         assert_eq!(eval.consumed_steps(), 0);
         assert_eq!(host.console_call_count(), 1);
         assert_eq!(host.stdout_text(), "once\n");
+        let scheduler = eval
+            .scheduler
+            .capture_metadata(&mut crate::eval::machine::snapshot::CaptureContext::default())
+            .unwrap();
+        let mut scheduled = eval.scheduler.take_checkpoint_task(handle);
+        let saved = scheduled
+            .machine
+            .capture_snapshot(&[], (0, 0, 0))
+            .unwrap()
+            .machine;
+        let saved = crate::api::codec::checkpoint::input::roundtrip_machine(&saved, &checked);
+        scheduled.machine = EvalMachine::from_snapshot_with_resources(
+            &saved,
+            &checked,
+            plan.slots.clone(),
+            &plan.dispatch,
+            &plan.closures,
+            &eval.host_context,
+            crate::eval::machine::snapshot::SnapshotRestoreResources {
+                task: Some(
+                    crate::eval::machine::snapshot::TaskSnapshotRestoreResources {
+                        scheduler: &scheduler,
+                        identity: super::super::scheduler::TaskIdentity::Scheduled(handle.task),
+                        frames: Default::default(),
+                    },
+                ),
+                locked_model: None,
+                limits: &eval.storage_limits,
+                revisions: None,
+                root: Some(crate::eval::machine::snapshot::CheckpointRoot {
+                    program,
+                    args: Vec::new(),
+                }),
+                ordering: None,
+                residual: None,
+            },
+        )
+        .unwrap();
+        eval.scheduler.restore_checkpoint_task(handle, scheduled);
         eval.scheduler.end_checkpoint_barrier();
 
         enter(&mut eval, &mut reactor, &mut root).await.unwrap();
@@ -272,5 +311,188 @@ mod tests {
             super::super::scheduler::TaskState::Completed
         );
         assert_eq!(host.console_call_count(), 1);
+    }
+
+    #[test]
+    fn ready_machine_json_roundtrip_keeps_pending_blocks_and_shared_locals() {
+        use crate::{
+            control::Frame,
+            driver::scheduler::TaskIdentity,
+            eval::machine::{
+                MachinePoll,
+                snapshot::{
+                    CaptureContext, CheckpointRoot, SharedFrameCapture, SharedFrameRestore,
+                    SnapshotRestoreResources, TaskSnapshotRestoreResources,
+                },
+            },
+        };
+        let checked = checked_project(
+            r#"
+module app.main;
+import std.task.{run, Scheduler};
+flow main() -> i32 {
+    var counter: i32 = 41;
+    return run((saved_scheduler: Scheduler) => { counter = counter + 1; return counter; });
+}
+"#,
+        );
+        let plan = crate::Interpreter.plan(&checked, PlanOptions).plan.unwrap();
+        let (program_input, mut state) = initialize(&checked, &plan, RunOptions::default());
+        let mut eval = EvalContext::new(program_input, &mut state);
+        let program = eval.checked_execution_program();
+        let symbol = checked
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "counter")
+            .unwrap()
+            .id;
+        let scheduler_symbol = checked
+            .symbols
+            .iter()
+            .find(|symbol| symbol.name == "saved_scheduler")
+            .unwrap()
+            .id;
+        let block = checked
+            .hir
+            .exprs
+            .iter()
+            .find_map(|(_, expr)| match expr {
+                etas_hir::HirExpr::Lambda {
+                    body: etas_hir::HirLambdaBody::Block(block),
+                    ..
+                } => Some(*block),
+                _ => None,
+            })
+            .unwrap();
+        let mut captured = Frame::from_snapshot(vec![
+            (symbol, InterpValue::i32(41)),
+            (
+                scheduler_symbol,
+                InterpValue::Scheduler(crate::value::SchedulerHandleValue::new(
+                    crate::driver::scheduler::TaskScopeId(0),
+                )),
+            ),
+        ])
+        .unwrap();
+        let captures = SharedFrameCapture::default();
+        let mut saved = Vec::new();
+        for _ in 0..2 {
+            let mut machine = EvalMachine::for_entry(program.clone(), Vec::new());
+            machine.resume(ControlSignal::pending_block(crate::control::PendingBlock {
+                block,
+                next_stmt_index: 0,
+                frame: captured.clone(),
+                residual: None,
+                continuation: Continuation::BlockValue,
+            }));
+            let snapshot = machine
+                .capture_machine(&mut CaptureContext::for_tasks(&captures), (0, 0, 0))
+                .unwrap();
+            assert!(snapshot.input.is_some());
+            saved.push(crate::api::codec::checkpoint::input::roundtrip_machine(
+                &snapshot, &checked,
+            ));
+        }
+        captured.insert(symbol, InterpValue::i32(99));
+        eval.scheduler.begin_checkpoint_barrier();
+        let scheduler = eval
+            .scheduler
+            .capture_metadata(&mut CaptureContext::default())
+            .unwrap();
+        eval.scheduler.end_checkpoint_barrier();
+        let frames = SharedFrameRestore::default();
+        let limits = eval.storage_limits.clone();
+        let mut machines = Vec::new();
+        for saved in saved {
+            machines.push(
+                EvalMachine::from_snapshot_with_resources(
+                    &saved,
+                    &checked,
+                    plan.slots.clone(),
+                    &plan.dispatch,
+                    &plan.closures,
+                    &eval.host_context,
+                    SnapshotRestoreResources {
+                        task: Some(TaskSnapshotRestoreResources {
+                            scheduler: &scheduler,
+                            identity: TaskIdentity::Root,
+                            frames: frames.clone(),
+                        }),
+                        locked_model: None,
+                        limits: &limits,
+                        revisions: None,
+                        root: Some(CheckpointRoot {
+                            program: program.clone(),
+                            args: Vec::new(),
+                        }),
+                        ordering: None,
+                        residual: None,
+                    },
+                )
+                .unwrap(),
+            );
+        }
+        assert_eq!(eval.consumed_steps(), 0);
+        let mut first_charge = 0;
+        for (index, mut machine) in machines.into_iter().enumerate() {
+            loop {
+                match machine.run_until_yield(&mut eval) {
+                    MachinePoll::Complete(value) => {
+                        assert_eq!(*value, InterpValue::i32(42 + index as i32));
+                        break;
+                    }
+                    MachinePoll::CooperativeYield => {}
+                    MachinePoll::Fault(fault) => panic!("restored machine: {fault:?}"),
+                    _ => panic!("pure restored machine unexpectedly suspended"),
+                }
+            }
+            if index == 0 {
+                first_charge = eval.consumed_steps();
+                assert!(first_charge > 0);
+            } else {
+                assert_eq!(eval.consumed_steps(), first_charge * 2);
+            }
+        }
+    }
+
+    #[test]
+    fn completed_model_input_roundtrip_keeps_usage_cost_and_tool_payloads() {
+        use crate::orchestration::MachineInputSnapshot as I;
+        use etas_host::*;
+        let checked = checked_project("module app.main; flow main() -> unit { return; }");
+        let call = ModelToolCall {
+            id: "tool-1".into(),
+            tool: "lookup".into(),
+            args: HostValue::Record(vec![("key".into(), HostValue::String("a".into()))]),
+        };
+        let response = ModelResponse {
+            id: HostRequestId(7),
+            usage: Some(ModelUsage {
+                input_tokens: 3,
+                output_tokens: 5,
+                cost: Some(ModelCostUsage {
+                    micros: 17,
+                    currency: "USD".into(),
+                }),
+            }),
+            result: Ok(ModelOutput {
+                message: ModelMessage {
+                    role: ModelRole::Assistant,
+                    content: vec![
+                        ModelContent::Text("ready".into()),
+                        ModelContent::Value(HostValue::Bool(true)),
+                    ],
+                    tool_call_id: Some("prior".into()),
+                    tool_calls: vec![call.clone()],
+                },
+                tool_calls: vec![call],
+            }),
+        };
+        let input = I::ModelResult(Ok(response.clone()));
+        let restored = crate::api::codec::checkpoint::input::roundtrip(&input, &checked);
+        let I::ModelResult(restored) = restored else {
+            panic!("model response input")
+        };
+        assert_eq!(restored.unwrap(), response);
     }
 }

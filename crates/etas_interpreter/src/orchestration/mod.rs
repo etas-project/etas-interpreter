@@ -6,9 +6,14 @@ pub(crate) use suspension::{
     ExecutionRootSnapshot, SuspendedProgramSnapshot,
 };
 mod checkpoint;
+mod cooperative;
 pub(crate) use call_target_storage::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 pub(crate) use callable::{
     CallableProjectionSnapshot, CheckpointProgramReference, ScopedCallableMetadata,
+};
+pub(crate) use cooperative::{
+    ContinuationInputSnapshot, ControlSignalSnapshot, MachineInputSnapshot,
+    ResidualActivationSnapshot, TaskControlSnapshot,
 };
 mod continuation_storage;
 pub(crate) use continuation_storage::ContinuationSnapshotLink;
@@ -42,7 +47,8 @@ pub(crate) use checkpoint::{
     LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot,
     MessageSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelLoopFrameSnapshot,
     ModelRepairSnapshot, ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramReturnSnapshot,
-    SliceExprEvalSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot, ValueSnapshot,
+    SliceExprEvalSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
+    TaskValueSnapshot, ValueSnapshot,
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{CpuWorkerId, WorkflowEvent, WorkflowEventLayer, WorkflowStepId};
