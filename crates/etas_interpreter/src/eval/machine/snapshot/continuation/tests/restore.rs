@@ -171,6 +171,7 @@ fn restored_shared_links_preserve_frames_and_validate_every_parent() {
     };
     let second = ContinuationSnapshot::HandlerDispatch {
         outer: shared.clone(),
+        deferred: None,
     };
     let mut context = RestoreContext::default();
     let first = first.restore_with(&mut context).unwrap();
@@ -281,6 +282,7 @@ fn mixed_restore_preserves_metadata_frame_aliases_and_retained_definitions() {
                 },
                 1 => ContinuationSnapshot::HandlerDispatch {
                     outer: snapshot.into(),
+                    deferred: None,
                 },
                 2 => ContinuationSnapshot::HandleBoundary {
                     scope_id: HandlerScopeId(i as u32),
@@ -362,7 +364,7 @@ fn mixed_restore_preserves_metadata_frame_aliases_and_retained_definitions() {
         loop {
             cursor = match cursor {
                 ContinuationSnapshot::CallBoundary { outer, .. }
-                | ContinuationSnapshot::HandlerDispatch { outer } => outer,
+                | ContinuationSnapshot::HandlerDispatch { outer, .. } => outer,
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => inner,
                 ContinuationSnapshot::HandleBoundary { inner, frame, .. } => {
@@ -398,6 +400,7 @@ fn restore_rejects_late_invalid_frames_and_releases_completed_deep_branches() {
                     },
                     1 => ContinuationSnapshot::HandlerDispatch {
                         outer: inner.into(),
+                        deferred: None,
                     },
                     2 => ContinuationSnapshot::HandleBoundary {
                         scope_id: HandlerScopeId(i as u32 + 2),

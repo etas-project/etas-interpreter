@@ -1,3 +1,4 @@
+mod checkpoint;
 pub(crate) mod cpu;
 mod dispatch;
 mod drive;

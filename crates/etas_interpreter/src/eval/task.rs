@@ -566,7 +566,7 @@ impl EvalContext<'_> {
         })
     }
 
-    fn cpu_task_capsule(
+    pub(crate) fn cpu_task_capsule(
         &mut self,
         target: &crate::control::CallTarget,
         args: &[InterpValue],

@@ -194,7 +194,7 @@ impl Coverage<'_, '_> {
                     pending.push(Task::Link(inner));
                     pending.push(Task::Link(outer));
                 }
-                ContinuationSnapshot::HandlerDispatch { outer } => {
+                ContinuationSnapshot::HandlerDispatch { outer, .. } => {
                     pending.push(Task::Restore(scope));
                     pending.push(Task::Link(outer));
                 }

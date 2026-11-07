@@ -37,7 +37,7 @@ fn shared_capture_preserves_parent_identity_and_freezes_live_frames() {
     };
     let (
         ContinuationSnapshot::CallBoundary { outer: a, .. },
-        ContinuationSnapshot::HandlerDispatch { outer: b },
+        ContinuationSnapshot::HandlerDispatch { outer: b, .. },
     ) = (&saved_first, &saved_second)
     else {
         panic!("parent kind lost")
@@ -374,7 +374,7 @@ fn mixed_capture_preserves_wrapper_metadata_and_detaches_live_frames() {
     for i in (0..depth).rev() {
         cursor = match (i % 5, cursor) {
             (0, ContinuationSnapshot::CallBoundary { outer, .. })
-            | (1, ContinuationSnapshot::HandlerDispatch { outer }) => outer,
+            | (1, ContinuationSnapshot::HandlerDispatch { outer, .. }) => outer,
             (
                 2,
                 ContinuationSnapshot::HandleBoundary {

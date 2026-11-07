@@ -220,7 +220,10 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
                 span: crate::testing::synthetic_span(),
                 outer: root.into(),
             },
-            1 => ContinuationSnapshot::HandlerDispatch { outer: root.into() },
+            1 => ContinuationSnapshot::HandlerDispatch {
+                outer: root.into(),
+                deferred: None,
+            },
             2 => ContinuationSnapshot::HandleBoundary {
                 scope_id: HandlerScopeId(i as u32),
                 inner: root.into(),

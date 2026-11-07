@@ -6,7 +6,7 @@ use crate::{
     eval::{TaskLocalState, machine::EvalMachine},
 };
 
-fn root_local(scope: TaskScopeId) -> TaskLocalState {
+pub(super) fn root_local(scope: TaskScopeId) -> TaskLocalState {
     TaskLocalState::root(
         scope,
         etas_host::execution::ExecutionScope::new_owned(),
@@ -14,7 +14,7 @@ fn root_local(scope: TaskScopeId) -> TaskLocalState {
     )
 }
 
-fn spawn(
+pub(super) fn spawn(
     scheduler: &mut TaskScheduler,
     parent: &TaskLocalState,
     source_index: usize,
@@ -76,6 +76,56 @@ fn host_wait_releases_its_slot_and_wakes_at_the_fifo_tail() {
             Vec::new(),
         )
         .unwrap();
+}
+
+#[test]
+fn checkpoint_barrier_keeps_fifo_and_waiters_while_committing_host_completions() {
+    let scope = TaskScopeId(8);
+    let root = root_local(scope);
+    let operation = root
+        .execution
+        .register(
+            None,
+            None,
+            etas_host::TraceContext::root(etas_host::TraceId(1)),
+        )
+        .unwrap();
+    let operation_id = operation.context().operation();
+    let mut scheduler = TaskScheduler::new(scope, NonZeroUsize::new(2).unwrap());
+    let host = spawn(&mut scheduler, &root, 0);
+    let waiter = spawn(&mut scheduler, &root, 1);
+    let ready = spawn(&mut scheduler, &root, 2);
+    assert_eq!(scheduler.dispatch_ready(), Some(host));
+    scheduler.wait_for_host(host, operation_id).unwrap();
+    assert_eq!(scheduler.dispatch_ready(), Some(waiter));
+    assert!(matches!(
+        scheduler.await_task(waiter, host).unwrap(),
+        AwaitDecision::Parked
+    ));
+
+    scheduler.begin_checkpoint_barrier();
+    assert_eq!(scheduler.dispatch_ready(), None);
+    scheduler.wake_from_host(host, operation_id).unwrap();
+    let task = scheduler.take_checkpoint_task(host);
+    scheduler.restore_checkpoint_task(host, task);
+    operation.begin_dispatch().unwrap();
+    operation
+        .complete(etas_host::execution::ExternalOutcome::Confirmed, Vec::new())
+        .unwrap();
+    assert_eq!(scheduler.dispatch_ready(), None);
+    scheduler.complete(host, InterpValue::i32(42)).unwrap();
+    assert_eq!(scheduler.state(waiter).unwrap(), TaskState::Ready);
+    assert_eq!(scheduler.dispatch_ready(), None);
+    scheduler.end_checkpoint_barrier();
+
+    assert_eq!(scheduler.dispatch_ready(), Some(ready));
+    assert_eq!(scheduler.dispatch_ready(), Some(waiter));
+    assert!(
+        matches!(scheduler.take_wakeup(waiter).unwrap(), Some(TaskWakeup::Task {
+        completed, outcome: TaskOutcome::Completed(value),
+    }) if completed == host && value == InterpValue::i32(42))
+    );
+    assert_eq!(scheduler.dispatch_ready(), None);
 }
 
 #[test]

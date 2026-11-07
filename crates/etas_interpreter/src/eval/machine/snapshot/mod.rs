@@ -23,7 +23,7 @@ pub(crate) mod value_compare;
 mod value_membership;
 mod value_restore;
 
-pub(super) use capture_context::CaptureContext;
+pub(crate) use capture_context::CaptureContext;
 pub(crate) use frame::RestoreContext;
 pub(in crate::eval::machine) use frame::RestoredResidualState;
 pub(in crate::eval::machine) use frame::SuspensionRestoreTable;

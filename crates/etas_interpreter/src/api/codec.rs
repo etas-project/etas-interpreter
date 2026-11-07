@@ -23,7 +23,7 @@ use crate::{
     value::{InterpValue, codec as value_codec},
 };
 
-mod checkpoint;
+pub(crate) mod checkpoint;
 mod document;
 mod file;
 mod json;

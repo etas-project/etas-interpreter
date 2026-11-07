@@ -8,7 +8,7 @@ use crate::orchestration::{
 enum UnaryParent {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
     CallBoundary(etas_core::Span, Option<crate::control::CallOrigin>),
-    HandlerDispatch,
+    HandlerDispatch(Option<crate::value::ContinuationTokenValue>),
     ReenterHandler,
     HandleBoundary {
         scope_id: HandlerScopeId,
@@ -51,7 +51,9 @@ impl ContinuationSnapshot {
                         span,
                         outer,
                     } => (UnaryParent::CallBoundary(span, caller), outer),
-                    Self::HandlerDispatch { outer } => (UnaryParent::HandlerDispatch, outer),
+                    Self::HandlerDispatch { outer, deferred } => {
+                        (UnaryParent::HandlerDispatch(deferred), outer)
+                    }
                     Self::ReenterHandler { boundary } => (UnaryParent::ReenterHandler, boundary),
                     Self::HandleBoundary {
                         scope_id,
@@ -175,9 +177,9 @@ fn restore_parent(
             span,
             outer: child,
         },
-        UnaryParent::HandlerDispatch => Continuation::HandlerDispatch {
+        UnaryParent::HandlerDispatch(deferred) => Continuation::HandlerDispatch {
             outer: child,
-            deferred: None,
+            deferred,
         },
         UnaryParent::ReenterHandler => Continuation::ReenterHandler { boundary: child },
         UnaryParent::HandleBoundary {

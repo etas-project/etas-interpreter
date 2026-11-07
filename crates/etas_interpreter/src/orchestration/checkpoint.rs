@@ -854,6 +854,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     HandlerDispatch {
         outer: ContinuationSnapshotLink,
+        deferred: Option<crate::value::ContinuationTokenValue>,
     },
     ReenterHandler {
         boundary: ContinuationSnapshotLink,

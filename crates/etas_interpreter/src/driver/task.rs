@@ -257,7 +257,7 @@ async fn await_outcome<'host>(
     }
 }
 
-async fn drive_one<'host>(
+pub(super) async fn drive_one<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,
     reactor: &mut TaskHostReactor<'host>,
@@ -468,71 +468,11 @@ async fn drive_one<'host>(
         }
 
         if let Some(completed) = reactor.take_completed(handle) {
-            let signal = match completed {
-                CompletedTaskHost::Console(completed) => {
-                    let Some(signal) = dispatch::console::finish(&mut child, completed) else {
-                        let outcome = evaluation_failure(&mut child);
-                        drop(child);
-                        finish_task(eval, handle, task, outcome)?;
-                        return Ok(true);
-                    };
-                    signal
-                }
-                CompletedTaskHost::Command(completed) => {
-                    let Some(signal) =
-                        dispatch::command::finish(&mut child, &mut task.machine, completed)
-                    else {
-                        let outcome = evaluation_failure(&mut child);
-                        drop(child);
-                        finish_task(eval, handle, task, outcome)?;
-                        return Ok(true);
-                    };
-                    signal
-                }
-                CompletedTaskHost::Host(completed) => {
-                    let Some(signal) =
-                        dispatch::host::finish(&mut child, &mut task.machine, completed)
-                    else {
-                        let outcome = evaluation_failure(&mut child);
-                        drop(child);
-                        finish_task(eval, handle, task, outcome)?;
-                        return Ok(true);
-                    };
-                    signal
-                }
-                CompletedTaskHost::Tool(completed) => {
-                    dispatch::tool::finish(&mut child, &mut task.machine, completed);
-                    continue;
-                }
-                CompletedTaskHost::Model(completed) => {
-                    dispatch::model::finish(&mut child, &mut task.machine, completed);
-                    continue;
-                }
-                CompletedTaskHost::Approval(completed) => {
-                    let Some(signal) = dispatch::approval::finish(&mut child, completed) else {
-                        let outcome = evaluation_failure(&mut child);
-                        drop(child);
-                        finish_task(eval, handle, task, outcome)?;
-                        return Ok(true);
-                    };
-                    signal
-                }
-                CompletedTaskHost::Compiler(completed) => {
-                    dispatch::compiler::finish(&mut child, completed)
-                }
-                CompletedTaskHost::Memory(completed) => {
-                    let Some(signal) =
-                        dispatch::memory::finish(&mut child, &mut task.machine, completed)
-                    else {
-                        let outcome = evaluation_failure(&mut child);
-                        drop(child);
-                        finish_task(eval, handle, task, outcome)?;
-                        return Ok(true);
-                    };
-                    signal
-                }
-            };
-            task.machine.resume(signal);
+            if let Err(outcome) = commit_host_completion(&mut child, &mut task.machine, completed) {
+                drop(child);
+                finish_task(eval, handle, task, outcome)?;
+                return Ok(true);
+            }
             continue;
         }
 
@@ -1064,7 +1004,37 @@ async fn drive_one<'host>(
     }
 }
 
-async fn wait_for_cpu_or_host(
+/// Commit Host results on the coordinator without polling language code. The
+/// checkpoint barrier uses the same commit path as normal task execution.
+pub(super) fn commit_host_completion(
+    eval: &mut EvalContext<'_>,
+    machine: &mut crate::eval::machine::EvalMachine,
+    completed: CompletedTaskHost,
+) -> Result<(), EvaluationOutcome> {
+    let signal = match completed {
+        CompletedTaskHost::Console(completed) => dispatch::console::finish(eval, completed),
+        CompletedTaskHost::Command(completed) => {
+            dispatch::command::finish(eval, machine, completed)
+        }
+        CompletedTaskHost::Host(completed) => dispatch::host::finish(eval, machine, completed),
+        CompletedTaskHost::Tool(completed) => {
+            dispatch::tool::finish(eval, machine, completed);
+            return Ok(());
+        }
+        CompletedTaskHost::Model(completed) => {
+            dispatch::model::finish(eval, machine, completed);
+            return Ok(());
+        }
+        CompletedTaskHost::Approval(completed) => dispatch::approval::finish(eval, completed),
+        CompletedTaskHost::Compiler(completed) => Some(dispatch::compiler::finish(eval, completed)),
+        CompletedTaskHost::Memory(completed) => dispatch::memory::finish(eval, machine, completed),
+    };
+    let signal = signal.ok_or_else(|| evaluation_failure(eval))?;
+    machine.resume(signal);
+    Ok(())
+}
+
+pub(super) async fn wait_for_cpu_or_host(
     eval: &mut EvalContext<'_>,
     reactor: &mut TaskHostReactor<'_>,
 ) -> Result<(), EvaluationOutcome> {
@@ -1080,7 +1050,7 @@ async fn wait_for_cpu_or_host(
     Ok(())
 }
 
-fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, EvaluationOutcome> {
+pub(super) fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, EvaluationOutcome> {
     let executor = eval.cpu_executor.clone();
     let mut completions = Vec::new();
     while let Some(completion) = executor.try_completion() {
@@ -1345,7 +1315,7 @@ fn record_scope_exit(
     });
 }
 
-fn record_cancellation_events(eval: &mut EvalContext<'_>) {
+pub(super) fn record_cancellation_events(eval: &mut EvalContext<'_>) {
     record_resource_events(eval);
     for (handle, reason) in eval.scheduler.take_cancellation_events() {
         for (job, record) in &eval.cpu_jobs {
@@ -1436,7 +1406,10 @@ fn validate_continuation_value(
     })
 }
 
-fn task_fault(eval: &mut EvalContext<'_>, message: impl Into<String>) -> EvaluationOutcome {
+pub(super) fn task_fault(
+    eval: &mut EvalContext<'_>,
+    message: impl Into<String>,
+) -> EvaluationOutcome {
     let span = crate::diagnostics::item_span(eval.checked, eval.entry_item);
     let fault = crate::control::ExecutionFault::new(
         AnalysisDiagnosticCode::MissingCheckedFact,

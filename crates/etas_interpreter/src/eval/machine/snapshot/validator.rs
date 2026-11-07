@@ -864,8 +864,13 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 Ok(())
             }
+            ContinuationSnapshot::HandlerDispatch {
+                deferred: Some(_), ..
+            } => Err(format!(
+                "{context}: deferred continuation requires its scheduler snapshot"
+            )),
             ContinuationSnapshot::RestoreModelPolicy { .. }
-            | ContinuationSnapshot::HandlerDispatch { .. }
+            | ContinuationSnapshot::HandlerDispatch { deferred: None, .. }
             | ContinuationSnapshot::ScopedModelPolicy { .. } => Ok(()),
             ContinuationSnapshot::ForLoop {
                 pat,

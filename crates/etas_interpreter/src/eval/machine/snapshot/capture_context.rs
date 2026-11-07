@@ -23,8 +23,8 @@ type FrameIdentity = (*const (), u64);
 /// One synchronous, read-only capture operation. All keyed runtime nodes remain
 /// owned by the borrowed root, including its captured frames. No cache escapes.
 #[derive(Default)]
-pub(in crate::eval::machine) struct CaptureContext {
-    pub(in crate::eval::machine) revisions: std::collections::BTreeMap<
+pub(crate) struct CaptureContext {
+    pub(crate) revisions: std::collections::BTreeMap<
         etas_code::RevisionKey,
         std::sync::Arc<crate::api::code::PreparedCodeRevision>,
     >,
@@ -43,6 +43,7 @@ pub(in crate::eval::machine) struct CaptureContext {
     residual_scopes: Vec<crate::control::residual::SharedResidualScope>,
     residual_attempt_ids: HashMap<*const (), u32>,
     residual_attempts: Vec<crate::control::residual::ResidualAttemptTag>,
+    pub(crate) task_handles: bool,
 }
 
 impl CaptureContext {
@@ -184,17 +185,14 @@ impl CaptureContext {
         super::call_target::capture_call_target_with(target, self)
     }
 
-    pub(in crate::eval::machine) fn continuation(
+    pub(crate) fn continuation(
         &mut self,
         continuation: &crate::control::Continuation,
     ) -> Result<crate::orchestration::ContinuationSnapshot, String> {
         crate::orchestration::ContinuationSnapshot::capture_with(continuation, self)
     }
 
-    pub(in crate::eval::machine) fn value(
-        &mut self,
-        value: &InterpValue,
-    ) -> Result<ValueSnapshot, String> {
+    pub(crate) fn value(&mut self, value: &InterpValue) -> Result<ValueSnapshot, String> {
         super::value_capture::capture_with(value, self)
     }
 

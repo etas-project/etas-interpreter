@@ -44,6 +44,7 @@ pub(super) fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcom
     EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
 }
 
+#[derive(Debug)]
 pub(crate) enum EvaluationOutcome {
     Completed(InterpValue),
     Failed(crate::api::RunFailure),

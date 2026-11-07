@@ -93,7 +93,7 @@ fn references(mut work: Vec<&ContinuationSnapshot>) -> Vec<u32> {
             | ContinuationSnapshot::RestoreModelPolicy { inner, .. }
             | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => work.push(inner),
             ContinuationSnapshot::CallBoundary { outer, .. }
-            | ContinuationSnapshot::HandlerDispatch { outer } => work.push(outer),
+            | ContinuationSnapshot::HandlerDispatch { outer, .. } => work.push(outer),
             ContinuationSnapshot::Chain { inner, outer } => {
                 work.push(outer);
                 work.push(inner);
@@ -135,7 +135,7 @@ impl super::MachineSnapshot {
                 | ContinuationSnapshot::RestoreModelPolicy { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => work.push(inner),
                 ContinuationSnapshot::CallBoundary { outer, .. }
-                | ContinuationSnapshot::HandlerDispatch { outer } => work.push(outer),
+                | ContinuationSnapshot::HandlerDispatch { outer, .. } => work.push(outer),
                 ContinuationSnapshot::Chain { inner, outer } => {
                     work.push(outer);
                     work.push(inner);

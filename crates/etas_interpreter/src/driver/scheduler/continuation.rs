@@ -6,7 +6,8 @@ use crate::{control::Continuation, value::ContinuationTokenValue};
 
 use super::{ContinuationId, SchedulerError, TaskIdentity, TaskScopeId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum ContinuationState {
     ArmOwned,
     ReadyOwned,
@@ -40,7 +41,84 @@ pub(super) struct ContinuationArena {
     entries: BTreeMap<ContinuationId, ContinuationEntry>,
 }
 
+/// Durable entries include consumed tokens so restoring a checkpoint cannot
+/// revive a continuation whose stack was already transferred to a task.
+#[derive(Clone, Debug)]
+pub(crate) struct ContinuationArenaSnapshot {
+    pub(crate) next: u64,
+    pub(crate) entries: BTreeMap<ContinuationId, ContinuationEntrySnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ContinuationEntrySnapshot {
+    pub(crate) owner: TaskScopeId,
+    pub(crate) origin: TaskIdentity,
+    pub(crate) continuation: Option<crate::orchestration::ContinuationSnapshot>,
+    pub(crate) output: TypeId,
+    pub(crate) state: ContinuationState,
+}
+
 impl ContinuationArena {
+    pub(super) fn capture(
+        &self,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
+    ) -> Result<ContinuationArenaSnapshot, String> {
+        let entries = self
+            .entries
+            .iter()
+            .map(|(id, entry)| {
+                Ok((
+                    *id,
+                    ContinuationEntrySnapshot {
+                        owner: entry.owner,
+                        origin: entry.origin,
+                        continuation: entry
+                            .continuation
+                            .as_ref()
+                            .map(|continuation| context.continuation(continuation))
+                            .transpose()?,
+                        output: entry.output,
+                        state: entry.state,
+                    },
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(ContinuationArenaSnapshot {
+            next: self.next,
+            entries,
+        })
+    }
+
+    pub(super) fn restore(
+        snapshot: ContinuationArenaSnapshot,
+        context: &mut crate::eval::machine::snapshot::RestoreContext,
+    ) -> Result<Self, String> {
+        snapshot.validate()?;
+        let entries = snapshot
+            .entries
+            .into_iter()
+            .map(|(id, entry)| {
+                Ok((
+                    id,
+                    ContinuationEntry {
+                        owner: entry.owner,
+                        origin: entry.origin,
+                        continuation: entry
+                            .continuation
+                            .map(|continuation| continuation.restore_with(context))
+                            .transpose()?,
+                        output: entry.output,
+                        state: entry.state,
+                    },
+                ))
+            })
+            .collect::<Result<_, String>>()?;
+        Ok(Self {
+            next: snapshot.next,
+            entries,
+        })
+    }
+
     pub(super) fn new() -> Self {
         Self {
             next: 0,
@@ -124,5 +202,124 @@ impl ContinuationArena {
         entry.continuation = None;
         entry.state = ContinuationState::Disposed;
         Ok(())
+    }
+}
+
+impl ContinuationArenaSnapshot {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        for (id, entry) in &self.entries {
+            if id.0 >= self.next {
+                return Err("checkpoint continuation counter would reuse a token".into());
+            }
+            if (entry.state == ContinuationState::ArmOwned) != entry.continuation.is_some() {
+                return Err(
+                    "checkpoint continuation ownership differs from its saved stack".into(),
+                );
+            }
+        }
+        Ok(())
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::{
+        control::Frame,
+        eval::machine::snapshot::{CaptureContext, RestoreContext},
+        value::InterpValue,
+    };
+    use etas_hir::{HirBlockId, SymbolId};
+
+    #[test]
+    fn checkpoint_roundtrip_preserves_consumption_ids_deferred_tokens_and_shared_frames() {
+        let owner = TaskScopeId(7);
+        let origin = TaskIdentity::Scheduled(super::super::TaskId(9));
+        let mut arena = ContinuationArena::new();
+        let mut frame = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(3))]).unwrap();
+        let leaf = Continuation::ContinueBlock {
+            block: HirBlockId(0),
+            next_stmt_index: 1,
+            frame: frame.clone(),
+        };
+        let resumed = arena.allocate(owner, origin, Continuation::Return, TypeId(0));
+        let requeued = arena.allocate(owner, origin, Continuation::Return, TypeId(0));
+        let parked = arena.allocate(owner, origin, leaf.clone(), TypeId(0));
+        let disposed = arena.allocate(owner, origin, Continuation::Return, TypeId(0));
+        for (token, transfer) in [
+            (resumed, ContinuationTransfer::Resume),
+            (requeued, ContinuationTransfer::Requeue),
+            (parked, ContinuationTransfer::Park),
+        ] {
+            arena.consume(token, origin, transfer).unwrap();
+        }
+        arena.dispose(disposed, origin).unwrap();
+        let first = arena.allocate(owner, origin, leaf, TypeId(0));
+        let second = arena.allocate(
+            owner,
+            origin,
+            Continuation::HandlerDispatch {
+                outer: Continuation::ContinueBlock {
+                    block: HirBlockId(0),
+                    next_stmt_index: 2,
+                    frame: frame.clone(),
+                }
+                .into(),
+                deferred: Some(parked),
+            },
+            TypeId(0),
+        );
+        let mut capture = CaptureContext::default();
+        capture.task_handles = true;
+        let saved = arena.capture(&mut capture).unwrap();
+        assert_eq!(
+            saved.entries[&resumed.continuation].state,
+            ContinuationState::Resumed
+        );
+        assert_eq!(
+            saved.entries[&requeued.continuation].state,
+            ContinuationState::ReadyOwned
+        );
+        assert_eq!(
+            saved.entries[&parked.continuation].state,
+            ContinuationState::WaitingOn
+        );
+        assert_eq!(
+            saved.entries[&disposed.continuation].state,
+            ContinuationState::Disposed
+        );
+        frame.insert(SymbolId(0), InterpValue::i32(99));
+        let saved = crate::api::codec::checkpoint::scheduler::roundtrip_continuation_arena(&saved);
+        let mut restored =
+            ContinuationArena::restore(saved, &mut RestoreContext::default()).unwrap();
+        for token in [resumed, requeued, parked, disposed] {
+            assert!(matches!(
+                restored.consume(token, origin, ContinuationTransfer::Resume),
+                Err(SchedulerError::ContinuationConsumed)
+            ));
+        }
+        let a = restored
+            .consume(first, origin, ContinuationTransfer::Resume)
+            .unwrap()
+            .continuation;
+        let b = restored
+            .consume(second, origin, ContinuationTransfer::Resume)
+            .unwrap()
+            .continuation;
+        let Continuation::ContinueBlock { frame: mut a, .. } = a else {
+            panic!("first stack")
+        };
+        let Continuation::HandlerDispatch { outer, deferred } = b else {
+            panic!("second stack")
+        };
+        assert_eq!(deferred, Some(parked));
+        let Continuation::ContinueBlock { frame: b, .. } = &*outer else {
+            panic!("shared frame")
+        };
+        assert_eq!(a.get(SymbolId(0)), Some(InterpValue::i32(3)));
+        a.insert(SymbolId(0), InterpValue::i32(42));
+        assert_eq!(b.get(SymbolId(0)), Some(InterpValue::i32(42)));
+        let fresh = restored.allocate(owner, origin, Continuation::Return, TypeId(0));
+        assert_eq!(fresh.continuation.0, second.continuation.0 + 1);
     }
 }

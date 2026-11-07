@@ -145,7 +145,7 @@ cargo test --release cpu_dispatch_benchmark -- --ignored --nocapture --test-thre
 
 Durable CPU scheduling events use logical worker IDs and dispatch/completion
 sequences. OS thread IDs and durations are available through
-`RunEventObserver::observe_cpu`. Report v3 and checkpoint v74 reject older
+`RunEventObserver::observe_cpu`. Report v3 and checkpoint v75 reject older
 schemas; replay never depends on process-local thread IDs.
 
 `crates/etas_interpreter/examples/concurrency_speedup.es` measures pure CPU work;
