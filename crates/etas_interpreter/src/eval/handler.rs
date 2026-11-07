@@ -883,6 +883,23 @@ impl<'a> EvalContext<'a> {
         Ok(())
     }
 
+    pub(in crate::eval) fn checked_handler_action(
+        &self,
+        handler: &ActiveHandlerArmRecord,
+    ) -> Result<&etas_effects::Effect, ExecutionFault> {
+        self.checked
+            .effects
+            .handler_action_effects
+            .get(&handler.arm)
+            .ok_or_else(|| {
+                ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    handler.span,
+                    "handler has no checked canonical action identity",
+                )
+            })
+    }
+
     pub(in crate::eval) fn handler_matches_perform(
         &self,
         perform: &PendingPerform,
@@ -893,18 +910,7 @@ impl<'a> EvalContext<'a> {
             return self.error_raise_matches_record(perform, handler, frame);
         }
         if let Some(actual) = self.checked_perform_action(perform)? {
-            let effect = self
-                .checked
-                .effects
-                .handler_action_effects
-                .get(&handler.arm)
-                .ok_or_else(|| {
-                    ExecutionFault::new(
-                        AnalysisDiagnosticCode::MissingCheckedFact,
-                        handler.span,
-                        "handler has no checked canonical action identity",
-                    )
-                })?;
+            let effect = self.checked_handler_action(handler)?;
             let mut effect = effect.clone();
             if let Some(frame) = frame
                 && let etas_effects::Effect::AppliedAction(instance) = &mut effect
