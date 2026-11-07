@@ -195,6 +195,7 @@ fn run_lambda(
         model_policy: Default::default(),
         execution_limits: Default::default(),
         cpu_threads: std::num::NonZeroUsize::MIN,
+        cpu_min_work: 10_000,
         consumed_steps: 0,
         current_session: None,
         entry_item: plan.entry.item,

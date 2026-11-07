@@ -30,10 +30,18 @@ pub enum RunOutcome {
 
 #[derive(Clone, Debug)]
 pub enum RunFailure {
-    PreparationRejected { origin: etas_core::Span },
-    RestoreRejected { origin: etas_core::Span },
+    PreparationRejected {
+        origin: etas_core::Span,
+    },
+    RestoreRejected {
+        origin: etas_core::Span,
+    },
     Language(Box<Diagnostic>),
     ExecutionFault(crate::control::ExecutionFault),
+    CpuInfrastructure {
+        worker: crate::orchestration::CpuWorkerId,
+        message: String,
+    },
 }
 
 /// Infrastructure failures cannot assert that local work has terminated.

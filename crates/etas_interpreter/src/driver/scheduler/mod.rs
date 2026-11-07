@@ -248,7 +248,7 @@ impl TaskScheduler {
     ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
         let task = self.tasks.get_mut(&id).expect("resolved task");
-        capsule.execution = task.local.execution.clone();
+        capsule.contract.execution = task.local.execution.clone();
         if task.state != TaskState::Ready || task.cpu_capsule.replace(capsule).is_some() {
             return Err(SchedulerError::InvalidTransition);
         }

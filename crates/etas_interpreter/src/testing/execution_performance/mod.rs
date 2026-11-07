@@ -16,6 +16,7 @@ const MIN_EFFECTIVE_FIXTURE_LINES: usize = 30;
 
 mod agent_context_specialization;
 mod batch_storage_semijoin;
+mod cpu_dispatch;
 mod cross_level_semantics;
 mod crypto;
 mod fuse_projection_scans;
@@ -120,6 +121,7 @@ impl PreparedExecution {
             model_policy: options.model_policy,
             execution_limits: options.execution_limits,
             cpu_threads: options.cpu_threads,
+            cpu_min_work: options.cpu_min_work,
             consumed_steps: 0,
             current_session: None,
             entry_item: self.checked.entry.unwrap(),

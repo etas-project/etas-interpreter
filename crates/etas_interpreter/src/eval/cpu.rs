@@ -2,16 +2,23 @@ use std::sync::atomic::Ordering;
 
 use crate::control::{CallPurity, CallTarget, Continuation, ControlSignal, PendingCall};
 use crate::driver::cpu::{
-    CpuBudgetDelta, CpuCallableId, CpuExecutionFailure, CpuTaskCapsule, CpuTaskCompletion,
-    CpuTaskMetrics, FrozenValue,
+    CpuBudgetDelta, CpuCallableId, CpuContractViolation, CpuExecutionFailure, CpuTaskCapsule,
+    CpuTaskCompletion, CpuTaskMetrics, FrozenValue,
 };
 use crate::eval::machine::{EvalMachine, MachinePoll, PendingBoundary};
 
-pub(crate) fn execute(capsule: CpuTaskCapsule) -> CpuTaskCompletion {
+pub(crate) fn execute(
+    capsule: CpuTaskCapsule,
+    worker: crate::orchestration::CpuWorkerId,
+) -> CpuTaskCompletion {
     let started = std::time::Instant::now();
     let dispatch_sequence = capsule.dispatch_sequence;
     let job = capsule.job;
-    let result = execute_inner(&capsule);
+    let mut timings = capsule.timings.clone();
+    timings.queue_wait = capsule
+        .submitted
+        .map_or(std::time::Duration::ZERO, |submitted| submitted.elapsed());
+    let result = execute_inner(&capsule, &mut timings);
     CpuTaskCompletion {
         job,
         consumed_budget: CpuBudgetDelta {
@@ -19,9 +26,12 @@ pub(crate) fn execute(capsule: CpuTaskCapsule) -> CpuTaskCompletion {
         },
         result: result.value,
         metrics: CpuTaskMetrics {
+            worker,
             dispatch_sequence,
-            thread: std::thread::current().id(),
+            thread: Some(std::thread::current().id()),
             elapsed: started.elapsed(),
+            finished_at: std::time::Instant::now(),
+            timings,
         },
     }
 }
@@ -31,50 +41,50 @@ struct CpuRunResult {
     steps: u64,
 }
 
-fn execute_inner(capsule: &CpuTaskCapsule) -> CpuRunResult {
+fn execute_inner(
+    capsule: &CpuTaskCapsule,
+    timings: &mut crate::api::CpuTaskTimings,
+) -> CpuRunResult {
     if capsule.cancellation.load(Ordering::Acquire) {
         return failed(CpuExecutionFailure::Cancelled(
             etas_host::execution::CancellationReason::Requested,
         ));
     }
     let CpuCallableId::Flow(item) = capsule.callable;
+    let started = std::time::Instant::now();
     let args = capsule
         .arguments
         .clone()
         .into_iter()
         .map(FrozenValue::thaw)
         .collect::<Vec<_>>();
-    let mut options = crate::api::RunOptions::default();
-    options.execution_limits = capsule.budget.execution_limits;
-    options.host_context.budget = capsule.budget.budget.clone();
-    let replay_keys = match super::replay::RunReplayKeys::start(&options) {
-        Ok(keys) => keys,
-        Err(message) => return failed(CpuExecutionFailure::Fault(message)),
-    };
-    let execution = capsule.execution.clone();
+    timings.input_thaw = started.elapsed();
+    let started = std::time::Instant::now();
+    let contract = &capsule.contract;
     let (program, mut run_state) = super::EvalContextInput {
-        replay_keys,
+        replay_keys: contract.replay_keys.clone(),
         code_definitions: None,
-        syntax_limits: options.syntax_limits,
-        storage_limits: options.storage_limits,
+        syntax_limits: contract.syntax_limits,
+        storage_limits: contract.storage_limits.clone(),
         event_observer: None,
-        execution,
+        execution: contract.execution.clone(),
         checked: &capsule.program.checked,
         plan: &capsule.program.plan,
-        host_context: options.host_context,
-        model_policy: options.model_policy,
-        execution_limits: options.execution_limits,
+        host_context: contract.host_context.clone(),
+        model_policy: contract.model_policy.clone(),
+        execution_limits: contract.execution_limits,
         cpu_threads: std::num::NonZeroUsize::MIN,
+        cpu_min_work: 10_000,
         consumed_steps: 0,
         current_session: None,
-        entry_item: item,
+        entry_item: contract.entry_item,
         entry_args: &args,
     }
     .into_parts();
     run_state.shared.safe_points =
         super::safe_point::ExecutionSafePointScheduler::with_ledger(capsule.budget.steps.clone());
     let mut eval = super::EvalContext::new(program, &mut run_state);
-    let span = crate::diagnostics::item_span(eval.checked, item);
+    let span = capsule.call_span;
     let mut machine = EvalMachine::new();
     machine.resume(ControlSignal::pending_call(PendingCall {
         purity: CallPurity::Ordinary,
@@ -84,6 +94,8 @@ fn execute_inner(capsule: &CpuTaskCapsule) -> CpuRunResult {
         span,
         continuation: Continuation::BlockValue,
     }));
+    timings.bootstrap = started.elapsed();
+    let started = std::time::Instant::now();
     let value = loop {
         if capsule.cancellation.load(Ordering::Acquire) {
             break Err(CpuExecutionFailure::Cancelled(
@@ -92,24 +104,28 @@ fn execute_inner(capsule: &CpuTaskCapsule) -> CpuRunResult {
         }
         match machine.run_until_yield(&mut eval) {
             MachinePoll::Complete(value) => {
-                break FrozenValue::freeze(&value).ok_or_else(|| {
-                    CpuExecutionFailure::Fault("CPU task produced a non-freezable value".to_owned())
+                let freeze_start = std::time::Instant::now();
+                let frozen = FrozenValue::freeze(&value).ok_or_else(|| {
+                    CpuExecutionFailure::ContractViolation(CpuContractViolation::NonFreezableResult)
                 });
+                timings.output_freeze = freeze_start.elapsed();
+                break frozen;
             }
             MachinePoll::CooperativeYield | MachinePoll::ProgramChanged => continue,
             MachinePoll::Cancelled(cause) => {
                 break Err(CpuExecutionFailure::Cancelled(cause.reason().clone()));
             }
             MachinePoll::Fault(fault) => {
-                break Err(CpuExecutionFailure::Fault(fault.message));
+                break Err(CpuExecutionFailure::ExecutionFault(fault));
             }
             MachinePoll::Yield(boundary) => {
-                break Err(CpuExecutionFailure::EffectBoundary(boundary_kind(
-                    &boundary,
-                )));
+                break Err(CpuExecutionFailure::ContractViolation(
+                    CpuContractViolation::EffectBoundary(boundary_kind(&boundary)),
+                ));
             }
         }
     };
+    timings.execution = started.elapsed().saturating_sub(timings.output_freeze);
     drop(eval);
     CpuRunResult {
         value,

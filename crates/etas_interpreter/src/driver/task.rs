@@ -167,7 +167,7 @@ pub(super) async fn settle<'host>(
         return root;
     }
 
-    while eval.scheduler.has_unsettled_tasks() {
+    while eval.scheduler.has_unsettled_tasks() || !eval.cpu_jobs.is_empty() {
         if let Some(failure) = primary_failure(eval) {
             root = failure;
             if let Err(outcome) = cancel_and_drain(eval, host, reactor).await {
@@ -193,7 +193,7 @@ async fn cancel_and_drain<'host>(
         .cancel_unsettled(etas_host::execution::CancellationReason::ChildFailed)
         .map_err(|error| scheduler_failure(eval, error))?;
     record_cancellation_events(eval);
-    while eval.scheduler.has_unsettled_tasks() {
+    while eval.scheduler.has_unsettled_tasks() || !eval.cpu_jobs.is_empty() {
         match drive_one(eval, host, reactor).await {
             Ok(true) => {}
             Ok(false) => return Err(scheduler_deadlock(eval)),
@@ -386,15 +386,25 @@ async fn drive_one<'host>(
         return Ok(true);
     }
 
-    if let Some(capsule) = task.cpu_capsule.take() {
+    if let Some(mut capsule) = task.cpu_capsule.take() {
+        let dispatch_sequence = eval.next_cpu_dispatch;
+        eval.next_cpu_dispatch = dispatch_sequence
+            .checked_add(1)
+            .expect("CPU dispatch sequence exhausted");
+        capsule.dispatch_sequence = dispatch_sequence;
         let cancellation = capsule.cancellation.clone();
         let executor = eval.cpu_executor.clone();
         let job = match executor.submit(capsule) {
             Ok(job) => job,
             Err(error) => {
-                let outcome =
-                    task_fault(eval, format!("CPU executor submission failed: {error:?}"));
-                finish_task(eval, handle, task, outcome)?;
+                eval.events.push(WorkflowEvent::CpuExecutorFallback {
+                    task: Some(handle.task.0),
+                    message: format!("CPU executor submission failed: {error:?}"),
+                });
+                eval.scheduler
+                    .restore_running(handle, task)
+                    .and_then(|()| eval.scheduler.requeue(handle))
+                    .map_err(|error| scheduler_failure(eval, error))?;
                 return Ok(true);
             }
         };
@@ -418,6 +428,7 @@ async fn drive_one<'host>(
             scope: handle.owner.0,
             task: handle.task.0,
             job: job.0,
+            dispatch_sequence,
         });
         eval.events.push(WorkflowEvent::TaskWaitingCpu {
             scope: handle.owner.0,
@@ -1060,30 +1071,66 @@ fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, EvaluationO
                 format!("CPU worker completed unknown job {}", completion.job.0),
             ));
         };
+        let completion_sequence = eval.next_cpu_completion;
+        eval.next_cpu_completion = completion_sequence
+            .checked_add(1)
+            .expect("CPU completion sequence exhausted");
+        let mut telemetry = crate::api::CpuTaskTelemetry {
+            job: completion.job.0,
+            worker: completion.metrics.worker,
+            dispatch_sequence: completion.metrics.dispatch_sequence,
+            completion_sequence,
+            thread: completion.metrics.thread,
+            elapsed: completion.metrics.elapsed,
+            consumed_steps: completion.consumed_budget.steps,
+            timings: completion.metrics.timings,
+        };
+        telemetry.timings.return_wait = completion.metrics.finished_at.elapsed();
+        eval.events.push(WorkflowEvent::TaskCpuCompleted {
+            scope: record.task.owner.0,
+            task: record.task.task.0,
+            job: completion.job.0,
+            worker: completion.metrics.worker,
+            dispatch_sequence: completion.metrics.dispatch_sequence,
+            completion_sequence,
+        });
+        if let Err(crate::driver::cpu::CpuExecutionFailure::Infrastructure { worker, message }) =
+            &completion.result
+        {
+            eval.events.push(WorkflowEvent::CpuWorkerFailed {
+                worker: *worker,
+                live_workers: executor
+                    .health()
+                    .iter()
+                    .enumerate()
+                    .filter(|(index, state)| {
+                        *index != usize::from(worker.0)
+                            && !matches!(state, crate::driver::cpu::CpuWorkerHealth::Exited(_))
+                    })
+                    .count(),
+                message: message.clone(),
+            });
+        }
         if eval
             .scheduler
             .state(record.task)
             .map_err(|error| scheduler_failure(eval, error))?
             .is_terminal()
         {
+            eval.events.cpu_telemetry(&telemetry);
             continue;
         }
         let task = eval
             .scheduler
             .take_cpu_completion(record.task, completion.job)
             .map_err(|error| scheduler_failure(eval, error))?;
-        eval.events.push(WorkflowEvent::TaskReady {
-            scope: record.task.owner.0,
-            task: record.task.task.0,
-        });
-        eval.events.push(WorkflowEvent::TaskCpuCompleted {
-            scope: record.task.owner.0,
-            task: record.task.task.0,
-            job: completion.job.0,
-            thread: format!("{:?}", completion.metrics.thread),
-        });
         let outcome = match completion.result {
-            Ok(value) => EvaluationOutcome::Completed(value.thaw()),
+            Ok(value) => {
+                let started = std::time::Instant::now();
+                let value = value.thaw();
+                telemetry.timings.output_thaw = started.elapsed();
+                EvaluationOutcome::Completed(value)
+            }
             Err(crate::driver::cpu::CpuExecutionFailure::Cancelled(reason)) => {
                 task.local
                     .execution
@@ -1099,14 +1146,21 @@ fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, EvaluationO
                     .expect("cancelled CPU task publishes a cause");
                 EvaluationOutcome::Cancelled(cause)
             }
-            Err(crate::driver::cpu::CpuExecutionFailure::Fault(message)) => {
-                task_fault(eval, format!("CPU task failed: {message}"))
+            Err(crate::driver::cpu::CpuExecutionFailure::ExecutionFault(fault)) => {
+                eval.diagnostics.push(fault.clone().into_diagnostic());
+                EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
             }
-            Err(crate::driver::cpu::CpuExecutionFailure::EffectBoundary(kind)) => task_fault(
-                eval,
-                format!("CPU-eligible task reached coordinator-only {kind} boundary"),
-            ),
+            Err(crate::driver::cpu::CpuExecutionFailure::ContractViolation(violation)) => {
+                task_fault(eval, format!("CPU task contract violation: {violation:?}"))
+            }
+            Err(crate::driver::cpu::CpuExecutionFailure::Infrastructure { worker, message }) => {
+                EvaluationOutcome::Failed(crate::api::RunFailure::CpuInfrastructure {
+                    worker,
+                    message,
+                })
+            }
         };
+        eval.events.cpu_telemetry(&telemetry);
         finish_task(eval, record.task, task, outcome)?;
     }
     Ok(had_completions)
@@ -1153,6 +1207,31 @@ fn finish_task(
     task: ScheduledTask,
     outcome: EvaluationOutcome,
 ) -> Result<(), EvaluationOutcome> {
+    // Both execution modes commit values through this coordinator boundary.
+    // Resource handles stay local; data values use the parent's storage limits.
+    let outcome = match outcome {
+        EvaluationOutcome::Completed(value) => {
+            let error = crate::eval::interp_to_host_value(&value)
+                .ok()
+                .and_then(|projected| eval.storage_limits.value_size(&projected).err());
+            match error {
+                Some(error) => {
+                    let fault = crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::UnhandledRuntimeError,
+                        crate::diagnostics::item_span(eval.checked, eval.entry_item),
+                        format!(
+                            "task result exceeds the run storage limits: {}",
+                            error.message
+                        ),
+                    );
+                    eval.diagnostics.push(fault.clone().into_diagnostic());
+                    EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+                }
+                None => EvaluationOutcome::Completed(value),
+            }
+        }
+        other => other,
+    };
     let outcome_name = match &outcome {
         EvaluationOutcome::Completed(_) => "completed",
         EvaluationOutcome::Failed(_) => "failed",

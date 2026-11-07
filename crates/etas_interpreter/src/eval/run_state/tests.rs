@@ -40,6 +40,7 @@ fn initialize<'a>(
         model_policy: options.model_policy,
         execution_limits: options.execution_limits,
         cpu_threads: options.cpu_threads,
+        cpu_min_work: options.cpu_min_work,
         consumed_steps,
         current_session: options.current_session,
     }

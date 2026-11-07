@@ -16,11 +16,42 @@ pub(crate) struct PreparedCpuProgram {
     pub(crate) plan: Arc<crate::api::InterpreterPlan>,
 }
 
+impl PreparedCpuProgram {
+    pub(crate) fn new(
+        checked: etas_frontend::CheckedProject,
+        plan: Arc<crate::api::InterpreterPlan>,
+    ) -> Self {
+        #[cfg(test)]
+        PROGRAM_BUILDS.set(PROGRAM_BUILDS.get() + 1);
+        Self { checked, plan }
+    }
+}
+
+#[cfg(test)]
+std::thread_local! { static PROGRAM_BUILDS: std::cell::Cell<u64> = const { std::cell::Cell::new(0) }; }
+
+#[cfg(test)]
+pub(crate) fn program_build_count() -> u64 {
+    PROGRAM_BUILDS.get()
+}
+
 #[derive(Clone, Debug)]
 pub(crate) struct CpuBudgetLease {
-    pub(crate) execution_limits: crate::api::ExecutionLimits,
-    pub(crate) budget: etas_host::ExecutionBudget,
     pub(crate) steps: Arc<std::sync::atomic::AtomicU64>,
+}
+
+/// The parent's immutable run contract. Host context includes the shared wall
+/// time/token/cost ledger; execution is rebound to the admitted child scope.
+#[derive(Clone, Debug)]
+pub(crate) struct CpuRuntimeContract {
+    pub(crate) execution_limits: crate::api::ExecutionLimits,
+    pub(crate) entry_item: etas_hir::HirItemId,
+    pub(crate) storage_limits: etas_host::StorageLimits,
+    pub(crate) syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
+    pub(crate) host_context: crate::api::HostExecutionContext,
+    pub(crate) model_policy: crate::api::ModelExecutionPolicy,
+    pub(crate) execution: etas_host::execution::ExecutionScope,
+    pub(crate) replay_keys: crate::eval::replay::RunReplayKeys,
 }
 
 #[derive(Clone, Debug)]
@@ -31,8 +62,13 @@ pub(crate) struct CpuTaskCapsule {
     pub(crate) callable: CpuCallableId,
     pub(crate) arguments: Vec<FrozenValue>,
     pub(crate) budget: CpuBudgetLease,
+    pub(crate) contract: CpuRuntimeContract,
     pub(crate) cancellation: Arc<AtomicBool>,
-    pub(crate) execution: etas_host::execution::ExecutionScope,
+    pub(crate) call_span: etas_core::Span,
+    pub(crate) timings: crate::api::CpuTaskTimings,
+    pub(crate) submitted: Option<std::time::Instant>,
+    #[cfg(test)]
+    pub(crate) inject_panic: bool,
 }
 
 impl CpuTaskCapsule {
@@ -40,8 +76,12 @@ impl CpuTaskCapsule {
         self.job = job;
     }
 
-    pub(crate) fn execute(self) -> CpuTaskCompletion {
-        crate::eval::cpu::execute(self)
+    pub(crate) fn execute(self, worker: crate::orchestration::CpuWorkerId) -> CpuTaskCompletion {
+        #[cfg(test)]
+        if self.inject_panic {
+            panic!("injected CPU task panic");
+        }
+        crate::eval::cpu::execute(self, worker)
     }
 }
 

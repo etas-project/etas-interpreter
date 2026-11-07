@@ -84,6 +84,9 @@ pub struct RunOptions {
     pub execution_limits: ExecutionLimits,
     /// Host CPU worker capacity. The default is one for deterministic compatibility.
     pub cpu_threads: std::num::NonZeroUsize,
+    /// Minimum estimated HIR operations for worker dispatch. Unknown work runs
+    /// inline. Zero forces eligible tasks onto workers for profiling/calibration.
+    pub cpu_min_work: u64,
     pub host_context: HostExecutionContext,
     pub model_policy: ModelExecutionPolicy,
     pub current_session: Option<String>,
@@ -102,6 +105,7 @@ impl Default for RunOptions {
             plan: Default::default(),
             execution_limits: Default::default(),
             cpu_threads: std::num::NonZeroUsize::MIN,
+            cpu_min_work: 10_000,
             host_context: Default::default(),
             model_policy: Default::default(),
             current_session: None,
