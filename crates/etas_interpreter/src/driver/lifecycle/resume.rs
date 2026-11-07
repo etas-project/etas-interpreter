@@ -182,6 +182,7 @@ pub(super) async fn resume(
                         .original_limits
                         .stricter(options.execution_limits),
                     cpu_threads: options.cpu_threads,
+                    cpu_min_work: options.cpu_min_work,
                     consumed_steps: header.progress.consumed_steps,
                     current_session: header.session.or(options.current_session.clone()),
                     entry_item: checkpoint.entry_item,

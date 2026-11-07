@@ -27,8 +27,14 @@ pub(crate) struct EvalSharedState {
     pub(crate) locked_model: Option<etas_host::ModelName>,
     pub execution_limits: ExecutionLimits,
     pub(crate) cpu_executor: std::sync::Arc<dyn crate::driver::cpu::CpuExecutor>,
+    pub(crate) cpu_min_work: u64,
+    pub(crate) cpu_programs: std::collections::HashMap<
+        (usize, etas_hir::HirItemId),
+        std::sync::Arc<crate::driver::cpu::PreparedCpuProgram>,
+    >,
     pub(crate) cpu_jobs: std::collections::BTreeMap<crate::driver::cpu::CpuJobId, CpuJobRecord>,
     pub(crate) next_cpu_dispatch: u64,
+    pub(crate) next_cpu_completion: u64,
     pub current_session: Option<String>,
     pub diagnostics: Vec<etas_core::Diagnostic>,
     pub events: crate::api::lifecycle::EventLog,
@@ -137,18 +143,32 @@ impl EvalRunState {
             .then(|| input.model_policy.model.clone());
         let root_scope = crate::driver::scheduler::TaskScopeId(0);
         let root_task = TaskLocalState::root(root_scope, input.execution, input.model_policy);
+        let mut events = crate::api::lifecycle::EventLog::new(input.event_observer);
+        let cpu_executor = match crate::driver::cpu::new_executor(input.cpu_threads) {
+            Ok(executor) => executor,
+            Err(error) => {
+                events.push(crate::orchestration::WorkflowEvent::CpuExecutorFallback {
+                    task: None,
+                    message: error.to_string(),
+                });
+                std::sync::Arc::new(crate::driver::cpu::InlineCpuExecutor::new())
+            }
+        };
         let shared = EvalSharedState {
             replay_keys: input.replay_keys,
             storage_limits: limits,
             host_context: input.host_context,
             locked_model,
             execution_limits: input.execution_limits,
-            cpu_executor: crate::driver::cpu::new_executor(input.cpu_threads),
+            cpu_executor,
+            cpu_min_work: input.cpu_min_work,
+            cpu_programs: Default::default(),
             cpu_jobs: Default::default(),
             next_cpu_dispatch: 0,
+            next_cpu_completion: 0,
             current_session: input.current_session,
             diagnostics: Vec::new(),
-            events: crate::api::lifecycle::EventLog::new(input.event_observer),
+            events,
             checkpoints: Vec::new(),
             next_step: 0,
             next_checkpoint: 0,

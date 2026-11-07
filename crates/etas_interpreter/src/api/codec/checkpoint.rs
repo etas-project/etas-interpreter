@@ -224,7 +224,8 @@ pub fn sources_and_flow_from_checkpoint_json(
 }
 
 pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCodecError> {
-    let event = match event {
+    let layer = event.layer();
+    let mut event = match event {
         WorkflowEvent::StepStarted(id) => json!({ "kind": "step_started", "id": id.0 }),
         WorkflowEvent::StepCompleted(id) => json!({ "kind": "step_completed", "id": id.0 }),
         WorkflowEvent::ScopeEntered {
@@ -282,11 +283,27 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "task": task,
             "source_index": source_index,
         }),
-        WorkflowEvent::TaskDispatched { scope, task, job } => json!({
+        WorkflowEvent::CpuWorkerFailed {
+            worker,
+            live_workers,
+            message,
+        } => json!({
+            "kind": "cpu_worker_failed", "worker": worker.0, "live_workers": live_workers, "message": message,
+        }),
+        WorkflowEvent::CpuExecutorFallback { task, message } => json!({
+            "kind": "cpu_executor_fallback", "task": task, "message": message,
+        }),
+        WorkflowEvent::TaskDispatched {
+            scope,
+            task,
+            job,
+            dispatch_sequence,
+        } => json!({
             "kind": "task_dispatched",
             "scope": scope,
             "task": task,
             "cpu_job": job,
+            "dispatch_sequence": dispatch_sequence,
         }),
         WorkflowEvent::TaskWaitingCpu { scope, task, job } => json!({
             "kind": "task_waiting_cpu",
@@ -298,13 +315,17 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             scope,
             task,
             job,
-            thread,
+            worker,
+            dispatch_sequence,
+            completion_sequence,
         } => json!({
             "kind": "task_cpu_completed",
             "scope": scope,
             "task": task,
             "cpu_job": job,
-            "thread": thread,
+            "worker": worker.0,
+            "dispatch_sequence": dispatch_sequence,
+            "completion_sequence": completion_sequence,
         }),
         WorkflowEvent::TaskSettled {
             scope,
@@ -487,6 +508,9 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "reason": reason,
         }),
     };
+    if layer == crate::orchestration::WorkflowEventLayer::CpuScheduling {
+        event["layer"] = "cpu_scheduling".into();
+    }
     Ok(JsonDocument::from(event))
 }
 

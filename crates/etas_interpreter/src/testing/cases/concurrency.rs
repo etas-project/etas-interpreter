@@ -19,10 +19,12 @@ async fn run(source: &str) -> api::RunResult {
 async fn run_with_cpu_threads(
     checked: &etas_frontend::CheckedProject,
     threads: usize,
-) -> api::RunResult {
+) -> (api::RunResult, Vec<api::CpuTaskTelemetry>) {
+    let observer = std::sync::Arc::new(CpuTelemetry::default());
     let mut options = RunOptions::default();
     options.cpu_threads = std::num::NonZeroUsize::new(threads).expect("CPU threads are non-zero");
-    Interpreter
+    options.event_observer = Some(observer.clone());
+    let result = Interpreter
         .run_checked(
             checked,
             EntryPoint {
@@ -33,7 +35,54 @@ async fn run_with_cpu_threads(
             options,
         )
         .await
-        .unwrap()
+        .unwrap();
+    let telemetry = observer.0.lock().unwrap().clone();
+    (result, telemetry)
+}
+
+#[derive(Debug, Default)]
+struct CpuTelemetry(std::sync::Mutex<Vec<api::CpuTaskTelemetry>>);
+
+impl api::RunEventObserver for CpuTelemetry {
+    fn observe(&self, _event: &WorkflowEvent) {}
+    fn observe_cpu(&self, telemetry: &api::CpuTaskTelemetry) {
+        self.0.lock().unwrap().push(telemetry.clone());
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn tiny_and_unknown_work_stays_inline_with_multiple_cpu_threads() {
+    for expression in ["value + 1", "recursive(value)"] {
+        let checked = checked_project(&format!(
+            r#"
+module app.main;
+import std.task.{{run, map_concurrent, Scheduler}};
+flow recursive(value: i32) -> i32 {{
+    if value == 0 {{ return 1; }}
+    return 1 + recursive(value - 1);
+}}
+flow job(value: i32) -> i32 {{ return {expression}; }}
+flow main() -> Array<i32> {{
+    return run((scheduler: Scheduler) => {{ return map_concurrent([1, 2], job); }});
+}}
+"#
+        ));
+        let (result, telemetry) = run_with_cpu_threads(&checked, 4).await;
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        assert_eq!(
+            result.value(),
+            Some(&InterpValue::Array(
+                vec![InterpValue::i32(2), InterpValue::i32(3)].into()
+            ))
+        );
+        assert!(telemetry.is_empty());
+        assert!(
+            !result
+                .events
+                .iter()
+                .any(|event| matches!(event, WorkflowEvent::TaskDispatched { .. }))
+        );
+    }
 }
 
 #[tokio::test(flavor = "current_thread")]
@@ -59,8 +108,8 @@ flow main() -> bool {
 }
 "#,
     );
-    let inline = run_with_cpu_threads(&checked, 1).await;
-    let parallel = run_with_cpu_threads(&checked, 4).await;
+    let (inline, _) = run_with_cpu_threads(&checked, 1).await;
+    let (parallel, telemetry) = run_with_cpu_threads(&checked, 4).await;
 
     assert!(inline.diagnostics.is_empty(), "{:#?}", inline.diagnostics);
     assert!(
@@ -74,7 +123,7 @@ flow main() -> bool {
         .events
         .iter()
         .filter_map(|event| match event {
-            WorkflowEvent::TaskCpuCompleted { thread, .. } => Some(thread.as_str()),
+            WorkflowEvent::TaskCpuCompleted { worker, .. } => Some(*worker),
             _ => None,
         })
         .collect::<std::collections::BTreeSet<_>>();
@@ -82,6 +131,76 @@ flow main() -> bool {
         worker_threads.len() >= 2,
         "expected at least two CPU worker threads, got {worker_threads:?}"
     );
+    let threads = telemetry
+        .iter()
+        .filter_map(|metric| metric.thread)
+        .collect::<std::collections::HashSet<_>>();
+    assert!(
+        threads.len() >= 2,
+        "OS thread evidence belongs in telemetry"
+    );
+    let (repeated, _) = run_with_cpu_threads(&checked, 4).await;
+    assert_eq!(repeated.value(), parallel.value());
+    let mut shapes = Vec::new();
+    for result in [&parallel, &repeated] {
+        let report = api::codec::run_report_json("run", &[], "main", result).unwrap();
+        assert!(!report.to_string().contains("ThreadId("));
+        assert_eq!(report["schema"], api::codec::INTERPRETER_REPORT_SCHEMA);
+        let dispatches = result
+            .events
+            .iter()
+            .filter_map(|event| match event {
+                WorkflowEvent::TaskDispatched {
+                    job,
+                    dispatch_sequence,
+                    ..
+                } => Some((*job, *dispatch_sequence)),
+                _ => None,
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let mut next_completion = 0;
+        for event in &result.events {
+            if let WorkflowEvent::TaskCpuCompleted {
+                job,
+                worker,
+                dispatch_sequence,
+                completion_sequence,
+                ..
+            } = event
+            {
+                assert_eq!(dispatches[job], *dispatch_sequence);
+                assert_eq!(*completion_sequence, next_completion);
+                assert!(worker.0 < 4);
+                next_completion += 1;
+            }
+        }
+        assert_eq!(next_completion, 4);
+        assert_eq!(
+            dispatches.values().copied().collect::<Vec<_>>(),
+            [0, 1, 2, 3]
+        );
+        let mut shape = report["events"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|event| event["layer"] == "cpu_scheduling")
+            .map(|event| {
+                (
+                    event["kind"].as_str().unwrap().to_owned(),
+                    event
+                        .as_object()
+                        .unwrap()
+                        .keys()
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                )
+            })
+            .collect::<Vec<_>>();
+        shape.sort();
+        shapes.push(shape);
+    }
+    assert!(!shapes[0].is_empty());
+    assert_eq!(shapes[0], shapes[1]);
 }
 
 #[tokio::test(flavor = "current_thread")]

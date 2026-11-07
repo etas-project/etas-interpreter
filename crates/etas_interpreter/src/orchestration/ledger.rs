@@ -3,6 +3,15 @@ use super::{CheckpointId, RetryAttemptId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkflowStepId(pub u32);
 
+#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+pub struct CpuWorkerId(pub u16);
+
+#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+pub enum WorkflowEventLayer {
+    Semantic,
+    CpuScheduling,
+}
+
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkflowEvent {
     StepStarted(WorkflowStepId),
@@ -43,6 +52,7 @@ pub enum WorkflowEvent {
         scope: u64,
         task: u64,
         job: u64,
+        dispatch_sequence: u64,
     },
     TaskWaitingCpu {
         scope: u64,
@@ -53,7 +63,18 @@ pub enum WorkflowEvent {
         scope: u64,
         task: u64,
         job: u64,
-        thread: String,
+        worker: CpuWorkerId,
+        dispatch_sequence: u64,
+        completion_sequence: u64,
+    },
+    CpuWorkerFailed {
+        worker: CpuWorkerId,
+        live_workers: usize,
+        message: String,
+    },
+    CpuExecutorFallback {
+        task: Option<u64>,
+        message: String,
     },
     TaskSettled {
         scope: u64,
@@ -151,4 +172,17 @@ pub enum WorkflowEvent {
         attempts: usize,
         reason: String,
     },
+}
+
+impl WorkflowEvent {
+    pub fn layer(&self) -> WorkflowEventLayer {
+        match self {
+            Self::TaskDispatched { .. }
+            | Self::TaskWaitingCpu { .. }
+            | Self::TaskCpuCompleted { .. }
+            | Self::CpuWorkerFailed { .. }
+            | Self::CpuExecutorFallback { .. } => WorkflowEventLayer::CpuScheduling,
+            _ => WorkflowEventLayer::Semantic,
+        }
+    }
 }

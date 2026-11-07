@@ -45,6 +45,6 @@ pub(crate) use checkpoint::{
     SliceExprEvalSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot, ValueSnapshot,
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
-pub use ledger::{WorkflowEvent, WorkflowStepId};
+pub use ledger::{CpuWorkerId, WorkflowEvent, WorkflowEventLayer, WorkflowStepId};
 mod model_request;
 pub(crate) use model_request::{ModelRequestSnapshot, bounded_model_options};

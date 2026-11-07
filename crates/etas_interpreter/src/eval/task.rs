@@ -199,7 +199,7 @@ impl EvalContext<'_> {
         }
         let program = self.checked_execution_program();
         for (index, (target, args)) in calls.into_iter().enumerate() {
-            let cpu_capsule = self.cpu_task_capsule(&target, &args);
+            let cpu_capsule = self.cpu_task_capsule(&target, &args, span);
             let mut machine = crate::eval::machine::EvalMachine::new();
             machine.resume(ControlSignal::pending_call(PendingCall {
                 purity: crate::control::CallPurity::Ordinary,
@@ -439,7 +439,7 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = job else {
             return ControlSignal::invalid_arguments("std.task.start job is not callable", span);
         };
-        let cpu_capsule = self.cpu_task_capsule(&target, &[]);
+        let cpu_capsule = self.cpu_task_capsule(&target, &[], span);
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
@@ -530,6 +530,7 @@ impl EvalContext<'_> {
         &mut self,
         target: &crate::control::CallTarget,
         args: &[InterpValue],
+        call_span: Span,
     ) -> Option<crate::driver::cpu::CpuTaskCapsule> {
         if self.cpu_executor.capacity().get() == 1 {
             return None;
@@ -537,40 +538,68 @@ impl EvalContext<'_> {
         let crate::control::CallTarget::FlowItem(item) = target else {
             return None;
         };
-        if !self
-            .checked
-            .cpu_parallel
-            .callables
-            .get(item)
-            .is_some_and(|fact| fact.eligible)
+        let fact = self.checked.cpu_parallel.callables.get(item)?;
+        if !fact.eligible
+            || (self.cpu_min_work != 0
+                && fact
+                    .estimated_work
+                    .is_none_or(|work| work < self.cpu_min_work))
         {
             return None;
         }
+        let started = std::time::Instant::now();
         let arguments = args
             .iter()
             .map(crate::driver::cpu::FrozenValue::freeze)
             .collect::<Option<Vec<_>>>()?;
-        let dispatch_sequence = self.next_cpu_dispatch;
-        self.next_cpu_dispatch = self
-            .next_cpu_dispatch
-            .checked_add(1)
-            .expect("CPU dispatch sequence exhausted");
+        let input_freeze = started.elapsed();
+        let started = std::time::Instant::now();
+        // Keep one prepared program per checked execution scope. The strong Arc
+        // also keeps this private pointer key alive for the invocation's lifetime.
+        let program_key = (
+            std::sync::Arc::as_ptr(self.checked) as usize,
+            self.plan.entry.item,
+        );
+        let program = if let Some(program) = self.cpu_programs.get(&program_key) {
+            program.clone()
+        } else {
+            let checked_program = self.checked_execution_program();
+            let program = std::sync::Arc::new(crate::driver::cpu::PreparedCpuProgram::new(
+                checked_program.checked,
+                checked_program.plan,
+            ));
+            self.cpu_programs.insert(program_key, program.clone());
+            program
+        };
         Some(crate::driver::cpu::CpuTaskCapsule {
             job: crate::driver::cpu::CpuJobId(0),
-            dispatch_sequence,
-            program: std::sync::Arc::new(crate::driver::cpu::PreparedCpuProgram {
-                checked: self.checked.clone(),
-                plan: std::sync::Arc::new(self.plan.clone()),
-            }),
+            dispatch_sequence: 0,
+            program,
             callable: crate::driver::cpu::CpuCallableId::Flow(*item),
             arguments,
             budget: crate::driver::cpu::CpuBudgetLease {
-                execution_limits: self.execution_limits,
-                budget: self.host_context.budget.clone(),
                 steps: self.safe_points.ledger(),
             },
+            contract: crate::driver::cpu::CpuRuntimeContract {
+                execution_limits: self.execution_limits,
+                entry_item: self.entry_item,
+                storage_limits: self.storage_limits.clone(),
+                syntax_limits: self.syntax_limits,
+                host_context: self.host_context.clone(),
+                model_policy: self.task.model_policy.clone(),
+                execution: self.task.execution.clone(),
+                replay_keys: self.replay_keys.clone(),
+            },
             cancellation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
-            execution: self.task.execution.clone(),
+            call_span,
+            timings: crate::api::CpuTaskTimings {
+                input_freeze,
+                program_prepare: started.elapsed(),
+                ..Default::default()
+            },
+            submitted: None,
+            #[cfg(test)]
+            inject_panic: crate::driver::cpu::take_test_panic(),
         })
     }
 }

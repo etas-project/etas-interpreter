@@ -56,6 +56,7 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
             model_policy: options.model_policy,
             execution_limits: options.execution_limits,
             cpu_threads: options.cpu_threads,
+            cpu_min_work: options.cpu_min_work,
             consumed_steps: 0,
             current_session: None,
             entry_item: checked.entry.unwrap(),

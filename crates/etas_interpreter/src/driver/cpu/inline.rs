@@ -35,7 +35,7 @@ impl CpuExecutor for InlineCpuExecutor {
             .lock()
             .expect("inline CPU cancellation map poisoned")
             .insert(job, capsule.cancellation.clone());
-        let completion = capsule.execute();
+        let completion = capsule.execute(crate::orchestration::CpuWorkerId(0));
         self.completed
             .lock()
             .expect("inline CPU completion queue poisoned")

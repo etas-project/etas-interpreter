@@ -15,6 +15,7 @@ mod command_results;
 mod compiler_definitions;
 mod compiler_syntax;
 mod concurrency;
+mod concurrency_contract;
 mod container_limits;
 mod conversation;
 mod entry_validation;

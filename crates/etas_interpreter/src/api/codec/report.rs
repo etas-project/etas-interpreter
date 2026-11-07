@@ -1,5 +1,7 @@
 use super::*;
 
+pub const INTERPRETER_REPORT_SCHEMA: &str = "etas.cli.interpreter-report.v3";
+
 pub fn run_report_json(
     command: &'static str,
     sources: &[PathBuf],
@@ -8,7 +10,7 @@ pub fn run_report_json(
 ) -> Result<JsonDocument, InterpreterCodecError> {
     let report = &result.termination;
     let mut report = CheckpointDocument::from_value(json!({
-        "schema": "etas.cli.interpreter-report.v2",
+        "schema": INTERPRETER_REPORT_SCHEMA,
         "command": command,
         "sources": sources,
         "flow": flow,
@@ -84,6 +86,9 @@ fn failure_json(failure: &crate::api::RunFailure) -> Value {
         }
         RunFailure::ExecutionFault(fault) => {
             json!({"kind": "execution_fault", "diagnostic": diagnostic_summary_json(&fault.clone().into_diagnostic())})
+        }
+        RunFailure::CpuInfrastructure { worker, message } => {
+            json!({"kind": "infrastructure", "component": "cpu", "worker": worker.0, "message": message})
         }
     }
 }

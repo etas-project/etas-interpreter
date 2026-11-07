@@ -119,6 +119,26 @@ fixed OS worker pool. Closures, global captures, live handles, effects and
 Handlers use the cooperative coordinator. Language `Concurrency(n)` still limits
 each scope and its descendants independently of the host worker count.
 Cancellation and execution budgets belong to the original run.
+Workers use the parent's storage and syntax limits and preserve structured
+language diagnostics. A worker panic settles its jobs as an infrastructure
+failure. Small or unknown work stays on the coordinator; embedders can tune
+`RunOptions::cpu_min_work` (default 10,000 estimated HIR operations). Zero is a
+profiling override that dispatches every eligible task.
+
+The manual release benchmark warms each case once, takes three samples, and
+reports median wall time and per-task freeze/thaw, queue, bootstrap and execution
+costs. It covers 1/2/4/8 workers, 1/4/32/1000 tasks, micro/medium/heavy tasks, and
+map/join/nested scopes. It forces eligible tasks onto workers to measure the
+dispatch crossover; it does not assert wall-clock speedups in CI.
+
+```bash
+cargo test --release cpu_dispatch_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+Durable CPU scheduling events use logical worker IDs and dispatch/completion
+sequences. OS thread IDs and durations are available through
+`RunEventObserver::observe_cpu`. Report v3 and checkpoint v74 reject older
+schemas; replay never depends on process-local thread IDs.
 
 `crates/etas_interpreter/examples/concurrency_speedup.es` measures pure CPU work;
 `handler_cpu.es` demonstrates Handler/`park` scheduling of the same worker path.
