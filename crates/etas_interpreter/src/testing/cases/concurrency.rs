@@ -1,6 +1,7 @@
 use super::super::*;
 
 mod callables;
+mod shared_runtime;
 
 async fn run(source: &str) -> api::RunResult {
     let checked = checked_project(source);

@@ -255,8 +255,10 @@ flow main() -> string {
             cost: None,
         }),
     );
+    let runtime = api::InterpreterRuntime::new(std::num::NonZeroUsize::new(4).unwrap()).unwrap();
     let options = || {
         let mut options = RunOptions::default();
+        options.runtime = Some(runtime.clone());
         options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
         options.cpu_min_work = 0;
         options

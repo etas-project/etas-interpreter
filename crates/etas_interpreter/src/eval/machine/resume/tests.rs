@@ -32,6 +32,7 @@ fn retry_lookup_does_not_copy_unrelated_payloads_or_each_scanned_frame() {
         model_policy: options.model_policy,
         execution_limits: options.execution_limits,
         cpu_threads: options.cpu_threads,
+        runtime: options.runtime.clone(),
         cpu_min_work: options.cpu_min_work,
         consumed_steps: 0,
         current_session: None,

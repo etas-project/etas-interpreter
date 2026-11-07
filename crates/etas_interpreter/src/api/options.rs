@@ -82,7 +82,10 @@ pub struct RunOptions {
     pub event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
     pub plan: PlanOptions,
     pub execution_limits: ExecutionLimits,
-    /// Host CPU worker capacity. The default is one for deterministic compatibility.
+    /// Shared host runtime. None creates an isolated executor for this invocation.
+    pub runtime: Option<super::InterpreterRuntime>,
+    /// Per-run CPU quota, capped by shared runtime capacity when configured.
+    /// An isolated invocation defaults to the cooperative coordinator.
     pub cpu_threads: std::num::NonZeroUsize,
     /// Minimum estimated HIR operations for worker dispatch. Unknown work runs
     /// inline. Zero forces eligible tasks onto workers for profiling/calibration.
@@ -105,6 +108,7 @@ impl Default for RunOptions {
             plan: Default::default(),
             execution_limits: Default::default(),
             cpu_threads: std::num::NonZeroUsize::MIN,
+            runtime: None,
             cpu_min_work: 10_000,
             host_context: Default::default(),
             model_policy: Default::default(),

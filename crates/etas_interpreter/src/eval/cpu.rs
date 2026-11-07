@@ -73,6 +73,7 @@ fn execute_inner(
         model_policy: contract.model_policy.clone(),
         execution_limits: contract.execution_limits,
         cpu_threads: std::num::NonZeroUsize::MIN,
+        runtime: None,
         cpu_min_work: 10_000,
         consumed_steps: 0,
         current_session: None,

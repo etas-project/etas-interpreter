@@ -157,7 +157,11 @@ impl EvalRunState {
         let root_scope = crate::driver::scheduler::TaskScopeId(0);
         let root_task = TaskLocalState::root(root_scope, input.execution, input.model_policy);
         let mut events = crate::api::lifecycle::EventLog::new(input.event_observer);
-        let cpu_executor = match crate::driver::cpu::new_executor(input.cpu_threads) {
+        let executor = match input.runtime {
+            Some(runtime) => Ok(runtime.executor(input.cpu_threads)),
+            None => crate::driver::cpu::new_executor(input.cpu_threads),
+        };
+        let cpu_executor = match executor {
             Ok(executor) => executor,
             Err(error) => {
                 events.push(crate::orchestration::WorkflowEvent::CpuExecutorFallback {

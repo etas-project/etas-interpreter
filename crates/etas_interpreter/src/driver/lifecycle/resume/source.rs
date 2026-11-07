@@ -55,6 +55,7 @@ pub(crate) async fn resume_source_inner(
                 .original_limits
                 .stricter(options.execution_limits),
             cpu_threads: options.cpu_threads,
+            runtime: options.runtime.clone(),
             cpu_min_work: options.cpu_min_work,
             consumed_steps: checkpoint.header.progress.consumed_steps,
             current_session: checkpoint
