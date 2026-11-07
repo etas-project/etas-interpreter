@@ -31,7 +31,9 @@ pub(crate) fn validate_comparator(
                 pending.push((value.target(), Some(value.program().clone())));
                 continue;
             }
-            CallTarget::Specialized { target, .. } | CallTarget::Limited { target, .. } => {
+            CallTarget::Specialized { target, .. }
+            | CallTarget::Limited { target, .. }
+            | CallTarget::BoundMethod { target, .. } => {
                 if target.shared_identity().is_none_or(|key| {
                     visited.insert((std::sync::Arc::as_ptr(checked) as usize, 0, key as usize))
                 }) {

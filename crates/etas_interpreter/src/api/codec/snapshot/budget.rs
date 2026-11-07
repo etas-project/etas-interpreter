@@ -179,6 +179,7 @@ impl EncodingBudget {
                     .ok_or_else(exhausted)?,
             ),
             Node::CallTarget(CallTargetSnapshot::Composed(targets)) => (targets.len(), 0),
+            Node::CallTarget(CallTargetSnapshot::BoundMethod { .. }) => (2, 1),
             Node::CallTarget(CallTargetSnapshot::Scoped { metadata, .. }) => {
                 (1, metadata.projections.len())
             }

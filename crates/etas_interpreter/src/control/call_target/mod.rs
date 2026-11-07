@@ -19,6 +19,11 @@ pub enum CallTarget {
         expr: HirExprId,
         captured: Frame,
     },
+    BoundMethod {
+        target: CallTargetLink,
+        receiver: crate::value::SharedValue,
+        slot: u32,
+    },
     EnumVariant(SymbolId),
     NominalConstructor(etas_types::TypeId),
     PureIntrinsic(CheckedPureIntrinsicCall),

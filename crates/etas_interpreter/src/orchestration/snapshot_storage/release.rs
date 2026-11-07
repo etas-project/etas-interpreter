@@ -66,6 +66,20 @@ pub(super) fn release_value(mut current: Value) {
     let mut ancestors = Vec::new();
     loop {
         let children = match current {
+            Value::Callable(crate::orchestration::CallTargetSnapshot::BoundMethod {
+                target,
+                receiver,
+                ..
+            }) => {
+                let mut values = Vec::with_capacity(2);
+                if let Some(target) = target.into_unique() {
+                    values.push(Value::Callable(target));
+                }
+                if let Some(receiver) = receiver.into_unique() {
+                    values.push(receiver);
+                }
+                Some(Children::Values(values.into_iter()))
+            }
             Value::Callable(crate::orchestration::CallTargetSnapshot::Lambda {
                 captured, ..
             }) => captured

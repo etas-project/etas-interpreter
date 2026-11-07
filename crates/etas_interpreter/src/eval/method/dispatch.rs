@@ -2,6 +2,32 @@ use super::*;
 use etas_types::method::{MethodReceiver, MethodTarget};
 
 impl EvalContext<'_> {
+    pub(in crate::eval) fn bind_method_value(
+        &self,
+        expr: HirExprId,
+        receiver: InterpValue,
+        frame: &Frame,
+        span: Span,
+    ) -> ControlSignal {
+        let Some(fact) = self.plan.dispatch.method(expr) else {
+            return ControlSignal::missing_checked_fact(
+                "method value has no prepared target",
+                span,
+            );
+        };
+        let MethodReceiver::Value { slot } = fact.receiver else {
+            unreachable!()
+        };
+        match self.prepared_method_target(expr, Some(&receiver), frame, span) {
+            Ok(target) => ControlSignal::Value(InterpValue::Callable(CallTarget::BoundMethod {
+                target: target.into(),
+                receiver: crate::value::SharedValue::new(receiver),
+                slot,
+            })),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
+    }
+
     pub(in crate::eval) fn eval_method_call(
         &mut self,
         dispatch: MethodDispatch<'_>,

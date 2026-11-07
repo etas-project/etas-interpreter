@@ -13,7 +13,7 @@ impl<'a> EvalContext<'a> {
     ) -> ControlSignal {
         match self.eval_expr(base, frame) {
             ControlSignal::Value(value) => {
-                self.eval_field_value_signal(FieldAccessSite::Expr(expr), value, field, span)
+                self.complete_field_receiver(expr, value, field, span, frame)
             }
             signal @ (ControlSignal::Apply(_)
             | ControlSignal::Checkpoint(_)
@@ -44,6 +44,21 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
             ControlSignal::Cancelled(cause) => ControlSignal::Cancelled(cause),
             ControlSignal::Continue => ControlSignal::Continue,
+        }
+    }
+
+    pub(super) fn complete_field_receiver(
+        &mut self,
+        expr: HirExprId,
+        value: InterpValue,
+        field: &str,
+        span: Span,
+        frame: &Frame,
+    ) -> ControlSignal {
+        if self.checked.types.bound_method_values.contains_key(&expr) {
+            self.bind_method_value(expr, value, frame, span)
+        } else {
+            self.eval_field_value_signal(FieldAccessSite::Expr(expr), value, field, span)
         }
     }
 

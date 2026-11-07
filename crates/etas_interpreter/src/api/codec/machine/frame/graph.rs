@@ -138,6 +138,7 @@ fn prepare_with_budget<F: Clone>(
 }
 
 enum Children<'a> {
+    Roots(std::array::IntoIter<DecodeRoot<'a>, 2>),
     One(Option<DecodeRoot<'a>>),
     Two(std::array::IntoIter<Option<&'a Value>, 2>),
     Values {
@@ -157,6 +158,7 @@ enum Children<'a> {
 impl<'a> Children<'a> {
     fn next(&mut self) -> Result<Option<DecodeRoot<'a>>, String> {
         Ok(match self {
+            Self::Roots(roots) => roots.next(),
             Self::One(value) => value.take(),
             Self::Two(values) => values.find_map(|value| value).map(DecodeRoot::Value),
             Self::Values {
@@ -262,6 +264,13 @@ fn value_children(value: &Value) -> Result<Children<'_>, String> {
 
 fn target_children(value: &Value) -> Result<Children<'_>, String> {
     Ok(match required_str(value, "kind")? {
+        "bound_method" => Children::Roots(
+            [
+                DecodeRoot::Target(required(value, "target")?),
+                DecodeRoot::Value(required(value, "receiver")?),
+            ]
+            .into_iter(),
+        ),
         "lambda" => {
             super::required_u32(value, "expr")?;
             Children::One(Some(DecodeRoot::Frame(required(value, "captured")?)))

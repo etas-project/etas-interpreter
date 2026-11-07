@@ -119,6 +119,10 @@ fixed OS worker pool, including generic functions with concrete data types and
 dependency flows with checked package ownership. Generic type and effect-row
 bindings travel as data and are reconstructed inside the worker. Admission
 checks the instantiated input/output freeze contract.
+Pure bound methods defined in the program follow the same path when their
+receivers can be frozen, including receivers with generic owner types. Taking
+`receiver.method` evaluates the receiver once; checkpoints retain the selected
+target, generic bindings and receiver value.
 Closures, global captures, live handles, effects and
 Handlers use the cooperative coordinator. Language `Concurrency(n)` still limits
 each scope and its descendants independently of the host worker count.
@@ -151,7 +155,7 @@ cargo test --release cpu_dispatch_benchmark -- --ignored --nocapture --test-thre
 
 Durable CPU scheduling events use logical worker IDs and dispatch/completion
 sequences. OS thread IDs and durations are available through
-`RunEventObserver::observe_cpu`. Report v3 and checkpoint v75 reject older
+`RunEventObserver::observe_cpu`. Report v3 and checkpoint v76 reject older
 schemas; replay never depends on process-local thread IDs.
 
 `crates/etas_interpreter/examples/concurrency_speedup.es` measures pure CPU work;

@@ -363,6 +363,21 @@ impl<'a> EvalContext<'a> {
             CallTarget::Lambda { expr, captured } => {
                 self.execute_lambda_call(expr, captured, call_args, span)
             }
+            CallTarget::BoundMethod {
+                target,
+                receiver,
+                slot,
+            } => {
+                let mut call_args = call_args;
+                if slot as usize > call_args.len() {
+                    return ControlSignal::invalid_arguments(
+                        "bound receiver slot exceeds the supplied arguments",
+                        span,
+                    );
+                }
+                call_args.insert(slot as usize, receiver.into_value());
+                self.execute_call_target_at(target.into_value(), call_args, span, site)
+            }
             CallTarget::EnumVariant(symbol) => {
                 match self.eval_variant_constructor(
                     symbol,

@@ -23,9 +23,11 @@ type CacheKey = (
     u8,
     usize,
     Vec<(String, TypeId)>,
+    Vec<(TypeId, TypeId)>,
     Vec<(String, EffectRowRef)>,
 );
 enum Task<'a> {
+    Bind(&'a crate::value::InterpValue, u32),
     Visit(&'a Target, Rc<Bindings>),
     Cache(CacheKey),
     Compose(usize),
@@ -36,6 +38,7 @@ pub(super) fn validate(
     plan: &InterpreterPlan,
     root: &Target,
     expected: Expected,
+    limits: &etas_host::StorageLimits,
 ) -> Result<(), String> {
     let expected_signature = match expected {
         Expected::Value(ty) => match checked.type_store.get(ty) {
@@ -72,12 +75,16 @@ pub(super) fn validate(
                 };
                 let bindings = if let Target::Specialized {
                     type_bindings,
+                    type_parameter_bindings,
                     effect_row_bindings,
                     ..
                 } = target
                 {
                     let mut bindings = (*bindings).clone();
                     bindings.extend(type_bindings.iter().cloned());
+                    bindings
+                        .parameters
+                        .extend(type_parameter_bindings.iter().copied());
                     bindings.rows.extend(effect_row_bindings.iter().cloned());
                     Rc::new(bindings)
                 } else {
@@ -89,7 +96,13 @@ pub(super) fn validate(
                         .map(|(name, ty)| (name.clone(), *ty))
                         .collect::<Vec<_>>();
                     types.sort_unstable();
-                    let key = (kind, pointer, types, bindings.sorted_rows());
+                    let key = (
+                        kind,
+                        pointer,
+                        types,
+                        bindings.sorted_parameters(),
+                        bindings.sorted_rows(),
+                    );
                     if let Some(interface) = cache.get(&key) {
                         results.push(interface.clone());
                         continue;
@@ -97,6 +110,14 @@ pub(super) fn validate(
                     pending.push(Task::Cache(key));
                 }
                 match target {
+                    Target::BoundMethod {
+                        target,
+                        receiver,
+                        slot,
+                    } => {
+                        pending.push(Task::Bind(receiver, *slot));
+                        pending.push(Task::Visit(target, bindings));
+                    }
                     Target::Limited { target, .. } | Target::Specialized { target, .. } => {
                         pending.push(Task::Visit(target, bindings))
                     }
@@ -125,6 +146,21 @@ pub(super) fn validate(
                         .ok_or("callable input has an incomplete interface")?
                         .clone(),
                 );
+            }
+            Task::Bind(receiver, slot) => {
+                let interface = results
+                    .last_mut()
+                    .ok_or("bound method has no target interface")?;
+                let signature = interface
+                    .signature
+                    .as_mut()
+                    .ok_or("bound method target is not callable")?;
+                let ty = *signature
+                    .input
+                    .get(slot as usize)
+                    .ok_or("bound receiver slot is outside the target ABI")?;
+                super::runtime::validate_value(checked, plan, receiver, ty, limits)?;
+                signature.input.remove(slot as usize);
             }
             Task::Compose(count) => {
                 let offset = results

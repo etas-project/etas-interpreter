@@ -17,6 +17,43 @@ flow main() -> Array<{output}> {{
     ))
 }
 
+fn bound_mapper() -> etas_frontend::CheckedProject {
+    checked_project(
+        r#"
+module app.main;
+import std.task.{map_concurrent, run, Scheduler};
+type Counter<T> = { fallback: T, valid: bool };
+impl Counter<T> {
+    flow keep(self, value: T) -> T {
+        var step = 0;
+        while step < 20000 limit Iterations(20000) { step = step + 1; }
+        if self.valid { return value; }
+        return self.fallback;
+    }
+}
+flow main() -> Array<i32> {
+    let owner = Counter<i32> { fallback = 99, valid = true };
+    let bound: (i32) -> i32 ![] = owner.keep;
+    return run((scheduler: Scheduler) => { return map_concurrent([7, 3, 9, 1], bound); });
+}
+"#,
+    )
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn bound_method_cpu_freezes_receivers_and_keeps_order_on_workers() {
+    crate::driver::cpu::take_test_pools();
+    assert_map_workers(&bound_mapper(), false).await;
+    assert_workers_released();
+}
+
+fn assert_workers_released() {
+    assert!(crate::driver::cpu::take_test_pools().iter().all(|pool| {
+        pool.upgrade()
+            .is_none_or(|live| live.load(std::sync::atomic::Ordering::Acquire) == 0)
+    }));
+}
+
 async fn assert_map_workers(checked: &etas_frontend::CheckedProject, nested: bool) {
     let (inline, _) = run_with_cpu_threads(checked, 1).await;
     let (parallel, telemetry) = run_with_cpu_threads(checked, 4).await;
@@ -121,36 +158,51 @@ flow main() -> Array<i32> { return run((scheduler: Scheduler) => { return map_co
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn generic_named_cpu_tasks_keep_the_shared_step_limit() {
-    let checked = generic_mapper("[7, 3, 9, 1]", "i32");
-    let mut diagnostics = Vec::new();
-    for threads in [1, 4] {
-        let mut options = RunOptions::default();
-        options.cpu_threads = std::num::NonZeroUsize::new(threads).unwrap();
-        options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
-        let result = Interpreter
-            .run_checked(
-                &checked,
-                EntryPoint {
-                    item: checked.entry.unwrap(),
-                },
-                vec![],
-                &FakeHost::new(HostServiceAvailability::default()),
-                options,
-            )
-            .await
-            .unwrap();
-        assert!(result.value().is_none());
-        assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
-        if threads == 4 {
-            assert!(
-                result
-                    .events
-                    .iter()
-                    .any(|event| matches!(event, WorkflowEvent::TaskDispatched { .. }))
-            );
+async fn bound_method_and_generic_recipes_keep_the_shared_step_limit() {
+    crate::driver::cpu::take_test_pools();
+    for checked in [generic_mapper("[7, 3, 9, 1]", "i32"), bound_mapper()] {
+        let mut diagnostics = Vec::new();
+        for threads in [1, 4] {
+            let mut options = RunOptions::default();
+            options.cpu_threads = std::num::NonZeroUsize::new(threads).unwrap();
+            options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
+            let result = Interpreter
+                .run_checked(
+                    &checked,
+                    EntryPoint {
+                        item: checked.entry.unwrap(),
+                    },
+                    vec![],
+                    &FakeHost::new(HostServiceAvailability::default()),
+                    options,
+                )
+                .await
+                .unwrap();
+            assert!(result.value().is_none());
+            assert_eq!(result.diagnostics.len(), 1, "{:?}", result.diagnostics);
+            if threads == 4 {
+                assert!(
+                    result
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, WorkflowEvent::TaskDispatched { .. }))
+                );
+                assert!(
+                    result.events.iter().any(|event| matches!(
+                        event,
+                        WorkflowEvent::TaskCancellationRequested { .. }
+                    ))
+                );
+                assert!(
+                    result
+                        .events
+                        .iter()
+                        .any(|event| matches!(event, WorkflowEvent::TaskCleanupCompleted { .. }))
+                );
+            }
+            diagnostics.push(result.diagnostics);
         }
-        diagnostics.push(result.diagnostics);
+        assert_eq!(diagnostics[0], diagnostics[1]);
     }
-    assert_eq!(diagnostics[0], diagnostics[1]);
+    assert_workers_released();
 }

@@ -30,7 +30,9 @@ pub(super) fn release(mut next: Option<Edge>) {
                 }
             };
             match &mut node {
-                CallTarget::Specialized { target, .. } | CallTarget::Limited { target, .. } => {
+                CallTarget::Specialized { target, .. }
+                | CallTarget::Limited { target, .. }
+                | CallTarget::BoundMethod { target, .. } => {
                     next = target.0.take().map(Edge::Shared);
                 }
                 CallTarget::Composed(children) => {

@@ -63,6 +63,25 @@ pub(super) fn target<'a>(
     seen: &mut Seen,
 ) -> bool {
     match (a, b) {
+        (
+            Target::BoundMethod {
+                target: a,
+                receiver: ar,
+                slot: ai,
+            },
+            Target::BoundMethod {
+                target: b,
+                receiver: br,
+                slot: bi,
+            },
+        ) => {
+            if ai != bi {
+                return false;
+            }
+            pending.push((ar, br));
+            *next = Some(Comparison::Target(a, b));
+            true
+        }
         (Target::FlowItem(a), Target::FlowItem(b))
         | (Target::AgentItem(a), Target::AgentItem(b))
         | (Target::ToolItem(a), Target::ToolItem(b)) => a == b,

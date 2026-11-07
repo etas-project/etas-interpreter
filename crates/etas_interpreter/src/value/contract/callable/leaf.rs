@@ -182,7 +182,10 @@ pub(super) fn interface(
                 component: Some(*ty),
             });
         }
-        Target::Composed(_) | Target::Specialized { .. } | Target::Limited { .. } => {
+        Target::Composed(_)
+        | Target::Specialized { .. }
+        | Target::Limited { .. }
+        | Target::BoundMethod { .. } => {
             return Err("callable input has an unprocessed wrapper".into());
         }
     };

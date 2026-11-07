@@ -7,6 +7,7 @@ use crate::{
 use etas_types::TypeId;
 
 enum PendingParent {
+    Bound(crate::value::SharedValue, u32),
     Scoped(Box<ScopedRestore>),
     Specialized(
         Vec<(String, TypeId)>,
@@ -42,6 +43,17 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
     let mut pending = Vec::new();
     loop {
         let mut value = match current {
+            CallTargetSnapshot::BoundMethod {
+                target,
+                receiver,
+                slot,
+            } => {
+                let receiver =
+                    crate::value::SharedValue::new(receiver.into_value().restore_with(context)?);
+                pending.push(PendingParent::Bound(receiver, slot));
+                current = target.into_value();
+                continue;
+            }
             CallTargetSnapshot::Scoped { metadata, target } => {
                 let parent = context
                     .revision_program
@@ -136,6 +148,13 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
         };
         loop {
             match pending.pop() {
+                Some(PendingParent::Bound(receiver, slot)) => {
+                    value = CallTarget::BoundMethod {
+                        target: value.into(),
+                        receiver,
+                        slot,
+                    };
+                }
                 Some(PendingParent::Scoped(state)) => {
                     let ScopedRestore {
                         metadata,

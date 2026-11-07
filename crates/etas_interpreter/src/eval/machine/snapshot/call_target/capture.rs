@@ -5,6 +5,7 @@ use crate::orchestration::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 use etas_types::TypeId;
 
 enum PendingParent<'a> {
+    Bound(crate::orchestration::SnapshotBox, u32),
     Scoped(Box<crate::orchestration::ScopedCallableMetadata>),
     Specialized(
         &'a [(String, TypeId)],
@@ -39,6 +40,18 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
     let mut pending = Vec::new();
     loop {
         let mut value = match current {
+            CallTarget::BoundMethod {
+                target,
+                receiver,
+                slot,
+            } => {
+                pending.push(PendingParent::Bound(
+                    crate::orchestration::SnapshotBox::new(context.value(receiver)?),
+                    *slot,
+                ));
+                current = target;
+                continue;
+            }
             CallTarget::Scoped(call) => {
                 let metadata = call.checkpoint_metadata(&mut context.revisions)?;
                 pending.push(PendingParent::Scoped(Box::new(metadata)));
@@ -105,6 +118,13 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
         };
         loop {
             match pending.pop() {
+                Some(PendingParent::Bound(receiver, slot)) => {
+                    value = CallTargetSnapshot::BoundMethod {
+                        target: value.into(),
+                        receiver,
+                        slot,
+                    };
+                }
                 Some(PendingParent::Scoped(metadata)) => {
                     value = CallTargetSnapshot::Scoped {
                         metadata,

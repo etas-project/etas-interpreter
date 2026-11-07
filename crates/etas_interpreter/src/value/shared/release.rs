@@ -88,6 +88,18 @@ pub(crate) fn release_value(mut current: Value) {
             Value::Callable(crate::control::CallTarget::Lambda { captured, .. }) => {
                 Some(Children::Frame(captured.into_unique_values()))
             }
+            Value::Callable(crate::control::CallTarget::BoundMethod {
+                target, receiver, ..
+            }) => {
+                let mut values = Vec::with_capacity(2);
+                if let Some(target) = target.into_unique() {
+                    values.push(Value::Callable(target));
+                }
+                if let Ok(receiver) = receiver.try_into_value() {
+                    values.push(receiver);
+                }
+                Some(Children::values(values))
+            }
             Value::Callable(
                 crate::control::CallTarget::Specialized { target, .. }
                 | crate::control::CallTarget::Limited { target, .. },

@@ -169,7 +169,10 @@ impl SnapshotValidator<'_> {
                     component: Some(*ty),
                 });
             }
-            Target::Composed(_) | Target::Specialized { .. } | Target::Limited { .. } => {
+            Target::Composed(_)
+            | Target::Specialized { .. }
+            | Target::Limited { .. }
+            | Target::BoundMethod { .. } => {
                 return Err("checkpoint callable graph contains an unprocessed wrapper".into());
             }
         };

@@ -2,6 +2,61 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn bound_method_values_keep_receivers_and_generic_bindings() {
+    let checked = checked_project(
+        r#"
+module app.main;
+type Counter = { number: i32 };
+impl Counter {
+    flow compute(self, value: i32) -> i32 { return self.number + value; }
+    flow echo<T>(self, value: T) -> T { return value; }
+}
+flow make<T>(seed: T) -> (i32) -> i32 ![] {
+    let counter = Counter { number = 7 };
+    return counter.compute;
+}
+flow main() -> i32 {
+    let selected = make("creator");
+    let generic: (i32) -> i32 ![] = Counter { number = 1 }.echo;
+    let holder = { counter = Counter { number = 11 } };
+    let projected: (i32) -> i32 ![] = holder.counter.compute;
+    std.runtime.checkpoint("bound-methods");
+    return selected(generic(3)) + projected(2);
+}
+"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(23)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
+    let decoded = checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &checked,
+            &decoded,
+            &FakeHost::new(availability(&[HostRequirementKind::Checkpoint])),
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn entry_reachable_generic_witness_executes_without_checking_other_impl_bodies() {
     let mut session = etas_frontend::FrontendSession::new();
     let project = session.open_project(etas_frontend::ProjectInput::single_source(
