@@ -42,6 +42,17 @@ fn signal_json(
 ) -> Result<Value, InterpreterCodecError> {
     budget.metadata(12, 0)?;
     Ok(match signal {
+        S::Error {
+            error_type,
+            payload,
+            span,
+            continuation,
+            residual,
+        } => json!({
+            "kind":"error", "type":error_type, "payload":snapshot::value_json_with_budget(payload, budget)?,
+            "span":span_json(*span), "continuation":snapshot::continuation_json_with_budget(continuation, budget)?,
+            "residual":residual,
+        }),
         S::Input(input) => json!({"kind":"input", "input":continuation_input_json(input, budget)?}),
         S::Apply {
             continuation,
@@ -192,6 +203,16 @@ fn signal_from_json(
             limits,
             required_obj(value, "input")?,
         )?),
+        "error" => S::Error {
+            error_type: field(value, "type")?,
+            payload: value::snapshot_from_json_with_limits(
+                limits,
+                required_obj(value, "payload")?,
+            )?,
+            span: span()?,
+            continuation: continuation()?,
+            residual: field(value, "residual")?,
+        },
         "apply" => S::Apply {
             continuation: continuation()?,
             input: continuation_input_from_json(limits, required_obj(value, "input")?)?,

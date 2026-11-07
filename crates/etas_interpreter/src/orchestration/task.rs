@@ -75,6 +75,8 @@ pub(crate) struct TaskRunCountersSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ScheduledTaskSnapshot {
+    pub inherited_dynamic: (usize, usize),
+    pub start: Option<super::CallTargetSnapshot>,
     pub scope: TaskScopeId,
     pub program: ExecutionProgramSnapshot,
     pub local: TaskLocalSnapshot,

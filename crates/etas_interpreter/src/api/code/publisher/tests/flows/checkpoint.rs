@@ -5,6 +5,72 @@ use crate::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn concurrent_checkpoint_in_prepared_flow_roundtrips_with_its_revision() {
+    let candidate = flow_candidate_for(
+        "module app; import std.runtime.checkpoint; import std.task.{run, start, await, Scheduler}; flow toggle(value: bool) -> bool ![] { return value; } flow main(next: (bool) -> bool ![]) -> bool { return run((scheduler: Scheduler) => { let child = start(() => { return next(false); }); return await(child); }); } flow inspect() -> unit { let definition = ^toggle; return; }",
+        "checkpoint(\"child\"); return !value;",
+    );
+    let original = candidate.frozen().checked().clone();
+    let entry = original.entry.unwrap();
+    let etas_types::ItemSignature::Flow(signature) = &original.types.item_signatures[&entry] else {
+        panic!("source entry signature");
+    };
+    let expected = signature.params[0];
+    let prepared = InterpreterCandidatePublisher.publish(candidate).unwrap();
+    let value = crate::value::ScopedCallableValue::from_revision(
+        prepared.clone(),
+        None,
+        &original,
+        expected,
+    )
+    .unwrap();
+    let host = crate::testing::FakeHost::new(crate::host::HostServiceAvailability {
+        checkpoint: true,
+        ..Default::default()
+    });
+    let first = Interpreter
+        .run_checked(
+            &original,
+            EntryPoint { item: entry },
+            vec![InterpValue::Callable(value)],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(first.value(), Some(&InterpValue::Bool(true)));
+    let mut revisions = crate::api::code::PreparedRevisionSet::new(original.clone());
+    revisions.insert(prepared).unwrap();
+    let revisions = Arc::new(revisions);
+    let artifact = codec::checkpoint_artifact_json(&[], "main", &first.checkpoints[0]).unwrap();
+    let bytes = codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
+    let artifact = codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+    let checkpoint = codec::checkpoint_from_json_with_revisions(
+        &Default::default(),
+        &artifact,
+        &original,
+        Some(&revisions),
+    )
+    .unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &original,
+            &checkpoint,
+            &host,
+            RunOptions {
+                checkpoint_revisions: Some(revisions),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), first.value());
+    assert!(resumed.checkpoints.is_empty());
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn ordinary_flow_checkpoint_roundtrips_and_rejects_forged_target_families() {
     let candidate = flow_candidate_for(
         "module app; import std.runtime.checkpoint; flow toggle(value: bool) -> bool ![] { checkpoint(\"base\"); return value; } flow inspect() -> unit { let definition = ^toggle; return; }",

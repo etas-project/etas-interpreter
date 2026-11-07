@@ -162,6 +162,12 @@ impl EvalMachine {
     ) -> Result<super::snapshot::RestoredMachineSnapshot, String> {
         let limits = resources.limits;
         super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, closures, limits)
+            .with_inherited_handlers(
+                resources
+                    .task
+                    .as_ref()
+                    .map_or(0, |task| task.inherited_handlers),
+            )
             .with_execution_revision(
                 resources
                     .root

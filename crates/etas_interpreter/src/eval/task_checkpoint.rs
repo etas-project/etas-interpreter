@@ -248,6 +248,18 @@ impl super::EvalContext<'_> {
             saved_tasks.insert(
                 *id,
                 ScheduledTaskSnapshot {
+                    inherited_dynamic: task.inherited_dynamic,
+                    start: task
+                        .start
+                        .as_ref()
+                        .map(|call| {
+                            capture
+                                .context
+                                .call_target(&crate::control::CallTarget::StdIntrinsic(
+                                    (**call).clone(),
+                                ))
+                        })
+                        .transpose()?,
                     scope: task.scope,
                     program: program.checkpoint_identity(&mut capture.context.revisions),
                     local: TaskLocalSnapshot {
@@ -462,6 +474,7 @@ impl super::EvalContext<'_> {
             root.args.clone(),
             self.task,
             TaskIdentity::Root,
+            0,
             &saved.metadata,
             &current,
             locked_model.clone(),
@@ -481,6 +494,17 @@ impl super::EvalContext<'_> {
             let mut local = locals
                 .remove(id)
                 .expect("execution scope was rebuilt for every task");
+            let validator = super::machine::snapshot::SnapshotValidator::new(
+                &program.checked,
+                &program.plan.slots,
+                &program.plan.dispatch,
+                &program.plan.closures,
+                &limits,
+            )
+            .with_execution_revision(program.revision.as_deref())
+            .with_revisions(revisions.as_deref())
+            .with_tasks(Some(&saved.metadata), Some(TaskIdentity::Scheduled(*id)));
+            validator.validate_task_local(task)?;
             let mut machine = match &task.machine {
                 Some(snapshot) => restore_machine(
                     snapshot,
@@ -488,6 +512,7 @@ impl super::EvalContext<'_> {
                     Vec::new(),
                     &mut local,
                     TaskIdentity::Scheduled(*id),
+                    task.inherited_dynamic.0,
                     &saved.metadata,
                     &self.host_context,
                     self.locked_model.clone(),
@@ -511,6 +536,38 @@ impl super::EvalContext<'_> {
                     }
                 }
             };
+            let start = task
+                .start
+                .as_ref()
+                .map(|call| {
+                    validator.validate_task_start(call)?;
+                    let context = machine
+                        .contexts
+                        .get_mut(&(Arc::as_ptr(&program.checked) as usize))
+                        .expect("task root program has a restore context");
+                    let crate::control::CallTarget::StdIntrinsic(call) =
+                        context.restore_call_target(call.clone())?
+                    else {
+                        return Err("task start origin is not a checked standard call".to_owned());
+                    };
+                    let saved_type = saved
+                        .metadata
+                        .task_types
+                        .get(id)
+                        .ok_or("started task has no output type snapshot")?;
+                    if call.result_type != saved_type.ty
+                        || saved_type.program != task.program.program
+                    {
+                        return Err(
+                            "task start origin differs from its scheduler output type".into()
+                        );
+                    }
+                    if let Some(outcome) = &task.outcome {
+                        validator.validate_task_outcome(outcome, call.result_type)?;
+                    }
+                    Ok(Arc::new(call))
+                })
+                .transpose()?;
             let waiting_continuation = task
                 .waiting_continuation
                 .as_ref()
@@ -614,6 +671,8 @@ impl super::EvalContext<'_> {
             tasks.insert(
                 *id,
                 ScheduledTask {
+                    inherited_dynamic: task.inherited_dynamic,
+                    start,
                     scope: task.scope,
                     machine: EvalMachine::new(),
                     local,
@@ -762,6 +821,7 @@ fn restore_machine(
     args: Vec<crate::value::InterpValue>,
     local: &mut super::TaskLocalState,
     identity: TaskIdentity,
+    inherited_handlers: usize,
     scheduler: &crate::driver::scheduler::TaskSchedulerMetadataSnapshot,
     current: &crate::api::HostExecutionContext,
     locked_model: Option<etas_host::ModelName>,
@@ -782,6 +842,7 @@ fn restore_machine(
         current,
         SnapshotRestoreResources {
             task: Some(TaskSnapshotRestoreResources {
+                inherited_handlers,
                 scheduler,
                 identity,
                 frames,

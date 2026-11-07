@@ -116,6 +116,8 @@ pub(crate) enum RootTaskWait {
 }
 
 pub(crate) struct ScheduledTask {
+    pub(crate) inherited_dynamic: (usize, usize),
+    pub(crate) start: Option<std::sync::Arc<crate::intrinsic::dispatch::CheckedStdIntrinsicCall>>,
     pub(crate) scope: TaskScopeId,
     pub(crate) machine: EvalMachine,
     pub(crate) local: TaskLocalState,
@@ -140,7 +142,10 @@ impl ScheduledTask {
         handler_floor: usize,
         source_index: usize,
     ) -> Self {
+        let inherited_dynamic = local.dynamic_depths();
         Self {
+            inherited_dynamic,
+            start: None,
             scope,
             machine,
             local,

@@ -17,6 +17,7 @@ mod revision;
 mod scoped_callable;
 mod stream_reducer;
 mod suspension;
+mod task;
 mod traversal;
 mod value_contract;
 
@@ -45,6 +46,7 @@ use crate::orchestration::{
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
+    inherited_handlers: usize,
     tasks: Option<&'a crate::driver::scheduler::TaskSchedulerMetadataSnapshot>,
     task_identity: Option<crate::driver::scheduler::TaskIdentity>,
     execution_revision: Option<&'a crate::api::code::PreparedCodeRevision>,
@@ -74,6 +76,7 @@ impl<'a> SnapshotValidator<'a> {
         limits: &'a etas_host::StorageLimits,
     ) -> Self {
         Self {
+            inherited_handlers: 0,
             tasks: None,
             task_identity: None,
             execution_revision: None,
@@ -109,6 +112,11 @@ impl<'a> SnapshotValidator<'a> {
     ) -> Self {
         self.tasks = tasks;
         self.task_identity = task;
+        self
+    }
+
+    pub(crate) fn with_inherited_handlers(mut self, depth: usize) -> Self {
+        self.inherited_handlers = depth;
         self
     }
 

@@ -44,6 +44,7 @@ pub(crate) struct SnapshotRestoreResources<'a> {
 }
 
 pub(crate) struct TaskSnapshotRestoreResources<'a> {
+    pub inherited_handlers: usize,
     pub scheduler: &'a crate::driver::scheduler::TaskSchedulerMetadataSnapshot,
     pub identity: crate::driver::scheduler::TaskIdentity,
     pub frames: SharedFrameRestore,

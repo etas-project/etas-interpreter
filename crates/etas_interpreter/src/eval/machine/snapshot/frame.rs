@@ -224,7 +224,7 @@ impl RestoreContext {
         }
         self.revision_program = Some(program);
     }
-    pub(in crate::eval::machine) fn restore_call_target(
+    pub(crate) fn restore_call_target(
         &mut self,
         target: CallTargetSnapshot,
     ) -> Result<crate::control::CallTarget, String> {

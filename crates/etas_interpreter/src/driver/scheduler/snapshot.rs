@@ -4,6 +4,7 @@ use super::*;
 /// restored by the evaluator, which owns checked programs and frame graphs.
 #[derive(Clone, Debug)]
 pub(crate) struct TaskSchedulerMetadataSnapshot {
+    pub(crate) task_types: BTreeMap<TaskId, TaskTypeSnapshot>,
     pub(crate) next_scope: u64,
     pub(crate) next_task: u64,
     pub(crate) groups: BTreeMap<TaskScopeId, TaskScopeSnapshot>,
@@ -11,6 +12,12 @@ pub(crate) struct TaskSchedulerMetadataSnapshot {
     pub(crate) wakeups: BTreeMap<TaskId, VecDeque<TaskWakeupSnapshot>>,
     pub(crate) continuations: ContinuationArenaSnapshot,
     pub(crate) resources: ResourceGuardsSnapshot,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct TaskTypeSnapshot {
+    pub(crate) program: crate::orchestration::CheckpointProgramReference,
+    pub(crate) ty: etas_types::TypeId,
 }
 
 // Outcomes are already stored by the completed task/scope. Save their stable
@@ -50,6 +57,26 @@ impl TaskScheduler {
             "cancellation events must be committed before capture"
         );
         let snapshot = TaskSchedulerMetadataSnapshot {
+            task_types: self
+                .tasks
+                .iter()
+                .filter_map(|(id, task)| {
+                    task.start.as_ref().map(|call| {
+                        (
+                            *id,
+                            TaskTypeSnapshot {
+                                program: task
+                                    .program
+                                    .as_ref()
+                                    .expect("started task has a checked program")
+                                    .checkpoint_identity(&mut Default::default())
+                                    .program,
+                                ty: call.result_type,
+                            },
+                        )
+                    })
+                })
+                .collect(),
             next_scope: self.next_scope,
             next_task: self.next_task,
             groups: self
@@ -194,6 +221,9 @@ impl TaskSchedulerMetadataSnapshot {
 
     fn validate(&self, tasks: &BTreeMap<TaskId, ScheduledTask>) -> Result<(), String> {
         self.continuations.validate()?;
+        if self.task_types.keys().any(|id| !tasks.contains_key(id)) {
+            return Err("Task type snapshot has no scheduler owner".into());
+        }
         let mut active: BTreeMap<_, usize> = self.groups.keys().map(|id| (*id, 0)).collect();
         for (id, saved) in &self.groups {
             let group = &saved.0;
@@ -218,6 +248,9 @@ impl TaskSchedulerMetadataSnapshot {
             }
         }
         for (id, task) in tasks {
+            if task.start.is_some() != self.task_types.contains_key(id) {
+                return Err("Task output type differs from its checked start origin".into());
+            }
             let group = self
                 .groups
                 .get(&task.scope)

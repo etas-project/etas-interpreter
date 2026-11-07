@@ -96,7 +96,7 @@ impl SnapshotValidator<'_> {
             None,
         )?;
         for (position, boundary) in boundaries.iter().enumerate() {
-            if boundary.floor != scopes.len() {
+            if boundary.floor != scopes.len() + self.inherited_handlers {
                 return Err(
                     "checkpoint program handler floor disagrees with its parent boundaries".into(),
                 );
@@ -111,7 +111,8 @@ impl SnapshotValidator<'_> {
                 &boundary.program.plan.closures,
                 self.limits,
             )
-            .with_revisions(self.revisions);
+            .with_revisions(self.revisions)
+            .with_execution_revision(boundary.program.revision.as_deref());
             validator.frame_owners = self.frame_owners.clone();
             validator.frame_definitions = self.frame_definitions.clone();
             validator.tasks = self.tasks;
@@ -132,17 +133,34 @@ impl SnapshotValidator<'_> {
         &self,
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<Vec<HandlerScopeId>, String> {
-        let boundaries = self.program_boundaries(&checkpoint.machine)?;
-        let count = checkpoint.handlers.handlers.len();
-        if boundaries.iter().any(|b| b.floor > count) {
+        self.validate_handler_stack(
+            &checkpoint.machine,
+            &checkpoint.handlers,
+            checkpoint.retry_state.attempts.len(),
+            0,
+        )
+    }
+
+    pub(super) fn validate_handler_stack(
+        &self,
+        machine: &MachineSnapshot,
+        handlers: &HandlerSnapshot,
+        retries: usize,
+        floor: usize,
+    ) -> Result<Vec<HandlerScopeId>, String> {
+        let boundaries = self.program_boundaries(machine)?;
+        let count = handlers.handlers.len();
+        if floor > count
+            || boundaries
+                .iter()
+                .any(|b| b.floor < floor || b.floor > count)
+        {
             return Err("checkpoint program handler floor exceeds active handler stack".into());
         }
         let mut retry_depth = 0;
-        for frame in &checkpoint.machine.frames {
+        for frame in &machine.frames {
             if let MachineFrameSnapshot::ProgramReturn(frame) = frame {
-                if frame.retry_depth < retry_depth
-                    || frame.retry_depth > checkpoint.retry_state.attempts.len()
-                {
+                if frame.retry_depth < retry_depth || frame.retry_depth > retries {
                     return Err(
                         "checkpoint program retry depths disagree with active retry stack".into(),
                     );
@@ -152,7 +170,7 @@ impl SnapshotValidator<'_> {
         }
         let root_end = boundaries.first().map_or(count, |b| b.floor);
         let mut scopes = self.handlers(&HandlerSnapshot {
-            handlers: checkpoint.handlers.handlers[..root_end].to_vec(),
+            handlers: handlers.handlers[floor..root_end].to_vec(),
         })?;
         for (index, boundary) in boundaries.iter().enumerate() {
             let end = boundaries.get(index + 1).map_or(count, |b| b.floor);
@@ -165,7 +183,7 @@ impl SnapshotValidator<'_> {
             )
             .with_revisions(self.revisions);
             scopes.extend(validator.handlers(&HandlerSnapshot {
-                handlers: checkpoint.handlers.handlers[boundary.floor..end].to_vec(),
+                handlers: handlers.handlers[boundary.floor..end].to_vec(),
             })?);
         }
         if scopes.windows(2).any(|pair| pair[0] >= pair[1]) {

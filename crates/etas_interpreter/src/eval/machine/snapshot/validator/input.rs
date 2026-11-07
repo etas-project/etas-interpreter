@@ -33,7 +33,8 @@ impl SnapshotValidator<'_> {
                 self.limits,
             )
             .with_revisions(self.revisions)
-            .with_tasks(self.tasks, self.task_identity);
+            .with_tasks(self.tasks, self.task_identity)
+            .with_execution_revision(program.revision.as_deref());
             validator.frame_definitions = self.frame_definitions.clone();
             validator.frame_owners = self.frame_owners.clone();
             validator.suspension_references = self.suspension_references.clone();
@@ -56,6 +57,24 @@ impl SnapshotValidator<'_> {
             )?;
         }
         match signal {
+            S::Error {
+                error_type,
+                payload,
+                residual,
+                ..
+            } => {
+                if let Some(attempt) = residual {
+                    self.residual_references
+                        .borrow_mut()
+                        .attempts
+                        .push(*attempt);
+                }
+                self.reference_value(
+                    payload,
+                    *error_type,
+                    &crate::control::GenericBindings::new(),
+                )
+            }
             S::Input(input) | S::Apply { input, .. } => self.input_value(input),
             S::Expr { expr, frame, .. } => {
                 self.expr(*expr, "checkpoint pending expression")?;

@@ -90,11 +90,66 @@ async fn drain(
             committed?;
         }
         if eval.cpu_jobs.is_empty() && !reactor.has_pending() {
+            drain_native(eval, root).await?;
             task::record_cancellation_events(eval);
             return Ok(());
         }
         task::wait_for_cpu_or_host(eval, reactor).await?;
     }
+}
+
+async fn drain_native(
+    eval: &mut EvalContext<'_>,
+    root: &mut EvalMachine,
+) -> Result<(), EvaluationOutcome> {
+    let cancelled = if let Some(scope) = root.program_scope() {
+        let mut scoped = eval.scoped_context(&scope.program, scope.handler_floor);
+        root.drain_native_input(&mut scoped).await
+    } else {
+        root.drain_native_input(eval).await
+    };
+    if let Some(cause) = cancelled {
+        return Err(EvaluationOutcome::Cancelled(cause));
+    }
+    let handles = eval
+        .scheduler
+        .checkpoint_tasks()
+        .iter()
+        .filter_map(|(id, task)| {
+            task.machine.has_native_input().then_some(TaskHandle {
+                owner: task.scope,
+                task: *id,
+            })
+        })
+        .collect::<Vec<_>>();
+    for handle in handles {
+        let mut scheduled = eval.scheduler.take_checkpoint_task(handle);
+        let (program, floor) = scheduled
+            .machine
+            .program_scope()
+            .map(|scope| (scope.program, scope.handler_floor))
+            .unwrap_or_else(|| {
+                (
+                    scheduled
+                        .program
+                        .clone()
+                        .expect("native work has a checked owner"),
+                    scheduled.handler_floor,
+                )
+            });
+        let mut child =
+            eval.scheduled_task_context(&program, &mut scheduled.local, handle.task, floor);
+        let cancelled = scheduled.machine.drain_native_input(&mut child).await;
+        drop(child);
+        eval.scheduler.restore_checkpoint_task(handle, scheduled);
+        if let Some(cause) = cancelled {
+            eval.scheduler
+                .cancelled(handle, cause)
+                .and_then(|()| eval.scheduler.apply_group_policy(handle))
+                .expect("coordinator owns the checkpoint task");
+        }
+    }
+    Ok(())
 }
 
 #[cfg(test)]
@@ -483,6 +538,7 @@ flow main() -> i32 {
                     &eval.host_context,
                     SnapshotRestoreResources {
                         task: Some(TaskSnapshotRestoreResources {
+                            inherited_handlers: 0,
                             scheduler: &scheduler,
                             identity: TaskIdentity::Root,
                             frames: frames.clone(),

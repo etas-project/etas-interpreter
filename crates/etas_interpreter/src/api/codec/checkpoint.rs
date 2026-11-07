@@ -207,7 +207,21 @@ pub fn checkpoint_from_json_with_revisions(
                 .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
         },
     };
+    let execution_revision = checkpoint
+        .code_revision
+        .as_ref()
+        .map(|identity| {
+            revisions
+                .ok_or_else(|| {
+                    InterpreterCodecError::new("native checkpoint requires prepared revisions")
+                })?
+                .checked_revision(identity)
+                .cloned()
+                .map_err(InterpreterCodecError::new)
+        })
+        .transpose()?;
     validator
+        .with_execution_revision(execution_revision.as_deref())
         .with_tasks(
             checkpoint.tasks.as_deref().map(|tasks| &tasks.metadata),
             Some(crate::driver::scheduler::TaskIdentity::Root),

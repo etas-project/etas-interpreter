@@ -13,6 +13,7 @@ pub(in crate::api::codec) fn encode(
         .iter()
         .map(|(id, task)| {
             let mut value = json!({
+            "inherited_dynamic": task.inherited_dynamic,
                 "id": id, "scope": task.scope, "program": task.program,
                 "local": { "parent": task.local.parent,
                     "model_policy": machine::model_policy_snapshot(&task.local.model_policy),
@@ -29,6 +30,12 @@ pub(in crate::api::codec) fn encode(
                 .machine
                 .as_ref()
                 .map(|machine| machine_json_with_budget(machine, budget))
+                .transpose()?
+                .unwrap_or(Value::Null);
+            value["start"] = task
+                .start
+                .as_ref()
+                .map(|call| snapshot::call_target_json_with_budget(call, budget))
                 .transpose()?
                 .unwrap_or(Value::Null);
             value["outcome"] = task
@@ -112,6 +119,14 @@ pub(in crate::api::codec) fn decode(
         };
         let local = required_obj(entry, "local")?;
         let task = ScheduledTaskSnapshot {
+            inherited_dynamic: field(entry, "inherited_dynamic")?,
+            start: match required_obj(entry, "start")? {
+                Value::Null => None,
+                call => Some(
+                    machine::call_target_snapshot_from_json(limits, call)
+                        .map_err(InterpreterCodecError::new)?,
+                ),
+            },
             scope: field(entry, "scope")?,
             program,
             local: TaskLocalSnapshot {

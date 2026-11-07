@@ -291,6 +291,18 @@ impl TaskScheduler {
         Ok(())
     }
 
+    pub(crate) fn attach_start(
+        &mut self,
+        handle: TaskHandle,
+        call: crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        assert!(task.start.is_none(), "task start origin is assigned once");
+        task.start = Some(std::sync::Arc::new(call));
+        Ok(())
+    }
+
     pub(crate) fn state(&self, handle: TaskHandle) -> Result<TaskState, SchedulerError> {
         Ok(self.resolve(handle)?.state)
     }

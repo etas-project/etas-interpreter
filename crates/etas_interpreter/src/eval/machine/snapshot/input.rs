@@ -184,6 +184,20 @@ impl ControlSignalSnapshot {
                 }
             }),
             ControlSignal::Fault(fault) => Self::Fault((**fault).clone()),
+            ControlSignal::Perform(perform) if perform.error_type.is_some() => Self::Error {
+                error_type: perform
+                    .error_type
+                    .expect("typed Error has its checked payload type"),
+                payload: context
+                    .value(perform.args.first().ok_or("typed Error has no payload")?)?,
+                span: perform.span,
+                continuation: context.continuation(&perform.continuation)?,
+                residual: perform
+                    .residual
+                    .as_ref()
+                    .map(|attempt| context.residual_attempt(attempt))
+                    .transpose()?,
+            },
             _ => {
                 return Err(
                     "pending native/Host work must reach a coordinator snapshot point".into(),
@@ -198,6 +212,24 @@ impl ControlSignalSnapshot {
         program: Option<&CheckedExecutionProgram>,
     ) -> Result<ControlSignal, String> {
         Ok(match self {
+            Self::Error {
+                error_type,
+                payload,
+                span,
+                continuation,
+                residual,
+            } => {
+                let mut perform = PendingPerform::typed_error(
+                    error_type,
+                    payload.restore_with(context)?,
+                    span,
+                    continuation.restore_with(context)?,
+                );
+                perform.residual = residual
+                    .map(|attempt| context.residual_attempt(attempt))
+                    .transpose()?;
+                ControlSignal::pending_perform(perform)
+            }
             Self::Input(input) => match input.restore(context)? {
                 ContinuationInput::Value(value) => ControlSignal::Value(value),
                 ContinuationInput::Return(value) => ControlSignal::Return(value),

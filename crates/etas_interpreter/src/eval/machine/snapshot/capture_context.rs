@@ -191,7 +191,7 @@ impl CaptureContext {
         }
         Ok(result)
     }
-    pub(super) fn call_target(
+    pub(crate) fn call_target(
         &mut self,
         target: &CallTarget,
     ) -> Result<crate::orchestration::CallTargetSnapshot, String> {

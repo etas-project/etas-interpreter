@@ -23,6 +23,13 @@ pub(crate) enum MachineInputSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ControlSignalSnapshot {
+    Error {
+        error_type: etas_types::TypeId,
+        payload: ValueSnapshot,
+        span: Span,
+        continuation: ContinuationSnapshot,
+        residual: Option<u32>,
+    },
     Input(ContinuationInputSnapshot),
     Apply {
         continuation: ContinuationSnapshot,
@@ -97,6 +104,7 @@ impl MachineInputSnapshot {
         match self {
             Self::Signal(
                 ControlSignalSnapshot::Apply { continuation, .. }
+                | ControlSignalSnapshot::Error { continuation, .. }
                 | ControlSignalSnapshot::Checkpoint { continuation, .. }
                 | ControlSignalSnapshot::Expr { continuation, .. }
                 | ControlSignalSnapshot::Block { continuation, .. }

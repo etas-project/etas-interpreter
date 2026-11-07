@@ -10,6 +10,7 @@ pub(in crate::api::codec) fn scheduler_metadata_json(
 ) -> Result<Value, InterpreterCodecError> {
     let mut value = json!({
         "next_scope": scheduler.next_scope,
+        "task_types": scheduler.task_types,
         "next_task": scheduler.next_task,
         "groups": scheduler.groups,
         "ready": scheduler.ready,
@@ -51,6 +52,7 @@ pub(in crate::api::codec) fn scheduler_metadata_from_json(
         })
     }
     Ok(TaskSchedulerMetadataSnapshot {
+        task_types: field(value, "task_types")?,
         next_scope: required_u64(value, "next_scope")?,
         next_task: required_u64(value, "next_task")?,
         groups: field(value, "groups")?,

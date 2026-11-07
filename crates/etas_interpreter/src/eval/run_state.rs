@@ -77,6 +77,9 @@ pub(crate) struct TaskLocalState {
 }
 
 impl TaskLocalState {
+    pub(crate) fn dynamic_depths(&self) -> (usize, usize) {
+        (self.handler_stack.len(), self.retry_stack.len())
+    }
     pub(crate) fn root(
         task_scope: crate::driver::scheduler::TaskScopeId,
         execution: etas_host::execution::ExecutionScope,
