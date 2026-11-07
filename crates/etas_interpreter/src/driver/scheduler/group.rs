@@ -2,7 +2,8 @@ use std::{collections::BTreeSet, num::NonZeroUsize};
 
 use super::{TaskId, TaskScopeId};
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "snake_case")]
 pub(crate) enum TaskGroupPolicy {
     Run,
     JoinTuple,
@@ -29,6 +30,7 @@ impl TaskGroupPolicy {
     }
 }
 
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(super) struct TaskGroup {
     pub(super) parent: Option<TaskScopeId>,
     pub(super) concurrency: NonZeroUsize,
@@ -43,6 +45,11 @@ pub(super) struct TaskGroup {
     pub(super) primary_failure: Option<TaskId>,
     pub(super) winner: Option<TaskId>,
 }
+
+/// Scope state contains only stable task/scope IDs and admission counters.
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+#[serde(transparent)]
+pub(crate) struct TaskScopeSnapshot(pub(super) TaskGroup);
 
 impl TaskGroup {
     pub(super) fn new(

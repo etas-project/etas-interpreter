@@ -1,5 +1,7 @@
 use super::super::*;
 
+mod concurrent;
+
 #[tokio::test(flavor = "current_thread")]
 async fn resume_checkpoint_continues_from_saved_state() {
     let checked = checked_project(

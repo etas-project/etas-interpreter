@@ -5,22 +5,28 @@ use crate::{
     value::{CheckedExecutionProgram, InterpValue},
 };
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct TaskScopeId(pub(crate) u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct TaskId(pub(crate) u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub(crate) struct ContinuationId(pub(crate) u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskIdentity {
     Root,
     Scheduled(TaskId),
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct TaskHandle {
     pub(crate) owner: TaskScopeId,
     pub(crate) task: TaskId,
@@ -90,7 +96,28 @@ pub(crate) enum TaskResume {
     },
 }
 
+pub(crate) enum RootTaskWait {
+    Await {
+        target: TaskHandle,
+        continuation: Continuation,
+    },
+    Run {
+        scope: TaskScopeId,
+    },
+    Transfer {
+        target: TaskHandle,
+        token: crate::value::ContinuationTokenValue,
+        continuation: Continuation,
+        output: etas_types::TypeId,
+        span: etas_core::Span,
+    },
+    Host,
+    Settling(TaskOutcome),
+}
+
 pub(crate) struct ScheduledTask {
+    pub(crate) inherited_dynamic: (usize, usize),
+    pub(crate) start: Option<std::sync::Arc<crate::intrinsic::dispatch::CheckedStdIntrinsicCall>>,
     pub(crate) scope: TaskScopeId,
     pub(crate) machine: EvalMachine,
     pub(crate) local: TaskLocalState,
@@ -115,7 +142,10 @@ impl ScheduledTask {
         handler_floor: usize,
         source_index: usize,
     ) -> Self {
+        let inherited_dynamic = local.dynamic_depths();
         Self {
+            inherited_dynamic,
+            start: None,
             scope,
             machine,
             local,

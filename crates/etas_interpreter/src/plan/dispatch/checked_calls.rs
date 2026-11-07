@@ -106,10 +106,41 @@ impl IntrinsicDispatchTable {
             .collect::<Result<Vec<_>, _>>()?;
         let output =
             CheckedStdIntrinsicCall::instantiate_type_with(store, call.result_type, substitutions)?;
-        if input != parameters || output != result {
+        if input.len() != parameters.len()
+            || input
+                .iter()
+                .zip(parameters)
+                .any(|(left, right)| !same_abi_type(store, *left, *right))
+            || !same_abi_type(store, output, result)
+        {
             return Err("standard intrinsic ABI differs from its checked origin".into());
         }
         Ok(())
+    }
+}
+
+fn same_abi_type(
+    store: &etas_types::TypeStore,
+    left: etas_types::TypeId,
+    right: etas_types::TypeId,
+) -> bool {
+    if left == right {
+        return true;
+    }
+    match (store.get(left), store.get(right)) {
+        (Some(etas_types::Type::Function(left)), Some(etas_types::Type::Function(right))) => {
+            let pure = |row: &Option<etas_types::EffectRowRef>| {
+                row.as_ref()
+                    .is_none_or(|row| row.tail.is_none() && row.effects.is_empty())
+            };
+            // Named pure flows and inferred closures can spell the same empty
+            // row as None or Some([]); their input and output ABI stays exact.
+            left.input == right.input
+                && left.output == right.output
+                && pure(&left.effects)
+                && pure(&right.effects)
+        }
+        _ => false,
     }
 }
 
@@ -198,6 +229,8 @@ mod tests {
                 result_type: result,
             };
             let machine = MachineSnapshot {
+                auxiliary: Vec::new(),
+                input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: vec![MachineFrameSnapshot::Continuation {

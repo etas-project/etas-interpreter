@@ -1,6 +1,6 @@
 use etas_core::{AnalysisDiagnosticCode, Diagnostic, Span};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ExecutionFault {
     pub code: AnalysisDiagnosticCode,
     pub span: Span,

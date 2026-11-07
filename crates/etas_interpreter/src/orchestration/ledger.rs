@@ -3,7 +3,9 @@ use super::{CheckpointId, RetryAttemptId};
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct WorkflowStepId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct CpuWorkerId(pub u16);
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]

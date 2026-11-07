@@ -2,22 +2,22 @@ use std::collections::{BTreeMap, VecDeque};
 
 use super::TaskId;
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct ResourceGuardId(pub(crate) u64);
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) enum EffectIdentity {
     Memory,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FrozenSelector {
     pub(crate) region: String,
     pub(crate) path: Vec<String>,
     pub(crate) key: Option<String>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord)]
+#[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RuntimeResourceKey {
     pub(crate) effect: EffectIdentity,
     pub(crate) selector: FrozenSelector,
@@ -46,6 +46,32 @@ pub(super) struct ResourceGuards {
     pub(super) holders: BTreeMap<TaskId, Vec<RuntimeResourceKey>>,
     pub(super) waiting: VecDeque<TaskId>,
     pub(super) events: Vec<ResourceEvent>,
+}
+
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct ResourceGuardsSnapshot {
+    pub(super) holders: BTreeMap<TaskId, Vec<RuntimeResourceKey>>,
+    pub(super) waiting: VecDeque<TaskId>,
+}
+
+impl ResourceGuards {
+    pub(super) fn capture(&self) -> ResourceGuardsSnapshot {
+        assert!(
+            self.events.is_empty(),
+            "resource events must be committed before checkpoint capture"
+        );
+        ResourceGuardsSnapshot {
+            holders: self.holders.clone(),
+            waiting: self.waiting.clone(),
+        }
+    }
+    pub(super) fn restore(snapshot: ResourceGuardsSnapshot) -> Self {
+        Self {
+            holders: snapshot.holders,
+            waiting: snapshot.waiting,
+            events: Vec::new(),
+        }
+    }
 }
 
 impl ResourceGuards {

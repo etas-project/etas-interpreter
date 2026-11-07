@@ -4,8 +4,15 @@ use crate::orchestration::{
     ContinuationSnapshotLink, LocalsSnapshot,
 };
 
+#[derive(Clone, Default)]
+pub(crate) struct SharedFrameRestore(
+    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, (LocalsSnapshot, Frame)>>>,
+);
+
 #[derive(Default)]
 pub(crate) struct RestoreContext {
+    pub(crate) task_handles: bool,
+    pub(crate) shared_frames: Option<SharedFrameRestore>,
     pub(in crate::eval::machine) current_host: Option<crate::api::HostExecutionContext>,
     pub(in crate::eval::machine) locked_model: Option<etas_host::ModelName>,
     pub(in crate::eval::machine) suspensions: Option<SuspensionRestoreTable>,
@@ -52,6 +59,45 @@ pub(super) struct ProgramRestoreCaches {
 }
 
 impl RestoreContext {
+    pub(crate) fn for_task(
+        program: crate::value::CheckedExecutionProgram,
+        current: &crate::api::HostExecutionContext,
+        locked_model: Option<etas_host::ModelName>,
+        revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
+        ordering: Option<super::ordering::OrderedRestoreChecks>,
+        frames: SharedFrameRestore,
+    ) -> Self {
+        Self {
+            current_host: Some(current.clone()),
+            locked_model,
+            revisions,
+            ordering,
+            task_handles: true,
+            shared_frames: Some(frames),
+            ..Self::for_program(program.checked.clone(), None)
+        }
+        .with_execution_program(program)
+    }
+
+    pub(super) fn related_program(&self, program: crate::value::CheckedExecutionProgram) -> Self {
+        Self {
+            task_handles: self.task_handles,
+            shared_frames: self.shared_frames.clone(),
+            current_host: self.current_host.clone(),
+            locked_model: self.locked_model.clone(),
+            suspensions: self.suspensions.clone(),
+            ordering: self.ordering.clone(),
+            residual: self.residual.clone(),
+            ..Self::for_program(program.checked.clone(), self.revisions.clone())
+        }
+        .with_execution_program(program)
+    }
+
+    fn with_execution_program(mut self, program: crate::value::CheckedExecutionProgram) -> Self {
+        self.execution_program = Some(program);
+        self
+    }
+
     pub(crate) fn for_execution(
         program: crate::value::CheckedExecutionProgram,
         revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
@@ -178,7 +224,7 @@ impl RestoreContext {
         }
         self.revision_program = Some(program);
     }
-    pub(in crate::eval::machine) fn restore_call_target(
+    pub(crate) fn restore_call_target(
         &mut self,
         target: CallTargetSnapshot,
     ) -> Result<crate::control::CallTarget, String> {
@@ -254,6 +300,14 @@ impl RestoreContext {
             }
             return Ok(Some(frame.clone()));
         }
+        if let Some(shared) = &self.shared_frames
+            && let Some((definition, frame)) = shared.0.borrow().get(&snapshot.id)
+        {
+            if definition != snapshot {
+                return Err("conflicting definitions for snapshot frame identity".into());
+            }
+            return Ok(Some(frame.clone()));
+        }
         Ok(None)
     }
 
@@ -276,6 +330,12 @@ impl RestoreContext {
             frame.bind_residual_invocation(invocation)?;
         }
         self.active.remove(&snapshot.id);
+        if let Some(shared) = &self.shared_frames {
+            shared
+                .0
+                .borrow_mut()
+                .insert(snapshot.id, (snapshot.clone(), frame.clone()));
+        }
         self.frames.insert(snapshot.id, (snapshot, frame));
         Ok(())
     }

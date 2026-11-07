@@ -630,10 +630,11 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "kind": json!("reenter_handler"),
             "boundary": Node::Continuation(boundary),
         },
-        Continuation::HandlerDispatch { outer } => {
+        Continuation::HandlerDispatch { outer, deferred } => {
             object! { slot, pending;
             "kind": json!("handler_dispatch"),
                 "outer": Node::Continuation(outer),
+                "deferred": json!(deferred),
             }
         }
         Continuation::AgentInference {

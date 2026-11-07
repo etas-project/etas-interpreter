@@ -145,14 +145,18 @@ cargo test --release cpu_dispatch_benchmark -- --ignored --nocapture --test-thre
 
 Durable CPU scheduling events use logical worker IDs and dispatch/completion
 sequences. OS thread IDs and durations are available through
-`RunEventObserver::observe_cpu`. Report v3 and checkpoint v74 reject older
+`RunEventObserver::observe_cpu`. Report v3 and checkpoint v75 reject older
 schemas; replay never depends on process-local thread IDs.
 
 `crates/etas_interpreter/examples/concurrency_speedup.es` measures pure CPU work;
 `handler_cpu.es` demonstrates Handler/`park` scheduling of the same worker path.
 The older Console Handler example demonstrates serialized effect safety.
-Checkpoints during active task scopes are explicitly rejected; take checkpoints
-after all structured tasks have settled.
+Checkpoints during active task scopes pause task admission and drain admitted
+CPU jobs, Host requests and native kernels before capture. The snapshot preserves
+scopes, ready queues, resource permits and waiters, parked continuations, task
+machines, shared frames and consumed budgets. Resume continues those machines
+without repeating completed Host requests or charging completed CPU work again.
+Pending external requests must finish before the checkpoint can be created.
 
 Trace and checkpoint workflows:
 

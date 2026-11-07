@@ -30,6 +30,13 @@ pub(super) fn value_json_with_budget(
     encode_with_budget(Node::Value(value), budget)
 }
 
+pub(super) fn frame_json_with_budget(
+    value: &LocalsSnapshot,
+    budget: &mut EncodingBudget,
+) -> Result<Value, super::InterpreterCodecError> {
+    encode_with_budget(Node::Frame(value), budget)
+}
+
 pub(super) fn call_target_json_with_budget(
     value: &CallTargetSnapshot,
     budget: &mut EncodingBudget,

@@ -33,6 +33,8 @@ impl SnapshotValidator<'_> {
         .with_revisions(self.revisions);
         validator.frame_owners = self.frame_owners.clone();
         validator.frame_definitions = self.frame_definitions.clone();
+        validator.tasks = self.tasks;
+        validator.task_identity = self.task_identity;
         validator.call_target(target, "checkpoint scoped callable native target")?;
         crate::value::ScopedCallableValue::checked_snapshot_root(
             &native,

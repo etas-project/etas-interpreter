@@ -102,6 +102,8 @@ fn perform_suspension_does_not_copy_named_argument_descriptors() {
             &limits,
         );
         let machine = |continuation| crate::orchestration::MachineSnapshot {
+            auxiliary: Vec::new(),
+            input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: vec![crate::orchestration::MachineFrameSnapshot::Continuation { continuation }],

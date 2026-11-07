@@ -406,6 +406,8 @@ fn decoded_deep_targets_still_require_checked_machine_identity() {
         let doc = document(tree);
         let target = call_target_snapshot_from_json(&limits, &doc["checkpoint"]).unwrap();
         let machine = MachineSnapshot {
+            auxiliary: Vec::new(),
+            input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation {

@@ -410,7 +410,7 @@ fn record_field_snapshot(
         match c {
             C::RecordField { .. } => Some(c),
             C::Chain { inner, outer } => find(inner).or_else(|| find(outer)),
-            C::CallBoundary { outer, .. } | C::HandlerDispatch { outer } => find(outer),
+            C::CallBoundary { outer, .. } | C::HandlerDispatch { outer, .. } => find(outer),
             C::HandleBoundary { inner, .. }
             | C::ScopedModelPolicy { inner, .. }
             | C::RestoreModelPolicy { inner, .. } => find(inner),

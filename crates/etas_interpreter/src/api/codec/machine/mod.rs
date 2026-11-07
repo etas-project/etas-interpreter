@@ -5,8 +5,8 @@ pub(in crate::api::codec) use call_target::{
 mod continuation;
 mod frame;
 pub(in crate::api::codec) use frame::{
-    DecodeRoot, FrameDecodeCache, effect_rows_from_snapshot, runtime_frame_cache,
-    snapshot_frame_cache, type_parameters_from_snapshot,
+    DecodeRoot, FrameDecodeCache, effect_rows_from_snapshot, locals_from_snapshot,
+    runtime_frame_cache, snapshot_frame_cache, type_parameters_from_snapshot,
 };
 mod intrinsic;
 mod model;

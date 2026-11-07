@@ -36,7 +36,7 @@ impl ContinuationSnapshot {
             let mut value = match current {
                 Continuation::HandlerDispatch {
                     deferred: Some(_), ..
-                } => {
+                } if !context.task_handles => {
                     return Err(
                         "live deferred continuation cannot be captured outside the task scheduler"
                             .into(),
@@ -47,10 +47,7 @@ impl ContinuationSnapshot {
                 | Continuation::HandleBoundary { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. }
                 | Continuation::CallBoundary { outer: inner, .. }
-                | Continuation::HandlerDispatch {
-                    outer: inner,
-                    deferred: None,
-                } => {
+                | Continuation::HandlerDispatch { outer: inner, .. } => {
                     if let Some(saved) = saved_link(inner, context) {
                         capture_parent(current, saved, context)?
                     } else {
@@ -155,16 +152,10 @@ fn capture_parent(
             span: *span,
             outer: child,
         },
-        Continuation::HandlerDispatch {
-            deferred: Some(_), ..
-        } => {
-            return Err(
-                "live deferred continuation cannot be captured outside the task scheduler".into(),
-            );
-        }
-        Continuation::HandlerDispatch { deferred: None, .. } => {
-            ContinuationSnapshot::HandlerDispatch { outer: child }
-        }
+        Continuation::HandlerDispatch { deferred, .. } => ContinuationSnapshot::HandlerDispatch {
+            outer: child,
+            deferred: *deferred,
+        },
         Continuation::ReenterHandler { .. } => {
             ContinuationSnapshot::ReenterHandler { boundary: child }
         }

@@ -232,6 +232,8 @@ fn checked_machine_validation_reuses_callable_graph_but_rejects_late_tampering()
                 },
             };
             let mut machine = MachineSnapshot {
+                auxiliary: Vec::new(),
+                input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: (0..count)

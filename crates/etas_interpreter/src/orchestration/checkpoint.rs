@@ -18,14 +18,19 @@ use crate::value::{
 #[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
 pub struct CheckpointId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct RetryAttemptId(pub u32);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash)]
+#[derive(
+    Clone, Copy, Debug, PartialEq, Eq, PartialOrd, Ord, Hash, serde::Serialize, serde::Deserialize,
+)]
 pub struct HandlerScopeId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct InterpreterCheckpoint {
+    pub(crate) tasks: Option<Box<super::TaskSchedulerSnapshot>>,
     pub replay_key_id: etas_host::replay::ReplayKeyId,
     /// Session-local immutable code pins. The codec never serializes these owners.
     pub(crate) retained_code: Option<std::sync::Arc<crate::api::code::CheckpointCodePins>>,
@@ -188,6 +193,8 @@ impl CheckpointCodeRevision {
 
 #[derive(Clone, Debug, Default)]
 pub struct MachineSnapshot {
+    pub(crate) auxiliary: Vec<super::AuxiliaryContinuationSnapshot>,
+    pub(crate) input: Option<Box<super::MachineInputSnapshot>>,
     pub(crate) frames: Vec<MachineFrameSnapshot>,
     pub(crate) program_owners: FrameProgramOwners,
     pub(crate) suspended_programs: Vec<super::SuspendedProgramSnapshot>,
@@ -209,6 +216,8 @@ impl MachineSnapshot {
             .any(|frame| matches!(frame, MachineFrameSnapshot::ProgramReturn(_)))
         {
             return Self {
+                auxiliary: Vec::new(),
+                input: None,
                 frames,
                 program_owners: FrameProgramOwners::Root,
                 suspended_programs: Vec::new(),
@@ -227,6 +236,8 @@ impl MachineSnapshot {
             })
             .collect();
         Self {
+            auxiliary: Vec::new(),
+            input: None,
             frames,
             program_owners: FrameProgramOwners::Scoped(program_owners),
             suspended_programs: Vec::new(),
@@ -342,6 +353,7 @@ impl Drop for LocalsSnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
+    TaskRuntime(TaskValueSnapshot),
     Existential {
         header: crate::value::ExistentialHeader,
         value: SnapshotBox,
@@ -452,6 +464,15 @@ pub(crate) enum ValueSnapshot {
         predicate: Option<SnapshotBox>,
         limit: Option<u32>,
     },
+}
+
+/// Coordinator handles have durable logical IDs, never a live execution owner.
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum TaskValueSnapshot {
+    Task { owner: u64, task: u64 },
+    Scheduler { owner: u64 },
+    Continuation { owner: u64, continuation: u64 },
 }
 
 #[derive(Clone, Debug, PartialEq)]
@@ -854,6 +875,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     HandlerDispatch {
         outer: ContinuationSnapshotLink,
+        deferred: Option<crate::value::ContinuationTokenValue>,
     },
     ReenterHandler {
         boundary: ContinuationSnapshotLink,
@@ -1023,12 +1045,12 @@ pub(crate) struct ComposedInvocationSnapshot {
     pub path: Vec<usize>,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct HandlerSnapshot {
     pub handlers: Vec<ActiveHandlerRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveHandlerRecord {
     pub id: HandlerScopeId,
     pub handled_actions: Vec<String>,
@@ -1036,7 +1058,7 @@ pub struct ActiveHandlerRecord {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ActiveHandlerArmRecord {
     pub arm: etas_hir::HirHandlerArmId,
     pub effect_segments: Vec<String>,
@@ -1049,12 +1071,12 @@ pub struct ActiveHandlerArmRecord {
     pub span: Span,
 }
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RetrySnapshot {
     pub attempts: Vec<RetryAttemptRecord>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RetryAttemptRecord {
     pub id: RetryAttemptId,
     pub ordinal: u32,

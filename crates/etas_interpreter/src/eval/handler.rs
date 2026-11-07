@@ -420,6 +420,7 @@ impl<'a> EvalContext<'a> {
                         handler.span,
                     ));
                 };
+                let program = self.checked_execution_program();
                 let token = self.scheduler.allocate_continuation(
                     self.task.task_scope,
                     self.current_task,
@@ -428,6 +429,8 @@ impl<'a> EvalContext<'a> {
                         .checked_action
                         .as_ref()
                         .map_or(fact.action_output, |action| action.output),
+                    Some(program),
+                    Some(symbol),
                 );
                 handler_frame.insert(symbol, InterpValue::Continuation(token));
                 (Continuation::BlockValue, Some(token))

@@ -13,6 +13,7 @@ pub(crate) fn validate_boundary_readiness(
     available: HostServiceAvailability,
 ) -> Option<Diagnostic> {
     let (ready, service, span) = match boundary {
+        PendingBoundary::Checkpoint { .. } => return None,
         PendingBoundary::Perform(_) => return None,
         PendingBoundary::Task(_) => return None,
         PendingBoundary::Console(pending) => (available.console, "Console", pending.span),

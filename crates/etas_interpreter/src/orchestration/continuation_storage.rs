@@ -71,7 +71,7 @@ impl Drop for ContinuationSnapshotLink {
                 | ContinuationSnapshot::HandleBoundary { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => next = inner.0.take(),
                 ContinuationSnapshot::CallBoundary { outer, .. }
-                | ContinuationSnapshot::HandlerDispatch { outer } => next = outer.0.take(),
+                | ContinuationSnapshot::HandlerDispatch { outer, .. } => next = outer.0.take(),
                 ContinuationSnapshot::Chain { inner, outer } => {
                     next = inner.0.take();
                     if let Some(outer) = outer.0.take() {

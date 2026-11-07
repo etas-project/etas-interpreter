@@ -92,6 +92,10 @@ fn context<'a>(
     ordering: Option<&crate::eval::machine::snapshot::ordering::OrderedRestoreChecks>,
     residual: &Option<Rc<crate::eval::machine::snapshot::RestoredResidualState>>,
 ) -> &'a mut crate::eval::machine::snapshot::RestoreContext {
+    let shared_frames = contexts
+        .values()
+        .find_map(|context| context.shared_frames.clone());
+    let task_handles = contexts.values().any(|context| context.task_handles);
     let context = contexts
         .entry(Arc::as_ptr(&program.checked) as usize)
         .or_insert_with(|| {
@@ -103,9 +107,12 @@ fn context<'a>(
             context.locked_model = locked_model.clone();
             context.ordering = ordering.cloned();
             context.residual = residual.clone();
+            context.shared_frames = shared_frames;
+            context.task_handles = task_handles;
             context
         });
     context.execution_program = Some(program.clone());
+    context.suspensions = Some(table.clone());
     context
 }
 

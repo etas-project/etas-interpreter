@@ -22,6 +22,28 @@ impl Default for EncodingBudget {
 }
 
 impl EncodingBudget {
+    pub(in crate::api::codec) fn json_metadata(
+        &mut self,
+        value: &serde_json::Value,
+    ) -> Result<(), InterpreterCodecError> {
+        let mut pending = vec![value];
+        while let Some(value) = pending.pop() {
+            let bytes = match value {
+                serde_json::Value::Object(object) => {
+                    pending.extend(object.values());
+                    object.keys().map(String::len).sum()
+                }
+                serde_json::Value::Array(array) => {
+                    pending.extend(array);
+                    0
+                }
+                serde_json::Value::String(text) => text.len(),
+                _ => 0,
+            };
+            self.metadata(1, bytes)?;
+        }
+        Ok(())
+    }
     pub(in crate::api::codec) fn register_suspensions(&mut self, count: usize) {
         self.suspended_programs = Some(count);
     }

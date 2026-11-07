@@ -18,6 +18,37 @@ pub(crate) struct CheckedExecutionProgram {
 }
 
 impl CheckedExecutionProgram {
+    pub(crate) fn restore_identity(
+        saved: &crate::orchestration::ExecutionProgramSnapshot,
+        source: &Self,
+        revisions: Option<&crate::api::code::PreparedRevisionSet>,
+    ) -> Result<Self, String> {
+        use crate::orchestration::{CheckpointProgramReference, ExecutionRootSnapshot as R};
+        if matches!(saved.program, CheckpointProgramReference::Source) && source.revision.is_none()
+        {
+            let root = match saved.root {
+                R::Item(item) => etas_frontend::CheckedCallableRoot::Item(item),
+                R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(expr),
+                R::StdReference(expr) => etas_frontend::CheckedCallableRoot::StdReference(expr),
+            };
+            let plan = source
+                .plan
+                .select_callable(&source.checked, root)
+                .map_err(|errors| {
+                    format!("checkpoint callable has no rechecked plan: {errors:?}")
+                })?;
+            return Ok(Self {
+                checked: source.checked.clone(),
+                plan: Arc::new(plan),
+                definitions: source.definitions.clone(),
+                revision: None,
+            });
+        }
+        revisions
+            .ok_or("checkpoint program has no prepared revision set")?
+            .execution_snapshot(saved)
+    }
+
     pub(crate) fn checkpoint_identity(
         &self,
         revisions: &mut std::collections::BTreeMap<

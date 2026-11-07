@@ -242,6 +242,18 @@ pub(crate) fn validate<'a>(
                     values.flat_map(move |(a, b)| [Seed::new(a, key), Seed::new(b, value)]),
                 )));
             }
+            // Console errors are a standard support type with runtime-owned
+            // constructors, rather than a source enum with a nominal envelope.
+            (_, Node::Variant(name, len, mut fields))
+                if crate::eval::resolve_std_type(checked, &["std", "io", "IOError"])
+                    == Some(expected) =>
+            {
+                match (name, len) {
+                    ("PermissionDenied", 0) => {}
+                    ("Host", 1) if matches!(fields.next().unwrap().node(), Node::String(_)) => {}
+                    _ => return Err("console error has a different runtime constructor".into()),
+                }
+            }
             (_, Node::Native) => native::validate(context, value, expected, &mut pending)?,
             _ => {
                 return Err(format!(

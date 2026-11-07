@@ -6,7 +6,7 @@ use crate::orchestration::{
 enum PendingParent<'a> {
     RestoreModelPolicy(Box<ModelExecutionPolicySnapshot>),
     CallBoundary(etas_core::Span, Option<crate::control::CallOrigin>),
-    HandlerDispatch,
+    HandlerDispatch(Option<crate::value::ContinuationTokenValue>),
     ReenterHandler,
     HandleBoundary {
         scope_id: HandlerScopeId,
@@ -43,7 +43,9 @@ pub(crate) fn continuation_from_snapshot(
                 continue;
             }
             "handler_dispatch" => {
-                pending.push(PendingParent::HandlerDispatch);
+                let deferred = serde::Deserialize::deserialize(required(value, "deferred")?)
+                    .map_err(|error| format!("invalid deferred continuation token: {error}"))?;
+                pending.push(PendingParent::HandlerDispatch(deferred));
                 value = required(value, "outer")?;
                 continue;
             }
@@ -88,8 +90,11 @@ pub(crate) fn continuation_from_snapshot(
                         outer: node.into(),
                     }
                 }
-                Some(PendingParent::HandlerDispatch) => {
-                    ContinuationSnapshot::HandlerDispatch { outer: node.into() }
+                Some(PendingParent::HandlerDispatch(deferred)) => {
+                    ContinuationSnapshot::HandlerDispatch {
+                        outer: node.into(),
+                        deferred,
+                    }
                 }
                 Some(PendingParent::ReenterHandler) => ContinuationSnapshot::ReenterHandler {
                     boundary: node.into(),

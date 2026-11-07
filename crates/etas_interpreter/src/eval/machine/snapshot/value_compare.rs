@@ -131,6 +131,7 @@ impl PartialEq for ValueSnapshot {
 fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pending<'a>) -> bool {
     use ValueSnapshot as V;
     match (a, b) {
+        (V::TaskRuntime(a), V::TaskRuntime(b)) => a == b,
         (V::Unit, V::Unit) | (V::OptionNone, V::OptionNone) => true,
         (V::Bool(a), V::Bool(b)) => a == b,
         (V::Number(a), V::Number(b)) => a == b,

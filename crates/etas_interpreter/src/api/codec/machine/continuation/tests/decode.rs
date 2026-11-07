@@ -220,7 +220,10 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
                 span: crate::testing::synthetic_span(),
                 outer: root.into(),
             },
-            1 => ContinuationSnapshot::HandlerDispatch { outer: root.into() },
+            1 => ContinuationSnapshot::HandlerDispatch {
+                outer: root.into(),
+                deferred: None,
+            },
             2 => ContinuationSnapshot::HandleBoundary {
                 scope_id: HandlerScopeId(i as u32),
                 inner: root.into(),
@@ -288,6 +291,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
             };
         }
         let saved = InterpreterCheckpoint {
+            tasks: None,
             replay_key_id: etas_host::replay::ReplayKeyId::from_bytes([1; 32]),
             retained_code: None,
             model_policy: crate::eval::machine::snapshot::capture_model_policy(&Default::default()),
@@ -298,6 +302,8 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
             entry_item: entry,
             args: vec![],
             machine: MachineSnapshot {
+                auxiliary: Vec::new(),
+                input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: vec![MachineFrameSnapshot::Continuation { continuation: root }],

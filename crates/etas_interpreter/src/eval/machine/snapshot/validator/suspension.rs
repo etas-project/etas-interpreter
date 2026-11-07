@@ -79,8 +79,11 @@ impl SnapshotValidator<'_> {
                 &parent.plan.closures,
                 self.limits,
             )
-            .with_revisions(self.revisions);
+            .with_revisions(self.revisions)
+            .with_execution_revision(parent.revision.as_deref());
             parent_validator.frame_definitions = self.frame_definitions.clone();
+            parent_validator.tasks = self.tasks;
+            parent_validator.task_identity = self.task_identity;
             parent_validator.frame_owners = self.frame_owners.clone();
             parent_validator.suspension_references = self.suspension_references.clone();
             parent_validator.invocation_site(
@@ -95,8 +98,11 @@ impl SnapshotValidator<'_> {
                 &native.plan.closures,
                 self.limits,
             )
-            .with_revisions(self.revisions);
+            .with_revisions(self.revisions)
+            .with_execution_revision(native.revision.as_deref());
             validator.frame_definitions = self.frame_definitions.clone();
+            validator.tasks = self.tasks;
+            validator.task_identity = self.task_identity;
             validator.frame_owners = self.frame_owners.clone();
             validator.suspension_references = self.suspension_references.clone();
             validator.residual_references = self.residual_references.clone();

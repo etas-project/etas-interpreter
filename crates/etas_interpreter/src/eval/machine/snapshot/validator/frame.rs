@@ -97,6 +97,46 @@ impl SnapshotValidator<'_> {
             ));
         }
         self.effect_row_bindings(&frame.effect_row_bindings, context)?;
+        let mut handler_bindings = std::collections::HashMap::new();
+        for (binder, value) in frame.locals.iter() {
+            let crate::orchestration::ValueSnapshot::TaskRuntime(
+                crate::orchestration::TaskValueSnapshot::Continuation { continuation, .. },
+            ) = value
+            else {
+                continue;
+            };
+            let Some(binding) = self.checked.types.continuation_bindings.get(binder) else {
+                continue;
+            };
+            if !matches!(
+                self.checked.type_store.get(binding.action_output),
+                Some(etas_types::Type::Named(_) | etas_types::Type::Var(_))
+            ) {
+                continue;
+            }
+            let output = self
+                .tasks
+                .and_then(|tasks| {
+                    tasks
+                        .continuations
+                        .entries
+                        .get(&crate::driver::scheduler::ContinuationId(*continuation))
+                })
+                .ok_or("Handler continuation has no scheduler signature")?
+                .output;
+            let scope = self
+                .checked
+                .hir
+                .scopes
+                .get(binding.owner_scope)
+                .ok_or("Handler has no checked binding scope")?;
+            for symbol in &scope.symbols {
+                let local = handler_bindings
+                    .entry(*symbol)
+                    .or_insert_with(|| bindings.clone());
+                local.parameters.insert(binding.action_output, output);
+            }
+        }
         for (symbol, value) in frame.locals.iter() {
             self.symbol(*symbol, &format!("{context} frame local"))?;
             if self.slots.resolve(*symbol).is_none() {
@@ -106,7 +146,11 @@ impl SnapshotValidator<'_> {
                 ));
             }
             self.snapshot_value_in(value, super::call_target::ReferenceScope::CheckedSlot)?;
-            self.validate_local_references(*symbol, value, &bindings)?;
+            self.validate_local_references(
+                *symbol,
+                value,
+                handler_bindings.get(symbol).unwrap_or(&bindings),
+            )?;
         }
         Ok(())
     }

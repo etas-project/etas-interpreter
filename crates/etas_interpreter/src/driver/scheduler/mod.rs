@@ -2,9 +2,12 @@ mod continuation;
 mod group;
 mod host;
 mod resource;
+mod snapshot;
 mod task;
 
-pub(crate) use resource::{EffectIdentity, FrozenSelector, ResourceEvent, RuntimeResourceKey};
+pub(crate) use resource::{
+    EffectIdentity, FrozenSelector, ResourceEvent, ResourceGuardId, RuntimeResourceKey,
+};
 
 use std::{
     collections::{BTreeMap, VecDeque},
@@ -12,11 +15,16 @@ use std::{
 };
 
 pub(crate) use continuation::{ConsumedContinuation, ContinuationTransfer};
-pub(crate) use group::TaskGroupPolicy;
+pub(crate) use continuation::{
+    ContinuationArenaSnapshot, ContinuationEntrySnapshot, ContinuationState,
+};
+pub(crate) use group::{TaskGroupPolicy, TaskScopeSnapshot};
 pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, TaskHostReactor};
+pub(crate) use resource::ResourceGuardsSnapshot;
+pub(crate) use snapshot::TaskSchedulerMetadataSnapshot;
 pub(crate) use task::{
-    ContinuationId, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome, TaskResume,
-    TaskScopeId, TaskState, TaskWait, TaskWaiter,
+    ContinuationId, RootTaskWait, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome,
+    TaskResume, TaskScopeId, TaskState, TaskWait, TaskWaiter,
 };
 
 pub(crate) const MAX_CONCURRENCY: usize = 65_536;
@@ -92,6 +100,7 @@ pub(crate) struct TaskScheduler {
     cancellation_events: Vec<(TaskHandle, etas_host::execution::CancellationReason)>,
     continuations: continuation::ContinuationArena,
     resources: resource::ResourceGuards,
+    checkpoint_barrier: bool,
 }
 
 impl TaskScheduler {
@@ -111,6 +120,7 @@ impl TaskScheduler {
             cancellation_events: Vec::new(),
             continuations: continuation::ContinuationArena::new(),
             resources: Default::default(),
+            checkpoint_barrier: false,
         }
     }
 
@@ -152,13 +162,30 @@ impl TaskScheduler {
         origin: TaskIdentity,
         continuation: crate::control::Continuation,
         output: etas_types::TypeId,
+        program: Option<crate::value::CheckedExecutionProgram>,
+        binder: Option<etas_hir::SymbolId>,
     ) -> crate::value::ContinuationTokenValue {
         assert!(
             self.groups.contains_key(&owner),
             "continuation scope must exist"
         );
         self.continuations
-            .allocate(owner, origin, continuation, output)
+            .allocate(owner, origin, continuation, output, program, binder)
+    }
+
+    pub(crate) fn capture_continuations(
+        &self,
+        revisions: &mut std::collections::BTreeMap<
+            etas_code::RevisionKey,
+            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
+        >,
+        capture: impl FnMut(
+            TaskIdentity,
+            Option<&crate::value::CheckedExecutionProgram>,
+            &crate::control::Continuation,
+        ) -> Result<u32, String>,
+    ) -> Result<ContinuationArenaSnapshot, String> {
+        self.continuations.capture(revisions, capture)
     }
 
     pub(crate) fn consume_continuation(
@@ -205,11 +232,15 @@ impl TaskScheduler {
         handler_floor: usize,
         source_index: usize,
     ) -> Result<TaskHandle, SchedulerError> {
+        assert!(
+            !self.checkpoint_barrier,
+            "task admission is paused by checkpoint barrier"
+        );
         if !self.groups.contains_key(&scope) {
             return Err(SchedulerError::WrongOwner);
         }
-        let local = parent.child_in_scope(scope)?;
         let id = TaskId(self.next_task);
+        let local = parent.child_in_scope(scope, id)?;
         self.next_task = self.next_task.checked_add(1).expect("task id exhausted");
         self.tasks.insert(
             id,
@@ -257,6 +288,18 @@ impl TaskScheduler {
         if task.state != TaskState::Ready || task.cpu_capsule.replace(capsule).is_some() {
             return Err(SchedulerError::InvalidTransition);
         }
+        Ok(())
+    }
+
+    pub(crate) fn attach_start(
+        &mut self,
+        handle: TaskHandle,
+        call: crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        assert!(task.start.is_none(), "task start origin is assigned once");
+        task.start = Some(std::sync::Arc::new(call));
         Ok(())
     }
 
@@ -381,6 +424,9 @@ impl TaskScheduler {
 
     /// FIFO admission. Stale queue entries from cancellation are skipped.
     pub(crate) fn dispatch_ready(&mut self) -> Option<TaskHandle> {
+        if self.checkpoint_barrier {
+            return None;
+        }
         let queued = self.ready.len();
         for _ in 0..queued {
             let id = self.ready.pop_front().expect("bounded ready queue scan");
@@ -416,6 +462,45 @@ impl TaskScheduler {
             });
         }
         None
+    }
+
+    pub(crate) fn begin_checkpoint_barrier(&mut self) {
+        assert!(!self.checkpoint_barrier, "checkpoint barriers cannot nest");
+        self.checkpoint_barrier = true;
+    }
+
+    pub(crate) fn end_checkpoint_barrier(&mut self) {
+        assert!(self.checkpoint_barrier, "checkpoint barrier must be active");
+        self.checkpoint_barrier = false;
+    }
+
+    /// Commit completed Host operations without running the task or changing
+    /// FIFO order, active slots, resource permits, or waiter ownership.
+    pub(crate) fn take_checkpoint_task(&mut self, handle: TaskHandle) -> ScheduledTask {
+        assert!(
+            self.checkpoint_barrier,
+            "checkpoint task access requires a barrier"
+        );
+        let task = self
+            .tasks
+            .remove(&handle.task)
+            .expect("completed Host task exists");
+        assert_eq!(task.scope, handle.owner);
+        assert_eq!(task.state, TaskState::Ready);
+        task
+    }
+
+    pub(crate) fn restore_checkpoint_task(&mut self, handle: TaskHandle, task: ScheduledTask) {
+        assert!(
+            self.checkpoint_barrier,
+            "checkpoint task access requires a barrier"
+        );
+        assert_eq!(task.scope, handle.owner);
+        assert_eq!(task.state, TaskState::Ready);
+        assert!(
+            self.tasks.insert(handle.task, task).is_none(),
+            "checkpoint task restored once"
+        );
     }
 
     pub(crate) fn take_running(
@@ -882,6 +967,8 @@ impl TaskScheduler {
 
     fn terminal(&mut self, handle: TaskHandle, outcome: TaskOutcome) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        self.continuations
+            .dispose_origin(TaskIdentity::Scheduled(id));
         let (waiters, was_running) = {
             let task = self.tasks.get_mut(&id).expect("resolved task");
             if task.state.is_terminal() {

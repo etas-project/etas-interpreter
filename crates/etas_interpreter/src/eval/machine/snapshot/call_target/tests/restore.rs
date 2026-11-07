@@ -441,6 +441,8 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                 );
             }
             let saved = MachineSnapshot {
+                auxiliary: Vec::new(),
+                input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: vec![MachineFrameSnapshot::Continuation {

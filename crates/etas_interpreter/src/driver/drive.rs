@@ -10,10 +10,7 @@ use crate::{
     value::InterpValue,
 };
 
-use super::{
-    dispatch,
-    scheduler::{CompletedTaskHost, HostOwner},
-};
+use super::{dispatch, scheduler::HostOwner};
 
 pub(super) fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcome {
     if let Some(diagnostic) = eval
@@ -44,6 +41,7 @@ pub(super) fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcom
     EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
 }
 
+#[derive(Debug)]
 pub(crate) enum EvaluationOutcome {
     Completed(InterpValue),
     Failed(crate::api::RunFailure),
@@ -67,7 +65,7 @@ pub async fn execute_entry(
 ) -> EvaluationOutcome {
     let machine =
         EvalMachine::for_entry(eval.checked_execution_program(), eval.entry_args.to_vec());
-    drive_eval_signal(eval, signal, host, machine).await
+    Box::pin(drive_eval_signal(eval, signal, host, machine)).await
 }
 
 pub async fn execute_entry_from_snapshot(
@@ -89,29 +87,49 @@ pub async fn execute_entry_from_snapshot(
         ));
         return evaluation_failure(eval);
     }
-    let machine = match EvalMachine::from_snapshot_with_resources(
-        snapshot,
-        eval.checked,
-        eval.plan.slots.clone(),
-        &eval.plan.dispatch,
-        &eval.plan.closures,
-        &eval.host_context,
-        crate::eval::machine::snapshot::SnapshotRestoreResources {
-            locked_model: eval.locked_model.clone(),
-            limits: &eval.storage_limits,
-            revisions,
-            root: Some(crate::eval::machine::snapshot::CheckpointRoot {
+    let signal = eval.execute_from_checkpoint_signal(checkpoint);
+    if let ControlSignal::Fault(fault) = signal {
+        eval.diagnostics.push(fault.clone().into_diagnostic());
+        return EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(*fault));
+    }
+    let restored = if let Some(tasks) = checkpoint.tasks.as_deref() {
+        eval.restore_task_checkpoint(
+            tasks,
+            snapshot,
+            crate::eval::machine::snapshot::CheckpointRoot {
                 program: eval.checked_execution_program(),
                 args: eval.entry_args.to_vec(),
-            }),
-            ordering: Some(ordering.clone()),
-            residual: Some(crate::eval::machine::snapshot::ResidualRestoreInput {
-                prepared: eval.plan.residual.clone(),
-                log: eval.task.residual.log.clone(),
-                limits: eval.task.residual.limits,
-            }),
-        },
-    ) {
+            },
+            revisions.clone(),
+            Some(ordering.clone()),
+        )
+    } else {
+        EvalMachine::from_snapshot_with_resources(
+            snapshot,
+            eval.checked,
+            eval.plan.slots.clone(),
+            &eval.plan.dispatch,
+            &eval.plan.closures,
+            &eval.host_context,
+            crate::eval::machine::snapshot::SnapshotRestoreResources {
+                task: None,
+                locked_model: eval.locked_model.clone(),
+                limits: &eval.storage_limits,
+                revisions,
+                root: Some(crate::eval::machine::snapshot::CheckpointRoot {
+                    program: eval.checked_execution_program(),
+                    args: eval.entry_args.to_vec(),
+                }),
+                ordering: Some(ordering.clone()),
+                residual: Some(crate::eval::machine::snapshot::ResidualRestoreInput {
+                    prepared: eval.plan.residual.clone(),
+                    log: eval.task.residual.log.clone(),
+                    limits: eval.task.residual.limits,
+                }),
+            },
+        )
+    };
+    let machine = match restored {
         Ok(machine) => machine,
         Err(message) => {
             let span = crate::diagnostics::item_span(eval.checked, eval.entry_item);
@@ -140,8 +158,7 @@ pub async fn execute_entry_from_snapshot(
     if let Err(outcome) = super::restore_ordering::validate(eval, host, &ordering).await {
         return super::residual_exit::finish(eval, Some(machine), outcome);
     }
-    let signal = eval.execute_from_checkpoint_signal(checkpoint);
-    drive_eval_signal(eval, signal, host, machine).await
+    Box::pin(drive_eval_signal(eval, signal, host, machine)).await
 }
 
 async fn drive_eval_signal<'host>(
@@ -150,8 +167,12 @@ async fn drive_eval_signal<'host>(
     host: &'host dyn HostServices,
     mut machine: EvalMachine,
 ) -> EvaluationOutcome {
-    let mut machine_has_input = false;
+    let mut machine_has_input = machine.has_input();
     let mut task_hosts = super::scheduler::TaskHostReactor::new();
+    if let Some(outcome) = super::task::take_root_settlement(&mut machine) {
+        let outcome = super::task::settle(eval, host, &mut task_hosts, outcome, &mut machine).await;
+        return super::residual_exit::finish(eval, Some(machine), outcome);
+    }
     loop {
         let scope = machine.program_scope();
         let result = if let Some(scope) = scope {
@@ -191,7 +212,8 @@ async fn drive_eval_signal<'host>(
             .await
         };
         if let ScopeOutcome::Finished(outcome) = result {
-            let outcome = super::task::settle(eval, host, &mut task_hosts, outcome).await;
+            let outcome =
+                super::task::settle(eval, host, &mut task_hosts, outcome, &mut machine).await;
             return super::residual_exit::finish(eval, Some(machine), outcome);
         }
     }
@@ -210,6 +232,12 @@ async fn drive_scope<'host>(
     machine: &mut EvalMachine,
     machine_has_input: &mut bool,
 ) -> ScopeOutcome {
+    if machine.root_wait.is_some() {
+        if let Err(outcome) = super::task::resume_root_wait(eval, host, task_hosts, machine).await {
+            return ScopeOutcome::Finished(outcome);
+        }
+        *machine_has_input = true;
+    }
     loop {
         if !*machine_has_input {
             machine.resume(std::mem::replace(
@@ -249,6 +277,15 @@ async fn drive_scope<'host>(
             return ScopeOutcome::Finished(evaluation_failure(eval));
         }
         *signal = match boundary {
+            PendingBoundary::Checkpoint { label, span } => {
+                if let Err(outcome) =
+                    super::checkpoint::create(eval, task_hosts, machine, label, span).await
+                {
+                    return ScopeOutcome::Finished(outcome);
+                }
+                *machine_has_input = true;
+                continue;
+            }
             PendingBoundary::Model(model) => {
                 match dispatch::model::begin(eval, host, *model, machine).await {
                     dispatch::model::ModelDispatchStart::Complete(true) => {
@@ -265,13 +302,11 @@ async fn drive_scope<'host>(
                             registered, operation,
                             "registered host operation changed id"
                         );
-                        let completed =
-                            match super::task::await_root_host(eval, host, task_hosts).await {
-                                Ok(CompletedTaskHost::Model(completed)) => completed,
-                                Ok(_) => panic!("root model wait received another host boundary"),
-                                Err(outcome) => return ScopeOutcome::Finished(outcome),
-                            };
-                        dispatch::model::finish(eval, machine, completed);
+                        if let Err(outcome) =
+                            super::task::await_root_host(eval, host, task_hosts, machine).await
+                        {
+                            return ScopeOutcome::Finished(outcome);
+                        }
                         *machine_has_input = true;
                         continue;
                     }
@@ -293,13 +328,11 @@ async fn drive_scope<'host>(
                             registered, operation,
                             "registered host operation changed id"
                         );
-                        let completed =
-                            match super::task::await_root_host(eval, host, task_hosts).await {
-                                Ok(CompletedTaskHost::Tool(completed)) => completed,
-                                Ok(_) => panic!("root tool wait received another host boundary"),
-                                Err(outcome) => return ScopeOutcome::Finished(outcome),
-                            };
-                        dispatch::tool::finish(eval, machine, completed);
+                        if let Err(outcome) =
+                            super::task::await_root_host(eval, host, task_hosts, machine).await
+                        {
+                            return ScopeOutcome::Finished(outcome);
+                        }
                         *machine_has_input = true;
                         continue;
                     }
@@ -319,12 +352,16 @@ async fn drive_scope<'host>(
                         eval,
                         host,
                         task_hosts,
+                        machine,
                         target,
                         perform.continuation,
                     )
                     .await
                     {
-                        Ok(signal) => signal,
+                        Ok(()) => {
+                            *machine_has_input = true;
+                            continue;
+                        }
                         Err(outcome) => return ScopeOutcome::Finished(outcome),
                     }
                 } else if let Some(signal) = eval.default_agent_inference(&perform) {
@@ -348,24 +385,15 @@ async fn drive_scope<'host>(
                                         registered, operation,
                                         "registered host operation changed id"
                                     );
-                                    let completed = match super::task::await_root_host(
-                                        eval, host, task_hosts,
+                                    if let Err(outcome) = super::task::await_root_host(
+                                        eval, host, task_hosts, machine,
                                     )
                                     .await
                                     {
-                                        Ok(CompletedTaskHost::Approval(completed)) => completed,
-                                        Ok(_) => {
-                                            panic!(
-                                                "root approval wait received another host boundary"
-                                            )
-                                        }
-                                        Err(outcome) => return ScopeOutcome::Finished(outcome),
-                                    };
-                                    let Some(signal) = dispatch::approval::finish(eval, completed)
-                                    else {
-                                        return ScopeOutcome::Finished(evaluation_failure(eval));
-                                    };
-                                    signal
+                                        return ScopeOutcome::Finished(outcome);
+                                    }
+                                    *machine_has_input = true;
+                                    continue;
                                 }
                             }
                         }
@@ -376,15 +404,13 @@ async fn drive_scope<'host>(
                                 registered, operation,
                                 "registered host operation changed id"
                             );
-                            let completed =
-                                match super::task::await_root_host(eval, host, task_hosts).await {
-                                    Ok(CompletedTaskHost::Compiler(completed)) => completed,
-                                    Ok(_) => {
-                                        panic!("root compiler wait received another host boundary")
-                                    }
-                                    Err(outcome) => return ScopeOutcome::Finished(outcome),
-                                };
-                            dispatch::compiler::finish(eval, completed)
+                            if let Err(outcome) =
+                                super::task::await_root_host(eval, host, task_hosts, machine).await
+                            {
+                                return ScopeOutcome::Finished(outcome);
+                            }
+                            *machine_has_input = true;
+                            continue;
                         }
                     }
                 }
@@ -412,16 +438,13 @@ async fn drive_scope<'host>(
                             registered, operation,
                             "registered host operation changed id"
                         );
-                        let completed =
-                            match super::task::await_root_host(eval, host, task_hosts).await {
-                                Ok(CompletedTaskHost::Console(completed)) => completed,
-                                Ok(_) => panic!("root console wait received another host boundary"),
-                                Err(outcome) => return ScopeOutcome::Finished(outcome),
-                            };
-                        let Some(signal) = dispatch::console::finish(eval, completed) else {
-                            return ScopeOutcome::Finished(evaluation_failure(eval));
-                        };
-                        signal
+                        if let Err(outcome) =
+                            super::task::await_root_host(eval, host, task_hosts, machine).await
+                        {
+                            return ScopeOutcome::Finished(outcome);
+                        }
+                        *machine_has_input = true;
+                        continue;
                     }
                 }
             }
@@ -438,17 +461,13 @@ async fn drive_scope<'host>(
                             registered, operation,
                             "registered host operation changed id"
                         );
-                        let completed =
-                            match super::task::await_root_host(eval, host, task_hosts).await {
-                                Ok(CompletedTaskHost::Command(completed)) => completed,
-                                Ok(_) => panic!("root command wait received another host boundary"),
-                                Err(outcome) => return ScopeOutcome::Finished(outcome),
-                            };
-                        let Some(signal) = dispatch::command::finish(eval, machine, completed)
-                        else {
-                            return ScopeOutcome::Finished(evaluation_failure(eval));
-                        };
-                        signal
+                        if let Err(outcome) =
+                            super::task::await_root_host(eval, host, task_hosts, machine).await
+                        {
+                            return ScopeOutcome::Finished(outcome);
+                        }
+                        *machine_has_input = true;
+                        continue;
                     }
                 }
             }
@@ -465,16 +484,13 @@ async fn drive_scope<'host>(
                             registered, operation,
                             "registered host operation changed id"
                         );
-                        let completed =
-                            match super::task::await_root_host(eval, host, task_hosts).await {
-                                Ok(CompletedTaskHost::Host(completed)) => completed,
-                                Ok(_) => panic!("root host wait received another host boundary"),
-                                Err(outcome) => return ScopeOutcome::Finished(outcome),
-                            };
-                        let Some(signal) = dispatch::host::finish(eval, machine, completed) else {
-                            return ScopeOutcome::Finished(evaluation_failure(eval));
-                        };
-                        signal
+                        if let Err(outcome) =
+                            super::task::await_root_host(eval, host, task_hosts, machine).await
+                        {
+                            return ScopeOutcome::Finished(outcome);
+                        }
+                        *machine_has_input = true;
+                        continue;
                     }
                 }
             }

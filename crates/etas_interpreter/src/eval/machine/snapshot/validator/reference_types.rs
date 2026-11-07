@@ -217,6 +217,47 @@ impl SnapshotValidator<'_> {
         expected: TypeId,
         bindings: &crate::control::GenericBindings,
     ) -> Result<(), String> {
+        // Task effect rows may stay abstract in Handler arms; the output
+        // type still comes from the checked start invocation and its bindings.
+        if let ValueSnapshot::TaskRuntime(crate::orchestration::TaskValueSnapshot::Task {
+            task,
+            ..
+        }) = value
+            && let Some(etas_types::Type::Task(ty)) = self.checked.type_store.get(expected)
+        {
+            self.tasks
+                .ok_or("Task value has no scheduler snapshot")?
+                .validate_value(match value {
+                    ValueSnapshot::TaskRuntime(value) => *value,
+                    _ => unreachable!(),
+                })?;
+            let output = bindings
+                .substitution(&self.checked.type_store)
+                .substitute(ty.output)
+                .map_err(|error| format!("Task output type is not materialized: {error}"))?;
+            let actual = self.task_output_type(crate::driver::scheduler::TaskId(*task))?;
+            return if actual == output {
+                Ok(())
+            } else {
+                Err(format!(
+                    "Task output `{}` differs from checked slot `{}`",
+                    etas_types::ty::display_type(&self.checked.type_store, actual),
+                    etas_types::ty::display_type(&self.checked.type_store, output)
+                ))
+            };
+        }
+        if matches!(value, ValueSnapshot::TaskRuntime(_))
+            && matches!(
+                self.checked.type_store.get(expected),
+                Some(etas_types::Type::Continuation(_))
+            )
+        {
+            return crate::value::contract::Context::native(
+                self,
+                crate::value::contract::Value::Snapshot(value),
+                expected,
+            );
+        }
         crate::value::contract::validate(
             self,
             [crate::value::contract::Seed {

@@ -250,6 +250,8 @@ fn shared_runtime_call_target_dags_capture_and_restore_without_expanding_aliases
     let span = checked.hir.blocks.iter().next().unwrap().1.span;
     let validate = |target| {
         validator.validate_machine(&MachineSnapshot {
+            auxiliary: Vec::new(),
+            input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation {

@@ -25,6 +25,79 @@ macro_rules! local_continuation {
 }
 
 impl EvalMachine {
+    fn poll_native_input(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+        mut pending: Box<crate::intrinsic::pure::PendingNativeWork>,
+        step_span: etas_core::Span,
+    ) -> Option<ControlSignal> {
+        let call = pending.call().cloned();
+        match pending.poll(ctx.plan.dispatch.pure_abi()) {
+            Ok(crate::intrinsic::pure::NativeWorkPoll::Ready(value)) => {
+                Some(ControlSignal::Value(value))
+            }
+            Ok(crate::intrinsic::pure::NativeWorkPoll::IterationReady(value)) => {
+                let Some((state, source, mut frame)) = pending.into_iteration() else {
+                    return Some(ControlSignal::missing_checked_fact(
+                        "native iteration completed without loop state",
+                        step_span,
+                    ));
+                };
+                Some(ctx.resume_native_for_loop(state, source, value, &mut frame))
+            }
+            Ok(crate::intrinsic::pure::NativeWorkPoll::Pending) => {
+                self.input = Some(MachineInput::Signal(ControlSignal::Native(pending)));
+                None
+            }
+            Err(error) => Some(match call {
+                Some(call) => ctx.complete_pure_intrinsic(&call, Err(error), step_span),
+                None => ControlSignal::missing_checked_fact(
+                    format!("native text iteration failed: {error:?}"),
+                    step_span,
+                ),
+            }),
+        }
+    }
+
+    pub(crate) fn has_native_input(&self) -> bool {
+        matches!(
+            self.input,
+            Some(MachineInput::Signal(ControlSignal::Native(_)))
+        )
+    }
+
+    /// Complete the admitted pure kernel without polling language continuations.
+    pub(crate) async fn drain_native_input(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+    ) -> Option<etas_host::execution::CancellationCause> {
+        let span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
+        while self.has_native_input() {
+            if let Some(signal) = ctx.cancellation_signal(span) {
+                match signal {
+                    ControlSignal::Cancelled(cause) => return Some(cause),
+                    signal => {
+                        self.resume(signal);
+                        return None;
+                    }
+                }
+            }
+            if let Err(fault) = ctx.consume_execution_step(span) {
+                self.resume(ControlSignal::Fault(Box::new(fault)));
+                return None;
+            }
+            let Some(MachineInput::Signal(ControlSignal::Native(pending))) = self.input.take()
+            else {
+                unreachable!("native input is owned by this machine")
+            };
+            if let Some(signal) = self.poll_native_input(ctx, pending, span) {
+                self.resume(signal);
+            } else {
+                tokio::task::yield_now().await;
+            }
+        }
+        None
+    }
     pub(crate) fn run_until_yield(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
         let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
         if let Some(scope) = &self.program_scope
@@ -43,7 +116,11 @@ impl EvalMachine {
             }
         }
         if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
-            return poll;
+            if !matches!(poll, MachinePoll::CooperativeYield)
+                || !matches!(self.input.as_ref(), Some(MachineInput::Signal(signal)) if !durable_yield_input(signal))
+            {
+                return poll;
+            }
         }
         let mirror = ctx.task.residual.mirror.clone();
         self.join_residual_mirror(&mirror);
@@ -76,8 +153,10 @@ impl EvalMachine {
                 return MachinePoll::Fault(*fault);
             }
             if let Some(poll) = scheduling_poll(ctx.scheduling_decision(step_span)) {
-                self.input = Some(MachineInput::Signal(signal));
-                return poll;
+                if !matches!(poll, MachinePoll::CooperativeYield) || durable_yield_input(&signal) {
+                    self.input = Some(MachineInput::Signal(signal));
+                    return poll;
+                }
             }
             if let Some(span) = signal.requested_operation_span(step_span)
                 && self
@@ -145,20 +224,11 @@ impl EvalMachine {
                 ControlSignal::Checkpoint(pending) => {
                     let pending = *pending;
                     self.push_continuation_frames(pending.continuation);
-                    let counters = ctx.task.residual.counters();
-                    let machine = match self.capture_snapshot(ctx.entry_args, counters) {
-                        Ok(machine) => machine,
-                        Err(message) => {
-                            return machine_fault(
-                                format!("checkpoint cannot serialize evaluation stack: {message}"),
-                                crate::diagnostics::item_span(ctx.checked, ctx.entry_item),
-                            );
-                        }
-                    };
-                    if let Err(fault) = ctx.record_checkpoint(pending.label, machine) {
-                        return MachinePoll::Fault(fault);
-                    }
-                    ControlSignal::Value(crate::value::InterpValue::Unit)
+                    self.resume(ControlSignal::Value(crate::value::InterpValue::Unit));
+                    return MachinePoll::Yield(PendingBoundary::Checkpoint {
+                        label: pending.label,
+                        span: step_span,
+                    });
                 }
                 ControlSignal::Block(pending) => {
                     let mut pending = *pending;
@@ -262,32 +332,10 @@ impl EvalMachine {
                         Err(signal) => *signal,
                     }
                 }
-                ControlSignal::Native(mut pending) => {
-                    let call = pending.call().cloned();
-                    match pending.poll(ctx.plan.dispatch.pure_abi()) {
-                        Ok(crate::intrinsic::pure::NativeWorkPoll::Ready(value)) => {
-                            ControlSignal::Value(value)
-                        }
-                        Ok(crate::intrinsic::pure::NativeWorkPoll::IterationReady(value)) => {
-                            let Some((state, source, mut frame)) = pending.into_iteration() else {
-                                return machine_fault(
-                                    "native iteration completed without loop state".to_owned(),
-                                    step_span,
-                                );
-                            };
-                            ctx.resume_native_for_loop(state, source, value, &mut frame)
-                        }
-                        Ok(crate::intrinsic::pure::NativeWorkPoll::Pending) => {
-                            self.input = Some(MachineInput::Signal(ControlSignal::Native(pending)));
-                            return MachinePoll::CooperativeYield;
-                        }
-                        Err(error) => match call {
-                            Some(call) => ctx.complete_pure_intrinsic(&call, Err(error), step_span),
-                            None => ControlSignal::missing_checked_fact(
-                                format!("native text iteration failed: {error:?}"),
-                                step_span,
-                            ),
-                        },
+                ControlSignal::Native(pending) => {
+                    match self.poll_native_input(ctx, pending, step_span) {
+                        Some(signal) => signal,
+                        None => return MachinePoll::CooperativeYield,
                     }
                 }
                 ControlSignal::Value(value) => {
@@ -665,6 +713,23 @@ impl EvalMachine {
         });
         first
     }
+}
+
+// Transient native/effect dispatch reaches a durable input or a Host boundary
+// before yielding. A checkpoint never has to persist an unissued Host request.
+fn durable_yield_input(signal: &ControlSignal) -> bool {
+    !matches!(
+        signal,
+        ControlSignal::Native(_)
+            | ControlSignal::Perform(_)
+            | ControlSignal::Memory(_)
+            | ControlSignal::Session(_)
+            | ControlSignal::Console(_)
+            | ControlSignal::Command(_)
+            | ControlSignal::Model(_)
+            | ControlSignal::Host(_)
+            | ControlSignal::Cancelled(_)
+    )
 }
 
 fn machine_fault(message: impl Into<String>, span: etas_core::Span) -> MachinePoll {

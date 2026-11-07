@@ -168,6 +168,12 @@ impl<'host> TaskHostReactor<'host> {
         self.root_completed.take()
     }
 
+    pub(in crate::driver) fn take_next_completed_task(
+        &mut self,
+    ) -> Option<(TaskId, CompletedTaskHost)> {
+        self.completed.pop_first()
+    }
+
     pub(in crate::driver) async fn poll_ready(
         &mut self,
     ) -> Option<(HostOwner, etas_host::execution::OperationId)> {

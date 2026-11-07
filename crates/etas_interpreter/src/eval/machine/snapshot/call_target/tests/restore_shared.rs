@@ -212,6 +212,8 @@ fn checked_machine_restore_shares_callables_between_continuations() {
             },
         };
         let mut saved = MachineSnapshot {
+            auxiliary: Vec::new(),
+            input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: (0..count)

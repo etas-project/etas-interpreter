@@ -8,6 +8,7 @@ mod callable_types;
 mod comparison;
 mod construction;
 mod frame;
+mod input;
 mod program;
 mod reference_presence;
 mod reference_types;
@@ -16,6 +17,7 @@ mod revision;
 mod scoped_callable;
 mod stream_reducer;
 mod suspension;
+mod task;
 mod traversal;
 mod value_contract;
 
@@ -44,6 +46,9 @@ use crate::orchestration::{
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
 
 pub(crate) struct SnapshotValidator<'a> {
+    inherited_handlers: usize,
+    tasks: Option<&'a crate::driver::scheduler::TaskSchedulerMetadataSnapshot>,
+    task_identity: Option<crate::driver::scheduler::TaskIdentity>,
     execution_revision: Option<&'a crate::api::code::PreparedCodeRevision>,
     revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     frame_definitions:
@@ -71,6 +76,9 @@ impl<'a> SnapshotValidator<'a> {
         limits: &'a etas_host::StorageLimits,
     ) -> Self {
         Self {
+            inherited_handlers: 0,
+            tasks: None,
+            task_identity: None,
             execution_revision: None,
             revisions: None,
             frame_definitions: Default::default(),
@@ -94,6 +102,21 @@ impl<'a> SnapshotValidator<'a> {
         revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     ) -> Self {
         self.revisions = revisions;
+        self
+    }
+
+    pub(crate) fn with_tasks(
+        mut self,
+        tasks: Option<&'a crate::driver::scheduler::TaskSchedulerMetadataSnapshot>,
+        task: Option<crate::driver::scheduler::TaskIdentity>,
+    ) -> Self {
+        self.tasks = tasks;
+        self.task_identity = task;
+        self
+    }
+
+    pub(crate) fn with_inherited_handlers(mut self, depth: usize) -> Self {
+        self.inherited_handlers = depth;
         self
     }
 
@@ -198,6 +221,22 @@ impl<'a> SnapshotValidator<'a> {
         let expected_boundaries = active_scopes.iter().rev().copied().collect::<Vec<_>>();
         let mut boundary_unwind_order = Vec::new();
         let mut retries = Vec::new();
+        let pending = checkpoint
+            .tasks
+            .as_deref()
+            .map(|tasks| tasks.root_continuation(&checkpoint.machine))
+            .transpose()?
+            .flatten()
+            .or_else(|| {
+                checkpoint
+                    .machine
+                    .input
+                    .as_deref()
+                    .and_then(|input| input.continuation_root())
+            });
+        if let Some(pending) = pending {
+            Self::continuation_unwind_order(pending, &mut boundary_unwind_order, &mut retries);
+        }
         Self::frame_unwind_order(
             &checkpoint.machine.frames,
             &mut boundary_unwind_order,
@@ -286,6 +325,8 @@ impl<'a> SnapshotValidator<'a> {
         self.suspension_references.borrow_mut().clear();
         *self.residual_references.borrow_mut() = ResidualReferences::default();
         self.validate_program_frames(snapshot, boundary_scopes)?;
+        self.validate_machine_input(snapshot)?;
+        self.validate_auxiliary(snapshot)?;
         self.validate_suspensions(snapshot, boundary_scopes)?;
         self.validate_residual_references(snapshot)
     }
@@ -864,8 +905,19 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 Ok(())
             }
+            ContinuationSnapshot::HandlerDispatch {
+                deferred: Some(token),
+                ..
+            } => self
+                .tasks
+                .ok_or("deferred continuation requires its scheduler snapshot")?
+                .validate_deferred(
+                    *token,
+                    self.task_identity
+                        .ok_or("deferred continuation has no task identity")?,
+                ),
             ContinuationSnapshot::RestoreModelPolicy { .. }
-            | ContinuationSnapshot::HandlerDispatch { .. }
+            | ContinuationSnapshot::HandlerDispatch { deferred: None, .. }
             | ContinuationSnapshot::ScopedModelPolicy { .. } => Ok(()),
             ContinuationSnapshot::ForLoop {
                 pat,
@@ -977,6 +1029,10 @@ impl<'a> SnapshotValidator<'a> {
         let mut query_seeds = Vec::new();
         for value in root.walk() {
             match value {
+                ValueSnapshot::TaskRuntime(value) => self
+                    .tasks
+                    .ok_or("task value requires its scheduler snapshot")?
+                    .validate_value(*value)?,
                 ValueSnapshot::TextSequence {
                     source: _,
                     plan,
@@ -1597,6 +1653,8 @@ flow main() -> unit {
             &etas_host::StorageLimits::default(),
         )
         .validate_machine(&MachineSnapshot {
+            auxiliary: Vec::new(),
+            input: None,
             program_owners: Default::default(),
             suspended_programs: Vec::new(),
             frames: vec![MachineFrameSnapshot::Continuation { continuation }],
@@ -1639,6 +1697,8 @@ flow main() -> unit {
             .unwrap();
             let frame = super::super::frame::capture_frame(&frame).unwrap();
             let machine = MachineSnapshot {
+                auxiliary: Vec::new(),
+                input: None,
                 program_owners: Default::default(),
                 suspended_programs: Vec::new(),
                 frames: (0..3)

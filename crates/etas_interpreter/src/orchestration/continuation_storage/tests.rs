@@ -66,7 +66,10 @@ fn mixed_continuation_edges_release_every_node_after_last_snapshot_owner() {
                     span: crate::testing::synthetic_span(),
                     outer: node,
                 },
-                1 => ContinuationSnapshot::HandlerDispatch { outer: node },
+                1 => ContinuationSnapshot::HandlerDispatch {
+                    outer: node,
+                    deferred: None,
+                },
                 2 => ContinuationSnapshot::RestoreModelPolicy {
                     previous: policy(),
                     inner: node,

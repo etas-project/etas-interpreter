@@ -20,7 +20,7 @@ impl SchedulerHandleValue {
     }
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct ContinuationTokenValue {
     pub(crate) owner: crate::driver::scheduler::TaskScopeId,
     pub(crate) continuation: crate::driver::scheduler::ContinuationId,

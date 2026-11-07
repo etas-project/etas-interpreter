@@ -14,7 +14,7 @@ impl EvalContext<'_> {
     ) -> ControlSignal {
         match operation {
             StdTaskIntrinsic::Run => self.execute_task_run(checked_call, call_args, span),
-            StdTaskIntrinsic::Start => self.execute_task_start(call_args, span),
+            StdTaskIntrinsic::Start => self.execute_task_start(checked_call, call_args, span),
             StdTaskIntrinsic::Await => self.execute_task_await(checked_call, call_args, span),
             StdTaskIntrinsic::Requeue => self.execute_task_requeue(checked_call, call_args, span),
             StdTaskIntrinsic::Park => self.execute_task_park(call_args, span),
@@ -449,7 +449,12 @@ impl EvalContext<'_> {
         ControlSignal::pending_task(crate::control::PendingTaskControl::Run { scope, span })
     }
 
-    fn execute_task_start(&mut self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+    fn execute_task_start(
+        &mut self,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
         let [job]: [InterpValue; 1] = match call_args.try_into() {
             Ok(args) => args,
             Err(args) => {
@@ -495,6 +500,9 @@ impl EvalContext<'_> {
             span.range.start.0 as usize,
         ) {
             Ok(handle) => {
+                if let Err(error) = self.scheduler.attach_start(handle, checked_call.clone()) {
+                    return ControlSignal::runtime_fault(error.to_string(), span);
+                }
                 if let Err(error) = self.scheduler.attach_resources(handle, resources) {
                     return ControlSignal::runtime_fault(error.to_string(), span);
                 }
@@ -566,7 +574,7 @@ impl EvalContext<'_> {
         })
     }
 
-    fn cpu_task_capsule(
+    pub(crate) fn cpu_task_capsule(
         &mut self,
         target: &crate::control::CallTarget,
         args: &[InterpValue],

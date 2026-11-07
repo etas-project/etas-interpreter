@@ -97,7 +97,7 @@ impl<'a> Iterator for ContinuationWalk<'a> {
                 }
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
                 | ContinuationSnapshot::CallBoundary { outer: inner, .. }
-                | ContinuationSnapshot::HandlerDispatch { outer: inner }
+                | ContinuationSnapshot::HandlerDispatch { outer: inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => {
                     self.next = Some(Task::Link(inner))
                 }
