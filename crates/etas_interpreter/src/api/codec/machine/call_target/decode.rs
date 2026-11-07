@@ -58,6 +58,7 @@ fn decode_many<T: TargetValue>(
 }
 
 enum PendingParent<'a, T: TargetValue> {
+    Bound(&'a Value),
     Scoped(Box<crate::orchestration::ScopedCallableMetadata>),
     Specialized(&'a Value),
     Limited(&'a Value),
@@ -88,6 +89,11 @@ fn decode_with_frames<T: TargetValue>(
     loop {
         let kind = required_str(current, "kind")?;
         let mut value = match kind {
+            "bound_method" => {
+                pending.push(PendingParent::Bound(current));
+                current = required(current, "target")?;
+                continue;
+            }
             "scoped_callable" => {
                 let raw = required(current, "metadata")?;
                 super::revision::bounded_json(limits, raw)?;
@@ -128,6 +134,16 @@ fn decode_with_frames<T: TargetValue>(
         };
         loop {
             let target = match pending.pop() {
+                Some(PendingParent::Bound(parent)) => {
+                    value = T::bound_method(
+                        value,
+                        required(parent, "receiver")?,
+                        required_u32(parent, "slot")?,
+                        limits,
+                        cache,
+                    )?;
+                    continue;
+                }
                 Some(PendingParent::Scoped(metadata)) => {
                     value = T::scoped(metadata, value)?;
                     continue;

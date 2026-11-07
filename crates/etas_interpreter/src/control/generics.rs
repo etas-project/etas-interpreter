@@ -89,6 +89,13 @@ impl CheckedCallBindings {
                 .types
                 .checked_method_calls
                 .get(&call)
+                .or_else(|| {
+                    checked
+                        .types
+                        .bound_method_values
+                        .get(&call)
+                        .map(|value| &value.method)
+                })
                 .into_iter()
                 .flat_map(|method| &method.owner_bindings)
                 .map(|(parameter, argument)| {

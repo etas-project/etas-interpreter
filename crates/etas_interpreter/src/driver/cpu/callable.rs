@@ -3,6 +3,11 @@ use crate::control::{CallTarget, GenericBindings};
 /// A callable recipe; every Rc-backed runtime target is built on its worker.
 #[derive(Clone, Debug)]
 pub(crate) enum FrozenCpuCallable {
+    BoundMethod {
+        target: Box<Self>,
+        receiver: super::FrozenValue,
+        slot: u32,
+    },
     FlowItem(etas_hir::HirItemId),
     ExternalFlow {
         callable: etas_code::CallableId,
@@ -32,6 +37,15 @@ impl FrozenCpuCallable {
         bindings: &GenericBindings,
     ) -> Option<Self> {
         Some(match target {
+            CallTarget::BoundMethod {
+                target,
+                receiver,
+                slot,
+            } => Self::BoundMethod {
+                target: Box::new(Self::capture_with(checked, target, minimum_work, bindings)?),
+                receiver: super::FrozenValue::freeze(receiver)?,
+                slot: *slot,
+            },
             CallTarget::FlowItem(item) => {
                 let fact = checked.cpu_parallel.callables.get(item)?;
                 if !fact.eligible
@@ -82,6 +96,15 @@ impl FrozenCpuCallable {
 
     pub(crate) fn thaw(&self, checked: &etas_frontend::CheckedProject) -> CallTarget {
         match self {
+            Self::BoundMethod {
+                target,
+                receiver,
+                slot,
+            } => CallTarget::BoundMethod {
+                target: target.thaw(checked).into(),
+                receiver: crate::value::SharedValue::new(receiver.clone().thaw()),
+                slot: *slot,
+            },
             Self::FlowItem(item) => CallTarget::FlowItem(*item),
             Self::ExternalFlow { callable, item } => {
                 assert!(

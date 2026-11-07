@@ -26,6 +26,21 @@ pub(super) fn encode<'a>(
 ) {
     use CallTargetSnapshot as T;
     match target {
+        T::BoundMethod {
+            target,
+            receiver,
+            slot: receiver_slot,
+        } => {
+            *slot =
+                json!({"kind":"bound_method","target":null,"receiver":null,"slot":receiver_slot});
+            for (name, entry) in slot.as_object_mut().expect("bound method object") {
+                match name.as_str() {
+                    "target" => pending.push((Node::CallTarget(target), entry)),
+                    "receiver" => pending.push((Node::Value(receiver), entry)),
+                    _ => {}
+                }
+            }
+        }
         T::Scoped { metadata, target } => {
             *slot = json!({"kind":"scoped_callable", "metadata": metadata, "target":null});
             pending.push((Node::CallTarget(target), &mut slot["target"]));

@@ -49,7 +49,10 @@ fn capture_leaf(
             parameter_types: call.parameter_types.clone(),
             result_type: call.result_type,
         },
-        CallTarget::Specialized { .. } | CallTarget::Limited { .. } | CallTarget::Composed(_) => {
+        CallTarget::Specialized { .. }
+        | CallTarget::Limited { .. }
+        | CallTarget::Composed(_)
+        | CallTarget::BoundMethod { .. } => {
             return Err("compound call target must use its capture builder".into());
         }
     })
@@ -99,6 +102,7 @@ fn restore_leaf(
             result_type,
         }),
         CallTargetSnapshot::Scoped { .. }
+        | CallTargetSnapshot::BoundMethod { .. }
         | CallTargetSnapshot::Specialized { .. }
         | CallTargetSnapshot::Limited { .. }
         | CallTargetSnapshot::Composed(_) => {

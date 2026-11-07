@@ -20,6 +20,36 @@ impl<'a> EvalContext<'a> {
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),
             },
             HirExpr::Path(path) => {
+                if let Some(fact) = self.checked.types.bound_method_values.get(&expr) {
+                    let etas_types::facts::BoundMethodReceiver::Path { symbol, fields } =
+                        &fact.receiver
+                    else {
+                        unreachable!()
+                    };
+                    let mut value = match frame
+                        .get(*symbol)
+                        .map(Ok)
+                        .unwrap_or_else(|| self.eval_global_symbol(*symbol, path.span))
+                    {
+                        Ok(value) => value,
+                        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                    };
+                    let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
+                        unreachable!()
+                    };
+                    for (index, field) in fields.iter().enumerate() {
+                        let site = crate::plan::FieldAccessSite::Path {
+                            prefix: *symbol,
+                            remaining: &partial.remaining,
+                            index,
+                        };
+                        match self.eval_field_value_signal(site, value, field, path.span) {
+                            ControlSignal::Value(next) => value = next,
+                            other => return other,
+                        }
+                    }
+                    return self.bind_method_value(expr, value, frame, path.span);
+                }
                 if let ResolveResult::Resolved(symbol) = path.resolution {
                     match self.eval_enum_reference(expr, symbol, frame, path.span) {
                         Ok(Some(value)) => return ControlSignal::Value(value),

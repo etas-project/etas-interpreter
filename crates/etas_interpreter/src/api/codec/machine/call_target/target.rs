@@ -18,6 +18,13 @@ pub(super) trait TargetValue: Sized {
     ) -> Result<FrameDecodeCache<Self::Frame>, String>;
     fn frame(value: &Value, cache: &FrameDecodeCache<Self::Frame>) -> Result<Self::Frame, String>;
     fn build(target: DecodedTarget<Self::Frame, Self>) -> Self;
+    fn bound_method(
+        target: Self,
+        receiver: &Value,
+        slot: u32,
+        limits: &etas_host::StorageLimits,
+        cache: &FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, String>;
     fn agent_reference(
         reference: crate::orchestration::CheckpointAgentReference,
     ) -> Result<Self, String>;
@@ -65,6 +72,22 @@ pub(super) enum DecodedTarget<F, T> {
 
 impl TargetValue for CallTargetSnapshot {
     type Frame = LocalsSnapshot;
+    fn bound_method(
+        target: Self,
+        receiver: &Value,
+        slot: u32,
+        limits: &etas_host::StorageLimits,
+        cache: &FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, String> {
+        let value: crate::orchestration::ValueSnapshot =
+            crate::api::codec::value::decode::decode_with_frames(limits, receiver, cache)
+                .map_err(|error| error.to_string())?;
+        Ok(Self::BoundMethod {
+            target: target.into(),
+            receiver: crate::orchestration::SnapshotBox::new(value),
+            slot,
+        })
+    }
     fn frame_cache(
         limits: &etas_host::StorageLimits,
         root: DecodeRoot<'_>,
@@ -143,6 +166,22 @@ impl TargetValue for CallTargetSnapshot {
 
 impl TargetValue for CallTarget {
     type Frame = Frame;
+    fn bound_method(
+        target: Self,
+        receiver: &Value,
+        slot: u32,
+        limits: &etas_host::StorageLimits,
+        cache: &FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, String> {
+        let value: crate::value::InterpValue =
+            crate::api::codec::value::decode::decode_with_frames(limits, receiver, cache)
+                .map_err(|error| error.to_string())?;
+        Ok(Self::BoundMethod {
+            target: target.into(),
+            receiver: crate::value::SharedValue::new(value),
+            slot,
+        })
+    }
     fn frame_cache(
         limits: &etas_host::StorageLimits,
         root: DecodeRoot<'_>,

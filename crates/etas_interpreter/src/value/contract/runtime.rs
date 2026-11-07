@@ -211,6 +211,6 @@ impl RuntimeContext<'_> {
         let Target::Runtime(target) = target else {
             return Err("runtime input contains a snapshot callable".into());
         };
-        callable::validate(self.checked, self.plan, target, expected)
+        callable::validate(self.checked, self.plan, target, expected, self.limits)
     }
 }

@@ -287,6 +287,11 @@ pub(crate) enum CallTargetSnapshot {
         expr: etas_hir::HirExprId,
         captured: LocalsSnapshot,
     },
+    BoundMethod {
+        target: CallTargetSnapshotLink,
+        receiver: SnapshotBox,
+        slot: u32,
+    },
     EnumVariant(SymbolId),
     NominalConstructor(etas_types::TypeId),
     PureIntrinsic {

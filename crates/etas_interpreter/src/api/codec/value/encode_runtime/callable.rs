@@ -23,6 +23,21 @@ pub(super) fn write<'a>(
             *slot = json!({"kind":"lambda","expr":expr.0,"captured":null});
             child(Node::Frame(captured), &mut slot["captured"]);
         }
+        CallTarget::BoundMethod {
+            target,
+            receiver,
+            slot: receiver_slot,
+        } => {
+            *slot =
+                json!({"kind":"bound_method","target":null,"receiver":null,"slot":receiver_slot});
+            for (name, entry) in slot.as_object_mut().expect("bound method object") {
+                match name.as_str() {
+                    "target" => child(Node::Target(target), entry),
+                    "receiver" => child(Node::Value(receiver), entry),
+                    _ => {}
+                }
+            }
+        }
         CallTarget::PureIntrinsic(call) => {
             *slot = json!({"kind":"pure_intrinsic","intrinsic":call.intrinsic.0,"parameter_types":call.parameter_types.iter().map(|ty|ty.0).collect::<Vec<_>>(),"result_type":call.result_type.0})
         }

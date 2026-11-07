@@ -83,6 +83,10 @@ impl CpuTaskCapsule {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub(crate) enum FrozenValue {
+    Nominal {
+        ty: etas_types::TypeId,
+        value: Box<Self>,
+    },
     Unit,
     Bool(bool),
     Number(crate::value::NumericValue),
@@ -102,6 +106,10 @@ pub(crate) enum FrozenValue {
 impl FrozenValue {
     pub(crate) fn freeze(value: &InterpValue) -> Option<Self> {
         Some(match value {
+            InterpValue::Nominal { ty, value } => Self::Nominal {
+                ty: *ty,
+                value: Box::new(Self::freeze(value)?),
+            },
             InterpValue::Unit => Self::Unit,
             InterpValue::Bool(value) => Self::Bool(*value),
             InterpValue::Number(value) => Self::Number(*value),
@@ -144,6 +152,10 @@ impl FrozenValue {
 
     pub(crate) fn thaw(self) -> InterpValue {
         match self {
+            Self::Nominal { ty, value } => InterpValue::Nominal {
+                ty,
+                value: crate::value::SharedValue::new(value.thaw()),
+            },
             Self::Unit => InterpValue::Unit,
             Self::Bool(value) => InterpValue::Bool(value),
             Self::Number(value) => InterpValue::Number(value),

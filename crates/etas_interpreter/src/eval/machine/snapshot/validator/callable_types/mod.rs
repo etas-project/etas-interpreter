@@ -30,6 +30,7 @@ impl From<FlowType> for CallableAbi {
 type Bindings = crate::control::GenericBindings;
 type BindingKey = (
     Vec<(String, TypeId)>,
+    Vec<(TypeId, TypeId)>,
     Vec<(String, etas_types::EffectRowRef)>,
 );
 type CacheKey = (u8, usize, BindingKey);
@@ -41,7 +42,7 @@ fn binding_key(bindings: &Bindings) -> BindingKey {
         .map(|(name, ty)| (name.clone(), *ty))
         .collect::<Vec<_>>();
     types.sort_unstable();
-    (types, bindings.sorted_rows())
+    (types, bindings.sorted_parameters(), bindings.sorted_rows())
 }
 
 #[derive(Default)]
@@ -62,17 +63,24 @@ fn root_key(target: &Target, expected: TypeId, bindings: &Bindings) -> Option<Ro
     let mut specialization = match target {
         Target::Specialized {
             type_bindings,
+            type_parameter_bindings,
             effect_row_bindings,
             ..
-        } => (type_bindings.clone(), effect_row_bindings.clone()),
-        _ => (Vec::new(), Vec::new()),
+        } => (
+            type_bindings.clone(),
+            type_parameter_bindings.clone(),
+            effect_row_bindings.clone(),
+        ),
+        _ => (Vec::new(), Vec::new(), Vec::new()),
     };
     specialization.0.sort_unstable();
     specialization.1.sort_unstable();
+    specialization.2.sort_unstable();
     Some(((kind, pointer, names), expected, specialization))
 }
 
 enum Task<'a> {
+    Bind(&'a crate::orchestration::ValueSnapshot, u32),
     Visit(&'a Target, Rc<Bindings>),
     Cache(CacheKey),
     Compose(usize),
@@ -166,11 +174,15 @@ impl SnapshotValidator<'_> {
                     let next_bindings = match target {
                         Target::Specialized {
                             type_bindings,
+                            type_parameter_bindings,
                             effect_row_bindings,
                             ..
                         } => {
                             let mut combined = (*bindings).clone();
                             combined.extend(type_bindings.iter().cloned());
+                            combined
+                                .parameters
+                                .extend(type_parameter_bindings.iter().copied());
                             combined.rows.extend(effect_row_bindings.iter().cloned());
                             Rc::new(combined)
                         }
@@ -186,6 +198,14 @@ impl SnapshotValidator<'_> {
                         pending.push(Task::Cache(key));
                     }
                     match target {
+                        Target::BoundMethod {
+                            target,
+                            receiver,
+                            slot,
+                        } => {
+                            pending.push(Task::Bind(receiver, *slot));
+                            pending.push(Task::Visit(target, next_bindings));
+                        }
                         Target::Limited { target, .. } | Target::Specialized { target, .. } => {
                             pending.push(Task::Visit(target, next_bindings))
                         }
@@ -213,6 +233,21 @@ impl SnapshotValidator<'_> {
                         .last()
                         .ok_or("checkpoint callable interface stack is empty")?;
                     cache.insert(key, interface.clone());
+                }
+                Task::Bind(receiver, slot) => {
+                    let interface = results
+                        .last_mut()
+                        .ok_or("bound method snapshot has no target interface")?;
+                    let signature = interface
+                        .signature
+                        .as_mut()
+                        .ok_or("bound method snapshot target is not callable")?;
+                    let ty = *signature
+                        .input
+                        .get(slot as usize)
+                        .ok_or("bound method snapshot receiver slot is outside its target ABI")?;
+                    self.reference_value(receiver, ty, &Bindings::new())?;
+                    signature.input.remove(slot as usize);
                 }
                 Task::Compose(count) => {
                     let offset = results

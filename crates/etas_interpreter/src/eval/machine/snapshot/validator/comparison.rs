@@ -31,6 +31,7 @@ impl SnapshotValidator<'_> {
                     CheckedCallableRoot::StdReference(*origin)
                 }
                 CallTargetSnapshot::Specialized { target, .. }
+                | CallTargetSnapshot::BoundMethod { target, .. }
                 | CallTargetSnapshot::Limited { target, .. } => {
                     if target.shared_identity().is_none_or(|key| {
                         visited.insert((std::sync::Arc::as_ptr(checked) as usize, 0, key as usize))

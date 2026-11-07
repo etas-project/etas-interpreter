@@ -32,7 +32,8 @@ pub(super) fn release(mut next: Option<Edge>) {
             match &mut node {
                 CallTargetSnapshot::Scoped { target, .. }
                 | CallTargetSnapshot::Specialized { target, .. }
-                | CallTargetSnapshot::Limited { target, .. } => {
+                | CallTargetSnapshot::Limited { target, .. }
+                | CallTargetSnapshot::BoundMethod { target, .. } => {
                     next = target.0.take().map(Edge::Shared);
                 }
                 CallTargetSnapshot::Composed(children) => {

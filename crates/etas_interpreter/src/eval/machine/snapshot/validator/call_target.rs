@@ -53,6 +53,12 @@ impl SnapshotValidator<'_> {
                 #[cfg(test)]
                 VISITS.set(VISITS.get() + 1);
                 match node {
+                    CallTargetSnapshot::BoundMethod {
+                        target, receiver, ..
+                    } => {
+                        self.snapshot_value(receiver)?;
+                        next = Some(target);
+                    }
                     CallTargetSnapshot::Specialized {
                         target,
                         type_bindings,
@@ -298,6 +304,7 @@ impl SnapshotValidator<'_> {
                 self.type_id(*result_type, context)
             }
             CallTargetSnapshot::Specialized { .. }
+            | CallTargetSnapshot::BoundMethod { .. }
             | CallTargetSnapshot::Limited { .. }
             | CallTargetSnapshot::Composed(_) => Err(format!(
                 "{context}: internal call target traversal sent a parent to leaf validation"

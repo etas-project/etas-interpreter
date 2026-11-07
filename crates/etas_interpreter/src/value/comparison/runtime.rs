@@ -85,6 +85,12 @@ pub(super) struct Cursor<'c> {
 }
 
 enum Children {
+    BoundMethod(
+        CallTargetLink,
+        CallTargetLink,
+        crate::value::SharedValue,
+        crate::value::SharedValue,
+    ),
     Frames(Box<crate::control::FrameComparison>),
     TargetLinks(CallTargetLink, CallTargetLink),
     Targets(CallTargetChildren, CallTargetChildren),
@@ -161,6 +167,11 @@ impl EqualityCursor for Cursor<'_> {
         let context = self.context;
         let compare_node = |a: &InterpValue, b: &InterpValue| compare_node(a, b, context);
         let child = match &mut self.children {
+            Children::BoundMethod(a, b, ar, br) => match position {
+                0 => Some(target::target(a, b, context)),
+                1 => Some(compare_node(ar, br)),
+                _ => None,
+            },
             Children::Frames(frames) => {
                 return match frames.next(compare_node) {
                     crate::control::FrameComparisonStep::Child(child) => CursorStep::Child(child),

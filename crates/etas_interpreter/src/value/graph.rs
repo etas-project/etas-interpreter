@@ -12,6 +12,7 @@ pub(crate) enum Node<'a> {
 }
 
 enum Children<'a> {
+    Nodes(std::array::IntoIter<Node<'a>, 2>),
     One(Option<Node<'a>>),
     Two(std::array::IntoIter<&'a Value, 2>),
     Values(slice::Iter<'a, Value>),
@@ -40,6 +41,7 @@ impl<'a> Iterator for Children<'a> {
     type Item = Node<'a>;
     fn next(&mut self) -> Option<Self::Item> {
         Some(match self {
+            Self::Nodes(nodes) => return nodes.next(),
             Self::One(value) => return value.take(),
             Self::Two(values) => Node::Value(values.next()?),
             Self::Values(values) => Node::Value(values.next()?),
@@ -155,6 +157,11 @@ impl FrameDiscovery {
                     }
                     Node::Target(CallTarget::Scoped(call)) => {
                         Children::One(follow_scoped.then_some(Node::Target(call.target_ref())))
+                    }
+                    Node::Target(CallTarget::BoundMethod {
+                        target, receiver, ..
+                    }) => {
+                        Children::Nodes([Node::Target(target), Node::Value(receiver)].into_iter())
                     }
                     Node::Target(
                         CallTarget::Limited { target, .. } | CallTarget::Specialized { target, .. },

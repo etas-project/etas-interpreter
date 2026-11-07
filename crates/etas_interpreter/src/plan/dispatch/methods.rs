@@ -221,7 +221,13 @@ impl MethodDispatchPlan {
             result.packs.insert(*expr, members);
         }
         let view = project.hir.view();
-        for (expr, fact) in &project.types.checked_method_calls {
+        for (expr, fact) in project.types.checked_method_calls.iter().chain(
+            project
+                .types
+                .bound_method_values
+                .iter()
+                .map(|(expr, value)| (expr, &value.method)),
+        ) {
             let candidates = declarations
                 .get(&(&fact.target).into())
                 .ok_or("checked method target is absent from its declaration environment")?;
@@ -234,16 +240,102 @@ impl MethodDispatchPlan {
             if matching.next().is_some() {
                 return Err("checked method target has ambiguous declaration identities".into());
             }
-            let (receiver, args) = match project.hir.exprs.get(*expr) {
-                Some(
-                    HirExpr::MethodCall { receiver, args, .. }
-                    | HirExpr::SpecMethodCall { receiver, args, .. },
-                ) => (*receiver, args),
-                _ => {
+            let (receiver_type, argument_count) = if let Some(bound) =
+                project.types.bound_method_values.get(expr)
+            {
+                let receiver = match &bound.receiver {
+                    etas_types::facts::BoundMethodReceiver::Expr(base) => {
+                        if !matches!(project.hir.exprs.get(*expr), Some(HirExpr::Field { base: actual, .. }) if actual == base)
+                        {
+                            return Err(
+                                "bound method receiver differs from its field expression".into()
+                            );
+                        }
+                        *project
+                            .types
+                            .expr_types
+                            .get(base)
+                            .ok_or("bound receiver has no checked type")?
+                    }
+                    etas_types::facts::BoundMethodReceiver::Path { symbol, fields } => {
+                        if !matches!(project.hir.exprs.get(*expr), Some(HirExpr::Path(path))
+                            if matches!(&path.resolution, etas_hir::ResolveResult::PartiallyResolved(partial)
+                                if partial.resolved_prefix == Some(*symbol) && partial.remaining.len() == fields.len() + 1
+                                    && partial.remaining[..fields.len()] == fields[..]))
+                        {
+                            return Err("bound receiver differs from its checked value path".into());
+                        }
+                        if fields.is_empty() {
+                            match project.types.symbol_types.get(symbol) {
+                                Some(
+                                    etas_types::SymbolTypeFact::Param { ty }
+                                    | etas_types::SymbolTypeFact::Local { ty, .. }
+                                    | etas_types::SymbolTypeFact::Value { ty }
+                                    | etas_types::SymbolTypeFact::Field { ty }
+                                    | etas_types::SymbolTypeFact::TopLevelLet { ty, .. },
+                                ) => *ty,
+                                _ => {
+                                    return Err(
+                                        "bound receiver symbol has no checked value type".into()
+                                    );
+                                }
+                            }
+                        } else {
+                            project
+                                .types
+                                .field_projections
+                                .get(expr)
+                                .and_then(|fields| fields.last())
+                                .ok_or("bound receiver path has no checked projections")?
+                                .output
+                        }
+                    }
+                };
+                let Some(etas_types::Type::Function(signature)) = project
+                    .types
+                    .expr_types
+                    .get(expr)
+                    .and_then(|ty| project.type_store.get(*ty))
+                else {
+                    return Err("bound method has no checked function type".into());
+                };
+                let MethodReceiver::Value { slot } = fact.receiver else {
+                    return Err("bound method has no value receiver".into());
+                };
+                let expected = fact
+                    .signature
+                    .params
+                    .iter()
+                    .enumerate()
+                    .filter_map(|(index, ty)| (index != slot as usize).then_some(*ty))
+                    .collect::<Vec<_>>();
+                if signature.input != expected || signature.output != fact.signature.output {
                     return Err(
-                        "checked method fact does not belong to a method call expression".into(),
+                        "bound method function differs from its checked receiver ABI".into(),
                     );
                 }
+                (receiver, signature.input.len())
+            } else {
+                let (receiver, args) = match project.hir.exprs.get(*expr) {
+                    Some(
+                        HirExpr::MethodCall { receiver, args, .. }
+                        | HirExpr::SpecMethodCall { receiver, args, .. },
+                    ) => (*receiver, args),
+                    _ => {
+                        return Err(
+                            "checked method fact does not belong to a method call expression"
+                                .into(),
+                        );
+                    }
+                };
+                (
+                    *project
+                        .types
+                        .expr_types
+                        .get(&receiver)
+                        .ok_or("checked method receiver is missing its value type")?,
+                    args.len(),
+                )
             };
             let owner = view
                 .index()
@@ -253,12 +345,7 @@ impl MethodDispatchPlan {
             if !entry.public && entry.defining_module != project.hir.item_module(*owner) {
                 return Err("checked method target is private to another module".into());
             }
-            let receiver_type = project
-                .types
-                .expr_types
-                .get(&receiver)
-                .ok_or("checked method receiver is missing its value type")?;
-            if fact.receiver != entry.receiver || *receiver_type != fact.receiver_type {
+            if fact.receiver != entry.receiver || receiver_type != fact.receiver_type {
                 return Err("checked method receiver differs from its declaration ABI".into());
             }
             validate_signature(project, entry, fact)?;
@@ -266,7 +353,7 @@ impl MethodDispatchPlan {
             if let MethodReceiver::Value { slot } = fact.receiver {
                 slots.insert(slot);
             }
-            if args.len() != fact.argument_slots.len()
+            if argument_count != fact.argument_slots.len()
                 || fact.argument_slots.iter().any(|slot| {
                     *slot as usize >= fact.signature.params.len() || !slots.insert(*slot)
                 })

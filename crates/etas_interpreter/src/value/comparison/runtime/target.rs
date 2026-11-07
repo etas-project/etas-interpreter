@@ -61,6 +61,29 @@ pub(super) fn target<'c>(a: &T, b: &T, context: &'c Context) -> Comparison<Curso
     context.visit();
     let links = match (a, b) {
         (
+            T::BoundMethod {
+                target: a,
+                receiver: ar,
+                slot: ai,
+            },
+            T::BoundMethod {
+                target: b,
+                receiver: br,
+                slot: bi,
+            },
+        ) => {
+            return if ai == bi {
+                context.pending(Children::BoundMethod(
+                    a.clone(),
+                    b.clone(),
+                    ar.clone(),
+                    br.clone(),
+                ))
+            } else {
+                Comparison::Ready(false)
+            };
+        }
+        (
             T::Lambda {
                 expr: a,
                 captured: ac,

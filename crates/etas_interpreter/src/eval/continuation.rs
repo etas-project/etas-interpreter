@@ -498,13 +498,8 @@ impl<'a> EvalContext<'a> {
                 expr,
                 field,
                 span,
-                frame: _frame,
-            } => self.eval_field_value_signal(
-                crate::plan::FieldAccessSite::Expr(expr),
-                value,
-                &field,
-                span,
-            ),
+                frame,
+            } => self.complete_field_receiver(expr, value, &field, span, &frame),
             Continuation::Unary { op, span } => match self.eval_unary_value(op, value, span) {
                 Ok(value) => ControlSignal::Value(value),
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),

@@ -180,6 +180,9 @@ impl RecordLayoutTable {
                     );
                 }
                 HirExpr::Field { base, field, .. } => {
+                    if project.types.bound_method_values.contains_key(&expr) {
+                        continue;
+                    }
                     let Some(ty) = project.types.expr_types.get(base) else {
                         continue;
                     };
@@ -254,8 +257,11 @@ impl RecordLayoutTable {
                         .types
                         .field_projections
                         .get(&expr)
-                        .ok_or("value path has no checked field projection facts")?;
-                    if projections.len() != partial.remaining.len() {
+                        .map(Vec::as_slice)
+                        .unwrap_or(&[]);
+                    let projection_count = partial.remaining.len()
+                        - usize::from(project.types.bound_method_values.contains_key(&expr));
+                    if projections.len() != projection_count {
                         return Err(
                             "value path length differs from checked projection facts".into()
                         );
