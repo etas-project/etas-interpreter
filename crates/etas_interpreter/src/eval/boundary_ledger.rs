@@ -221,6 +221,7 @@ mod tests {
             model_policy: Default::default(),
             execution_limits: Default::default(),
             cpu_threads: std::num::NonZeroUsize::MIN,
+            runtime: None,
             cpu_min_work: 10_000,
             consumed_steps: 0,
             current_session: None,

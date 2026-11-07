@@ -18,6 +18,7 @@ pub(crate) use completion::{
 };
 pub(crate) use inline::InlineCpuExecutor;
 pub(crate) use worker_pool::CpuWorkerHealth;
+pub(crate) use worker_pool::SharedCpuPool;
 pub(crate) use worker_pool::WorkerPoolCpuExecutor;
 #[cfg(test)]
 pub(crate) use worker_pool::take_test_pools;
@@ -29,6 +30,10 @@ pub(crate) enum CpuSubmitError {
 
 pub(crate) trait CpuExecutor: Send + Sync {
     fn capacity(&self) -> NonZeroUsize;
+
+    fn is_inline(&self) -> bool {
+        false
+    }
 
     fn submit(&self, job: CpuTaskCapsule) -> Result<CpuJobId, CpuSubmitError>;
 
@@ -81,5 +86,7 @@ mod send_assertions {
         assert_send::<FrozenCpuCallable>();
         assert_send::<CpuTaskCompletion>();
         assert_sync::<WorkerPoolCpuExecutor>();
+        assert_send::<crate::api::InterpreterRuntime>();
+        assert_sync::<crate::api::InterpreterRuntime>();
     }
 }

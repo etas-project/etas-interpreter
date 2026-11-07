@@ -23,6 +23,7 @@ async fn execute(
 
 #[tokio::test(flavor = "current_thread")]
 async fn cpu_faults_and_profile_limits_preserve_coordinator_diagnostics() {
+    let runtime = api::InterpreterRuntime::new(std::num::NonZeroUsize::new(4).unwrap()).unwrap();
     for (output, expression, steps, depth, bytes, value_depth, expected) in [
         ("i32", "100 / value", None, 512, 1_048_576, 48, "zero"),
         (
@@ -87,6 +88,7 @@ flow main() -> Array<{output}> {{
         options.storage_limits.max_value_bytes = bytes;
         options.storage_limits.max_depth = value_depth;
         let inline = execute(&checked, options.clone(), 1).await;
+        options.runtime = Some(runtime.clone());
         let parallel = execute(&checked, options, 4).await;
         assert!(inline.value().is_none(), "{expected}: {:?}", inline.value());
         assert!(

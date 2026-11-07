@@ -24,6 +24,10 @@ impl InlineCpuExecutor {
 }
 
 impl CpuExecutor for InlineCpuExecutor {
+    fn is_inline(&self) -> bool {
+        true
+    }
+
     fn capacity(&self) -> NonZeroUsize {
         NonZeroUsize::MIN
     }

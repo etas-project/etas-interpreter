@@ -146,6 +146,18 @@ failure. Small or unknown work stays on the coordinator; embedders can tune
 `RunOptions::cpu_min_work` (default 10,000 estimated HIR operations). Zero is a
 profiling override that dispatches every eligible task.
 
+Embedding hosts can create `api::InterpreterRuntime::new(cpu_threads)` once and
+clone it into `RunOptions::runtime` for each invocation. Invocations then share
+that finite pool, while `RunOptions::cpu_threads` sets each run's outstanding
+CPU job quota, capped by the pool size. A quota of one still uses a shared
+worker. Ready runs take turns in the dispatch queue; a large map cannot fill
+the queue ahead of every other run. See the compiled example on
+`api::InterpreterRuntime` for running two invocations with different quotas.
+Budgets, completions, job IDs and traces remain run-local. `RunControl::stop`
+cancels only its invocation, and subsequent runs can keep using the runtime.
+Dropping the last runtime/run handle shuts down the workers. The CLI keeps an
+isolated executor per invocation; no shared runtime is configured by default.
+
 The manual release benchmark warms each case once, takes three samples, and
 reports median wall time and per-task freeze/thaw, queue, bootstrap and execution
 costs. It covers 1/2/4/8 workers, 1/4/32/1000 tasks, micro/medium/heavy tasks, and

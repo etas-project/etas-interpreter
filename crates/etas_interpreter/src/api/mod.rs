@@ -6,6 +6,7 @@ mod blocking;
 mod entry_args;
 mod options;
 mod result;
+mod runtime;
 
 pub use crate::{
     orchestration::{
@@ -26,3 +27,4 @@ pub use options::{
     RunOptions,
 };
 pub use result::{PlanResult, RunFailure, RunInfrastructureError, RunOutcome, RunResult};
+pub use runtime::InterpreterRuntime;

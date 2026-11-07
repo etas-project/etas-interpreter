@@ -581,7 +581,7 @@ impl EvalContext<'_> {
         call_span: Span,
     ) -> Option<crate::driver::cpu::CpuTaskCapsule> {
         // Frozen source callables do not carry a native revision's code owner.
-        if self.cpu_executor.capacity().get() == 1 || self.revision.is_some() {
+        if self.cpu_executor.is_inline() || self.revision.is_some() {
             return None;
         }
         let callable = crate::driver::cpu::FrozenCpuCallable::capture(
