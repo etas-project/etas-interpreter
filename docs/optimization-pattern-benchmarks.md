@@ -1,5 +1,26 @@
 # HIR agent optimization benchmark
 
+## CPU task dispatch
+
+The [CPU dispatch results](cpu-dispatch-benchmark.json) contain all 144 combinations
+of 1/2/4/8 workers, 1/4/32/1000 tasks, three work sizes, and map/join/nested scopes.
+Each release case uses one warmup and three measured samples. Profiling separates
+freeze/thaw, queue/return wait, program preparation, evaluator bootstrap and execution.
+The benchmark forces eligible tasks onto workers to measure crossover costs.
+Default dispatch instead keeps tiny or unknown work inline and starts with a
+conservative threshold of 10,000 estimated HIR operations; this is tunable rather
+than a hardware-independent optimum. Pool creation is included in wall time.
+
+These are local measurements on a shared host, not portable speedup guarantees;
+initial map cases overlapped CLI checks. No performance CI wall-time assertions
+are made. Reproduce with:
+
+```sh
+cargo test --release cpu_dispatch_benchmark -- --ignored --nocapture --test-threads=1
+```
+
+## HIR optimization patterns
+
 This benchmark covers the typed-HIR optimization prototypes identified in the agent-system survey. Each semantics-preserving transform has ten Etas programs compiled and executed at O0, O1, O2, and O3. Runtime benefit is compared between O0 and the pass's minimum enabled level.
 
 The tests assert equal returned values, fewer deterministic interpreter steps, and fewer measured allocations. Wall-clock time is printed for observation but is not asserted because it is scheduler-sensitive. `AgentEffectLegality` is the P0 analysis gate from the survey: it has ten compile programs and deliberately reports no direct runtime benefit.
