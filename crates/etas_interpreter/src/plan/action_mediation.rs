@@ -59,6 +59,11 @@ impl Pass<PlanContext<'_>> for ComputeEntryActionMediationPass {
         };
         let mut table = ActionMediationTable::default();
         table.include_summary(summary);
+        for scope in context.project.concurrency.owners.values() {
+            for branch in &scope.branches {
+                table.include_summary(&branch.behavior);
+            }
+        }
         let standard_actions = context
             .project
             .effects

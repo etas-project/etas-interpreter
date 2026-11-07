@@ -80,6 +80,16 @@ impl<'a> EvalContext<'a> {
         label: Option<String>,
         mut captured: crate::eval::machine::snapshot::CapturedMachineSnapshot,
     ) -> Result<(), crate::control::ExecutionFault> {
+        if self.current_task != crate::driver::scheduler::TaskIdentity::Root
+            || self.scheduler.has_unsettled_tasks()
+            || !self.cpu_jobs.is_empty()
+        {
+            return Err(crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::UnhandledRuntimeError,
+                item_span(self.checked, self.entry_item),
+                "checkpoint requires a settled coordinator barrier; concurrent task or CPU work is still active",
+            ));
+        }
         let root = captured.root.take().unwrap_or_else(|| {
             crate::eval::machine::snapshot::CheckpointRoot {
                 program: self.checked_execution_program(),

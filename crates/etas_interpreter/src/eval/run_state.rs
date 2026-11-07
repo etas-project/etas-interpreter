@@ -26,6 +26,9 @@ pub(crate) struct EvalSharedState {
     pub host_context: HostExecutionContext,
     pub(crate) locked_model: Option<etas_host::ModelName>,
     pub execution_limits: ExecutionLimits,
+    pub(crate) cpu_executor: std::sync::Arc<dyn crate::driver::cpu::CpuExecutor>,
+    pub(crate) cpu_jobs: std::collections::BTreeMap<crate::driver::cpu::CpuJobId, CpuJobRecord>,
+    pub(crate) next_cpu_dispatch: u64,
     pub current_session: Option<String>,
     pub diagnostics: Vec<etas_core::Diagnostic>,
     pub events: crate::api::lifecycle::EventLog,
@@ -48,10 +51,16 @@ pub(crate) struct EvalSharedState {
     pub(crate) storage_operations: std::collections::BTreeMap<u32, StorageOperationRef>,
 }
 
+pub(crate) struct CpuJobRecord {
+    pub(crate) task: crate::driver::scheduler::TaskHandle,
+    pub(crate) cancellation: std::sync::Arc<std::sync::atomic::AtomicBool>,
+}
+
 /// Execution stacks owned by one cooperatively scheduled task.
 pub(crate) struct TaskLocalState {
     pub(crate) task_scope: crate::driver::scheduler::TaskScopeId,
     pub(crate) execution: etas_host::execution::ExecutionScope,
+    pub(crate) cancellation: Result<etas_host::execution::CancelSignal, etas_host::HostError>,
     pub(crate) model_policy: ModelExecutionPolicy,
     pub(super) retry_stack: Vec<RetryAttemptRecord>,
     pub(super) handler_stack: Vec<ActiveHandlerRecord>,
@@ -67,6 +76,7 @@ impl TaskLocalState {
     ) -> Self {
         Self {
             task_scope,
+            cancellation: execution.signal(),
             execution,
             model_policy,
             retry_stack: Vec::new(),
@@ -86,6 +96,7 @@ impl TaskLocalState {
         execution.claim_body()?;
         Ok(Self {
             task_scope,
+            cancellation: execution.signal(),
             execution,
             model_policy: self.model_policy.clone(),
             retry_stack: self.retry_stack.clone(),
@@ -132,6 +143,9 @@ impl EvalRunState {
             host_context: input.host_context,
             locked_model,
             execution_limits: input.execution_limits,
+            cpu_executor: crate::driver::cpu::new_executor(input.cpu_threads),
+            cpu_jobs: Default::default(),
+            next_cpu_dispatch: 0,
             current_session: input.current_session,
             diagnostics: Vec::new(),
             events: crate::api::lifecycle::EventLog::new(input.event_observer),

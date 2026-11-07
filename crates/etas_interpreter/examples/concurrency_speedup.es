@@ -1,31 +1,20 @@
 module app.main;
 
-import std.io.println;
-import std.task.{join, run, Scheduler};
+import std.task.{map_concurrent, run, Scheduler};
 
-flow serial_work() -> i32 {
-    println("job-1")?;
-    println("job-2")?;
-    println("job-3")?;
-    println("job-4")?;
-    return 4;
-}
-
-flow concurrent_work() -> i32 {
-    return run((scheduler: Scheduler) => {
-        let (a, b, c, d) = join((
-            () => { println("job-1")?; return 1; },
-            () => { println("job-2")?; return 1; },
-            () => { println("job-3")?; return 1; },
-            () => { println("job-4")?; return 1; }
-        ));
-        return a + b + c + d;
-    });
-}
-
-flow main(use_concurrency: bool) -> i32 {
-    if use_concurrency {
-        return concurrent_work();
+// Compare the same program with --cpu-threads 1 and --cpu-threads 4.
+flow burn(value: i32) -> i32 {
+    var index = 0;
+    while index < 100000 limit Iterations(100000) {
+        index = index + 1;
     }
-    return serial_work();
+    return value;
+}
+
+flow main(args: Array<string>) -> i32 {
+    let values = run((scheduler: Scheduler) => {
+        return map_concurrent([1, 2, 3, 4], burn);
+    });
+    if values == [1, 2, 3, 4] { return 0; }
+    return 1;
 }

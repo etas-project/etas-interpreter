@@ -20,6 +20,10 @@ pub enum WorkflowEvent {
         scope: u64,
         policy: String,
     },
+    ScopeSerialized {
+        scope: u64,
+        reason: String,
+    },
     ScopeResolved {
         scope: u64,
         decision: String,
@@ -34,6 +38,22 @@ pub enum WorkflowEvent {
         scope: u64,
         task: u64,
         source_index: usize,
+    },
+    TaskDispatched {
+        scope: u64,
+        task: u64,
+        job: u64,
+    },
+    TaskWaitingCpu {
+        scope: u64,
+        task: u64,
+        job: u64,
+    },
+    TaskCpuCompleted {
+        scope: u64,
+        task: u64,
+        job: u64,
+        thread: String,
     },
     TaskSettled {
         scope: u64,

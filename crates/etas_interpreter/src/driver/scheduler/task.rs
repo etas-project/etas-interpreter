@@ -31,6 +31,7 @@ pub(crate) enum TaskWait {
     Task(TaskId),
     Scope(TaskScopeId),
     Host(etas_host::execution::OperationId),
+    Cpu(crate::driver::cpu::CpuJobId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -99,6 +100,8 @@ pub(crate) struct ScheduledTask {
     pub(crate) waiters: Vec<TaskWaiter>,
     pub(crate) waiting_continuation: Option<TaskResume>,
     pub(crate) source_index: usize,
+    pub(crate) cpu_capsule: Option<crate::driver::cpu::CpuTaskCapsule>,
+    pub(crate) active_slot: bool,
 }
 
 impl ScheduledTask {
@@ -121,6 +124,8 @@ impl ScheduledTask {
             waiters: Vec::new(),
             waiting_continuation: None,
             source_index,
+            cpu_capsule: None,
+            active_slot: false,
         }
     }
 }

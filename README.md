@@ -110,7 +110,21 @@ CLI:
 etas check --phase1 path/to/program.es
 etas run path/to/program.es
 etas run path/to/project --profile local
+etas run program.es --cpu-threads 4
 ```
+
+CPU workers are opt-in (`--cpu-threads N|auto`, default `1`, CLI cap `64`).
+Checked pure named task functions with frozen data arguments/results run on a
+fixed OS worker pool. Closures, global captures, live handles, effects and
+Handlers use the cooperative coordinator. Language `Concurrency(n)` still limits
+each scope and its descendants independently of the host worker count.
+Cancellation and execution budgets belong to the original run.
+
+`crates/etas_interpreter/examples/concurrency_speedup.es` measures pure CPU work;
+`handler_cpu.es` demonstrates Handler/`park` scheduling of the same worker path.
+The older Console Handler example demonstrates serialized effect safety.
+Checkpoints during active task scopes are explicitly rejected; take checkpoints
+after all structured tasks have settled.
 
 Trace and checkpoint workflows:
 

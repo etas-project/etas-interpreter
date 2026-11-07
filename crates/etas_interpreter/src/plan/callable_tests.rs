@@ -194,6 +194,7 @@ fn run_lambda(
         host_context: Default::default(),
         model_policy: Default::default(),
         execution_limits: Default::default(),
+        cpu_threads: std::num::NonZeroUsize::MIN,
         consumed_steps: 0,
         current_session: None,
         entry_item: plan.entry.item,

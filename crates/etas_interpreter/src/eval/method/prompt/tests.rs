@@ -32,6 +32,7 @@ pub(super) fn with_prompt_eval(test: impl FnOnce(&EvalContext<'_>, Span)) {
         host_context: options.host_context,
         model_policy: options.model_policy,
         execution_limits: options.execution_limits,
+        cpu_threads: options.cpu_threads,
         consumed_steps: 0,
         current_session: None,
         entry_item: checked.entry.unwrap(),

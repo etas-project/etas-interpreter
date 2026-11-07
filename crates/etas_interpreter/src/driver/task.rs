@@ -262,6 +262,9 @@ async fn drive_one<'host>(
     host: &'host dyn HostServices,
     reactor: &mut TaskHostReactor<'host>,
 ) -> Result<bool, EvaluationOutcome> {
+    if drain_cpu_completions(eval)? {
+        return Ok(true);
+    }
     if let Some((owner, operation)) = reactor.poll_ready().await {
         match owner {
             HostOwner::Root => return Ok(true),
@@ -269,6 +272,10 @@ async fn drive_one<'host>(
         }
     }
     let Some(handle) = eval.scheduler.dispatch_ready() else {
+        if !eval.cpu_jobs.is_empty() {
+            wait_for_cpu_or_host(eval, reactor).await?;
+            return Ok(true);
+        }
         let Some((owner, operation)) = reactor.wait_next().await else {
             return Ok(false);
         };
@@ -368,6 +375,56 @@ async fn drive_one<'host>(
             }
         }
         None => {}
+    }
+
+    if task.cpu_capsule.is_some() && eval.cpu_jobs.len() >= eval.cpu_executor.capacity().get() {
+        eval.scheduler
+            .restore_running(handle, task)
+            .and_then(|()| eval.scheduler.requeue(handle))
+            .map_err(|error| scheduler_failure(eval, error))?;
+        wait_for_cpu_or_host(eval, reactor).await?;
+        return Ok(true);
+    }
+
+    if let Some(capsule) = task.cpu_capsule.take() {
+        let cancellation = capsule.cancellation.clone();
+        let executor = eval.cpu_executor.clone();
+        let job = match executor.submit(capsule) {
+            Ok(job) => job,
+            Err(error) => {
+                let outcome =
+                    task_fault(eval, format!("CPU executor submission failed: {error:?}"));
+                finish_task(eval, handle, task, outcome)?;
+                return Ok(true);
+            }
+        };
+        eval.scheduler
+            .restore_running(handle, task)
+            .and_then(|()| eval.scheduler.wait_for_cpu(handle, job))
+            .map_err(|error| scheduler_failure(eval, error))?;
+        assert!(
+            eval.cpu_jobs
+                .insert(
+                    job,
+                    crate::eval::CpuJobRecord {
+                        task: handle,
+                        cancellation,
+                    },
+                )
+                .is_none(),
+            "CPU job identity must be unique"
+        );
+        eval.events.push(WorkflowEvent::TaskDispatched {
+            scope: handle.owner.0,
+            task: handle.task.0,
+            job: job.0,
+        });
+        eval.events.push(WorkflowEvent::TaskWaitingCpu {
+            scope: handle.owner.0,
+            task: handle.task.0,
+            job: job.0,
+        });
+        return Ok(true);
     }
 
     loop {
@@ -972,6 +1029,89 @@ async fn drive_one<'host>(
     }
 }
 
+async fn wait_for_cpu_or_host(
+    eval: &mut EvalContext<'_>,
+    reactor: &mut TaskHostReactor<'_>,
+) -> Result<(), EvaluationOutcome> {
+    let executor = eval.cpu_executor.clone();
+    tokio::select! {
+        _ = executor.completion_signal().notified() => {},
+        completed = reactor.wait_next(), if reactor.has_pending() => {
+            if let Some((HostOwner::Task(handle), operation)) = completed {
+                wake_from_host(eval, handle, operation)?;
+            }
+        }
+    }
+    Ok(())
+}
+
+fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, EvaluationOutcome> {
+    let executor = eval.cpu_executor.clone();
+    let mut completions = Vec::new();
+    while let Some(completion) = executor.try_completion() {
+        completions.push(completion);
+    }
+    completions.sort_by_key(|completion| completion.job);
+    let had_completions = !completions.is_empty();
+    for completion in completions {
+        let Some(record) = eval.cpu_jobs.remove(&completion.job) else {
+            return Err(task_fault(
+                eval,
+                format!("CPU worker completed unknown job {}", completion.job.0),
+            ));
+        };
+        if eval
+            .scheduler
+            .state(record.task)
+            .map_err(|error| scheduler_failure(eval, error))?
+            .is_terminal()
+        {
+            continue;
+        }
+        let task = eval
+            .scheduler
+            .take_cpu_completion(record.task, completion.job)
+            .map_err(|error| scheduler_failure(eval, error))?;
+        eval.events.push(WorkflowEvent::TaskReady {
+            scope: record.task.owner.0,
+            task: record.task.task.0,
+        });
+        eval.events.push(WorkflowEvent::TaskCpuCompleted {
+            scope: record.task.owner.0,
+            task: record.task.task.0,
+            job: completion.job.0,
+            thread: format!("{:?}", completion.metrics.thread),
+        });
+        let outcome = match completion.result {
+            Ok(value) => EvaluationOutcome::Completed(value.thaw()),
+            Err(crate::driver::cpu::CpuExecutionFailure::Cancelled(reason)) => {
+                task.local
+                    .execution
+                    .cancel_source()
+                    .stop(reason)
+                    .map_err(|error| task_fault(eval, error.to_string()))?;
+                let cause = task
+                    .local
+                    .execution
+                    .signal()
+                    .and_then(|signal| signal.cause())
+                    .map_err(|error| task_fault(eval, error.to_string()))?
+                    .expect("cancelled CPU task publishes a cause");
+                EvaluationOutcome::Cancelled(cause)
+            }
+            Err(crate::driver::cpu::CpuExecutionFailure::Fault(message)) => {
+                task_fault(eval, format!("CPU task failed: {message}"))
+            }
+            Err(crate::driver::cpu::CpuExecutionFailure::EffectBoundary(kind)) => task_fault(
+                eval,
+                format!("CPU-eligible task reached coordinator-only {kind} boundary"),
+            ),
+        };
+        finish_task(eval, record.task, task, outcome)?;
+    }
+    Ok(had_completions)
+}
+
 fn wake_from_host(
     eval: &mut EvalContext<'_>,
     handle: TaskHandle,
@@ -1104,6 +1244,14 @@ fn record_scope_exit(
 
 fn record_cancellation_events(eval: &mut EvalContext<'_>) {
     for (handle, reason) in eval.scheduler.take_cancellation_events() {
+        for (job, record) in &eval.cpu_jobs {
+            if record.task == handle {
+                record
+                    .cancellation
+                    .store(true, std::sync::atomic::Ordering::Release);
+                eval.cpu_executor.cancel(*job, reason.clone());
+            }
+        }
         eval.events.push(WorkflowEvent::TaskCancellationRequested {
             scope: handle.owner.0,
             task: handle.task.0,

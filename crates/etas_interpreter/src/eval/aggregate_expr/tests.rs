@@ -53,6 +53,7 @@ fn literal_suspension_does_not_copy_checked_descriptors() {
                 host_context: options.host_context,
                 model_policy: options.model_policy,
                 execution_limits: options.execution_limits,
+                cpu_threads: options.cpu_threads,
                 consumed_steps: 0,
                 current_session: None,
                 entry_item: checked.entry.unwrap(),

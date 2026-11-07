@@ -247,6 +247,11 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "scope": scope,
             "policy": policy,
         }),
+        WorkflowEvent::ScopeSerialized { scope, reason } => json!({
+            "kind": "task_scope_serialized",
+            "scope": scope,
+            "reason": reason,
+        }),
         WorkflowEvent::ScopeResolved {
             scope,
             decision,
@@ -276,6 +281,30 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "scope": scope,
             "task": task,
             "source_index": source_index,
+        }),
+        WorkflowEvent::TaskDispatched { scope, task, job } => json!({
+            "kind": "task_dispatched",
+            "scope": scope,
+            "task": task,
+            "cpu_job": job,
+        }),
+        WorkflowEvent::TaskWaitingCpu { scope, task, job } => json!({
+            "kind": "task_waiting_cpu",
+            "scope": scope,
+            "task": task,
+            "cpu_job": job,
+        }),
+        WorkflowEvent::TaskCpuCompleted {
+            scope,
+            task,
+            job,
+            thread,
+        } => json!({
+            "kind": "task_cpu_completed",
+            "scope": scope,
+            "task": task,
+            "cpu_job": job,
+            "thread": thread,
         }),
         WorkflowEvent::TaskSettled {
             scope,

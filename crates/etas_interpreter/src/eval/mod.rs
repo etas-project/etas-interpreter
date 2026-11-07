@@ -25,6 +25,7 @@ mod code;
 pub(crate) use code::CompilerInvocation;
 mod const_expr;
 mod continuation;
+pub(crate) mod cpu;
 mod existential;
 mod expr;
 mod field_access;
@@ -60,6 +61,7 @@ mod reflection;
 pub(crate) mod replay;
 pub(crate) mod residual;
 mod run_state;
+pub(crate) use run_state::CpuJobRecord;
 pub(crate) use run_state::{EvalRunState, TaskLocalState};
 mod collection_call;
 mod safe_point;
@@ -191,6 +193,7 @@ pub struct EvalContextInput<'a> {
     pub host_context: HostExecutionContext,
     pub model_policy: ModelExecutionPolicy,
     pub execution_limits: ExecutionLimits,
+    pub cpu_threads: std::num::NonZeroUsize,
     pub consumed_steps: u64,
     pub current_session: Option<String>,
     pub entry_item: HirItemId,
@@ -214,6 +217,7 @@ struct EvalRunStateInput {
     host_context: HostExecutionContext,
     model_policy: ModelExecutionPolicy,
     execution_limits: ExecutionLimits,
+    cpu_threads: std::num::NonZeroUsize,
     consumed_steps: u64,
     current_session: Option<String>,
 }
@@ -232,6 +236,7 @@ impl<'a> EvalContextInput<'a> {
             host_context,
             model_policy,
             execution_limits,
+            cpu_threads,
             consumed_steps,
             current_session,
             entry_item,
@@ -254,6 +259,7 @@ impl<'a> EvalContextInput<'a> {
                 host_context,
                 model_policy,
                 execution_limits,
+                cpu_threads,
                 consumed_steps,
                 current_session,
             }),
@@ -327,11 +333,11 @@ impl<'a> EvalContext<'a> {
         }
     }
     pub(crate) fn scheduling_decision(&mut self, span: Span) -> safe_point::SafePointDecision {
-        match self.task.execution.signal() {
+        match self.task.cancellation.as_ref() {
             Ok(signal) => {
                 self.runtime
                     .safe_points
-                    .observe(&signal, &self.runtime.host_context.budget, span)
+                    .observe(signal, &self.runtime.host_context.budget, span)
             }
             Err(error) => {
                 safe_point::SafePointDecision::Fault(crate::control::ExecutionFault::new(
@@ -343,12 +349,14 @@ impl<'a> EvalContext<'a> {
         }
     }
     pub(crate) fn cancellation_signal(&self, span: etas_core::Span) -> Option<ControlSignal> {
-        match self
-            .task
-            .execution
-            .signal()
-            .and_then(|signal| signal.cause())
-        {
+        let cause = match self.task.cancellation.as_ref() {
+            Ok(signal) if !signal.is_cancelled() => return None,
+            Ok(signal) => signal.cause(),
+            Err(error) => {
+                return Some(ControlSignal::missing_checked_fact(error.to_string(), span));
+            }
+        };
+        match cause {
             Ok(Some(cause)) => Some(ControlSignal::Cancelled(cause)),
             Ok(None) => None,
             Err(error) => Some(ControlSignal::missing_checked_fact(error.to_string(), span)),

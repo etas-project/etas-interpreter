@@ -180,13 +180,26 @@ impl EvalContext<'_> {
         policy: crate::driver::scheduler::TaskGroupPolicy,
         span: Span,
     ) -> ControlSignal {
-        let concurrency = checked_concurrency(self.checked, checked_call);
+        let concurrency_plan = match checked_concurrency(self.checked, checked_call) {
+            Ok(plan) => plan,
+            Err(message) => return ControlSignal::missing_checked_fact(message, span),
+        };
+        let concurrency = concurrency_plan.effective_limit;
         let parent_scope = self.task.task_scope;
         let scope = self
             .scheduler
             .create_scope_with_policy(parent_scope, concurrency, policy);
+        if let Some(reason) = serialization_reason(&concurrency_plan.decision) {
+            self.scheduler.serialize_scope(scope);
+            self.events
+                .push(crate::orchestration::WorkflowEvent::ScopeSerialized {
+                    scope: scope.0,
+                    reason: reason.to_owned(),
+                });
+        }
         let program = self.checked_execution_program();
         for (index, (target, args)) in calls.into_iter().enumerate() {
+            let cpu_capsule = self.cpu_task_capsule(&target, &args);
             let mut machine = crate::eval::machine::EvalMachine::new();
             machine.resume(ControlSignal::pending_call(PendingCall {
                 purity: crate::control::CallPurity::Ordinary,
@@ -208,6 +221,11 @@ impl EvalContext<'_> {
                 Ok(handle) => handle,
                 Err(error) => return ControlSignal::runtime_fault(error.to_string(), span),
             };
+            if let Some(capsule) = cpu_capsule
+                && let Err(error) = self.scheduler.attach_cpu_capsule(handle, capsule)
+            {
+                return ControlSignal::runtime_fault(error.to_string(), span);
+            }
             self.events
                 .push(crate::orchestration::WorkflowEvent::TaskStarted {
                     scope: handle.owner.0,
@@ -344,9 +362,21 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = body else {
             return ControlSignal::invalid_arguments("std.task.run callback is not callable", span);
         };
-        let concurrency = checked_concurrency(self.checked, checked_call);
+        let concurrency_plan = match checked_concurrency(self.checked, checked_call) {
+            Ok(plan) => plan,
+            Err(message) => return ControlSignal::missing_checked_fact(message, span),
+        };
+        let concurrency = concurrency_plan.effective_limit;
         let parent_scope = self.task.task_scope;
         let scope = self.scheduler.create_scope(parent_scope, concurrency);
+        if let Some(reason) = serialization_reason(&concurrency_plan.decision) {
+            self.scheduler.serialize_scope(scope);
+            self.events
+                .push(crate::orchestration::WorkflowEvent::ScopeSerialized {
+                    scope: scope.0,
+                    reason: reason.to_owned(),
+                });
+        }
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
@@ -409,6 +439,7 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = job else {
             return ControlSignal::invalid_arguments("std.task.start job is not callable", span);
         };
+        let cpu_capsule = self.cpu_task_capsule(&target, &[]);
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
@@ -427,6 +458,11 @@ impl EvalContext<'_> {
             span.range.start.0 as usize,
         ) {
             Ok(handle) => {
+                if let Some(capsule) = cpu_capsule
+                    && let Err(error) = self.scheduler.attach_cpu_capsule(handle, capsule)
+                {
+                    return ControlSignal::runtime_fault(error.to_string(), span);
+                }
                 self.events
                     .push(crate::orchestration::WorkflowEvent::TaskStarted {
                         scope: handle.owner.0,
@@ -489,6 +525,54 @@ impl EvalContext<'_> {
             residual: None,
         })
     }
+
+    fn cpu_task_capsule(
+        &mut self,
+        target: &crate::control::CallTarget,
+        args: &[InterpValue],
+    ) -> Option<crate::driver::cpu::CpuTaskCapsule> {
+        if self.cpu_executor.capacity().get() == 1 {
+            return None;
+        }
+        let crate::control::CallTarget::FlowItem(item) = target else {
+            return None;
+        };
+        if !self
+            .checked
+            .cpu_parallel
+            .callables
+            .get(item)
+            .is_some_and(|fact| fact.eligible)
+        {
+            return None;
+        }
+        let arguments = args
+            .iter()
+            .map(crate::driver::cpu::FrozenValue::freeze)
+            .collect::<Option<Vec<_>>>()?;
+        let dispatch_sequence = self.next_cpu_dispatch;
+        self.next_cpu_dispatch = self
+            .next_cpu_dispatch
+            .checked_add(1)
+            .expect("CPU dispatch sequence exhausted");
+        Some(crate::driver::cpu::CpuTaskCapsule {
+            job: crate::driver::cpu::CpuJobId(0),
+            dispatch_sequence,
+            program: std::sync::Arc::new(crate::driver::cpu::PreparedCpuProgram {
+                checked: self.checked.clone(),
+                plan: std::sync::Arc::new(self.plan.clone()),
+            }),
+            callable: crate::driver::cpu::CpuCallableId::Flow(*item),
+            arguments,
+            budget: crate::driver::cpu::CpuBudgetLease {
+                execution_limits: self.execution_limits,
+                budget: self.host_context.budget.clone(),
+                steps: self.safe_points.ledger(),
+            },
+            cancellation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),
+            execution: self.task.execution.clone(),
+        })
+    }
 }
 
 fn job_calls(
@@ -507,16 +591,50 @@ fn job_calls(
         .collect()
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(crate) struct CheckedConcurrencyPlan {
+    pub(crate) decision: etas_frontend::SchedulingDecision,
+    pub(crate) requested_limit: Option<std::num::NonZeroUsize>,
+    pub(crate) effective_limit: std::num::NonZeroUsize,
+}
+
 fn checked_concurrency(
     checked: &etas_frontend::CheckedProject,
     checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
-) -> std::num::NonZeroUsize {
-    let concurrency = checked
+) -> Result<CheckedConcurrencyPlan, &'static str> {
+    let site = checked
         .concurrency
         .sites
         .get(&checked_call.origin)
-        .and_then(|site| site.concurrency_limit)
-        .map(|limit| usize::try_from(limit).expect("u32 concurrency limit fits usize"))
-        .unwrap_or(crate::driver::scheduler::MAX_CONCURRENCY);
-    std::num::NonZeroUsize::new(concurrency).expect("checked concurrency limit is non-zero")
+        .ok_or("structured task call is missing its checked scheduling decision")?;
+    let requested_limit = site.concurrency_limit.map(|limit| {
+        let limit = usize::try_from(limit).expect("u32 concurrency limit fits usize");
+        std::num::NonZeroUsize::new(limit).expect("checked concurrency limit is non-zero")
+    });
+    let runtime_ceiling = std::num::NonZeroUsize::new(crate::driver::scheduler::MAX_CONCURRENCY)
+        .expect("scheduler ceiling is non-zero");
+    let effective_limit = match &site.decision {
+        etas_frontend::SchedulingDecision::Concurrent => requested_limit
+            .unwrap_or(runtime_ceiling)
+            .min(runtime_ceiling),
+        etas_frontend::SchedulingDecision::Serialize
+        | etas_frontend::SchedulingDecision::RuntimeGuard(_) => std::num::NonZeroUsize::MIN,
+        etas_frontend::SchedulingDecision::Reject => {
+            return Err("rejected structured task plan cannot enter execution");
+        }
+    };
+    Ok(CheckedConcurrencyPlan {
+        decision: site.decision.clone(),
+        requested_limit,
+        effective_limit,
+    })
+}
+
+fn serialization_reason(decision: &etas_frontend::SchedulingDecision) -> Option<&'static str> {
+    match decision {
+        etas_frontend::SchedulingDecision::Concurrent => None,
+        etas_frontend::SchedulingDecision::Serialize => Some("static_conflict"),
+        etas_frontend::SchedulingDecision::RuntimeGuard(_) => Some("runtime_guard_pending"),
+        etas_frontend::SchedulingDecision::Reject => Some("rejected"),
+    }
 }

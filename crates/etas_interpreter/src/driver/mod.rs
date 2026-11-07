@@ -1,3 +1,4 @@
+pub(crate) mod cpu;
 mod dispatch;
 mod drive;
 pub(crate) mod lifecycle;

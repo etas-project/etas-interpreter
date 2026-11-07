@@ -33,6 +33,7 @@ fn array_operator_and_extend_reuse_unique_left_without_copying_shared_right() {
         host_context: options.host_context,
         model_policy: options.model_policy,
         execution_limits: options.execution_limits,
+        cpu_threads: options.cpu_threads,
         consumed_steps: 0,
         current_session: None,
         entry_item: checked.entry.unwrap(),

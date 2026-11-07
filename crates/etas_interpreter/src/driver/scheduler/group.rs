@@ -32,6 +32,7 @@ impl TaskGroupPolicy {
 pub(super) struct TaskGroup {
     pub(super) parent: Option<TaskScopeId>,
     pub(super) concurrency: NonZeroUsize,
+    pub(super) serialize_host_actions: bool,
     pub(super) policy: TaskGroupPolicy,
     pub(super) active: usize,
     pub(super) tasks: BTreeSet<TaskId>,
@@ -50,6 +51,7 @@ impl TaskGroup {
         Self {
             parent,
             concurrency,
+            serialize_host_actions: false,
             policy,
             active: 0,
             tasks: BTreeSet::new(),

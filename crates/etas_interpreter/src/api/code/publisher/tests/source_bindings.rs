@@ -127,6 +127,7 @@ async fn run_source_flow_with_limit(
         host_context: options.host_context,
         model_policy: options.model_policy,
         execution_limits: options.execution_limits,
+        cpu_threads: options.cpu_threads,
         consumed_steps: 0,
         current_session: None,
         entry_item: prepared.entry().item,

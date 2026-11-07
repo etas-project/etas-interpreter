@@ -16,93 +16,262 @@ async fn run(source: &str) -> api::RunResult {
         .unwrap()
 }
 
-async fn run_delayed_console_demo(
+async fn run_with_cpu_threads(
     checked: &etas_frontend::CheckedProject,
-    use_concurrency: bool,
-    delay: std::time::Duration,
-) -> (api::RunResult, std::time::Duration, usize) {
-    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
-    host.delay_console_completion(delay);
-    let started = std::time::Instant::now();
-    let result = Interpreter
+    threads: usize,
+) -> api::RunResult {
+    let mut options = RunOptions::default();
+    options.cpu_threads = std::num::NonZeroUsize::new(threads).expect("CPU threads are non-zero");
+    Interpreter
         .run_checked(
             checked,
             EntryPoint {
                 item: checked.entry.unwrap(),
             },
-            vec![InterpValue::Bool(use_concurrency)],
+            vec![],
+            &FakeHost::new(HostServiceAvailability::default()),
+            options,
+        )
+        .await
+        .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn pure_map_tasks_run_on_multiple_cpu_workers_with_stable_output() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.task.{map_concurrent, run, Scheduler};
+
+flow burn(value: i32) -> i32 {
+    var index = 0;
+    while index < 20000 limit Iterations(20000) {
+        index = index + 1;
+    }
+    return value;
+}
+
+flow main() -> bool {
+    let mapped = run((scheduler: Scheduler) => {
+        return map_concurrent([1, 2, 3, 4], burn);
+    });
+    return mapped == [1, 2, 3, 4];
+}
+"#,
+    );
+    let inline = run_with_cpu_threads(&checked, 1).await;
+    let parallel = run_with_cpu_threads(&checked, 4).await;
+
+    assert!(inline.diagnostics.is_empty(), "{:#?}", inline.diagnostics);
+    assert!(
+        parallel.diagnostics.is_empty(),
+        "{:#?}",
+        parallel.diagnostics
+    );
+    assert_eq!(inline.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(parallel.value(), inline.value());
+    let worker_threads = parallel
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            WorkflowEvent::TaskCpuCompleted { thread, .. } => Some(thread.as_str()),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(
+        worker_threads.len() >= 2,
+        "expected at least two CPU worker threads, got {worker_threads:?}"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn effectful_map_tasks_stay_on_the_coordinator() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.effects.Console;
+import std.io.println;
+import std.task.{map_concurrent, run, Scheduler};
+
+flow report(value: i32) -> i32 ![Console, Error<IOError>] {
+    println("task");
+    return value;
+}
+
+flow main() -> bool ![Console, Error<IOError>] {
+    let mapped = run((scheduler: Scheduler) => {
+        return map_concurrent([1, 2], report);
+    });
+    return mapped == [1, 2];
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let mut options = RunOptions::default();
+    options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
             &host,
-            RunOptions::default(),
+            options,
         )
         .await
         .unwrap();
-    (result, started.elapsed(), host.console_call_count())
+
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+    assert_eq!(host.console_call_count(), 2);
+    assert!(result.events.iter().all(|event| !matches!(
+        event,
+        WorkflowEvent::TaskDispatched { .. } | WorkflowEvent::TaskCpuCompleted { .. }
+    )));
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn concurrency_speedup_demo() {
-    let checked = checked_project(include_str!("../../../examples/concurrency_speedup.es"));
-    let operation_delay = std::time::Duration::from_millis(120);
-
-    let (serial, serial_elapsed, serial_calls) =
-        run_delayed_console_demo(&checked, false, operation_delay).await;
-    let (concurrent, concurrent_elapsed, concurrent_calls) =
-        run_delayed_console_demo(&checked, true, operation_delay).await;
-
-    assert!(serial.diagnostics.is_empty(), "{:#?}", serial.diagnostics);
-    assert!(
-        concurrent.diagnostics.is_empty(),
-        "{:#?}",
-        concurrent.diagnostics
+async fn cpu_workers_share_the_run_step_budget() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.task.{map_concurrent, run, Scheduler};
+flow burn(value: i32) -> i32 {
+    var index = 0;
+    while index < 10000 limit Iterations(10000) { index = index + 1; }
+    return value;
+}
+flow main() -> Array<i32> {
+    return run((scheduler: Scheduler) => { return map_concurrent([1, 2, 3, 4], burn); });
+}
+"#,
     );
-    assert_eq!(serial.value(), Some(&InterpValue::i32(4)));
-    assert_eq!(concurrent.value(), Some(&InterpValue::i32(4)));
-    assert_eq!((serial_calls, concurrent_calls), (4, 4));
-
-    let speedup = serial_elapsed.as_secs_f64() / concurrent_elapsed.as_secs_f64();
-    println!(
-        "concurrency demo: serial={:.1}ms concurrent={:.1}ms speedup={speedup:.2}x",
-        serial_elapsed.as_secs_f64() * 1000.0,
-        concurrent_elapsed.as_secs_f64() * 1000.0,
-    );
+    let mut options = RunOptions::default();
+    options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &FakeHost::new(HostServiceAvailability::default()),
+            options,
+        )
+        .await
+        .unwrap();
+    assert!(result.value().is_none());
     assert!(
-        concurrent_elapsed.as_secs_f64() < serial_elapsed.as_secs_f64() / 2.0,
-        "expected at least 2x speedup, measured {speedup:.2}x"
+        result
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("steps (2000)"))
     );
 }
 
+#[derive(Debug)]
+struct CpuDispatchObserver(std::sync::Arc<tokio::sync::Notify>);
+
+impl api::RunEventObserver for CpuDispatchObserver {
+    fn observe(&self, event: &WorkflowEvent) {
+        if matches!(event, WorkflowEvent::TaskDispatched { .. }) {
+            self.0.notify_one();
+        }
+    }
+}
+
 #[tokio::test(flavor = "current_thread")]
-async fn handler_scheduler_speedup_demo() {
+async fn cpu_workers_stop_with_their_parent_execution_scope() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.task.{map_concurrent, run, Scheduler};
+flow burn(value: i32) -> i32 {
+    while true limit Iterations(1000000) {}
+    return value;
+}
+flow main() -> Array<i32> {
+    return run((scheduler: Scheduler) => { return map_concurrent([1, 2, 3, 4], burn); });
+}
+"#,
+    );
+    let dispatched = std::sync::Arc::new(tokio::sync::Notify::new());
+    let mut options = RunOptions::default();
+    options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    options.event_observer = Some(std::sync::Arc::new(CpuDispatchObserver(dispatched.clone())));
+    let host = FakeHost::new(HostServiceAvailability::default());
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        options,
+    );
+    let control = invocation.control();
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            dispatched.notified().await;
+            control
+                .stop(etas_host::execution::CancellationReason::Requested)
+                .unwrap();
+        })
+    })
+    .await
+    .expect("CPU tasks must stop at a safe point");
+    let result = result.unwrap();
+    assert!(matches!(result.outcome, api::RunOutcome::Cancelled(_)));
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn handler_scheduler_serializes_conflicting_console_actions() {
     let checked = checked_project(include_str!(
         "../../../examples/handler_scheduler_speedup.es"
     ));
-    let operation_delay = std::time::Duration::from_millis(120);
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let gate = host.pause_console_completion();
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![InterpValue::Bool(true)],
+        &host,
+        RunOptions::default(),
+    );
 
-    let (serial, serial_elapsed, serial_calls) =
-        run_delayed_console_demo(&checked, false, operation_delay).await;
-    let (scheduled, scheduled_elapsed, scheduled_calls) =
-        run_delayed_console_demo(&checked, true, operation_delay).await;
+    let (scheduled, serialized) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            let mut serialized = true;
+            for expected in 1..=4 {
+                while host.console_call_count() < expected {
+                    gate.started.notified().await;
+                }
+                for _ in 0..8 {
+                    tokio::task::yield_now().await;
+                }
+                serialized &= host.console_call_count() == expected;
+                gate.release.add_permits(1);
+            }
+            serialized
+        })
+    })
+    .await
+    .expect("serialized Console tasks should complete");
+    let scheduled = scheduled.unwrap();
 
-    assert!(serial.diagnostics.is_empty(), "{:#?}", serial.diagnostics);
     assert!(
         scheduled.diagnostics.is_empty(),
         "{:#?}",
         scheduled.diagnostics
     );
-    assert_eq!(serial.value(), Some(&InterpValue::i32(4)));
+    assert!(serialized, "conflicting Console actions overlapped");
     assert_eq!(scheduled.value(), Some(&InterpValue::i32(4)));
-    assert_eq!((serial_calls, scheduled_calls), (4, 4));
-
-    let speedup = serial_elapsed.as_secs_f64() / scheduled_elapsed.as_secs_f64();
-    println!(
-        "handler scheduler demo: serial={:.1}ms handler={:.1}ms speedup={speedup:.2}x",
-        serial_elapsed.as_secs_f64() * 1000.0,
-        scheduled_elapsed.as_secs_f64() * 1000.0,
-    );
-    assert!(
-        scheduled_elapsed.as_secs_f64() < serial_elapsed.as_secs_f64() / 2.0,
-        "expected at least 2x speedup, measured {speedup:.2}x"
-    );
+    assert_eq!(host.console_call_count(), 4);
     assert_eq!(
         scheduled
             .events
@@ -616,7 +785,7 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn a_child_waiting_on_console_does_not_block_its_sibling() {
+async fn conflicting_console_siblings_hold_the_serial_scope_slot() {
     let checked = checked_project(
         r#"
 module app.main;
@@ -649,27 +818,31 @@ flow main() -> i32 {
         RunOptions::default(),
     );
 
-    let (result, both_started) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+    let (result, serialized) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
         tokio::join!(invocation.execute(), async {
-            let both_started = tokio::time::timeout(std::time::Duration::from_millis(500), async {
-                while host.console_call_count() < 2 {
-                    gate.started.notified().await;
-                }
-            })
-            .await
-            .is_ok();
-            gate.release.add_permits(2);
-            both_started
+            while host.console_call_count() < 1 {
+                gate.started.notified().await;
+            }
+            for _ in 0..8 {
+                tokio::task::yield_now().await;
+            }
+            let serialized = host.console_call_count() == 1;
+            gate.release.add_permits(1);
+            while host.console_call_count() < 2 {
+                gate.started.notified().await;
+            }
+            gate.release.add_permits(1);
+            serialized
         })
     })
     .await
-    .expect("both sibling Host operations should start before either completes");
+    .expect("serialized sibling Host operations should complete");
     let result = result.unwrap();
 
     assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
     assert!(
-        both_started,
-        "expected two concurrent Console calls, observed {}",
+        serialized,
+        "conflicting Console siblings overlapped, observed {} calls",
         host.console_call_count()
     );
     assert_eq!(result.value(), Some(&InterpValue::i32(3)));

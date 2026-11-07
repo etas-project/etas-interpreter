@@ -82,6 +82,8 @@ pub struct RunOptions {
     pub event_observer: Option<std::sync::Arc<dyn crate::api::RunEventObserver>>,
     pub plan: PlanOptions,
     pub execution_limits: ExecutionLimits,
+    /// Host CPU worker capacity. The default is one for deterministic compatibility.
+    pub cpu_threads: std::num::NonZeroUsize,
     pub host_context: HostExecutionContext,
     pub model_policy: ModelExecutionPolicy,
     pub current_session: Option<String>,
@@ -99,6 +101,7 @@ impl Default for RunOptions {
             event_observer: None,
             plan: Default::default(),
             execution_limits: Default::default(),
+            cpu_threads: std::num::NonZeroUsize::MIN,
             host_context: Default::default(),
             model_policy: Default::default(),
             current_session: None,

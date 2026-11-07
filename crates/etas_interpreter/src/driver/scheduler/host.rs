@@ -159,6 +159,10 @@ impl<'host> TaskHostReactor<'host> {
         std::future::poll_fn(|cx| Poll::Ready(self.poll_one(cx))).await
     }
 
+    pub(in crate::driver) fn has_pending(&self) -> bool {
+        !self.pending.is_empty()
+    }
+
     pub(in crate::driver) async fn wait_next(
         &mut self,
     ) -> Option<(HostOwner, etas_host::execution::OperationId)> {

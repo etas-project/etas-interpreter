@@ -241,6 +241,20 @@ impl TaskScheduler {
         Ok(())
     }
 
+    pub(crate) fn attach_cpu_capsule(
+        &mut self,
+        handle: TaskHandle,
+        mut capsule: crate::driver::cpu::CpuTaskCapsule,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        capsule.execution = task.local.execution.clone();
+        if task.state != TaskState::Ready || task.cpu_capsule.replace(capsule).is_some() {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        Ok(())
+    }
+
     pub(crate) fn state(&self, handle: TaskHandle) -> Result<TaskState, SchedulerError> {
         Ok(self.resolve(handle)?.state)
     }
@@ -292,15 +306,17 @@ impl TaskScheduler {
                 continue;
             }
             let scope = task.scope;
-            if !self.can_admit(scope) {
+            let active_slot = task.active_slot;
+            if !active_slot && !self.can_admit(scope) {
                 self.ready.push_back(id);
                 continue;
             }
-            self.tasks
-                .get_mut(&id)
-                .expect("ready task must exist")
-                .state = TaskState::Running;
-            self.change_active(scope, true);
+            let task = self.tasks.get_mut(&id).expect("ready task must exist");
+            task.state = TaskState::Running;
+            if !active_slot {
+                task.active_slot = true;
+                self.change_active(scope, true);
+            }
             return Some(TaskHandle {
                 owner: scope,
                 task: id,
@@ -342,7 +358,10 @@ impl TaskScheduler {
         }
         task.state = TaskState::Ready;
         let scope = task.scope;
-        self.change_active(scope, false);
+        if task.active_slot {
+            task.active_slot = false;
+            self.change_active(scope, false);
+        }
         self.ready.push_back(id);
         Ok(())
     }
@@ -372,7 +391,13 @@ impl TaskScheduler {
             .expect("resolved waiter")
             .state = TaskState::Waiting(TaskWait::Task(target_id));
         let scope = self.tasks[&waiter_id].scope;
-        self.change_active(scope, false);
+        if self.tasks[&waiter_id].active_slot {
+            self.tasks
+                .get_mut(&waiter_id)
+                .expect("resolved waiter")
+                .active_slot = false;
+            self.change_active(scope, false);
+        }
         Ok(AwaitDecision::Parked)
     }
 
@@ -398,7 +423,13 @@ impl TaskScheduler {
             .expect("resolved waiter")
             .state = TaskState::Waiting(TaskWait::Scope(scope));
         let waiter_scope = self.tasks[&waiter_id].scope;
-        self.change_active(waiter_scope, false);
+        if self.tasks[&waiter_id].active_slot {
+            self.tasks
+                .get_mut(&waiter_id)
+                .expect("resolved waiter")
+                .active_slot = false;
+            self.change_active(waiter_scope, false);
+        }
         Ok(ScopeDecision::Parked)
     }
 
@@ -520,14 +551,46 @@ impl TaskScheduler {
         operation: etas_host::execution::OperationId,
     ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        let retain_slot = self.scope_serialized(self.tasks[&id].scope);
         let task = self.tasks.get_mut(&id).expect("resolved task");
         if task.state != TaskState::Running {
             return Err(SchedulerError::InvalidTransition);
         }
         task.state = TaskState::Waiting(TaskWait::Host(operation));
         let scope = task.scope;
-        self.change_active(scope, false);
+        if !retain_slot && task.active_slot {
+            task.active_slot = false;
+            self.change_active(scope, false);
+        }
         Ok(())
+    }
+
+    pub(crate) fn wait_for_cpu(
+        &mut self,
+        handle: TaskHandle,
+        job: crate::driver::cpu::CpuJobId,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Running {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Waiting(TaskWait::Cpu(job));
+        Ok(())
+    }
+
+    pub(crate) fn take_cpu_completion(
+        &mut self,
+        handle: TaskHandle,
+        job: crate::driver::cpu::CpuJobId,
+    ) -> Result<ScheduledTask, SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Waiting(TaskWait::Cpu(job)) {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Running;
+        self.tasks.remove(&id).ok_or(SchedulerError::UnknownTask)
     }
 
     pub(crate) fn wake_from_host(
@@ -730,7 +793,8 @@ impl TaskScheduler {
             if task.state.is_terminal() {
                 return Err(SchedulerError::InvalidTransition);
             }
-            let was_running = task.state == TaskState::Running;
+            let was_running = task.active_slot;
+            task.active_slot = false;
             task.local.execution.finish_body(!matches!(
                 outcome,
                 TaskOutcome::Raised(_) | TaskOutcome::Failed(_)
@@ -823,6 +887,26 @@ impl TaskScheduler {
             }
             let Some(parent) = group.parent else {
                 return true;
+            };
+            scope = parent;
+        }
+    }
+
+    pub(crate) fn serialize_scope(&mut self, scope: TaskScopeId) {
+        self.groups
+            .get_mut(&scope)
+            .expect("created task scope")
+            .serialize_host_actions = true;
+    }
+
+    fn scope_serialized(&self, mut scope: TaskScopeId) -> bool {
+        loop {
+            let group = self.groups.get(&scope).expect("task scope must exist");
+            if group.serialize_host_actions {
+                return true;
+            }
+            let Some(parent) = group.parent else {
+                return false;
             };
             scope = parent;
         }

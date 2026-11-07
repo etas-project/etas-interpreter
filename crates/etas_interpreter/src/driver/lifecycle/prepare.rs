@@ -156,6 +156,7 @@ pub(crate) async fn run_checked_inner(
         host_context: options.host_context,
         model_policy: options.model_policy,
         execution_limits: options.execution_limits,
+        cpu_threads: options.cpu_threads,
         consumed_steps: 0,
         current_session: options.current_session,
         entry_item: entry.item,

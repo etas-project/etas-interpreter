@@ -39,6 +39,7 @@ fn initialize<'a>(
         host_context: options.host_context,
         model_policy: options.model_policy,
         execution_limits: options.execution_limits,
+        cpu_threads: options.cpu_threads,
         consumed_steps,
         current_session: options.current_session,
     }
