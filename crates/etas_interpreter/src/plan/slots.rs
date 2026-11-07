@@ -2,7 +2,7 @@ use std::collections::HashMap;
 
 use etas_core::id_type;
 use etas_frontend::CheckedProject;
-use etas_hir::{SymbolDef, SymbolId, SymbolKind};
+use etas_hir::SymbolId;
 use etas_utils::{Pass, PassContext, PassManager, PassResult};
 
 use super::context::{PlanContext, plan_pass};
@@ -21,8 +21,7 @@ impl SlotLayoutTable {
             .symbols
             .iter()
             .filter(|symbol| {
-                matches!(symbol.kind, SymbolKind::Param | SymbolKind::Local)
-                    || matches!(symbol.def, SymbolDef::PatternBinding { .. })
+                etas_hir_analysis::closures::is_runtime_local(symbol.kind, &symbol.def)
             })
             .map(|symbol| symbol.id)
             .collect::<Vec<_>>();

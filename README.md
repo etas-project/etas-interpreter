@@ -123,8 +123,11 @@ Pure bound methods defined in the program follow the same path when their
 receivers can be frozen, including receivers with generic owner types. Taking
 `receiver.method` evaluates the receiver once; checkpoints retain the selected
 target, generic bindings and receiver value.
-Closures, global captures, live handles, effects and
-Handlers use the cooperative coordinator. Language `Concurrency(n)` still limits
+Pure closures use workers when their checked capture contract contains only
+freezable data. Their lexical generic bindings and captured values are frozen;
+the worker reconstructs the closure frame from the shared capture layout.
+Global captures, live handles, effects and Handlers use the cooperative
+coordinator. Language `Concurrency(n)` still limits
 each scope and its descendants independently of the host worker count.
 Cancellation and execution budgets belong to the original run.
 Step and wall-time exhaustion use the invocation entry span, so the task that

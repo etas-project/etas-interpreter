@@ -89,7 +89,7 @@ fn execute_inner(
     machine.resume(ControlSignal::pending_call(PendingCall {
         purity: CallPurity::Ordinary,
         site: None,
-        target: capsule.callable.thaw(&capsule.program.checked),
+        target: capsule.callable.thaw(&capsule.program),
         args: args.clone(),
         span,
         continuation: Continuation::BlockValue,

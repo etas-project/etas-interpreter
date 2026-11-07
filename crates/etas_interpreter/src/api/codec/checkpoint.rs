@@ -85,8 +85,8 @@ pub fn checkpoint_from_json_with_revisions(
     let slots = crate::plan::SlotLayoutTable::for_project(checked);
     let dispatch = crate::plan::IntrinsicDispatchTable::for_project(checked)
         .map_err(|errors| InterpreterCodecError::new(errors.join("; ")))?;
-    let closures = crate::plan::ClosureLayoutTable::build(checked, &slots)
-        .map_err(InterpreterCodecError::new)?;
+    let closures =
+        crate::plan::ClosureLayoutTable::build(checked).map_err(InterpreterCodecError::new)?;
     let tasks = match required_obj(checkpoint, "tasks")? {
         Value::Null => None,
         value => Some(Box::new(task::decode(
