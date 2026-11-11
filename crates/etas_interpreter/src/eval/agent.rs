@@ -1129,10 +1129,11 @@ impl<'a> EvalContext<'a> {
     }
 
     fn type_is_model_response(&self, ty: TypeId) -> bool {
-        matches!(
-            self.checked.type_store.get(ty),
-            Some(Type::Named(named)) if named.name == "ModelResponse"
-        )
+        self.checked
+            .types
+            .known_std_types
+            .runtime_role(&self.checked.type_store, ty)
+            == Some(etas_std::RuntimeTypeRole::ModelResponse)
     }
 
     fn type_is_unit(&self, ty: TypeId) -> bool {
