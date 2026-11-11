@@ -32,6 +32,7 @@ pub(crate) fn validate_boundary_readiness(
                 }
                 HostBoundaryRequest::MemoryWrite(_) => (available.memory, "DurableMemory"),
                 HostBoundaryRequest::Filesystem(_) => (available.filesystem, "FileIO"),
+                HostBoundaryRequest::CommandProcess(_) => (available.command, "Command"),
                 HostBoundaryRequest::Tcp(_) => (available.tcp, "Tcp"),
                 HostBoundaryRequest::Stream(_) => (available.stream, "Stream"),
                 HostBoundaryRequest::Tls(_) => (available.tls, "Tls"),

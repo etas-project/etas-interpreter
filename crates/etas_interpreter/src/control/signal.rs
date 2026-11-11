@@ -336,6 +336,7 @@ pub enum HostBoundaryRequest {
     SessionContext(etas_host::session::SessionWriteRequest),
     MemoryWrite(etas_host::memory::MemoryWriteRequest),
     Filesystem(FilesystemRequest),
+    CommandProcess(etas_host::CommandProcessRequest),
     Tcp(TcpConnectRequest),
     Stream(StreamRequest),
     Tls(TlsConnectRequest),
@@ -350,6 +351,7 @@ impl HostBoundaryRequest {
             Self::SessionContext(request) => request.authority = current,
             Self::MemoryWrite(request) => request.authority = current,
             Self::Filesystem(request) => request.authority = current,
+            Self::CommandProcess(request) => request.authority = current,
             Self::Tcp(request) => request.authority = current,
             Self::Stream(request) => request.authority = current,
             Self::Tls(request) => request.authority = current,
@@ -426,6 +428,12 @@ pub enum HostBoundaryDecode {
     DirectoryListLimited {
         max_entries: usize,
         max_bytes: usize,
+    },
+    CommandProcessHandle {
+        result_type: etas_types::TypeId,
+    },
+    CommandProcessEvent {
+        result_type: etas_types::TypeId,
     },
     TcpStream,
     StreamRead {

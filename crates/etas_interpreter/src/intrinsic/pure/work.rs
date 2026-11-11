@@ -2214,7 +2214,7 @@ impl PendingNativeWork {
                         .reserve_exact(end - start, &mut control)
                         .map_err(AdapterError::Builtin)?;
                     skip_until(projection, start, &mut control)?;
-                    if projection.position() != start {
+                    if projection.position() < start {
                         return Ok(NativeWorkPoll::Pending);
                     }
                     append_until(projection, end, output, &mut control)?;
@@ -2313,7 +2313,7 @@ impl PendingNativeWork {
                             .reserve_exact(end - start, &mut control)
                             .map_err(AdapterError::Builtin)?;
                         skip_until(projection, start, &mut control)?;
-                        if projection.position() != start {
+                        if projection.position() < start {
                             return Ok(NativeWorkPoll::Pending);
                         }
                         append_until(projection, end, output, &mut control)?;
@@ -2470,7 +2470,7 @@ impl PendingNativeWork {
                                 .reserve_exact(range.len(), &mut control)
                                 .map_err(AdapterError::Builtin)?;
                             skip_until(projection, range.start, &mut control)?;
-                            if projection.position() != range.start {
+                            if projection.position() < range.start {
                                 return Ok(NativeWorkPoll::Pending);
                             }
                             append_until(projection, range.end, output, &mut control)?;

@@ -2,6 +2,46 @@ use super::super::*;
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
+async fn checked_char_slice_resumes_after_copying_across_work_quanta() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.text.{get_char_slice, len};
+
+flow main() -> bool {
+    var text = "x";
+    var index = 0;
+    while index < 17 limit Iterations(17) {
+        text = text + text;
+        index = index + 1;
+    }
+    return match get_char_slice(text, Range.closed(0, 70000)) {
+        Some(value) => len(value) == 70001,
+        None() => false,
+    };
+}
+"#,
+    );
+    let host = FakeHost::new(HostServiceAvailability::default());
+    let run = Interpreter.run_checked(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+    let result = tokio::time::timeout(std::time::Duration::from_secs(5), run)
+        .await
+        .expect("multi-quantum char slice must make progress")
+        .unwrap();
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn segmented_text_keys_preserve_membership_order_and_checkpoint_resume() {
     let checked = checked_project(
         r#"

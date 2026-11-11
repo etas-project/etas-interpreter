@@ -142,7 +142,7 @@ impl<'a> EvalContext<'a> {
                 self.execute_console_callable(callable, checked_call, call_args, span)
             }
             StdCallable::Command(callable) => {
-                self.execute_command_callable(callable, call_args, span)
+                self.execute_command_callable(callable, checked_call, call_args, span)
             }
             StdCallable::Filesystem(callable) => self.execute_filesystem_callable(
                 callable,
@@ -691,6 +691,7 @@ impl<'a> EvalContext<'a> {
     fn execute_command_callable(
         &mut self,
         callable: CommandCallable,
+        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -700,6 +701,23 @@ impl<'a> EvalContext<'a> {
             CommandCallable::WithCwd => self.execute_command_with_cwd(call_args, span),
             CommandCallable::WithStdin => self.execute_command_with_stdin(call_args, span),
             CommandCallable::Run => self.execute_command_run(call_args, span),
+            CommandCallable::Start => {
+                self.execute_command_process_start(checked_call.result_type, call_args, span)
+            }
+            CommandCallable::Reconnect => {
+                self.execute_command_process_reconnect(checked_call.result_type, call_args, span)
+            }
+            CommandCallable::Read => {
+                self.execute_command_process_read(checked_call.result_type, call_args, span)
+            }
+            CommandCallable::Write => self.execute_command_process_write(call_args, span),
+            CommandCallable::CloseStdin => {
+                self.execute_command_process_close_stdin(call_args, span)
+            }
+            CommandCallable::Stop => {
+                self.execute_command_process_stop(checked_call.result_type, call_args, span)
+            }
+            CommandCallable::HandleId => self.execute_command_handle_id(call_args, span),
         }
     }
 
@@ -882,6 +900,244 @@ impl<'a> EvalContext<'a> {
             span,
             continuation: Continuation::BlockValue,
         })
+    }
+
+    fn execute_command_process_start(
+        &mut self,
+        result_type: etas_types::TypeId,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [command, sandbox] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.start expects Command and SandboxProfile",
+                span,
+            );
+        };
+        let InterpValue::Command {
+            argv,
+            env,
+            cwd,
+            stdin,
+        } = command
+        else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.start first argument must be Command",
+                span,
+            );
+        };
+        if !self.is_default_command_sandbox(sandbox) {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.start requires the DefaultCommandSandbox support value",
+                span,
+            );
+        }
+        if argv.is_empty() {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.start requires a non-empty argv",
+                span,
+            );
+        }
+        if stdin.is_some() {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.start does not accept buffered stdin; call Command.write and Command.close_stdin after starting",
+                span,
+            );
+        }
+        self.execute_command_process_boundary(
+            CommandProcessOperation::Start {
+                argv: argv.clone(),
+                env: env.clone(),
+                cwd: cwd.clone(),
+            },
+            HostBoundaryDecode::CommandProcessHandle { result_type },
+            "Command.start",
+            span,
+        )
+    }
+
+    fn execute_command_process_reconnect(
+        &mut self,
+        result_type: etas_types::TypeId,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [InterpValue::String(process), sandbox] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.reconnect expects string and SandboxProfile",
+                span,
+            );
+        };
+        if process.is_empty() || !self.is_default_command_sandbox(sandbox) {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.reconnect requires a non-empty process id and DefaultCommandSandbox",
+                span,
+            );
+        }
+        self.execute_command_process_boundary(
+            CommandProcessOperation::Reconnect {
+                process: process.to_string(),
+            },
+            HostBoundaryDecode::CommandProcessHandle { result_type },
+            "Command.reconnect",
+            span,
+        )
+    }
+
+    fn execute_command_process_read(
+        &mut self,
+        result_type: etas_types::TypeId,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [handle, max_bytes] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.read expects CommandHandle and usize",
+                span,
+            );
+        };
+        let process = std_value!(self.command_process_id_argument(handle, span));
+        let max_bytes =
+            std_value!(self.usize_argument(max_bytes, "std.host.command.read max_bytes", span,));
+        if max_bytes == 0 {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.read max_bytes must be greater than zero",
+                span,
+            );
+        }
+        self.execute_command_process_boundary(
+            CommandProcessOperation::Read { process, max_bytes },
+            HostBoundaryDecode::CommandProcessEvent { result_type },
+            "Command.read",
+            span,
+        )
+    }
+
+    fn execute_command_process_write(
+        &mut self,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [handle, bytes] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.write expects CommandHandle and bytes",
+                span,
+            );
+        };
+        let process = std_value!(self.command_process_id_argument(handle, span));
+        let bytes = std_value!(self.bytes_argument(bytes, "std.host.command.write bytes", span,));
+        self.execute_command_process_boundary(
+            CommandProcessOperation::Write { process, bytes },
+            HostBoundaryDecode::Unit,
+            "Command.write",
+            span,
+        )
+    }
+
+    fn execute_command_process_close_stdin(
+        &mut self,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [handle] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.close_stdin expects CommandHandle",
+                span,
+            );
+        };
+        let process = std_value!(self.command_process_id_argument(handle, span));
+        self.execute_command_process_boundary(
+            CommandProcessOperation::CloseStdin { process },
+            HostBoundaryDecode::Unit,
+            "Command.write",
+            span,
+        )
+    }
+
+    fn execute_command_process_stop(
+        &mut self,
+        result_type: etas_types::TypeId,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
+        let [handle] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.stop expects CommandHandle",
+                span,
+            );
+        };
+        let process = std_value!(self.command_process_id_argument(handle, span));
+        self.execute_command_process_boundary(
+            CommandProcessOperation::Stop { process },
+            HostBoundaryDecode::CommandProcessEvent { result_type },
+            "Command.stop",
+            span,
+        )
+    }
+
+    fn execute_command_handle_id(&self, call_args: Vec<InterpValue>, span: Span) -> ControlSignal {
+        let [handle] = call_args.as_slice() else {
+            return ControlSignal::invalid_arguments(
+                "std.host.command.id expects CommandHandle",
+                span,
+            );
+        };
+        match self.command_process_id_argument(handle, span) {
+            Ok(process) => ControlSignal::Value(InterpValue::String(process.into())),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
+    }
+
+    fn execute_command_process_boundary(
+        &mut self,
+        operation: CommandProcessOperation,
+        decode: HostBoundaryDecode,
+        action: &str,
+        span: Span,
+    ) -> ControlSignal {
+        let _action = std_value!(self.require_checked_default_action(action, span));
+        ControlSignal::pending_host(PendingHostBoundary {
+            request: HostBoundaryRequest::CommandProcess(CommandProcessRequest {
+                id: self.next_host_request_id(),
+                operation,
+                authority: self.host_authority(),
+                trace: self.host_trace(),
+                budget: self.host_budget(),
+            }),
+            decode,
+            span,
+            continuation: Continuation::BlockValue,
+        })
+    }
+
+    fn command_process_id_argument(
+        &self,
+        value: &InterpValue,
+        span: Span,
+    ) -> Result<String, ExecutionFault> {
+        let InterpValue::HostHandle(handle) = value else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::InvalidArguments,
+                span,
+                "expected std.host.command.CommandHandle",
+            ));
+        };
+        handle
+            .command_process_id()
+            .map(str::to_owned)
+            .ok_or_else(|| {
+                ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    span,
+                    "host handle is not a command process handle",
+                )
+            })
+    }
+
+    fn is_default_command_sandbox(&self, value: &InterpValue) -> bool {
+        matches!(value, InterpValue::StdConstant(constant)
+            if constant.role() == etas_std::StdValueRole::DefaultCommandSandbox
+                && constant.validate(&self.checked.types.known_std_types).is_ok())
     }
 
     fn execute_filesystem_callable(

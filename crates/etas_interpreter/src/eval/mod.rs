@@ -127,11 +127,12 @@ use etas_hir::{
 use etas_host::console::{ConsoleOperation, ConsoleRequest};
 use etas_host::{
     ApprovalGrant, ApprovalRequest, AuthorityContext, BrowserProtocolOperation,
-    BrowserProtocolRequest, ByteStreamRef, CommandRequest, FilesystemOperation, FilesystemRequest,
-    HostRequestId, HostValue, MemoryOperation, MemoryRegionRef, MemoryRequest, MemoryResult,
-    ModelContent, ModelMessage, ModelRequest, ModelRole, SecretOperation, SecretRequest, StoreRef,
-    StreamOperation, StreamRequest, TcpConnectOperation, TcpConnectRequest, TcpEndpoint,
-    TcpStreamRef, TlsConnectOperation, TlsConnectRequest, TraceContext, WriteCondition,
+    BrowserProtocolRequest, ByteStreamRef, CommandProcessOperation, CommandProcessRequest,
+    CommandRequest, FilesystemOperation, FilesystemRequest, HostRequestId, HostValue,
+    MemoryOperation, MemoryRegionRef, MemoryRequest, MemoryResult, ModelContent, ModelMessage,
+    ModelRequest, ModelRole, SecretOperation, SecretRequest, StoreRef, StreamOperation,
+    StreamRequest, TcpConnectOperation, TcpConnectRequest, TcpEndpoint, TcpStreamRef,
+    TlsConnectOperation, TlsConnectRequest, TraceContext, WriteCondition,
 };
 
 pub(crate) struct EvalContext<'a> {

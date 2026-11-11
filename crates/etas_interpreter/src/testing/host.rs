@@ -3,14 +3,14 @@ use etas_effects::HostRequirementKind;
 use etas_host::console::{ConsoleOperation, ConsoleRequest, ConsoleResponse, ConsoleResult};
 use etas_host::{
     ApprovalDecision, ApprovalRequest, ApprovalResponse, BrowserProtocolRequest,
-    BrowserProtocolResponse, ByteStreamOrigin, CommandOutput, CommandRequest, CommandResponse,
-    FilesystemRequest, FilesystemResponse, HostError, HostErrorCode, HostValue, MemoryConflict,
-    MemoryOperation, MemoryRequest, MemoryResponse, MemoryResult, MemoryVersion, ModelContent,
-    ModelMessage, ModelRequest, ModelResponse, ModelRole, ModelToolCall, PolicyDecision,
-    PolicyEvaluationRequest, PolicyResponse, SecretRequest, SecretResponse, SessionRequest,
-    SessionResponse, StreamFailure, StreamRequest, StreamResponse, TcpConnectRequest,
-    TcpConnectResponse, TcpStreamRef, TlsConnectRequest, TlsConnectResponse, ToolRequest,
-    ToolResponse, WriteCondition,
+    BrowserProtocolResponse, ByteStreamOrigin, CommandOutput, CommandProcessRequest,
+    CommandProcessResponse, CommandRequest, CommandResponse, FilesystemRequest, FilesystemResponse,
+    HostError, HostErrorCode, HostValue, MemoryConflict, MemoryOperation, MemoryRequest,
+    MemoryResponse, MemoryResult, MemoryVersion, ModelContent, ModelMessage, ModelRequest,
+    ModelResponse, ModelRole, ModelToolCall, PolicyDecision, PolicyEvaluationRequest,
+    PolicyResponse, SecretRequest, SecretResponse, SessionRequest, SessionResponse, StreamFailure,
+    StreamRequest, StreamResponse, TcpConnectRequest, TcpConnectResponse, TcpStreamRef,
+    TlsConnectRequest, TlsConnectResponse, ToolRequest, ToolResponse, WriteCondition,
 };
 use etas_host::{StreamPayload, StreamRead};
 use std::collections::{HashMap, VecDeque};
@@ -62,6 +62,7 @@ pub(crate) struct FakeHost {
     policy_calls: Arc<AtomicUsize>,
     command_requests: Arc<Mutex<Vec<CommandRequest>>>,
     command_response: Arc<Mutex<Option<CommandOutput>>>,
+    command_process_client: etas_host::LocalCommandClient,
     model_requests: Arc<Mutex<Vec<ModelRequest>>>,
     model_errors: Arc<Mutex<VecDeque<HostError>>>,
     model_responses: Arc<Mutex<VecDeque<ModelResponse>>>,
@@ -113,6 +114,7 @@ impl FakeHost {
             policy_calls: Arc::new(AtomicUsize::new(0)),
             command_requests: Arc::new(Mutex::new(Vec::new())),
             command_response: Arc::new(Mutex::new(None)),
+            command_process_client: etas_host::LocalCommandClient::new(),
             model_requests: Arc::new(Mutex::new(Vec::new())),
             model_errors: Arc::new(Mutex::new(VecDeque::new())),
             model_responses: Arc::new(Mutex::new(VecDeque::new())),
@@ -1204,6 +1206,18 @@ impl HostServices for FakeHost {
                 id: request.id,
                 result: Ok(output),
             })
+        })
+    }
+
+    fn command_process<'a>(
+        &'a self,
+        operation: etas_host::execution::OperationContext,
+        request: CommandProcessRequest,
+    ) -> HostFuture<'a, Result<CommandProcessResponse, HostError>> {
+        Box::pin(async move {
+            self.command_process_client
+                .execute_process_scoped(request, &operation)
+                .await
         })
     }
 

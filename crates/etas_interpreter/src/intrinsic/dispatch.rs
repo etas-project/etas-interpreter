@@ -46,6 +46,13 @@ pub enum CommandCallable {
     WithCwd,
     WithStdin,
     Run,
+    Start,
+    Reconnect,
+    Read,
+    Write,
+    CloseStdin,
+    Stop,
+    HandleId,
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -347,6 +354,15 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         intrinsic::runtime::COMMAND_WITH_CWD => StdCallable::Command(CommandCallable::WithCwd),
         intrinsic::runtime::COMMAND_WITH_STDIN => StdCallable::Command(CommandCallable::WithStdin),
         intrinsic::runtime::COMMAND_RUN => StdCallable::Command(CommandCallable::Run),
+        intrinsic::runtime::COMMAND_START => StdCallable::Command(CommandCallable::Start),
+        intrinsic::runtime::COMMAND_RECONNECT => StdCallable::Command(CommandCallable::Reconnect),
+        intrinsic::runtime::COMMAND_READ => StdCallable::Command(CommandCallable::Read),
+        intrinsic::runtime::COMMAND_WRITE => StdCallable::Command(CommandCallable::Write),
+        intrinsic::runtime::COMMAND_CLOSE_STDIN => {
+            StdCallable::Command(CommandCallable::CloseStdin)
+        }
+        intrinsic::runtime::COMMAND_STOP => StdCallable::Command(CommandCallable::Stop),
+        intrinsic::runtime::COMMAND_HANDLE_ID => StdCallable::Command(CommandCallable::HandleId),
         intrinsic::runtime::FS_ROOT => StdCallable::Filesystem(FilesystemCallable::Root),
         intrinsic::runtime::FS_RELATIVE_NAME => {
             StdCallable::Filesystem(FilesystemCallable::RelativeName)

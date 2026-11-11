@@ -3,11 +3,11 @@ use std::{future::Future, pin::Pin};
 use etas_host::console::{ConsoleRequest, ConsoleResponse};
 use etas_host::{
     ApprovalRequest, ApprovalResponse, BrowserProtocolRequest, BrowserProtocolResponse,
-    CommandRequest, CommandResponse, FilesystemRequest, FilesystemResponse, MemoryRequest,
-    MemoryResponse, ModelRequest, ModelResponse, PolicyEvaluationRequest, PolicyResponse,
-    SecretRequest, SecretResponse, SessionRequest, SessionResponse, StreamRequest, StreamResponse,
-    TcpConnectRequest, TcpConnectResponse, TlsConnectRequest, TlsConnectResponse, ToolRequest,
-    ToolResponse,
+    CommandProcessRequest, CommandProcessResponse, CommandRequest, CommandResponse,
+    FilesystemRequest, FilesystemResponse, MemoryRequest, MemoryResponse, ModelRequest,
+    ModelResponse, PolicyEvaluationRequest, PolicyResponse, SecretRequest, SecretResponse,
+    SessionRequest, SessionResponse, StreamRequest, StreamResponse, TcpConnectRequest,
+    TcpConnectResponse, TlsConnectRequest, TlsConnectResponse, ToolRequest, ToolResponse,
 };
 
 use super::HostServiceAvailability;
@@ -76,6 +76,12 @@ pub trait HostServices {
         operation: etas_host::execution::OperationContext,
         request: CommandRequest,
     ) -> HostFuture<'a, Result<CommandResponse, etas_host::HostError>>;
+
+    fn command_process<'a>(
+        &'a self,
+        operation: etas_host::execution::OperationContext,
+        request: CommandProcessRequest,
+    ) -> HostFuture<'a, Result<CommandProcessResponse, etas_host::HostError>>;
 
     fn tcp<'a>(
         &'a self,
