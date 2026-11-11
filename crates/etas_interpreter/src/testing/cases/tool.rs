@@ -1327,3 +1327,70 @@ flow main(input: string) -> ModelResponse {
         ))
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn builtin_model_response_role_selects_raw_decode_with_source_tools() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+import std.agent.schema.ModelResponse;
+
+public tool ping(value: i32) -> i32 ![] { return value + 1; }
+
+@tools([ping])
+agent Worker(input: string) -> ModelResponse {
+    return perform infer<ModelResponse>(Prompt.new().system(Trusted(input)));
+}
+
+flow main(input: string) -> ModelResponse {
+    return Worker.run(input);
+}
+"#,
+    );
+
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    host.seed_model_response_tool_call_with_args(
+        "ping",
+        HostValue::Record(vec![("value".to_owned(), HostValue::Int(7))]),
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            vec![value::InterpValue::String("Call ping with value 7".into())],
+            &host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: AuthorityContext {
+                        grants: vec![HostActionGrant::allow("Agentic", "infer")],
+                        ..AuthorityContext::deny_all()
+                    },
+                    trace: TraceContext::root(TraceId(104)),
+                    ..api::HostExecutionContext::default()
+                },
+                model_policy: api::ModelExecutionPolicy {
+                    provider_capabilities: Some(full_model_capabilities()),
+                    ..api::ModelExecutionPolicy::default()
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await
+        .expect("execution lifecycle infrastructure");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(host.model_call_count(), 1);
+    let requests = host.model_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].response_schema, None);
+    assert_eq!(requests[0].tools.len(), 1);
+    assert_eq!(requests[0].tools[0].tool.name, "ping");
+    let Some(value::InterpValue::ModelResponse(response)) = result.value() else {
+        panic!("builtin ModelResponse output must select raw model decoding");
+    };
+    assert_eq!(response.tool_calls.len(), 1);
+    assert_eq!(response.tool_calls[0].tool, "ping");
+}
