@@ -139,11 +139,11 @@ impl EvalMachine {
                 Ok(signal) => signal,
                 Err(poll) => return poll,
             },
-            MachineInput::ToolResult(result) => match self.resume_tool_host_result(ctx, result) {
+            MachineInput::ToolResult(result) => match self.resume_native_tool_result(ctx, result) {
                 Ok(signal) => signal,
                 Err(poll) => return poll,
             },
-            MachineInput::SourceToolApproved => match self.resume_source_tool_approved_input(ctx) {
+            MachineInput::SourceToolApproved => match self.resume_native_tool_approved(ctx) {
                 Ok(signal) => signal,
                 Err(poll) => return poll,
             },
@@ -185,27 +185,24 @@ impl EvalMachine {
                     };
                     match pending.input {
                         ContinuationInput::Value(value) => {
-                            if let Continuation::ProgramResume(continuation) = first {
-                                return self.resume_program_continuation(ctx, continuation, value);
-                            }
-                            if let Continuation::SourceToolReturn(saved) = first {
-                                match self.resume_source_tool_value(ctx, *saved.0, value) {
+                            if let Continuation::ToolInvocationStart(invocation) = first {
+                                match self.begin_tool_invocation(ctx, invocation) {
                                     Ok(signal) => signal,
                                     Err(poll) => return poll,
                                 }
                             } else {
+                                if let Continuation::ProgramResume(continuation) = first {
+                                    return self.resume_program_continuation(
+                                        ctx,
+                                        continuation,
+                                        value,
+                                    );
+                                }
                                 ctx.apply_continuation_frame(first, value)
                             }
                         }
                         ContinuationInput::Return(value) => {
-                            if let Continuation::SourceToolReturn(saved) = first {
-                                match self.resume_source_tool_value(ctx, *saved.0, value) {
-                                    Ok(signal) => signal,
-                                    Err(poll) => return poll,
-                                }
-                            } else {
-                                ctx.propagate_return_frame(value, first)
-                            }
+                            ctx.propagate_return_frame(value, first)
                         }
                         ContinuationInput::Resume(value) => {
                             ctx.propagate_resume_frame(value, first)
@@ -233,6 +230,12 @@ impl EvalMachine {
                 ControlSignal::Block(pending) => {
                     let mut pending = *pending;
                     self.push_continuation_frames(pending.continuation);
+                    if let Some(context) = pending.agent_context.take() {
+                        let previous = ctx.enter_agent_context(context);
+                        self.push_continuation_frames(Continuation::AgentExecutionState(Box::new(
+                            previous,
+                        )));
+                    }
                     if let Some(activation) = pending.residual.take() {
                         match ctx.activate_residual_scope(*activation, step_span) {
                             Ok(scope) => {
@@ -367,14 +370,8 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
                             ctx.apply_continuation(local_continuation!(frame, step_span), value)
                         }
-                        EvalFrame::SourceToolReturn(frame) => {
-                            match self.resume_source_tool_value(ctx, frame, value) {
-                                Ok(signal) => signal,
-                                Err(poll) => return poll,
-                            }
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault("model loop received an evaluator value without a model/tool response".to_owned(), frame.pending.span);
+                        EvalFrame::ModelRequest(frame) => {
+                            return machine_fault("model request received an evaluator value without a model/tool response".to_owned(), frame.pending.span);
                         }
                     }
                 }
@@ -412,14 +409,12 @@ impl EvalMachine {
                                 ControlSignal::Return(value),
                                 local_continuation!(frame, step_span),
                             ),
-                        EvalFrame::SourceToolReturn(frame) => {
-                            match self.resume_source_tool_value(ctx, frame, value) {
-                                Ok(signal) => signal,
-                                Err(poll) => return poll,
-                            }
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault("model loop received a source return without an active source tool frame".to_owned(), frame.pending.span);
+                        EvalFrame::ModelRequest(frame) => {
+                            return machine_fault(
+                                "model request received a source return without a response"
+                                    .to_owned(),
+                                frame.pending.span,
+                            );
                         }
                     }
                 }
@@ -490,12 +485,9 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
                             local_continuation!(frame, step_span)
                         }
-                        EvalFrame::SourceToolReturn(frame) => Continuation::SourceToolReturn(
-                            super::SourceToolContinuation(Box::new(frame)),
-                        ),
-                        EvalFrame::ModelLoop(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "perform crossed an incomplete model loop".to_owned(),
+                                "perform crossed an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }
@@ -565,15 +557,9 @@ impl EvalMachine {
                                 ControlSignal::Resume(value),
                                 local_continuation!(frame, step_span),
                             ),
-                        EvalFrame::SourceToolReturn(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "resume escaped a source tool execution frame".to_owned(),
-                                frame.model_loop.pending.span,
-                            );
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault(
-                                "resume escaped into an incomplete model loop".to_owned(),
+                                "resume escaped into an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }
@@ -616,15 +602,9 @@ impl EvalMachine {
                                 ControlSignal::Finish(value),
                                 local_continuation!(frame, step_span),
                             ),
-                        EvalFrame::SourceToolReturn(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "finish escaped a source tool execution frame".to_owned(),
-                                frame.model_loop.pending.span,
-                            );
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault(
-                                "finish escaped into an incomplete model loop".to_owned(),
+                                "finish escaped into an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }
@@ -675,15 +655,9 @@ impl EvalMachine {
                                 frame.span,
                             );
                         }
-                        EvalFrame::SourceToolReturn(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "loop control escaped a source tool execution frame".to_owned(),
-                                frame.model_loop.pending.span,
-                            );
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault(
-                                "loop control escaped into an incomplete model loop".to_owned(),
+                                "loop control escaped into an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }

@@ -17,7 +17,7 @@ type ModelCall<'host> = crate::host::HostFuture<'host, Result<ModelResponse, eta
 
 pub(in crate::driver) enum ModelDispatchStart<'host> {
     Complete(bool),
-    Pending(PendingModelHostDispatch<'host>),
+    Pending(Box<PendingModelHostDispatch<'host>>),
 }
 
 struct ModelAccounting {
@@ -132,7 +132,7 @@ pub(in crate::driver) async fn begin<'host>(
         pending.request.trace.clone(),
         |operation| host.model(operation, pending.request.clone()),
     ) {
-        Ok(host_pending) => ModelDispatchStart::Pending(PendingModelHostDispatch {
+        Ok(host_pending) => ModelDispatchStart::Pending(Box::new(PendingModelHostDispatch {
             accounting: ModelAccounting {
                 pending,
                 remaining_tokens,
@@ -141,7 +141,7 @@ pub(in crate::driver) async fn begin<'host>(
                 cost_reservation,
             },
             pending: host_pending,
-        }),
+        })),
         Err(error) => {
             let release = pending
                 .request
@@ -167,23 +167,24 @@ pub(in crate::driver) fn finish(
     } = completed.accounting;
     let result = match HostDispatch::finish(eval, completed.completion) {
         Ok(response) => {
-            let consumed = match response.usage.as_ref() {
-                Some(usage) => usage
-                    .input_tokens
-                    .checked_add(usage.output_tokens)
-                    .ok_or_else(|| {
-                        HostError::new(
-                            HostErrorCode::InvalidResponse,
-                            "model usage token count overflowed",
-                        )
-                    }),
+            let consumed = match response
+                .usage
+                .as_ref()
+                .and_then(|usage| usage.input_tokens.zip(usage.output_tokens))
+            {
+                Some((input, output)) => input.checked_add(output).map(Some).ok_or_else(|| {
+                    HostError::new(
+                        HostErrorCode::InvalidResponse,
+                        "model usage token count overflowed",
+                    )
+                }),
                 None if remaining_tokens.is_some() || remaining_cost.is_some() => {
                     Err(HostError::new(
                         HostErrorCode::InvalidResponse,
                         "model response omitted usage required by the run-owned execution budget",
                     ))
                 }
-                None => Ok(0),
+                None => Ok(None),
             };
             let cost_settlement = match (&remaining_cost, response.usage.as_ref()) {
                 (Some(expected), Some(usage)) => match usage.cost.as_ref() {
@@ -204,11 +205,17 @@ pub(in crate::driver) fn finish(
                 _ => Ok(None),
             };
             let accounting = consumed.and_then(|consumed| {
-                cost_settlement.and_then(|cost| {
-                    pending
+                cost_settlement.and_then(|cost| match consumed {
+                    Some(consumed) => {
+                        pending
+                            .request
+                            .budget
+                            .settle_usage(reservation, consumed, cost)
+                    }
+                    None => pending
                         .request
                         .budget
-                        .settle_usage(reservation, consumed, cost)
+                        .release_usage(reservation, cost_reservation.clone()),
                 })
             });
             match accounting {
@@ -254,7 +261,7 @@ fn policy_subject(request: &etas_host::ModelRequest) -> PolicySubject {
         ),
         (
             "qualified_action".to_owned(),
-            HostValue::String("Agentic.infer".to_owned()),
+            HostValue::String(request.action.qualified_name().to_owned()),
         ),
         (
             "model".to_owned(),

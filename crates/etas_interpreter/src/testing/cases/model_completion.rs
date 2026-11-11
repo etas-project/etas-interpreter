@@ -18,8 +18,8 @@ flow main() -> string ![Agentic] {
     host.seed_model_completion_failure(
         HostError::new(HostErrorCode::IncompleteResponse, "generation truncated"),
         etas_host::ModelUsage {
-            input_tokens: 10,
-            output_tokens: 4,
+            input_tokens: Some(10),
+            output_tokens: Some(4),
             cost: Some(etas_host::ModelCostUsage {
                 micros: 20,
                 currency: "USD".into(),

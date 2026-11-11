@@ -18,10 +18,7 @@ fn json_host_decode_requires_the_checked_std_identity_and_preserves_it_in_generi
     };
     let json = checked.types.known_std_types.json_value.unwrap();
     assert_eq!(signature.params[0], json);
-    assert!(matches!(
-        checked.type_store.get(json),
-        Some(Type::Nominal(_))
-    ));
+    assert!(matches!(checked.type_store.get(json), Some(Type::Enum(_))));
     let value = || {
         HostValue::Record(
             [("answer".into(), HostValue::Int(42))]
@@ -59,7 +56,7 @@ fn json_host_decode_requires_the_checked_std_identity_and_preserves_it_in_generi
     );
     assert!(
         host_to_typed_interp_value(value_for_negative(), json, &checked.type_store).is_err(),
-        "a TypeStore without checked std ABI facts cannot decode an opaque value"
+        "a TypeStore without checked std ABI facts cannot select the JSON native ABI"
     );
 }
 

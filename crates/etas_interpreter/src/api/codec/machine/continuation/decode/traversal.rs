@@ -13,6 +13,7 @@ enum PendingParent<'a> {
         value: &'a Value,
     },
     ScopedModelPolicy(Box<ModelExecutionPolicySnapshot>),
+    AgentExecutionScope(Box<crate::orchestration::AgentExecutionStateSnapshot>),
     ChainInner(&'a Value),
     ChainOuter(ContinuationSnapshotLink),
 }
@@ -57,6 +58,14 @@ pub(crate) fn continuation_from_snapshot(
             "handle_boundary" => {
                 let scope_id = HandlerScopeId(required_u32(value, "scope_id")?);
                 pending.push(PendingParent::HandleBoundary { scope_id, value });
+                value = required(value, "inner")?;
+                continue;
+            }
+            "agent_execution_scope" => {
+                let state = Box::new(super::super::super::agent_context::state_from_json(
+                    required(value, "state")?,
+                )?);
+                pending.push(PendingParent::AgentExecutionScope(state));
                 value = required(value, "inner")?;
                 continue;
             }
@@ -113,6 +122,12 @@ pub(crate) fn continuation_from_snapshot(
                             .collect::<Result<Vec<_>, _>>()?,
                         span: span_from_snapshot(required(value, "span")?)?,
                         frame: locals_from_snapshot(limits, required(value, "frame")?)?,
+                    }
+                }
+                Some(PendingParent::AgentExecutionScope(state)) => {
+                    ContinuationSnapshot::AgentExecutionScope {
+                        state,
+                        inner: node.into(),
                     }
                 }
                 Some(PendingParent::ScopedModelPolicy(policy)) => {

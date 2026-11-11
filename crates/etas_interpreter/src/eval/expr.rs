@@ -14,6 +14,15 @@ impl<'a> EvalContext<'a> {
         if let Err(fault) = self.consume_execution_step(span) {
             return ControlSignal::Fault(Box::new(fault));
         }
+        if self
+            .checked
+            .types
+            .std_intrinsic_calls
+            .get(&expr)
+            .is_some_and(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
+        {
+            return self.eval_tool_reference(expr, span);
+        }
         match &self.checked.hir.exprs[expr] {
             HirExpr::Literal(literal) => match self.eval_literal(expr, literal) {
                 Ok(value) => ControlSignal::Value(value),

@@ -66,8 +66,15 @@ pub(super) fn lower(
             etas_std::LoweringHint::Collection(operation) => Some(operation),
             _ => None,
         };
-        let type_member =
-            source.is_some_and(|source| source.kind == etas_std::FlowSourceMethodKind::TypeMember);
+        let direct = match project.hir.exprs.get(*expr) {
+            Some(HirExpr::Call { callee, .. }) => {
+                direct_std_callee(project, *callee) == Some(symbol.id)
+            }
+            _ => false,
+        };
+        let type_member = !direct
+            && source
+                .is_some_and(|source| source.kind == etas_std::FlowSourceMethodKind::TypeMember);
         let (receiver, args) = match project.hir.exprs.get(*expr) {
             Some(HirExpr::MethodCall {
                 receiver,
@@ -103,7 +110,9 @@ pub(super) fn lower(
                     return Err("checked type member call has an invalid member path".into());
                 };
                 if source.is_none_or(|source| source.name != *method) {
-                    return Err("checked type member name differs from its selected declaration".into());
+                    return Err(
+                        "checked type member name differs from its selected declaration".into(),
+                    );
                 }
                 if method_fact.is_none() {
                     validate_collection_subject(
@@ -231,6 +240,31 @@ pub(super) fn lower(
         }
     }
     Ok((calls, type_members))
+}
+
+fn direct_std_callee(
+    project: &CheckedProject,
+    expression: HirExprId,
+) -> Option<etas_std::StdSymbolId> {
+    let HirExpr::Path(path) = project.hir.exprs.get(expression)? else {
+        return None;
+    };
+    let (symbol, remaining) = match &path.resolution {
+        etas_hir::ResolveResult::Resolved(symbol) => (*symbol, &[][..]),
+        etas_hir::ResolveResult::PartiallyResolved(partial) => {
+            (partial.resolved_prefix?, partial.remaining.as_slice())
+        }
+        _ => return None,
+    };
+    let etas_hir::SymbolDef::ImportAlias { path, .. } = &project.symbols.get(symbol)?.def else {
+        return None;
+    };
+    let mut qualified = path.clone();
+    qualified.extend_from_slice(remaining);
+    project
+        .std_registry
+        .lookup_qualified(&qualified)
+        .map(|symbol| symbol.id)
 }
 
 fn validate_collection_subject(

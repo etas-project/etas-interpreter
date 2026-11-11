@@ -1,6 +1,40 @@
 use super::*;
 
 #[tokio::test(flavor = "current_thread")]
+async fn tool_reference_uses_the_same_canonical_revision_as_reflection_without_execution() {
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(""));
+    input.sources = [
+        "module tools; public tool lookup(value: string) -> string ![] { return abort(\"must not execute\"); }",
+        r#"module app;
+import tools.lookup as renamed;
+@tools([renamed])
+agent Worker() -> unit { return; }
+flow main() -> bool {
+    let direct = std.tool.reference(renamed);
+    let reflected = (^Worker).tools[0];
+    return direct == reflected && direct.id != "lookup" && direct.revision != "";
+}
+"#,
+    ].into_iter().enumerate().map(|(id, source)| SourceInput {
+        id: etas_core::SourceId(id as u32),
+        path: None,
+        text: source.into(),
+        kind: etas_frontend::SourceKind::SourceProjectFile,
+    }).collect();
+    let (checked, definitions) = prepared_project(input, &[]);
+    let result = execute(
+        &checked,
+        RunOptions {
+            code_definitions: Some(definitions),
+            ..Default::default()
+        },
+    )
+    .await;
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn compiler_specs_keep_named_identity_and_inline_typed_constraints_without_authority() {
     let mut input = ProjectInput::single_source(SourceInput::anonymous(""));
     input.sources = [
@@ -394,22 +428,73 @@ flow main() -> Array<std.compiler.ToolRef> { return (^Worker).tools; }
         .borrow()
         .iter()
         .map(|tool| {
-            let InterpValue::CodeMetadata(tool) = tool else {
-                panic!("untyped tool metadata")
+            let InterpValue::Nominal { value, .. } = tool else {
+                panic!("ToolRef identity");
             };
-            let crate::value::CodeMetadataPayload::Tool(identity) = tool.payload() else {
-                panic!("incorrect metadata role")
+            let InterpValue::Record(fields) = &**value else {
+                panic!("ToolRef fields");
             };
-            assert_eq!(identity.kind(), etas_code::DefinitionKind::Tool);
-            identity.clone()
+            let Some(InterpValue::String(id)) = fields.get("id") else {
+                panic!("canonical id");
+            };
+            let Some(InterpValue::String(revision)) = fields.get("revision") else {
+                panic!("implementation revision");
+            };
+            assert_eq!(revision.len(), 64);
+            (id.to_string(), revision.to_string())
         })
         .collect::<Vec<_>>();
     assert_eq!(identities.len(), 2);
-    assert_eq!(identities[0].declaration(), ["lookup"]);
-    assert_eq!(identities[1].declaration(), ["lookup"]);
-    assert_eq!(identities[0].module(), ["app", "left"]);
-    assert_eq!(identities[1].module(), ["app", "right"]);
-    assert_ne!(identities[0], identities[1]);
+    for (actual, module) in identities.iter().zip(["left", "right"]) {
+        let expected = etas_code::DefinitionKey::new(
+            PackageKey::from_canonical_fingerprint(CodeFingerprint::of_bytes(
+                "etas.test.compiler-definitions",
+                b"app",
+            )),
+            vec!["app".into(), module.into()],
+            vec!["lookup".into()],
+            etas_code::DefinitionKind::Tool,
+        )
+        .unwrap();
+        assert_eq!(actual.0, expected.fingerprint().to_string());
+    }
+    assert_ne!(identities[0].0, identities[1].0);
+    assert_ne!(identities[0].1, identities[1].1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn reflected_tool_revision_tracks_implementation_without_changing_public_identity() {
+    let mut references = Vec::new();
+    for body in ["return 1;", "return 2;"] {
+        let source = format!(
+            r#"
+module app;
+tool helper() -> i32 {{ {body} }}
+@tools([helper])
+agent Worker() -> i32 {{ return 0; }}
+flow main() -> (string, string) {{
+    let tool = (^Worker).tools[0];
+    return (tool.id, tool.revision);
+}}
+"#
+        );
+        let (checked, definitions) = prepared(&source, &[]);
+        let result = execute(
+            &checked,
+            RunOptions {
+                code_definitions: Some(definitions),
+                ..Default::default()
+            },
+        )
+        .await;
+        assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+        let Some(InterpValue::Tuple(fields)) = result.value() else {
+            panic!("ToolRef fields");
+        };
+        references.push(fields.clone());
+    }
+    assert_eq!(references[0][0], references[1][0]);
+    assert_ne!(references[0][1], references[1][1]);
 }
 
 #[tokio::test(flavor = "current_thread")]

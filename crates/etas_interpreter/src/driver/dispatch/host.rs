@@ -35,7 +35,7 @@ enum HostBoundaryFailure {
 
 pub(in crate::driver) enum HostBoundaryDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingHostBoundaryDispatch<'host>),
+    Pending(Box<PendingHostBoundaryDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingHostBoundaryDispatch<'host> {
@@ -547,12 +547,12 @@ where
     Wrap: FnOnce(HostCompletion<Response>) -> HostBoundaryCompletion + 'host,
 {
     let operation = pending.operation_id();
-    HostBoundaryDispatchStart::Pending(PendingHostBoundaryDispatch {
+    HostBoundaryDispatchStart::Pending(Box::new(PendingHostBoundaryDispatch {
         boundary,
         key,
         operation,
         future: Box::pin(async move { wrap(HostDispatch::poll(pending).await) }),
-    })
+    }))
 }
 
 impl PendingHostBoundaryDispatch<'_> {

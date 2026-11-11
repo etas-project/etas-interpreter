@@ -1,5 +1,5 @@
 mod action_reducer;
-mod agent;
+pub(crate) mod agent;
 mod aggregate_expr;
 mod assign;
 mod assign_nested;
@@ -23,6 +23,7 @@ mod checked_type;
 mod checkpoint;
 mod code;
 pub(crate) mod task_checkpoint;
+pub(crate) mod tool;
 pub(crate) use code::CompilerInvocation;
 mod const_expr;
 mod continuation;
@@ -65,6 +66,7 @@ mod run_state;
 pub(crate) use run_state::CpuJobRecord;
 pub(crate) use run_state::{EvalRunState, TaskLocalState};
 mod collection_call;
+mod conversation_assembly;
 mod safe_point;
 mod session_context;
 mod session_history;
@@ -117,7 +119,7 @@ use crate::{
     plan::{BraceLiteralShape, InterpreterPlan},
     value::{ArrayValue, InterpValue, MapValue, RecordValue, SliceValue},
 };
-use etas_core::{AnalysisDiagnosticCode, Diagnostic, Span};
+use etas_core::{AnalysisDiagnosticCode, Span};
 use etas_hir::{
     HirArg, HirBinaryOp, HirBlockId, HirEffectRef, HirElseBranch, HirExpr, HirExprId, HirFlowDecl,
     HirGenericArg, HirHandlerArm, HirItem, HirItemId, HirLiteral, HirPat, HirStmt, HirToolBody,

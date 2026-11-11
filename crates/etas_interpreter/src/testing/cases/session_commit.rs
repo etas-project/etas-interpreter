@@ -72,7 +72,7 @@ flow main(ticket: string) -> Conversation ![Memory.read<SessionId>, Memory.write
                 message: etas_host::SessionMessage {
                     id: "later".into(),
                     session: etas_host::SessionRef {
-                        id: history.session.clone(),
+                        id: history.session.clone().expect("loaded persistent session"),
                     },
                     from: None,
                     to: None,

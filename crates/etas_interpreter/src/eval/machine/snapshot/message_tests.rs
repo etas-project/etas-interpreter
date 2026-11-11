@@ -54,8 +54,9 @@ async fn selected_context_capture_and_restore_share_immutable_publication() {
         };
         let pointer = context.content.text.as_ptr();
         let runtime = InterpValue::Conversation(ConversationValue {
+            protocol: None,
             selected_context: Some(context.into()),
-            session: "s".into(),
+            session: Some("s".into()),
             history_fence: Some(fence.clone()),
             cursor: None,
             messages: vec![].into(),
@@ -155,8 +156,9 @@ fn runtime_chain(depth: usize) -> InterpValue {
             InterpValue::Message(message(value))
         } else {
             InterpValue::Conversation(ConversationValue {
+                protocol: None,
                 selected_context: None,
-                session: String::new(),
+                session: Some(String::new()),
                 history_fence: None,
                 cursor: None,
                 messages: vec![message(value)].into(),
@@ -171,8 +173,9 @@ fn snapshot_chain(depth: usize) -> ValueSnapshot {
             ValueSnapshot::Message(snapshot_message(value))
         } else {
             ValueSnapshot::Conversation(ConversationSnapshot {
+                protocol: None,
                 selected_context: None,
-                session: String::new(),
+                session: Some(String::new()),
                 history_fence: None,
                 cursor: None,
                 messages: vec![snapshot_message(value)],
@@ -230,8 +233,9 @@ fn conversation_capture_restore_preserves_message_order_and_shared_byte_payloads
         let bytes = BytesValue::from(vec![7; 4096]);
         let pointer = bytes.as_ptr();
         let runtime = InterpValue::Conversation(ConversationValue {
+            protocol: None,
             selected_context: None,
-            session: String::new(),
+            session: Some(String::new()),
             history_fence: None,
             cursor: None,
             messages: (0..count)
@@ -295,8 +299,9 @@ fn capture_failure_releases_deep_partial_conversation_without_copying_runtime() 
         ),
     ));
     let runtime = InterpValue::Conversation(ConversationValue {
+        protocol: None,
         selected_context: None,
-        session: String::new(),
+        session: Some(String::new()),
         history_fence: None,
         cursor: None,
         messages: vec![message(runtime_chain(30_000)), message(handle)].into(),
@@ -324,8 +329,9 @@ fn restore_failure_releases_deep_partial_conversation() {
     use crate::testing::allocation::measure;
     let (_, cost) = measure(|| {
         let snapshot = ValueSnapshot::Conversation(ConversationSnapshot {
+            protocol: None,
             selected_context: None,
-            session: String::new(),
+            session: Some(String::new()),
             history_fence: None,
             cursor: None,
             messages: vec![

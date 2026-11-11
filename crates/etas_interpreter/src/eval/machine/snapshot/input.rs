@@ -12,9 +12,9 @@ impl EvalMachine {
             .as_ref()
             .map(|input| {
                 Ok(match input {
-                    MachineInput::Signal(signal) => MachineInputSnapshot::Signal(
+                    MachineInput::Signal(signal) => MachineInputSnapshot::Signal(Box::new(
                         ControlSignalSnapshot::capture(signal, context)?,
-                    ),
+                    )),
                     MachineInput::EnterProgram { call, args, span } => {
                         let parent = self
                             .stack
@@ -130,6 +130,12 @@ impl ControlSignalSnapshot {
                 continuation: context.continuation(&pending.continuation)?,
             },
             ControlSignal::Block(pending) => Self::Block {
+                agent_context: pending.agent_context.as_ref().map(|request| {
+                    Box::new(super::capture_agent_context(
+                        request,
+                        &mut context.revisions,
+                    ))
+                }),
                 block: pending.block,
                 next_stmt_index: pending.next_stmt_index,
                 frame: context.frame(&pending.frame)?,
@@ -262,6 +268,7 @@ impl ControlSignalSnapshot {
                 continuation: continuation.restore_with(context)?,
             }),
             Self::Block {
+                agent_context,
                 block,
                 next_stmt_index,
                 frame,
@@ -290,6 +297,10 @@ impl ControlSignalSnapshot {
                     })
                     .transpose()?;
                 ControlSignal::pending_block(PendingBlock {
+                    agent_context: agent_context
+                        .as_ref()
+                        .map(|request| context.agent_context(request))
+                        .transpose()?,
                     block,
                     next_stmt_index,
                     frame: context.frame(frame)?,

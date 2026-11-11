@@ -219,7 +219,7 @@ fn flat_json_comparison_and_hash_borrow_large_payloads() {
 }
 
 #[test]
-fn json_equality_retains_tags_order_labels_and_numeric_bits() {
+fn json_equality_preserves_array_order_labels_and_bits_but_not_object_order() {
     fn reference(a: &Json, b: &Json) -> bool {
         match (a, b) {
             (Json::Null, Json::Null) => true,
@@ -231,9 +231,10 @@ fn json_equality_retains_tags_order_labels_and_numeric_bits() {
             }
             (Json::Object(a), Json::Object(b)) => {
                 a.len() == b.len()
-                    && a.iter()
-                        .zip(b)
-                        .all(|((ak, av), (bk, bv))| ak == bk && reference(av, bv))
+                    && a.iter().all(|(key, value)| {
+                        b.iter()
+                            .any(|(other_key, other)| key == other_key && reference(value, other))
+                    })
             }
             _ => false,
         }

@@ -18,7 +18,7 @@ type ToolCall<'host> = crate::host::HostFuture<'host, Result<ToolResponse, etas_
 
 pub(in crate::driver) enum ToolDispatchStart<'host> {
     Complete(bool),
-    Pending(PendingToolHostDispatch<'host>),
+    Pending(Box<PendingToolHostDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingToolHostDispatch<'host> {
@@ -83,7 +83,9 @@ pub(in crate::driver) async fn begin<'host>(
                 trace,
                 |operation| host.tool(operation, request),
             ) {
-                Ok(pending) => ToolDispatchStart::Pending(PendingToolHostDispatch { pending }),
+                Ok(pending) => {
+                    ToolDispatchStart::Pending(Box::new(PendingToolHostDispatch { pending }))
+                }
                 Err(error) => {
                     machine.resume_tool_result(Err(error));
                     ToolDispatchStart::Complete(true)

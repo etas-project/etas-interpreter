@@ -19,7 +19,7 @@ use super::{
 
 pub(in crate::driver) enum MemoryDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingMemoryDispatch<'host>),
+    Pending(Box<PendingMemoryDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingMemoryDispatch<'host> {
@@ -130,7 +130,7 @@ pub(in crate::driver) async fn begin<'host>(
             ));
         }
     };
-    MemoryDispatchStart::Pending(PendingMemoryDispatch { memory, key, io })
+    MemoryDispatchStart::Pending(Box::new(PendingMemoryDispatch { memory, key, io }))
 }
 
 async fn prepare(

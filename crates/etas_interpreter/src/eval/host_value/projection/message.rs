@@ -9,6 +9,7 @@ enum Field<'a> {
     NullableText(Option<&'a str>),
     OptionalText(Option<&'a str>),
     Value(&'a InterpValue),
+    NullableValue(Option<&'a InterpValue>),
     Message(&'a MessageValue),
     Messages(&'a [MessageValue]),
     OptionalProvenance(Option<&'a ProvenanceValue>),
@@ -58,9 +59,10 @@ pub(super) fn conversation<V: HostValueVisitor>(
             "history_fence",
             NullableText(conversation.history_fence.as_ref().map(|f| f.as_token())),
         ),
-        ("session", Text(&conversation.session)),
+        ("session", OptionalText(conversation.session.as_deref())),
         ("messages", Messages(&conversation.messages)),
         ("cursor", NullableText(conversation.cursor.as_deref())),
+        ("protocol", NullableValue(conversation.protocol.as_deref())),
     ])
 }
 
@@ -81,6 +83,8 @@ impl HostValueProjection for Field<'_> {
                 value.map(Self::Provenance),
             ),
             Self::Value(value) => BorrowedValue(value).project(visitor),
+            Self::NullableValue(Some(value)) => BorrowedValue(value).project(visitor),
+            Self::NullableValue(None) => visitor.scalar(HostScalar::Unit),
             Self::Message(value) => message(value, visitor),
             Self::Messages(values) => visitor.list(values.iter().map(Self::Message)),
             Self::Provenance(value) => visitor.record([

@@ -3,6 +3,7 @@ pub(in crate::api::codec) mod decode;
 pub(super) mod encode_host;
 pub(super) mod encode_model;
 mod encode_runtime;
+pub(in crate::api::codec) mod model_usage;
 #[cfg(test)]
 mod projection_tests;
 mod purpose;
@@ -290,10 +291,7 @@ pub(super) fn model_response_from_json(
             .collect::<Result<Vec<_>, InterpreterCodecError>>()?,
         usage: match value.get("usage") {
             Some(Value::Null) | None => None,
-            Some(value) => Some(crate::value::ModelUsageValue {
-                input_tokens: required_u64(value, "input_tokens")?,
-                output_tokens: required_u64(value, "output_tokens")?,
-            }),
+            Some(value) => Some(model_usage::decode(value)?),
         },
     })
 }

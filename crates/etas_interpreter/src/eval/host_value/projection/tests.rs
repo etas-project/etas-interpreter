@@ -323,7 +323,8 @@ fn message_projection_matches_canonical_envelope_and_conversation_context() {
         host_value_to_json_string(&expected_message).unwrap()
     );
     let value = InterpValue::Conversation(ConversationValue {
-        session: "s1".into(),
+        protocol: None,
+        session: Some("s1".into()),
         history_fence: None,
         messages: vec![message].into(),
         cursor: Some("cursor".into()),
@@ -332,9 +333,16 @@ fn message_projection_matches_canonical_envelope_and_conversation_context() {
     let expected = HostValue::Record(vec![
         ("selected_context".into(), HostValue::Unit),
         ("history_fence".into(), HostValue::Unit),
-        ("session".into(), HostValue::String("s1".into())),
+        (
+            "session".into(),
+            HostValue::Variant {
+                name: "Some".into(),
+                fields: vec![HostValue::String("s1".into())],
+            },
+        ),
         ("messages".into(), HostValue::List(vec![expected_message])),
         ("cursor".into(), HostValue::String("cursor".into())),
+        ("protocol".into(), HostValue::Unit),
     ]);
     assert_eq!(interp_to_host_value(&value).unwrap(), expected);
     assert_eq!(
@@ -417,7 +425,8 @@ async fn conversation_projection_preserves_selected_context_evidence() {
     };
     let token = fence.as_token().to_owned();
     let value = InterpValue::Conversation(ConversationValue {
-        session: "s".into(),
+        protocol: None,
+        session: Some("s".into()),
         history_fence: Some(fence.clone()),
         messages: vec![].into(),
         cursor: None,
@@ -438,7 +447,7 @@ async fn conversation_projection_preserves_selected_context_evidence() {
     assert_eq!(
         json,
         serde_json::json!({
-            "session": "s", "messages": [], "cursor": null, "history_fence": token,
+            "session": {"name": "Some", "fields": ["s"]}, "messages": [], "cursor": null, "history_fence": token, "protocol": null,
             "selected_context": { "text": "selected text", "provenance": {"producer": "source-v2"}, "fence": token, "version": 7 },
         })
     );

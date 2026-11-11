@@ -407,6 +407,7 @@ impl<'a> EvalContext<'a> {
             Ok(guard) => guard,
             Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
         };
+        let agent_context = perform.inference.clone();
         let outer_continuation = match guard {
             Some(guard) => compose_continuation(guard, perform.continuation),
             None => perform.continuation,
@@ -436,7 +437,10 @@ impl<'a> EvalContext<'a> {
                 (Continuation::BlockValue, Some(token))
             }
         };
-        let signal = self.execute_block(handler.body, &mut handler_frame);
+        let mut signal = self.execute_block(handler.body, &mut handler_frame);
+        if let ControlSignal::Block(pending) = &mut signal {
+            pending.agent_context = agent_context;
+        }
         Some(match signal {
             ControlSignal::Apply(mut pending) => {
                 pending.continuation = compose_continuation(

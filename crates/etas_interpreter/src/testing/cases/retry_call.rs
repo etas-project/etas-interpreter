@@ -571,13 +571,15 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_checked_retries_retryable_host_tool_failure_inside_model_loop() {
-    let checked = checked_project(
+async fn run_checked_retries_retryable_host_tool_failure_inside_model_request() {
+    let checked = checked_project_with_environment(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
+import dep.tools.Search;
 import std.runtime.limits.Attempts;
 
+@tools([Search])
 agent Writer(input: string) -> string {
   return perform infer(Prompt.new().user(Public(input)));
 }
@@ -590,6 +592,7 @@ flow main() -> string {
   return "unreachable";
 }
 "#,
+        search_tool_environment(true, false),
     );
 
     let host = FakeHost::new(availability(&[
@@ -611,6 +614,7 @@ flow main() -> string {
             Vec::new(),
             &host,
             RunOptions {
+                code_definitions: Some(super::compiler_definitions::definitions_for(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -624,11 +628,6 @@ flow main() -> string {
                     provider: Some(ModelProviderId("fixture".to_owned())),
                     model: ModelName("fixture-model".to_owned()),
                     provider_capabilities: Some(full_model_capabilities()),
-                    tools: vec![ToolSchema {
-                        tool: ToolRef::anonymous_test("Search"),
-                        input: HostSchema::Record(Vec::new()),
-                        output: Some(HostSchema::String),
-                    }],
                     ..Default::default()
                 },
                 ..Default::default()

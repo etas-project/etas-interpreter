@@ -17,12 +17,12 @@ use crate::orchestration::{CompletedHostBoundary, WorkflowEvent};
 use etas_core::{AnalysisDiagnosticCode, DiagnosticCode, SourceId};
 use etas_effects::{EffectRow, ErrorConversionFact, HostRequirementKind, InterpreterSupport};
 use etas_frontend::{
-    ExternalModuleId, ExternalPackageId, ExternalSymbolId, ModulePath, ProjectEnvironmentInput,
-    ProjectExternalActionTraceInput, ProjectExternalEffectRowInput,
+    EntryPolicy, ExternalModuleId, ExternalPackageId, ExternalSymbolId, Frontend, ModulePath,
+    ProjectEnvironmentInput, ProjectExternalActionTraceInput, ProjectExternalEffectRowInput,
     ProjectExternalEffectSummaryInput, ProjectExternalExportInput, ProjectExternalModuleInput,
     ProjectExternalPackageInput, ProjectExternalPublicMetadataInput,
-    ProjectExternalRecordFieldInput, ProjectExternalToolSchemaInput,
-    ProjectExternalToolSignatureInput, ProjectExternalTypeInput,
+    ProjectExternalToolSchemaInput, ProjectExternalToolSignatureInput, ProjectExternalTypeInput,
+    ProjectInput, SourceInput,
 };
 use etas_hir::{
     HirArg, HirBlock, HirExpr, HirItem, HirStmt, PartialResolution, PartialResolutionReason,
@@ -69,11 +69,89 @@ fn boundary_policy_context(policy_ref: HostValue) -> etas_host::PolicyContext {
 }
 
 fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentInput {
+    search_tool_environment(include_schema, true)
+}
+
+fn search_tool_environment(include_schema: bool, with_query: bool) -> ProjectEnvironmentInput {
     let package = ExternalPackageId(7);
     let module = ExternalModuleId(11);
     let symbol = ExternalSymbolId(13);
     let tool_path = vec!["dep".to_owned(), "tools".to_owned(), "Search".to_owned()];
+    let source = if with_query {
+        "module dep.tools; public tool Search(query: string) -> string ![] { return query; }"
+    } else {
+        "module dep.tools; public tool Search() -> string ![] { return \"native result\"; }"
+    };
+    let mut input = ProjectInput::single_source(SourceInput::anonymous(source));
+    input.options.entry_policy = EntryPolicy::Optional;
+    input
+        .environment
+        .tool_bindings
+        .push(etas_frontend::ProjectToolBindingInput {
+            tool: "dep.tools.Search".into(),
+            provider: "test-native".into(),
+            effect_row: vec![],
+            action_row: vec![],
+        });
+    let output = Frontend.check_project(input);
+    assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
+    use etas_frontend::code::{
+        definition::DefinitionCatalog,
+        identity::{DefinitionIdentityIndex, DefinitionOrigins},
+    };
+    let checked = output.checked.unwrap();
+    let package_key = etas_code::PackageKey::from_name_and_version("dep-tools", "1.0.0").unwrap();
+    let origins = DefinitionOrigins {
+        source_modules: DefinitionOrigins::declared_source_modules(&checked, package_key).unwrap(),
+        standard_package: etas_frontend::code::identity::standard_package_key(
+            &checked.std_registry,
+        )
+        .unwrap(),
+        external_definitions: Default::default(),
+    };
+    let identities = DefinitionIdentityIndex::build(&checked, &origins).unwrap();
+    let (item, native_symbol) = checked
+        .hir
+        .items
+        .iter()
+        .find_map(|(item, declaration)| match declaration {
+            HirItem::Tool(tool) => Some((item, tool.symbol)),
+            _ => None,
+        })
+        .unwrap();
+    let definition = identities.symbol(native_symbol).unwrap().clone();
+    let descriptors = DefinitionCatalog::exported_descriptors(
+        checked,
+        &origins,
+        identities,
+        &[item].into(),
+        Default::default(),
+    )
+    .unwrap();
+    let portable_origins = etas_code::identity::PackageDefinitionOrigins {
+        package: package_key,
+        modules: vec![etas_code::identity::DefinitionModuleOrigin {
+            path: vec!["dep".into(), "tools".into()],
+            canonical_path: vec!["dep".into(), "tools".into()],
+        }],
+        declarations: vec![etas_code::identity::DefinitionBindingOrigin {
+            module: vec!["dep".into(), "tools".into()],
+            declaration: vec!["Search".into()],
+            definition,
+        }],
+    };
     ProjectEnvironmentInput {
+        external_definition_origins: vec![etas_frontend::ProjectExternalDefinitionOriginsInput {
+            package,
+            origins: portable_origins,
+            descriptors: Some(descriptors),
+        }],
+        tool_bindings: vec![etas_frontend::ProjectToolBindingInput {
+            tool: "dep.tools.Search".into(),
+            provider: "test-native".into(),
+            effect_row: vec![],
+            action_row: vec![],
+        }],
         external_packages: vec![ProjectExternalPackageInput {
             id: package,
             name: "dep-tools".to_owned(),
@@ -106,22 +184,28 @@ fn external_search_tool_environment(include_schema: bool) -> ProjectEnvironmentI
             tools: vec![ProjectExternalToolSignatureInput {
                 generic_params: Vec::new(),
                 path: tool_path.clone(),
-                param_names: vec!["input".to_owned()],
-                input: vec![ProjectExternalTypeInput::Record {
-                    fields: vec![ProjectExternalRecordFieldInput {
-                        name: "query".to_owned(),
-                        ty: ProjectExternalTypeInput::Primitive("string".to_owned()),
-                    }],
-                }],
+                param_names: if with_query {
+                    vec!["query".into()]
+                } else {
+                    vec![]
+                },
+                input: if with_query {
+                    vec![ProjectExternalTypeInput::Primitive("string".into())]
+                } else {
+                    vec![]
+                },
                 output: ProjectExternalTypeInput::Primitive("string".to_owned()),
-                effects: None,
+                effects: Some(ProjectExternalEffectRowInput::default()),
                 visibility: "public".to_owned(),
             }],
             tool_schemas: if include_schema {
                 vec![ProjectExternalToolSchemaInput {
                     path: tool_path.clone(),
-                    schema_json: r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}"#
-                        .to_owned(),
+                    schema_json: if with_query {
+                        r#"{"type":"object","properties":{"query":{"type":"string"}},"required":["query"],"additionalProperties":false}"#.into()
+                    } else {
+                        r#"{"type":"object","properties":{},"additionalProperties":false}"#.into()
+                    },
                 }]
             } else {
                 Vec::new()

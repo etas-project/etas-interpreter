@@ -45,6 +45,7 @@ impl ContinuationSnapshot {
                 Continuation::RestoreModelPolicy { inner, .. }
                 | Continuation::ReenterHandler { boundary: inner }
                 | Continuation::HandleBoundary { inner, .. }
+                | Continuation::AgentExecutionScope { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. }
                 | Continuation::CallBoundary { outer: inner, .. }
                 | Continuation::HandlerDispatch { outer: inner, .. } => {
@@ -172,6 +173,12 @@ fn capture_parent(
             span: *span,
             frame: context.frame(frame)?,
         },
+        Continuation::AgentExecutionScope { state, .. } => {
+            ContinuationSnapshot::AgentExecutionScope {
+                state: Box::new(context.agent_state(state)),
+                inner: child,
+            }
+        }
         Continuation::ScopedModelPolicy { policy, .. } => ContinuationSnapshot::ScopedModelPolicy {
             policy: Box::new(capture_model_policy(policy)),
             inner: child,

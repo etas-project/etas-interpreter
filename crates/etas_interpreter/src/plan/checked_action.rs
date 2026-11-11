@@ -3,8 +3,10 @@ use etas_types::TypeId;
 
 use crate::value::CheckedExecutionProgram;
 
+mod controller;
 mod source;
 mod standard;
+pub(crate) use controller::controller_step;
 
 pub(crate) use source::source_action;
 pub(crate) use standard::standard_action;

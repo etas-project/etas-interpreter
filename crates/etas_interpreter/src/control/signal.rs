@@ -157,6 +157,7 @@ pub struct PendingCheckpoint {
 
 #[derive(Clone, Debug)]
 pub struct PendingBlock {
+    pub(crate) agent_context: Option<Box<super::AgentRequestContext>>,
     pub block: HirBlockId,
     pub next_stmt_index: usize,
     pub frame: crate::control::Frame,
@@ -239,7 +240,7 @@ pub struct PendingPerform {
     pub expr: Option<HirExprId>,
     pub action: ResolvedActionRef,
     pub error_type: Option<etas_types::TypeId>,
-    pub inference: Option<Box<crate::api::ModelExecutionPolicy>>,
+    pub inference: Option<Box<super::AgentRequestContext>>,
     pub args: Vec<InterpValue>,
     pub span: Span,
     pub continuation: Continuation,
@@ -316,8 +317,6 @@ pub struct PendingCommand {
 pub struct PendingModel {
     pub request: ModelRequest,
     pub decode: ModelDecode,
-    pub max_tool_rounds: usize,
-    pub source_tools: Vec<SourceToolBinding>,
     pub span: Span,
     pub continuation: Continuation,
 }
@@ -363,8 +362,6 @@ impl HostBoundaryRequest {
 
 #[derive(Clone, Debug)]
 pub struct SourceToolBinding {
-    pub name: String,
-    pub qualified_name: Option<String>,
     pub item: HirItemId,
 }
 
@@ -454,6 +451,10 @@ pub enum ModelDecode {
     String,
     ModelResponse,
     Typed(etas_types::TypeId),
+    Step {
+        result: etas_types::TypeId,
+        output: etas_types::TypeId,
+    },
 }
 
 #[cfg(test)]

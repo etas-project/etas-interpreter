@@ -153,22 +153,27 @@ impl From<MessageParts<crate::orchestration::ValueSnapshot>>
     }
 }
 
-struct ConversationParts<M> {
+struct ConversationParts<M, P> {
+    protocol: Option<P>,
     selected_context: Option<etas_host::session::SessionPublishedContext>,
     history_fence: Option<etas_host::session::SessionHistoryFence>,
-    session: String,
+    session: Option<String>,
     messages: Vec<M>,
     cursor: Option<String>,
 }
 
-fn conversation_parts<M>(
+fn conversation_parts<M, P>(
     limits: &etas_host::StorageLimits,
     value: &Value,
     mut decode_message: impl FnMut(
         &etas_host::StorageLimits,
         &Value,
     ) -> Result<M, InterpreterCodecError>,
-) -> Result<ConversationParts<M>, InterpreterCodecError> {
+    mut decode_protocol: impl FnMut(
+        &etas_host::StorageLimits,
+        &Value,
+    ) -> Result<P, InterpreterCodecError>,
+) -> Result<ConversationParts<M, P>, InterpreterCodecError> {
     crate::value::conversation::validate_json(value, limits).map_err(InterpreterCodecError::new)?;
     reject_unknown_fields(
         value,
@@ -179,6 +184,7 @@ fn conversation_parts<M>(
             "cursor",
             "history_fence",
             "selected_context",
+            "protocol",
         ],
         "conversation value",
     )?;
@@ -194,6 +200,10 @@ fn conversation_parts<M>(
         })
         .collect::<Result<Vec<_>, InterpreterCodecError>>()?;
     let conversation = ConversationParts {
+        protocol: match required_obj(value, "protocol")? {
+            Value::Null => None,
+            protocol => Some(decode_protocol(limits, protocol)?),
+        },
         selected_context: match value.get("selected_context") {
             Some(Value::Null) => None,
             Some(value) => Some(selected_context_from_json(limits, value)?),
@@ -205,7 +215,7 @@ fn conversation_parts<M>(
                     .map_err(|error| InterpreterCodecError::new(error.message))
             })
             .transpose()?,
-        session: required_str(value, "session")?.to_owned(),
+        session: required_optional_string(value, "session")?,
         messages,
         cursor: required_optional_string(value, "cursor")?,
     };
@@ -215,10 +225,14 @@ pub(super) fn conversation_from_json(
     limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<ConversationValue, InterpreterCodecError> {
-    let parts = conversation_parts(limits, value, |limits, value| {
-        message_parts(limits, value, value_from_json_with_limits).map(Into::into)
-    })?;
+    let parts = conversation_parts(
+        limits,
+        value,
+        |limits, value| message_parts(limits, value, value_from_json_with_limits).map(Into::into),
+        value_from_json_with_limits,
+    )?;
     let conversation = ConversationValue {
+        protocol: parts.protocol.map(Into::into),
         selected_context: parts.selected_context.map(Into::into),
         history_fence: parts.history_fence,
         session: parts.session,
@@ -234,10 +248,16 @@ pub(super) fn conversation_snapshot_from_json(
     limits: &etas_host::StorageLimits,
     value: &Value,
 ) -> Result<crate::orchestration::ConversationSnapshot, InterpreterCodecError> {
-    let parts = conversation_parts(limits, value, |limits, value| {
-        message_parts(limits, value, snapshot_from_json_with_limits).map(Into::into)
-    })?;
+    let parts = conversation_parts(
+        limits,
+        value,
+        |limits, value| {
+            message_parts(limits, value, snapshot_from_json_with_limits).map(Into::into)
+        },
+        snapshot_from_json_with_limits,
+    )?;
     Ok(crate::orchestration::ConversationSnapshot {
+        protocol: parts.protocol.map(crate::orchestration::SnapshotBox::new),
         selected_context: parts.selected_context.map(Into::into),
         history_fence: parts.history_fence,
         session: parts.session,
@@ -252,8 +272,9 @@ mod tests {
 
     fn conversation() -> InterpValue {
         InterpValue::Conversation(ConversationValue {
+            protocol: None,
             selected_context: None,
-            session: "session".into(),
+            session: Some("session".into()),
             history_fence: None,
             messages: vec![crate::value::MessageValue {
                 id: "one".into(),
@@ -284,8 +305,9 @@ mod tests {
             expected
         );
         let empty = InterpValue::Conversation(ConversationValue {
+            protocol: None,
             selected_context: None,
-            session: "empty".into(),
+            session: Some("empty".into()),
             history_fence: None,
             messages: Vec::new().into(),
             cursor: None,

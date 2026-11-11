@@ -1,12 +1,13 @@
 use super::super::*;
 
-fn options() -> RunOptions {
+fn options(checked: &etas_frontend::CheckedProgram) -> RunOptions {
     let mut options = RunOptions::default();
     options
         .host_context
         .authority
         .grants
         .push(HostActionGrant::allow("Agentic", "infer"));
+    options.code_definitions = Some(super::compiler_definitions::definitions_for(checked));
     options.model_policy.provider_capabilities = Some(full_model_capabilities());
     options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
     options
@@ -41,12 +42,12 @@ fn assert_tool_result(host: &FakeHost, expected: &str) {
     assert_eq!(results[0].tool_call_id.as_deref(), Some("call-1"));
     assert_eq!(
         results[0].content,
-        vec![ModelContent::Value(HostValue::String(expected.into()))]
+        vec![ModelContent::Text(serde_json::json!(expected).to_string())]
     );
 }
 
 fn source_tool_node(value: &mut serde_json::Value) -> Option<&mut serde_json::Value> {
-    if value.get("kind").and_then(serde_json::Value::as_str) == Some("source_tool_return") {
+    if value.get("kind").and_then(serde_json::Value::as_str) == Some("tool_invocation_result") {
         return Some(value);
     }
     match value {
@@ -57,7 +58,7 @@ fn source_tool_node(value: &mut serde_json::Value) -> Option<&mut serde_json::Va
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn source_tool_repeated_effects_keep_one_tool_result_and_the_model_loop() {
+async fn source_tool_repeated_effects_keep_one_tool_result_and_the_model_request() {
     let checked = project(
         "let a = perform Evidence.read(); let b = perform Evidence.read(); return a + b;",
         "resume \"part\";",
@@ -73,11 +74,16 @@ async fn source_tool_repeated_effects_keep_one_tool_result_and_the_model_loop() 
             },
             vec![],
             &host,
-            options(),
+            options(&checked),
         )
         .await
         .unwrap();
-    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(
+        result.diagnostics.is_empty(),
+        "{:?}; requests={:?}",
+        result.diagnostics,
+        host.model_requests()
+    );
     assert_eq!(
         result.value(),
         Some(&InterpValue::String("finished".into()))
@@ -99,7 +105,7 @@ async fn source_tool_outer_finish_discards_the_tool_and_pending_model_round() {
             },
             vec![],
             &host,
-            options(),
+            options(&checked),
         )
         .await
         .unwrap();
@@ -130,7 +136,7 @@ async fn source_tool_outer_handler_checkpoint_preserves_and_validates_the_tool_c
             },
             vec![],
             &host,
-            options(),
+            options(&checked),
         )
         .await
         .unwrap();
@@ -140,28 +146,17 @@ async fn source_tool_outer_handler_checkpoint_preserves_and_validates_the_tool_c
     assert_eq!(host.stdout_text(), "handling\n");
     let artifact =
         api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
-    assert!(artifact.to_string().contains("source_tool_return"));
+    assert!(artifact.to_string().contains("tool_invocation_result"));
     let bytes = api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
     let decoded = api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
     let restored = api::codec::checkpoint_from_json(&decoded, &checked).unwrap();
     let mut bad_binding = (*decoded).clone();
-    source_tool_node(&mut bad_binding).unwrap()["source_tool"]["binding"]["item"] =
-        serde_json::json!(u32::MAX);
+    source_tool_node(&mut bad_binding).unwrap()["call"]["inference"] = serde_json::json!(u32::MAX);
     assert!(api::codec::checkpoint_from_json(&bad_binding, &checked).is_err());
-    let mut bad_nested = (*decoded).clone();
-    source_tool_node(&mut bad_nested).unwrap()["source_tool"]["model_loop"]["outer_continuation"] =
-        serde_json::json!({"kind": "source_tool_return"});
-    let error = api::codec::checkpoint_from_json(&bad_nested, &checked).unwrap_err();
-    assert!(
-        error
-            .message()
-            .contains("unexpected nested execution continuation"),
-        "{error}"
-    );
     let resumed_host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
     resumed_host.seed_model_response_text("resumed");
     let resumed = Interpreter
-        .resume_checkpoint(&checked, &restored, &resumed_host, options())
+        .resume_checkpoint(&checked, &restored, &resumed_host, options(&checked))
         .await
         .unwrap();
     assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
@@ -178,9 +173,9 @@ async fn source_tool_outer_handler_checkpoint_preserves_and_validates_the_tool_c
             .iter()
             .any(|message| message.role == etas_host::ModelRole::Tool
                 && message.content
-                    == vec![ModelContent::Value(HostValue::String(
-                        "local evidence".into()
-                    ))])
+                    == vec![ModelContent::Text(
+                        serde_json::json!("local evidence").to_string()
+                    )])
     );
 }
 
@@ -208,7 +203,7 @@ flow main() -> string ![Agentic] {
             },
             vec![],
             &host,
-            options(),
+            options(&checked),
         )
         .await
         .unwrap();
@@ -249,7 +244,7 @@ flow main() -> string ![Agentic] {
             },
             vec![],
             &host,
-            options(),
+            options(&checked),
         )
         .await
         .unwrap();
@@ -262,7 +257,7 @@ flow main() -> string ![Agentic] {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn source_tool_effect_resumes_through_an_outer_handler_into_the_model_loop() {
+async fn source_tool_effect_resumes_through_an_outer_handler_into_the_model_request() {
     let checked = checked_project(
         r#"
 module app.main;
@@ -297,7 +292,7 @@ flow main() -> i32 ![Agentic, Error<IOError>] {
             },
             vec![],
             &host,
-            options(),
+            options(&checked),
         )
         .await
         .unwrap();
@@ -319,8 +314,8 @@ flow main() -> i32 ![Agentic, Error<IOError>] {
     assert_eq!(results[0].tool_call_id.as_deref(), Some("call-1"));
     assert_eq!(
         results[0].content,
-        vec![ModelContent::Value(HostValue::String(
-            "local evidence".into()
-        ))]
+        vec![ModelContent::Text(
+            serde_json::json!("local evidence").to_string()
+        )]
     );
 }

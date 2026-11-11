@@ -183,8 +183,9 @@ fn prompt_data_streams_borrowed_payloads_and_rejects_nested_secrets() {
             InterpValue::Array(vec![secret].into()),
             InterpValue::Message(message.clone()),
             InterpValue::Conversation(crate::value::ConversationValue {
+                protocol: None,
                 selected_context: None,
-                session: "s".into(),
+                session: Some("s".into()),
                 history_fence: None,
                 messages: vec![message].into(),
                 cursor: None,

@@ -106,7 +106,7 @@ fn execute_inner(
         match machine.run_until_yield(&mut eval) {
             MachinePoll::Complete(value) => {
                 let freeze_start = std::time::Instant::now();
-                let frozen = FrozenValue::freeze(&value).ok_or_else(|| {
+                let frozen = FrozenValue::freeze(&value).ok_or({
                     CpuExecutionFailure::ContractViolation(CpuContractViolation::NonFreezableResult)
                 });
                 timings.output_freeze = freeze_start.elapsed();

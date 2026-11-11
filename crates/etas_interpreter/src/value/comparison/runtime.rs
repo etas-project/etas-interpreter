@@ -99,6 +99,12 @@ enum Children {
         crate::value::ScopedCallableValue,
     ),
     Messages(MessageList, MessageList),
+    Conversation {
+        a: MessageList,
+        b: MessageList,
+        protocol_a: Option<crate::value::SharedValue>,
+        protocol_b: Option<crate::value::SharedValue>,
+    },
     Fields(SharedFields, SharedFields),
     Array(ArrayValue, ArrayValue),
     Slice(SliceValue, SliceValue),
@@ -193,6 +199,28 @@ impl EqualityCursor for Cursor<'_> {
                     Comparison::Ready(false)
                 }
             }),
+            Children::Conversation {
+                a,
+                b,
+                protocol_a,
+                protocol_b,
+            } => {
+                if position == 0 {
+                    Some(match (protocol_a.as_ref(), protocol_b.as_ref()) {
+                        (Some(a), Some(b)) => compare_node(a, b),
+                        (None, None) => Comparison::Ready(true),
+                        _ => Comparison::Ready(false),
+                    })
+                } else {
+                    a.get(position - 1).zip(b.get(position - 1)).map(|(a, b)| {
+                        if node::message_headers_equal(a, b) {
+                            compare_node(&a.payload, &b.payload)
+                        } else {
+                            Comparison::Ready(false)
+                        }
+                    })
+                }
+            }
             Children::Fields(a, b) => a
                 .get(position)
                 .zip(b.get(position))

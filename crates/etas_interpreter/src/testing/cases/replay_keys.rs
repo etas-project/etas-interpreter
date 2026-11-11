@@ -239,11 +239,13 @@ async fn checkpoint_codec_rejects_plaintext_replay_keys_and_unbound_key_ids() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn model_tool_loop_replays_the_original_invocation_only_when_its_request_matches() {
-    let checked = checked_project(
+    let checked = checked_project_with_environment(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
+import dep.tools.Search;
 import std.runtime.checkpoint;
+@tools([Search])
 agent Writer(input: string) -> string { return perform infer(Prompt.new().user(Public(input))); }
 flow main(input: string) -> string {
     checkpoint("before");
@@ -252,15 +254,14 @@ flow main(input: string) -> string {
     return answer;
 }
 "#,
+        search_tool_environment(true, false),
     );
-    let mut options = RunOptions::default();
+    let mut options = RunOptions {
+        code_definitions: Some(super::compiler_definitions::definitions_for(&checked)),
+        ..RunOptions::default()
+    };
     options.host_context.authority.grants = vec![HostActionGrant::allow("Agentic", "infer")];
     options.model_policy.provider_capabilities = Some(full_model_capabilities());
-    options.model_policy.tools = vec![ToolSchema {
-        tool: ToolRef::anonymous_test("Search"),
-        input: HostSchema::Record(vec![]),
-        output: Some(HostSchema::String),
-    }];
     let services = availability(&[
         HostRequirementKind::Agentic,
         HostRequirementKind::ToolCall,

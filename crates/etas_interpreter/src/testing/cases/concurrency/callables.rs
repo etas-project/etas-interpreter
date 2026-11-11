@@ -205,8 +205,10 @@ async fn frozen_callable_recipes_keep_the_shared_step_limit() {
     ] {
         let mut diagnostics = Vec::new();
         for threads in [1, 4] {
-            let mut options = RunOptions::default();
-            options.cpu_threads = std::num::NonZeroUsize::new(threads).unwrap();
+            let mut options = RunOptions {
+                cpu_threads: std::num::NonZeroUsize::new(threads).unwrap(),
+                ..Default::default()
+            };
             options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
             let result = Interpreter
                 .run_checked(

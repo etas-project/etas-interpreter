@@ -17,7 +17,7 @@ enum Children {
         start: Option<Value>,
         end: Option<Value>,
     },
-    Messages(std::vec::IntoIter<MessageSnapshot>),
+    Messages(std::vec::IntoIter<MessageSnapshot>, Option<Value>),
 }
 
 impl Children {
@@ -30,7 +30,7 @@ impl Children {
             Self::Fields(values) => values.len() == 0,
             Self::Pairs { pairs, pending } => pairs.len() == 0 && pending.is_none(),
             Self::Range { start, end } => start.is_none() && end.is_none(),
-            Self::Messages(values) => values.len() == 0,
+            Self::Messages(values, protocol) => values.len() == 0 && protocol.is_none(),
         }
     }
 }
@@ -55,7 +55,9 @@ impl Iterator for Children {
                 Some(key)
             }
             Self::Range { start, end } => start.take().or_else(|| end.take()),
-            Self::Messages(values) => values.find_map(|message| message.payload.into_unique()),
+            Self::Messages(values, protocol) => protocol
+                .take()
+                .or_else(|| values.find_map(|message| message.payload.into_unique())),
         }
     }
 }
@@ -159,7 +161,10 @@ pub(super) fn release_value(mut current: Value) {
                 start: start.into_unique(),
                 end: end.into_unique(),
             }),
-            Value::Conversation(value) => Some(Children::Messages(value.messages.into_iter())),
+            Value::Conversation(value) => Some(Children::Messages(
+                value.messages.into_iter(),
+                value.protocol.and_then(|value| value.into_unique()),
+            )),
             _ => None,
         };
         if let Some(mut children) = children

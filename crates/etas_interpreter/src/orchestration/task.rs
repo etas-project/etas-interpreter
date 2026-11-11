@@ -94,6 +94,7 @@ pub(crate) struct ScheduledTaskSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct TaskLocalSnapshot {
+    pub agent_context: Option<Box<super::AgentRequestContextSnapshot>>,
     pub parent: TaskIdentity,
     pub model_policy: ModelExecutionPolicySnapshot,
     pub handlers: HandlerSnapshot,

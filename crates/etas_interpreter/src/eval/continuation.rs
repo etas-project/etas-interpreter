@@ -61,6 +61,15 @@ impl<'a> EvalContext<'a> {
                 continuation => {
                     signal = match signal {
                         ControlSignal::Perform(mut pending) => match continuation {
+                            Continuation::AgentExecutionState(previous) => {
+                                let active = self.agent_execution_state();
+                                self.restore_agent_context((*previous).clone());
+                                pending.continuation = Continuation::AgentExecutionScope {
+                                    state: Box::new(active),
+                                    inner: pending.continuation.into(),
+                                };
+                                ControlSignal::Perform(pending)
+                            }
                             Continuation::RestoreModelPolicy { previous, .. }
                                 if pending.error_type.is_some() =>
                             {
@@ -201,6 +210,14 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         match continuation {
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.propagate_return_to_continuation(value, continuation)
+            }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Return(value)
+            }
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
@@ -257,6 +274,14 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         match continuation {
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.propagate_resume_to_continuation(value, continuation)
+            }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Resume(value)
+            }
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
@@ -322,6 +347,14 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         match continuation {
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.propagate_finish_to_continuation(value, continuation)
+            }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Finish(value)
+            }
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
@@ -431,6 +464,10 @@ impl<'a> EvalContext<'a> {
         value: InterpValue,
     ) -> ControlSignal {
         match continuation {
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.apply_continuation(continuation, value)
+            }
             Continuation::PackExistential { expr, frame } => {
                 self.pack_existential(expr, value, frame.generic_bindings())
             }
@@ -833,6 +870,16 @@ impl<'a> EvalContext<'a> {
                 self.task.model_policy = *previous;
                 self.apply_continuation(inner.into_value(), value)
             }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Value(value)
+            }
+            Continuation::AgentControllerStep(state) => {
+                self.resume_agent_controller_step(state, value)
+            }
+            Continuation::AgentControllerTool(state) => {
+                self.resume_agent_controller_tool(state, value)
+            }
             Continuation::CallBoundary { outer, .. } => {
                 self.apply_continuation(outer.into_value(), value)
             }
@@ -1008,7 +1055,10 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::ProgramResume(_) | Continuation::SourceToolReturn(_) => {
+            Continuation::ToolInvocationResult(invocation) => {
+                self.complete_tool_invocation(*invocation, value)
+            }
+            Continuation::ToolInvocationStart(_) | Continuation::ProgramResume(_) => {
                 ControlSignal::missing_checked_fact(
                     "program continuation must be resumed by its owning evaluation machine",
                     crate::diagnostics::item_span(self.checked, self.entry_item),

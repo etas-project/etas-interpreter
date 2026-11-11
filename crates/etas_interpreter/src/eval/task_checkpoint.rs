@@ -263,6 +263,12 @@ impl super::EvalContext<'_> {
                     scope: task.scope,
                     program: program.checkpoint_identity(&mut capture.context.revisions),
                     local: TaskLocalSnapshot {
+                        agent_context: task.local.agent_context.as_ref().map(|request| {
+                            Box::new(super::machine::snapshot::capture_agent_context(
+                                request,
+                                &mut capture.context.revisions,
+                            ))
+                        }),
                         parent: task
                             .local
                             .parent
@@ -397,7 +403,8 @@ impl super::EvalContext<'_> {
         ordering: Option<super::machine::snapshot::ordering::OrderedRestoreChecks>,
     ) -> Result<EvalMachine, String> {
         use super::machine::snapshot::{
-            RestoreContext, RestoredMachineSnapshot, SharedFrameRestore,
+            RestoreContext, RestoredMachineSnapshot, SharedFrameRestore, SnapshotRestoreResources,
+            TaskSnapshotRestoreResources,
         };
         use crate::driver::scheduler::{ResourceGuardId, ScheduledTask, TaskScheduler};
 
@@ -422,6 +429,18 @@ impl super::EvalContext<'_> {
                 .push(local.execution.clone());
             local.model_policy =
                 super::machine::snapshot::restore_model_policy(task.local.model_policy.clone());
+            local.agent_context = task
+                .local
+                .agent_context
+                .as_ref()
+                .map(|request| {
+                    super::machine::snapshot::restore_agent_context(
+                        request,
+                        &root.program,
+                        revisions.as_deref(),
+                    )
+                })
+                .transpose()?;
             local.handler_stack = task.local.handlers.handlers.clone();
             local.retry_stack = task.local.retries.attempts.clone();
             locals.insert(*id, local);
@@ -470,18 +489,22 @@ impl super::EvalContext<'_> {
         let limits = self.storage_limits.clone();
         let mut root_restored = restore_machine(
             root_snapshot,
-            &root.program,
-            root.args.clone(),
             self.task,
-            TaskIdentity::Root,
-            0,
-            &saved.metadata,
             &current,
-            locked_model.clone(),
-            &limits,
-            revisions.clone(),
-            ordering.clone(),
-            frames.clone(),
+            SnapshotRestoreResources {
+                root: Some(root.clone()),
+                task: Some(TaskSnapshotRestoreResources {
+                    identity: TaskIdentity::Root,
+                    inherited_handlers: 0,
+                    scheduler: &saved.metadata,
+                    frames: frames.clone(),
+                }),
+                locked_model: locked_model.clone(),
+                limits: &limits,
+                revisions: revisions.clone(),
+                ordering: ordering.clone(),
+                residual: None,
+            },
         )?;
         let mut restored = BTreeMap::new();
         let mut tasks = BTreeMap::new();
@@ -508,18 +531,25 @@ impl super::EvalContext<'_> {
             let mut machine = match &task.machine {
                 Some(snapshot) => restore_machine(
                     snapshot,
-                    &program,
-                    Vec::new(),
                     &mut local,
-                    TaskIdentity::Scheduled(*id),
-                    task.inherited_dynamic.0,
-                    &saved.metadata,
                     &self.host_context,
-                    self.locked_model.clone(),
-                    &self.storage_limits,
-                    revisions.clone(),
-                    ordering.clone(),
-                    frames.clone(),
+                    SnapshotRestoreResources {
+                        root: Some(CheckpointRoot {
+                            program: program.clone(),
+                            args: Vec::new(),
+                        }),
+                        task: Some(TaskSnapshotRestoreResources {
+                            identity: TaskIdentity::Scheduled(*id),
+                            inherited_handlers: task.inherited_dynamic.0,
+                            scheduler: &saved.metadata,
+                            frames: frames.clone(),
+                        }),
+                        locked_model: self.locked_model.clone(),
+                        limits: &self.storage_limits,
+                        revisions: revisions.clone(),
+                        ordering: ordering.clone(),
+                        residual: None,
+                    },
                 )?,
                 None => {
                     let context = RestoreContext::for_task(
@@ -817,22 +847,21 @@ impl super::EvalContext<'_> {
 
 fn restore_machine(
     snapshot: &crate::orchestration::MachineSnapshot,
-    program: &CheckedExecutionProgram,
-    args: Vec<crate::value::InterpValue>,
     local: &mut super::TaskLocalState,
-    identity: TaskIdentity,
-    inherited_handlers: usize,
-    scheduler: &crate::driver::scheduler::TaskSchedulerMetadataSnapshot,
     current: &crate::api::HostExecutionContext,
-    locked_model: Option<etas_host::ModelName>,
-    limits: &etas_host::StorageLimits,
-    revisions: Option<Arc<crate::api::code::PreparedRevisionSet>>,
-    ordering: Option<super::machine::snapshot::ordering::OrderedRestoreChecks>,
-    frames: super::machine::snapshot::SharedFrameRestore,
+    mut resources: super::machine::snapshot::SnapshotRestoreResources<'_>,
 ) -> Result<super::machine::snapshot::RestoredMachineSnapshot, String> {
-    use super::machine::snapshot::{
-        ResidualRestoreInput, SnapshotRestoreResources, TaskSnapshotRestoreResources,
-    };
+    let program = resources
+        .root
+        .as_ref()
+        .ok_or("restored task machine has no checked root")?
+        .program
+        .clone();
+    resources.residual = Some(super::machine::snapshot::ResidualRestoreInput {
+        prepared: program.plan.residual.clone(),
+        log: local.residual.log.clone(),
+        limits: local.residual.limits,
+    });
     let restored = EvalMachine::from_snapshot_with_contexts(
         snapshot,
         &program.checked,
@@ -840,27 +869,7 @@ fn restore_machine(
         &program.plan.dispatch,
         &program.plan.closures,
         current,
-        SnapshotRestoreResources {
-            task: Some(TaskSnapshotRestoreResources {
-                inherited_handlers,
-                scheduler,
-                identity,
-                frames,
-            }),
-            locked_model,
-            limits,
-            revisions,
-            ordering,
-            root: Some(CheckpointRoot {
-                program: program.clone(),
-                args,
-            }),
-            residual: Some(ResidualRestoreInput {
-                prepared: program.plan.residual.clone(),
-                log: local.residual.log.clone(),
-                limits: local.residual.limits,
-            }),
-        },
+        resources,
     )?;
     local.residual.restore_counters((
         snapshot.residual.next_cursor,

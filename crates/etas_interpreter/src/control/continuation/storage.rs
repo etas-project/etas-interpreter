@@ -75,6 +75,7 @@ impl Drop for Node {
                 }
                 Continuation::RestoreModelPolicy { inner, .. }
                 | Continuation::ReenterHandler { boundary: inner }
+                | Continuation::AgentExecutionScope { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. }
                 | Continuation::HandleBoundary { inner, .. } => {
                     next = inner.into_unique();

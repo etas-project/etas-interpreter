@@ -1,3 +1,4 @@
+pub(in crate::api::codec) mod agent_context;
 mod call_target;
 pub(in crate::api::codec) use call_target::{
     call_target_snapshot_with_frames, call_target_with_frames,

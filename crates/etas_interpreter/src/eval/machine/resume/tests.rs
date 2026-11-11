@@ -255,17 +255,18 @@ fn retry_lookup_preserves_selected_locals_in_each_execution_frame_kind() {
 }
 
 #[test]
-fn retry_lookup_only_inspects_model_and_source_tool_outer_continuations() {
-    use crate::control::{ModelDecode, PendingModel, SourceToolBinding};
-    use crate::eval::machine::frame::{ModelLoopFrame, SourceToolReturnFrame};
+fn retry_lookup_only_inspects_model_request_outer_continuation() {
+    use crate::control::{ModelDecode, PendingModel};
+    use crate::eval::machine::frame::ModelRequestFrame;
     use etas_host::{HostRequestId, HostValue, ModelName, ModelRequest};
 
     for count in [1000, 2000, 4000] {
         let host = crate::api::HostExecutionContext::default();
-        let model = ModelLoopFrame {
+        let model = ModelRequestFrame {
             boundary_request_id: etas_host::HostRequestId(0),
             pending: PendingModel {
                 request: ModelRequest {
+                    action: etas_host::ModelAction::Infer,
                     id: HostRequestId(1),
                     provider: None,
                     model: ModelName("test-model".into()),
@@ -280,52 +281,25 @@ fn retry_lookup_only_inspects_model_and_source_tool_outer_continuations() {
                     budget: host.budget,
                 },
                 decode: ModelDecode::String,
-                max_tool_rounds: 5,
-                source_tools: vec![],
                 span: Span::empty(etas_core::SourceId(7), etas_core::TextSize::ZERO),
                 continuation: retry(99),
             },
-            round: 1,
-            repair: Default::default(),
-            last_tool_error: None,
-            remaining_tool_calls: vec![],
-            completed_tool_result: false,
-            current_host_tool: None,
             boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
             outer_continuation: Continuation::Return,
         };
-        let mut frame = EvalFrame::ModelLoop(Box::new(model));
+        let mut frame = EvalFrame::ModelRequest(Box::new(model));
         let (id, cost) = measure(|| selected_id(&frame));
         assert_eq!(
             id, None,
             "pending model continuation is not the outer continuation"
         );
         assert_eq!(cost.count, 0, "copied unrelated model payload: {cost:?}");
-        let EvalFrame::ModelLoop(model) = &mut frame else {
+        let EvalFrame::ModelRequest(model) = &mut frame else {
             unreachable!()
         };
         model.outer_continuation = retry(7);
         let (id, cost) = measure(|| selected_id(&frame));
         assert_eq!(id, Some(7));
         assert_eq!(cost.count, 0);
-        let EvalFrame::ModelLoop(model) = frame else {
-            unreachable!()
-        };
-        let frame = EvalFrame::SourceToolReturn(SourceToolReturnFrame {
-            tool_call_id: "call".into(),
-            tool_name: "tool".into(),
-            binding: SourceToolBinding {
-                name: "tool".into(),
-                qualified_name: None,
-                item: etas_hir::HirItemId(1),
-            },
-            args: HostValue::String("y".repeat(count * 1024)),
-            boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
-            output_schema: None,
-            model_loop: model,
-        });
-        let (id, cost) = measure(|| selected_id(&frame));
-        assert_eq!(id, Some(7));
-        assert_eq!(cost.count, 0, "copied unrelated tool payload: {cost:?}");
     }
 }

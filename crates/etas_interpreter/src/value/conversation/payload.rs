@@ -10,6 +10,13 @@ impl Payload for InterpValue {
         budget.node(depth)?;
         match self {
             Unit | Bool(_) | Number(_) | OptionNone => Ok(()),
+            Prompt(messages) => {
+                for message in messages {
+                    budget.node(depth + 1)?;
+                    budget.charge(message.text.len(), depth + 1)?;
+                }
+                Ok(())
+            }
             Message(message) => budget.envelope(
                 MessageView {
                     id: &message.id,
@@ -128,6 +135,13 @@ impl Payload for ValueSnapshot {
         budget.node(depth)?;
         match self {
             Unit | Bool(_) | Number(_) | OptionNone => Ok(()),
+            Prompt(messages) => {
+                for message in messages {
+                    budget.node(depth + 1)?;
+                    budget.charge(message.text.len(), depth + 1)?;
+                }
+                Ok(())
+            }
             Message(message) => budget.envelope(
                 MessageView {
                     id: &message.id,

@@ -92,7 +92,7 @@ impl EvalContext<'_> {
         };
         let calls = match job_calls(jobs, "join", span) {
             Ok(calls) => calls,
-            Err(signal) => return signal,
+            Err(signal) => return *signal,
         };
         self.start_task_group(checked_call, calls, policy, span)
     }
@@ -128,7 +128,7 @@ impl EvalContext<'_> {
         }
         let calls = match job_calls(jobs.into_values(), name, span) {
             Ok(calls) => calls,
-            Err(signal) => return signal,
+            Err(signal) => return *signal,
         };
         self.start_task_group(checked_call, calls, policy, span)
     }
@@ -651,14 +651,14 @@ fn job_calls(
     jobs: Vec<InterpValue>,
     name: &str,
     span: Span,
-) -> Result<Vec<(crate::control::CallTarget, Vec<InterpValue>)>, ControlSignal> {
+) -> Result<Vec<(crate::control::CallTarget, Vec<InterpValue>)>, Box<ControlSignal>> {
     jobs.into_iter()
         .map(|job| match job {
             InterpValue::Callable(target) => Ok((target, Vec::new())),
-            _ => Err(ControlSignal::invalid_arguments(
+            _ => Err(Box::new(ControlSignal::invalid_arguments(
                 format!("std.task.{name} requires callable jobs"),
                 span,
-            )),
+            ))),
         })
         .collect()
 }

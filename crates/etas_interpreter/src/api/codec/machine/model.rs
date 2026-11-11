@@ -104,6 +104,10 @@ pub(super) fn optional_model_policy(
 
 pub(crate) fn model_options_snapshot(options: &etas_host::ModelOptions) -> Value {
     json!({
+        "attempt_policy": match options.attempt_policy {
+            etas_host::ModelAttemptPolicy::Configured => "configured",
+            etas_host::ModelAttemptPolicy::Single => "single",
+        },
         "temperature": options.temperature,
         "max_output_tokens": options.max_output_tokens,
         "metadata": options.metadata.iter().map(|(key, value)| json!({
@@ -148,6 +152,11 @@ pub(crate) fn model_options_from_snapshot(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(etas_host::ModelOptions {
+        attempt_policy: match required_str(value, "attempt_policy")? {
+            "configured" => etas_host::ModelAttemptPolicy::Configured,
+            "single" => etas_host::ModelAttemptPolicy::Single,
+            value => return Err(format!("unknown model attempt policy `{value}`")),
+        },
         temperature,
         max_output_tokens,
         metadata,

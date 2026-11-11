@@ -81,6 +81,11 @@ impl<'a> EvalContext<'a> {
                 ),
             ));
         }
+        if self.checked.types.known_std_types.json_value == Some(result) {
+            return crate::value::json::construct(&name, fields)
+                .map(InterpValue::Json)
+                .map_err(|message| self.enum_fact_fault(span, message));
+        }
         Ok(InterpValue::Nominal {
             ty: result,
             value: InterpValue::Variant {

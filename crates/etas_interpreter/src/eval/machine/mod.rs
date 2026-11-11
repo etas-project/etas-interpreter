@@ -1,10 +1,9 @@
 mod budget;
 pub(crate) mod frame;
 mod model;
-mod model_repair;
 mod program;
 mod suspension;
-pub use frame::SourceToolContinuation;
+mod tool;
 pub use suspension::ProgramContinuation;
 mod resume;
 mod scoped_call;

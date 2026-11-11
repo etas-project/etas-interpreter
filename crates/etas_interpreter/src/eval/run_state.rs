@@ -73,6 +73,7 @@ pub(crate) struct TaskLocalState {
     pub(crate) execution: etas_host::execution::ExecutionScope,
     pub(crate) cancellation: Result<etas_host::execution::CancelSignal, etas_host::HostError>,
     pub(crate) model_policy: ModelExecutionPolicy,
+    pub(crate) agent_context: Option<Box<crate::control::AgentRequestContext>>,
     pub(super) retry_stack: Vec<RetryAttemptRecord>,
     pub(super) handler_stack: Vec<ActiveHandlerRecord>,
     /// Live residual monitor bookkeeping for this task's program scopes.
@@ -95,6 +96,7 @@ impl TaskLocalState {
             cancellation: execution.signal(),
             execution,
             model_policy,
+            agent_context: None,
             retry_stack: Vec::new(),
             handler_stack: Vec::new(),
             residual: Default::default(),
@@ -118,6 +120,7 @@ impl TaskLocalState {
             cancellation: execution.signal(),
             execution,
             model_policy: self.model_policy.clone(),
+            agent_context: self.agent_context.clone(),
             retry_stack: self.retry_stack.clone(),
             handler_stack: self.handler_stack.clone(),
             residual: Default::default(),

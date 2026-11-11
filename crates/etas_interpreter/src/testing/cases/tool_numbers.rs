@@ -1,6 +1,6 @@
 use super::super::*;
 
-fn options() -> RunOptions {
+fn options(checked: &etas_frontend::CheckedProgram) -> RunOptions {
     let mut options = RunOptions::default();
     options
         .host_context
@@ -8,6 +8,7 @@ fn options() -> RunOptions {
         .grants
         .push(HostActionGrant::allow("Agentic", "infer"));
     options.model_policy.provider_capabilities = Some(full_model_capabilities());
+    options.code_definitions = Some(super::compiler_definitions::definitions_for(checked));
     options
 }
 
@@ -44,7 +45,7 @@ flow main() -> string ![Agentic] {{ return Reader.run(); }}
                     },
                     vec![],
                     &host,
-                    options(),
+                    options(&checked),
                 )
                 .await
                 .unwrap();
@@ -66,11 +67,11 @@ flow main() -> string ![Agentic] {{ return Reader.run(); }}
                 .collect();
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].tool_call_id.as_deref(), Some("call-1"));
-            let [ModelContent::Value(HostValue::Float(actual))] = tools[0].content.as_slice()
-            else {
+            let [ModelContent::Text(content)] = tools[0].content.as_slice() else {
                 panic!("checked float tool result: {:?}", tools[0])
             };
-            assert_eq!(actual.to_bits(), value.to_bits());
+            let result: serde_json::Value = serde_json::from_str(content).unwrap();
+            assert_eq!(result.as_f64().unwrap().to_bits(), value.to_bits());
             assert!(
                 host.tool_requests().is_empty(),
                 "source tool must not use external tool dispatch"
@@ -103,7 +104,7 @@ flow main() -> string ![Agentic, Error<IOError>] {{ return Reader.run(); }}
                 etas_host::HostJsonValue::Number(number),
             )])),
         );
-        host.seed_model_response_text("must not run");
+        host.seed_model_response_text("recovered");
         let result = Interpreter
             .run_checked(
                 &checked,
@@ -112,12 +113,32 @@ flow main() -> string ![Agentic, Error<IOError>] {{ return Reader.run(); }}
                 },
                 vec![],
                 &host,
-                options(),
+                options(&checked),
             )
             .await
             .unwrap();
-        assert!(!result.diagnostics.is_empty(), "{ty}/{number}");
-        assert_eq!(host.model_call_count(), 1);
+        assert!(
+            result.diagnostics.is_empty(),
+            "{ty}/{number}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.value(),
+            Some(&InterpValue::String("recovered".into()))
+        );
+        assert_eq!(host.model_call_count(), 2);
         assert!(host.stdout_text().is_empty());
+        let requests = host.model_requests();
+        let feedback = requests[1]
+            .messages
+            .iter()
+            .find(|message| message.role == ModelRole::Tool)
+            .unwrap();
+        let [ModelContent::Text(text)] = feedback.content.as_slice() else {
+            panic!("missing checked tool feedback");
+        };
+        let result: serde_json::Value = serde_json::from_str(text).unwrap();
+        assert_eq!(result["name"], "Err");
+        assert_eq!(result["fields"][0]["code"], "invalid_arguments");
     }
 }

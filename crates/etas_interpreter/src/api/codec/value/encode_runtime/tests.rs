@@ -72,7 +72,7 @@ fn aggregate_wire_tags_and_child_order_are_preserved() {
 }
 
 #[test]
-fn conversation_encodes_borrowed_message_contract_without_changing_the_wire() {
+fn conversation_encodes_borrowed_message_contract_and_optional_protocol() {
     use crate::value::{ConversationValue, MessageRoleValue, MessageValue, ProvenanceValue};
     let message = MessageValue {
         id: "m1".into(),
@@ -93,16 +93,17 @@ fn conversation_encodes_borrowed_message_contract_without_changing_the_wire() {
         expected
     );
     let value = V::Conversation(ConversationValue {
+        protocol: None,
         selected_context: None,
         history_fence: None,
-        session: "s".into(),
+        session: Some("s".into()),
         messages: vec![message].into(),
         cursor: Some("next".into()),
     });
     let wire = codec::value_json(&value).unwrap();
     assert_eq!(
         wire,
-        json!({"kind":"conversation","selected_context":null,"history_fence":null,"session":"s","messages":[expected],"cursor":"next"})
+        json!({"kind":"conversation","selected_context":null,"history_fence":null,"session":"s","messages":[expected],"cursor":"next","protocol":null})
     );
     assert_eq!(codec::value_from_json(&wire).unwrap(), value);
 }

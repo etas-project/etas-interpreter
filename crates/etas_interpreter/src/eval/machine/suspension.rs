@@ -68,6 +68,7 @@ struct SuspendedProgram {
     handlers: Vec<crate::orchestration::ActiveHandlerRecord>,
     retries: Vec<crate::orchestration::RetryAttemptRecord>,
     model_policy: crate::api::ModelExecutionPolicy,
+    agent_context: Option<Box<crate::control::AgentRequestContext>>,
     projection: ActionProjection,
     resuming_program: crate::value::CheckedExecutionProgram,
     depth: CallDepthLease,
@@ -207,10 +208,7 @@ impl EvalMachine {
                 EvalFrame::Call(frame) => work.push(&frame.continuation),
                 EvalFrame::Expr(frame) => work.push(&frame.continuation),
                 EvalFrame::Continuation(frame) => work.push(&frame.continuation),
-                EvalFrame::ModelLoop(frame) => work.push(&frame.outer_continuation),
-                EvalFrame::SourceToolReturn(frame) => {
-                    work.push(&frame.model_loop.outer_continuation)
-                }
+                EvalFrame::ModelRequest(frame) => work.push(&frame.outer_continuation),
                 EvalFrame::Retry(_) => {}
             }
         }
@@ -231,6 +229,7 @@ impl EvalMachine {
                 | Continuation::HandlerDispatch { outer, .. }
                 | Continuation::ReenterHandler { boundary: outer } => work.push(outer),
                 Continuation::RestoreModelPolicy { inner, .. }
+                | Continuation::AgentExecutionScope { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. } => work.push(inner),
                 Continuation::Chain { inner, outer } => {
                     work.push(outer);
@@ -293,6 +292,7 @@ impl EvalMachine {
         let retry_depth = boundary.retry_depth;
         let parent = boundary.parent.clone();
         let parent_policy = boundary.parent_model_policy.clone();
+        let parent_agent_context = boundary.parent_agent_context.clone();
         let parent_span = boundary.span;
         let resuming_program = boundary.parent_program.clone();
         let mut frames = self.stack.split_off(index);
@@ -312,6 +312,7 @@ impl EvalMachine {
             handlers: ctx.task.handler_stack.split_off(scope.handler_floor),
             retries: ctx.task.retry_stack.split_off(retry_depth),
             model_policy: std::mem::replace(&mut ctx.task.model_policy, parent_policy),
+            agent_context: std::mem::replace(&mut ctx.task.agent_context, parent_agent_context),
             projection: projection.clone(),
             resuming_program,
             depth: CallDepthLease {
@@ -332,6 +333,7 @@ impl EvalMachine {
         // The relocated request is the same semantic attempt: it keeps the
         // permit committed by every scope that observed it.
         relocated.residual = pending.residual.take();
+        relocated.inference = pending.inference.take();
         self.push_continuation_frames(outer);
         self.program_scope = parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_perform(
@@ -393,12 +395,14 @@ impl EvalMachine {
         };
         boundary.retry_depth = ctx.task.retry_stack.len();
         boundary.parent_model_policy = ctx.task.model_policy.clone();
+        boundary.parent_agent_context = ctx.task.agent_context.clone();
         boundary.parent = self.program_scope.clone();
         boundary.parent_program = resuming_program;
         saved.scope.handler_floor = ctx.task.handler_stack.len();
         ctx.task.handler_stack.append(&mut saved.handlers);
         ctx.task.retry_stack.append(&mut saved.retries);
         ctx.task.model_policy = saved.model_policy;
+        ctx.task.agent_context = saved.agent_context;
         self.stack.append(&mut saved.frames);
         self.resync_residual_mirror();
         saved.depth.calls = 0;

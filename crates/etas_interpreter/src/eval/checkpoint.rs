@@ -13,7 +13,28 @@ impl<'a> EvalContext<'a> {
     pub(crate) fn execute_from_checkpoint_signal(
         &mut self,
         checkpoint: &InterpreterCheckpoint,
+        revisions: Option<&crate::api::code::PreparedRevisionSet>,
     ) -> ControlSignal {
+        self.task.agent_context = match checkpoint
+            .agent_context
+            .as_ref()
+            .map(|request| {
+                crate::eval::machine::snapshot::restore_agent_context(
+                    request,
+                    &self.checked_execution_program(),
+                    revisions,
+                )
+            })
+            .transpose()
+        {
+            Ok(request) => request,
+            Err(message) => {
+                return ControlSignal::missing_checked_fact(
+                    message,
+                    item_span(self.checked, self.entry_item),
+                );
+            }
+        };
         self.task.model_policy =
             crate::eval::machine::snapshot::restore_model_policy(checkpoint.model_policy.clone());
         self.task.handler_stack = checkpoint.handlers.handlers.clone();
@@ -143,6 +164,12 @@ impl<'a> EvalContext<'a> {
                 error.to_string(),
             )
         })?;
+        let agent_context = self.task.agent_context.as_ref().map(|request| {
+            Box::new(crate::eval::machine::snapshot::capture_agent_context(
+                request,
+                &mut captured.revisions,
+            ))
+        });
         if let Some(revision) = root.program.revision.as_ref() {
             captured
                 .revisions
@@ -166,6 +193,7 @@ impl<'a> EvalContext<'a> {
             None
         };
         let checkpoint = InterpreterCheckpoint {
+            agent_context,
             tasks: tasks.map(Box::new),
             replay_key_id: self.replay_keys.id(),
             retained_code: Some(std::sync::Arc::new(

@@ -15,7 +15,7 @@ pub(crate) enum MachineInputSnapshot {
         args: Vec<ValueSnapshot>,
         span: Span,
     },
-    Signal(ControlSignalSnapshot),
+    Signal(Box<ControlSignalSnapshot>),
     ModelResult(Result<etas_host::ModelResponse, etas_host::HostError>),
     ToolResult(Result<etas_host::ToolResponse, etas_host::HostError>),
     SourceToolApproved,
@@ -45,6 +45,7 @@ pub(crate) enum ControlSignalSnapshot {
         continuation: ContinuationSnapshot,
     },
     Block {
+        agent_context: Option<Box<super::checkpoint::AgentRequestContextSnapshot>>,
         block: HirBlockId,
         next_stmt_index: usize,
         frame: LocalsSnapshot,
@@ -100,16 +101,21 @@ pub(crate) enum TaskControlSnapshot {
 }
 
 impl MachineInputSnapshot {
-    pub(crate) fn continuation_root(&self) -> Option<&ContinuationSnapshot> {
+    pub(crate) fn signal(&self) -> Option<&ControlSignalSnapshot> {
         match self {
-            Self::Signal(
-                ControlSignalSnapshot::Apply { continuation, .. }
-                | ControlSignalSnapshot::Error { continuation, .. }
-                | ControlSignalSnapshot::Checkpoint { continuation, .. }
-                | ControlSignalSnapshot::Expr { continuation, .. }
-                | ControlSignalSnapshot::Block { continuation, .. }
-                | ControlSignalSnapshot::Call { continuation, .. },
-            ) => Some(continuation),
+            Self::Signal(signal) => Some(signal),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn continuation_root(&self) -> Option<&ContinuationSnapshot> {
+        match self.signal()? {
+            ControlSignalSnapshot::Apply { continuation, .. }
+            | ControlSignalSnapshot::Error { continuation, .. }
+            | ControlSignalSnapshot::Checkpoint { continuation, .. }
+            | ControlSignalSnapshot::Expr { continuation, .. }
+            | ControlSignalSnapshot::Block { continuation, .. }
+            | ControlSignalSnapshot::Call { continuation, .. } => Some(continuation),
             _ => None,
         }
     }

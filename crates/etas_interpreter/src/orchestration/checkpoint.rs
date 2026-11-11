@@ -30,6 +30,7 @@ pub struct HandlerScopeId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct InterpreterCheckpoint {
+    pub(crate) agent_context: Option<Box<AgentRequestContextSnapshot>>,
     pub(crate) tasks: Option<Box<super::TaskSchedulerSnapshot>>,
     pub replay_key_id: etas_host::replay::ReplayKeyId,
     /// Session-local immutable code pins. The codec never serializes these owners.
@@ -494,8 +495,9 @@ pub(crate) struct MessageSnapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ConversationSnapshot {
+    pub(crate) protocol: Option<SnapshotBox>,
     pub(crate) selected_context: Option<crate::value::PublishedContextValue>,
-    pub(crate) session: String,
+    pub(crate) session: Option<String>,
     pub(crate) history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub(crate) messages: Vec<MessageSnapshot>,
     pub(crate) cursor: Option<String>,
@@ -560,6 +562,15 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
+    ToolInvocationStart(Box<ToolInvocationSnapshot>),
+    ToolInvocationResult(Box<ToolInvocationSnapshot>),
+    AgentControllerStep(Box<AgentControllerSnapshot>),
+    AgentControllerTool(Box<AgentControllerSnapshot>),
+    AgentExecutionState(Box<AgentExecutionStateSnapshot>),
+    AgentExecutionScope {
+        state: Box<AgentExecutionStateSnapshot>,
+        inner: ContinuationSnapshotLink,
+    },
     PackExistential {
         expr: HirExprId,
         frame: LocalsSnapshot,
@@ -571,7 +582,6 @@ pub(crate) enum ContinuationSnapshot {
         max_bytes: usize,
         span: Span,
     },
-    SourceToolReturn(Box<SourceToolReturnFrameSnapshot>),
     FileReadReduction {
         call: CallTargetSnapshot,
         args: Vec<ValueSnapshot>,
@@ -912,15 +922,51 @@ pub(crate) enum ContinuationSnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ModelLoopFrameSnapshot {
+pub(crate) struct AgentRequestContextSnapshot {
+    pub(crate) program: super::ExecutionProgramSnapshot,
+    pub(crate) method: etas_hir::SymbolId,
+    pub(crate) request: etas_host::HostRequestId,
+    pub(crate) policy: ModelExecutionPolicySnapshot,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentExecutionStateSnapshot {
+    pub(crate) request: Option<Box<AgentRequestContextSnapshot>>,
+    pub(crate) policy: ModelExecutionPolicySnapshot,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ToolInvocationSnapshot {
+    pub call: ToolInvocationOriginSnapshot,
+    pub input: ValueSnapshot,
+    pub context: Box<AgentRequestContextSnapshot>,
+    pub request: etas_host::HostRequestId,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ToolInvocationOriginSnapshot {
+    Standard(CallTargetSnapshot),
+    Controller { inference: etas_hir::HirExprId },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentControllerSnapshot {
+    pub inference: etas_hir::HirExprId,
+    pub conversation: ValueSnapshot,
+    pub calls: ValueSnapshot,
+    pub next_call: usize,
+    pub results: Vec<ValueSnapshot>,
+    pub round: usize,
+    pub repairs: usize,
+    pub max_tool_rounds: usize,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModelRequestFrameSnapshot {
     pub(crate) boundary_request_id: etas_host::HostRequestId,
     pub(crate) pending: PendingModelSnapshot,
-    pub(crate) round: usize,
-    pub(crate) repair: ModelRepairSnapshot,
-    pub(crate) last_tool_error: Option<String>,
-    pub(crate) remaining_tool_calls: Vec<etas_host::ModelToolCall>,
-    pub(crate) completed_tool_result: bool,
-    pub(crate) current_host_tool: Option<HostToolProgressSnapshot>,
     pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
     pub(crate) outer_continuation: ContinuationSnapshot,
 }
@@ -929,8 +975,6 @@ pub(crate) struct ModelLoopFrameSnapshot {
 pub(crate) struct PendingModelSnapshot {
     pub(crate) request: super::ModelRequestSnapshot,
     pub(crate) decode: ModelDecodeSnapshot,
-    pub(crate) max_tool_rounds: usize,
-    pub(crate) source_tools: Vec<SourceToolBindingSnapshot>,
     pub(crate) span: Span,
     pub(crate) continuation: ContinuationSnapshot,
 }
@@ -940,36 +984,7 @@ pub(crate) enum ModelDecodeSnapshot {
     String,
     ModelResponse,
     Typed(TypeId),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct SourceToolBindingSnapshot {
-    pub(crate) name: String,
-    pub(crate) qualified_name: Option<String>,
-    pub(crate) item: HirItemId,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ModelRepairSnapshot {
-    pub(crate) attempts: usize,
-    pub(crate) last_kind: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct HostToolProgressSnapshot {
-    pub(crate) call: etas_host::ModelToolCall,
-    pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct SourceToolReturnFrameSnapshot {
-    pub(crate) tool_call_id: String,
-    pub(crate) tool_name: String,
-    pub(crate) binding: SourceToolBindingSnapshot,
-    pub(crate) args: etas_host::HostValue,
-    pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
-    pub(crate) output_schema: Option<etas_host::HostSchema>,
-    pub(crate) model_loop: Box<ModelLoopFrameSnapshot>,
+    Step { result: TypeId, output: TypeId },
 }
 
 #[derive(Clone, Debug)]
@@ -995,8 +1010,7 @@ pub(crate) enum MachineFrameSnapshot {
     Retry {
         continuation: ContinuationSnapshot,
     },
-    ModelLoop(Box<ModelLoopFrameSnapshot>),
-    SourceToolReturn(SourceToolReturnFrameSnapshot),
+    ModelRequest(Box<ModelRequestFrameSnapshot>),
     /// Index into `MachineSnapshot::residual.scopes`.
     ResidualScope {
         scope: u32,
@@ -1013,13 +1027,9 @@ impl MachineFrameSnapshot {
             | Self::Continuation { continuation }
             | Self::Handler { continuation }
             | Self::Retry { continuation } => [Some(continuation), None],
-            Self::ModelLoop(frame) => [
+            Self::ModelRequest(frame) => [
                 Some(&frame.pending.continuation),
                 Some(&frame.outer_continuation),
-            ],
-            Self::SourceToolReturn(frame) => [
-                Some(&frame.model_loop.pending.continuation),
-                Some(&frame.model_loop.outer_continuation),
             ],
             Self::ResidualScope { .. } => [None, None],
         }
@@ -1033,6 +1043,7 @@ pub(crate) struct ProgramReturnSnapshot {
     pub handler_floor: usize,
     pub outer: ContinuationSnapshot,
     pub parent_model_policy: ModelExecutionPolicySnapshot,
+    pub parent_agent_context: Option<Box<AgentRequestContextSnapshot>>,
     pub span: Span,
     pub retry_depth: usize,
 }

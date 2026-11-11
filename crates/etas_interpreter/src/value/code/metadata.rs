@@ -63,7 +63,6 @@ pub(crate) enum CodeMetadataPayload {
     Determinism(DeterminismInfo),
     Detail(DescriptorDetail),
     TraceWitness(TraceInclusionWitness),
-    Tool(DefinitionKey),
     StaticValue(Arc<StaticValueInfo>),
     TraceConstraint {
         graph: DescriptorGraph,
@@ -116,12 +115,6 @@ impl CodeMetadataValue {
                 known.type_info
             }
             CodeMetadataPayload::GenericOwner(_) => known.generic_owner_info,
-            CodeMetadataPayload::Tool(identity) => {
-                if identity.kind() != etas_code::DefinitionKind::Tool {
-                    return Err("ToolRef requires a checked tool declaration identity".into());
-                }
-                known.tool_ref
-            }
             CodeMetadataPayload::StaticValue(_) => known.static_value_info,
             CodeMetadataPayload::TraceConstraint { graph, value } => {
                 value.validate(graph).map_err(|error| error.to_string())?;
@@ -326,49 +319,6 @@ mod tests {
         };
         assert_eq!(value("UserId"), value("UserId"));
         assert_ne!(value("UserId"), value("OrderId"));
-    }
-
-    #[test]
-    fn tool_descriptors_require_a_tool_identity_and_the_checked_tool_role() {
-        use etas_code::{CodeFingerprint, DefinitionKind, PackageKey};
-        let key = |kind| {
-            DefinitionKey::new(
-                PackageKey::from_canonical_fingerprint(CodeFingerprint::from_bytes([7; 32])),
-                vec!["app".into()],
-                vec!["helper".into()],
-                kind,
-            )
-            .unwrap()
-        };
-        let known = KnownCodeTypes {
-            tool_ref: Some(TypeId(11)),
-            definition_id: Some(TypeId(12)),
-            ..Default::default()
-        };
-        assert!(
-            CodeMetadataValue::new(
-                &known,
-                TypeId(11),
-                CodeMetadataPayload::Tool(key(DefinitionKind::Tool))
-            )
-            .is_ok()
-        );
-        assert!(
-            CodeMetadataValue::new(
-                &known,
-                TypeId(11),
-                CodeMetadataPayload::Tool(key(DefinitionKind::Flow))
-            )
-            .is_err()
-        );
-        assert!(
-            CodeMetadataValue::new(
-                &known,
-                TypeId(12),
-                CodeMetadataPayload::Tool(key(DefinitionKind::Tool))
-            )
-            .is_err()
-        );
     }
 
     #[test]

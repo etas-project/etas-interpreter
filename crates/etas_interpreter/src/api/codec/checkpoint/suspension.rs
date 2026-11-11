@@ -22,6 +22,7 @@ pub(super) fn encode(
         })).collect::<Vec<_>>(),
         "retries": node.retries.attempts.iter().map(|retry| json!({"id": retry.id.0, "ordinal": retry.ordinal})).collect::<Vec<_>>(),
         "model_policy": machine::model_policy_snapshot(&node.model_policy), "span": span_json(node.span),
+        "agent_context": machine::agent_context::request_json(node.agent_context.as_deref()),
         "action": null
     });
     value["boundary"] = machine::program_return_json(&node.boundary, budget)?;
@@ -45,6 +46,9 @@ pub(super) fn encode(
                 })?,
             )?;
             let origin = match origin {
+                ActionOriginSnapshot::ControllerStep { inference } => {
+                    json!({"kind":"controller_step", "inference":inference.0})
+                }
                 ActionOriginSnapshot::Source {
                     expr,
                     bindings,
@@ -123,6 +127,11 @@ pub(super) fn decode(
             .as_bool()
             .ok_or_else(|| InterpreterCodecError::new("suspended parent_scoped must be boolean"))?,
         parent_handler_floor: required_usize(value, "parent_handler_floor")?,
+        agent_context: machine::agent_context::request_from_json(required_obj(
+            value,
+            "agent_context",
+        )?)
+        .map_err(InterpreterCodecError::new)?,
         boundary: Box::new(boundary),
         frames: frames.frames,
         continuation: machine::continuation_from_snapshot(
@@ -174,6 +183,9 @@ fn decode_action(
     }
     let origin = required_obj(action, "origin")?;
     let origin = match required_str(origin, "kind")? {
+        "controller_step" => ActionOriginSnapshot::ControllerStep {
+            inference: etas_hir::HirExprId(required_u32(origin, "inference")?),
+        },
         "source" => {
             if ["bindings", "type_parameter_bindings", "effect_row_bindings"]
                 .iter()

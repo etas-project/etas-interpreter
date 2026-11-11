@@ -88,6 +88,11 @@ flow main() -> string {
     assert_eq!(host.model_call_count(), 0);
     let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
     assert_eq!(summary.requested_actions.effects.iter().count(), 1);
+    assert!(summary.default_actions.is_empty());
+    assert_eq!(
+        summary.action_trace.action_set(),
+        summary.requested_actions.effects
+    );
     assert!(summary.escaping_effects.effects.is_empty());
 }
 
@@ -274,17 +279,37 @@ flow main() -> string { return Writer(); }
     assert_eq!(checked.types.agent_inferences.len(), 2);
     let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
     assert!(summary.escaping_effects.effects.is_empty());
-    assert_eq!(summary.requested_actions.effects.iter().count(), 1);
-    assert_eq!(summary.default_actions.effects.iter().count(), 1);
+    assert_eq!(summary.requested_actions.effects.iter().count(), 2);
+    assert_eq!(summary.default_actions.effects.iter().count(), 2);
     let etas_effects::ActionTraceDomain::Seq(events) = &summary.action_trace else {
         panic!(
-            "both explicit inference sites must remain in the trace: {:?}",
+            "inference sites lost their ordered action trace: {:?}",
             summary.action_trace
         );
     };
-    assert_eq!(events.len(), 2);
-    for event in events {
-        assert!(matches!(event, etas_effects::ActionTraceDomain::Event(_)));
+    assert_eq!(events.len(), 4);
+    for events in events.chunks_exact(2) {
+        assert!(matches!(
+            events[0],
+            etas_effects::ActionTraceDomain::Event(_)
+        ));
+        let etas_effects::ActionTraceDomain::DefaultHandler { guards, body } = &events[1] else {
+            panic!(
+                "controller behavior lost its infer provenance: {:?}",
+                events[1]
+            );
+        };
+        let etas_effects::ActionTraceDomain::Event(request) = &events[0] else {
+            unreachable!()
+        };
+        assert_eq!(
+            guards,
+            &etas_effects::EffectSet::one(request.action.clone())
+        );
+        assert!(matches!(
+            body.as_ref(),
+            etas_effects::ActionTraceDomain::Repeat(_)
+        ));
     }
     let requests = host.model_requests();
     assert_eq!(requests.len(), 2);

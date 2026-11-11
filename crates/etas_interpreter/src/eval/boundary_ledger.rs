@@ -20,25 +20,6 @@ impl<'a> EvalContext<'a> {
         )
     }
 
-    pub(crate) fn record_completed_host_value_boundary(
-        &mut self,
-        occurrence: crate::orchestration::BoundaryOccurrenceId,
-        kind: &str,
-        key: etas_host::replay::ReplayFingerprint,
-        result: etas_host::HostValue,
-        span: Span,
-    ) -> Result<(), crate::control::ExecutionFault> {
-        self.store_completed_boundary(
-            crate::orchestration::CompletedHostBoundary {
-                occurrence,
-                kind: kind.to_owned(),
-                key,
-                result: crate::orchestration::CompletedHostBoundaryResult::Host(result),
-            },
-            span,
-        )
-    }
-
     fn store_completed_boundary(
         &mut self,
         boundary: crate::orchestration::CompletedHostBoundary,
@@ -65,27 +46,6 @@ impl<'a> EvalContext<'a> {
         };
         match &completed.result {
             crate::orchestration::CompletedHostBoundaryResult::Runtime(result) => {
-                Ok(Some(result.clone()))
-            }
-            _ => Err(replay_fault(
-                span,
-                "recorded boundary has a different result ABI",
-            )),
-        }
-    }
-
-    pub(crate) fn completed_host_boundary_host_result(
-        &self,
-        occurrence: &crate::orchestration::BoundaryOccurrenceId,
-        kind: &str,
-        key: &etas_host::replay::ReplayFingerprint,
-        span: Span,
-    ) -> Result<Option<etas_host::HostValue>, crate::control::ExecutionFault> {
-        let Some(completed) = self.checked_completed_boundary(occurrence, kind, key, span)? else {
-            return Ok(None);
-        };
-        match &completed.result {
-            crate::orchestration::CompletedHostBoundaryResult::Host(result) => {
                 Ok(Some(result.clone()))
             }
             _ => Err(replay_fault(
@@ -254,15 +214,6 @@ mod tests {
                 &original.occurrence,
                 "memory",
                 &etas_host::replay::ReplayFingerprint::from_bytes([2; 32]),
-                span
-            )
-            .is_err()
-        );
-        assert!(
-            ctx.completed_host_boundary_host_result(
-                &original.occurrence,
-                "memory",
-                &original.key,
                 span
             )
             .is_err()

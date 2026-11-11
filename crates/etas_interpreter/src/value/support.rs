@@ -28,8 +28,9 @@ pub struct SessionConfigValue {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub struct ConversationValue {
+    pub(crate) protocol: Option<super::SharedValue>,
     pub selected_context: Option<super::PublishedContextValue>,
-    pub session: String,
+    pub session: Option<String>,
     pub history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub messages: MessageList,
     pub cursor: Option<String>,
@@ -54,7 +55,7 @@ pub struct ModelResponseValue {
     pub id: u32,
     pub message: ModelMessageValue,
     pub tool_calls: Vec<ModelToolCallValue>,
-    pub usage: Option<ModelUsageValue>,
+    pub usage: Option<etas_host::ModelUsage>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -82,12 +83,6 @@ pub struct ModelToolCallValue {
     pub id: String,
     pub tool: String,
     pub args: HostSupportValue,
-}
-
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
-pub struct ModelUsageValue {
-    pub input_tokens: u64,
-    pub output_tokens: u64,
 }
 
 #[derive(Clone, Debug)]

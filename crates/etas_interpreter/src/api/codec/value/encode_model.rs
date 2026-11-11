@@ -53,7 +53,7 @@ pub(in crate::api::codec) fn write<'a>(
     match part {
         Part::Response(response) => {
             *slot = json!({"kind":"model_response","id":response.id,"message":null,"tool_calls":null,
-                "usage":response.usage.as_ref().map(|usage| json!({"input_tokens":usage.input_tokens,"output_tokens":usage.output_tokens}))});
+                "usage":response.usage.as_ref().map(super::model_usage::encode)});
             let Value::Object(fields) = slot else {
                 unreachable!("model response object initialized above")
             };

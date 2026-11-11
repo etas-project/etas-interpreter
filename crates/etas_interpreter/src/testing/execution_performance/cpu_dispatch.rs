@@ -79,10 +79,12 @@ flow main(values: Array<i32>) -> Array<i32> {{
                     let mut metrics = Vec::new();
                     for round in 0..=samples {
                         let observer = Arc::new(Metrics::default());
-                        let mut options = RunOptions::default();
-                        options.cpu_threads = std::num::NonZeroUsize::new(workers).unwrap();
-                        options.cpu_min_work = 0;
-                        options.event_observer = Some(observer.clone());
+                        let options = RunOptions {
+                            cpu_threads: std::num::NonZeroUsize::new(workers).unwrap(),
+                            cpu_min_work: 0,
+                            event_observer: Some(observer.clone()),
+                            ..Default::default()
+                        };
                         let args = vec![InterpValue::Array(
                             (0..count)
                                 .map(|value| InterpValue::i32(value as i32))

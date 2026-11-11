@@ -291,6 +291,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
             };
         }
         let saved = InterpreterCheckpoint {
+            agent_context: None,
             tasks: None,
             replay_key_id: etas_host::replay::ReplayKeyId::from_bytes([1; 32]),
             retained_code: None,

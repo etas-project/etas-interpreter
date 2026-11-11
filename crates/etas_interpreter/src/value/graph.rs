@@ -33,7 +33,7 @@ enum Children<'a> {
         next: Option<&'a Value>,
         comparator: Option<&'a CallTarget>,
     },
-    Messages(slice::Iter<'a, MessageValue>),
+    Messages(slice::Iter<'a, MessageValue>, Option<&'a Value>),
     Targets(slice::Iter<'a, CallTarget>),
 }
 
@@ -86,7 +86,11 @@ impl<'a> Iterator for Children<'a> {
                 *next = Some(value);
                 Node::Value(key)
             }
-            Self::Messages(values) => Node::Value(&values.next()?.payload),
+            Self::Messages(values, protocol) => Node::Value(
+                protocol
+                    .take()
+                    .or_else(|| values.next().map(|value| value.payload.as_ref()))?,
+            ),
             Self::Targets(values) => Node::Target(values.next()?),
         })
     }
@@ -252,7 +256,9 @@ fn value_children(value: &Value) -> Children<'_> {
             Children::Two([value.start.as_ref(), value.end.as_ref()].into_iter())
         }
         Value::Message(value) => Children::One(Some(Node::Value(&value.payload))),
-        Value::Conversation(value) => Children::Messages(value.messages.iter()),
+        Value::Conversation(value) => {
+            Children::Messages(value.messages.iter(), value.protocol.as_deref())
+        }
         Value::MemorySelection { predicate, .. } => {
             Children::One(predicate.as_deref().map(Node::Value))
         }

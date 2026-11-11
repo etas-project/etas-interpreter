@@ -24,9 +24,11 @@ async fn run_with_cpu_threads(
     threads: usize,
 ) -> (api::RunResult, Vec<api::CpuTaskTelemetry>) {
     let observer = std::sync::Arc::new(CpuTelemetry::default());
-    let mut options = RunOptions::default();
-    options.cpu_threads = std::num::NonZeroUsize::new(threads).expect("CPU threads are non-zero");
-    options.event_observer = Some(observer.clone());
+    let options = RunOptions {
+        cpu_threads: std::num::NonZeroUsize::new(threads).expect("CPU threads are non-zero"),
+        event_observer: Some(observer.clone()),
+        ..Default::default()
+    };
     let result = Interpreter
         .run_checked(
             checked,
@@ -229,8 +231,10 @@ flow main() -> bool ![Console, Error<IOError>] {
 "#,
     );
     let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
-    let mut options = RunOptions::default();
-    options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    let options = RunOptions {
+        cpu_threads: std::num::NonZeroUsize::new(4).unwrap(),
+        ..Default::default()
+    };
     let result = Interpreter
         .run_checked(
             &checked,
@@ -269,8 +273,10 @@ flow main() -> Array<i32> {
 }
 "#,
     );
-    let mut options = RunOptions::default();
-    options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    let mut options = RunOptions {
+        cpu_threads: std::num::NonZeroUsize::new(4).unwrap(),
+        ..Default::default()
+    };
     options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
     let result = Interpreter
         .run_checked(
@@ -320,9 +326,11 @@ flow main() -> Array<i32> {
 "#,
     );
     let dispatched = std::sync::Arc::new(tokio::sync::Notify::new());
-    let mut options = RunOptions::default();
-    options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
-    options.event_observer = Some(std::sync::Arc::new(CpuDispatchObserver(dispatched.clone())));
+    let options = RunOptions {
+        cpu_threads: std::num::NonZeroUsize::new(4).unwrap(),
+        event_observer: Some(std::sync::Arc::new(CpuDispatchObserver(dispatched.clone()))),
+        ..Default::default()
+    };
     let host = FakeHost::new(HostServiceAvailability::default());
     let invocation = Interpreter.create_run(
         &checked,
@@ -763,8 +771,10 @@ flow main() -> string {
     for threads in [1, 4] {
         let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
         host.seed_model_response_text("ok");
-        let mut options = RunOptions::default();
-        options.cpu_threads = std::num::NonZeroUsize::new(threads).unwrap();
+        let mut options = RunOptions {
+            cpu_threads: std::num::NonZeroUsize::new(threads).unwrap(),
+            ..Default::default()
+        };
         options
             .host_context
             .authority

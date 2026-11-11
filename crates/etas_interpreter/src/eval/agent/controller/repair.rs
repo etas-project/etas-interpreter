@@ -4,6 +4,7 @@ use etas_host::{ModelContent, ModelMessage, ModelRole, ModelToolChoice};
 pub enum ModelRepairKind {
     RequiredToolChoice,
     TypedOutput,
+    ToolCall,
 }
 
 impl ModelRepairKind {
@@ -11,6 +12,7 @@ impl ModelRepairKind {
         match self {
             Self::RequiredToolChoice => "required_tool_choice",
             Self::TypedOutput => "typed_output",
+            Self::ToolCall => "tool_call",
         }
     }
 }
@@ -68,6 +70,18 @@ impl ModelRepairPolicy {
         )
     }
 
+    pub fn tool_call(
+        self,
+        attempts_used: usize,
+        error: &str,
+    ) -> Result<ModelRepairDirective, ModelRepairExhausted> {
+        self.directive_or_exhausted(ModelRepairKind::ToolCall, attempts_used, error.into(), ModelMessage {
+            provider_data: Vec::new(), role: ModelRole::User,
+            content: vec![ModelContent::Text(format!("The previous tool request was invalid. Correct the tool name and arguments to match the declared tool schema. Error: {error}"))],
+            tool_call_id: None, tool_calls: Vec::new(),
+        })
+    }
+
     fn directive_or_exhausted(
         self,
         kind: ModelRepairKind,
@@ -94,6 +108,7 @@ impl ModelRepairPolicy {
 
 fn typed_output_repair_message(error: &str) -> ModelMessage {
     ModelMessage {
+        provider_data: Vec::new(),
         role: ModelRole::User,
         content: vec![ModelContent::Text(format!(
             "The previous response did not satisfy the required typed output contract. Return exactly one valid JSON value matching the requested schema. Do not include markdown, prose, escaped JSON strings, or extra keys. Decoder error: {error}"
@@ -116,6 +131,7 @@ fn required_tool_choice_repair_message(choice: &ModelToolChoice) -> ModelMessage
         }
     };
     ModelMessage {
+        provider_data: Vec::new(),
         role: ModelRole::User,
         content: vec![ModelContent::Text(instruction)],
         tool_call_id: None,

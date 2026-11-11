@@ -257,8 +257,10 @@ async fn runtime_resource_guards_release_permits_when_the_run_is_cancelled() {
     let mut host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
     let probe = host.observe_memory_concurrency(2);
     let waiting = std::sync::Arc::new(tokio::sync::Notify::new());
-    let mut options = RunOptions::default();
-    options.event_observer = Some(std::sync::Arc::new(WaitingResource(waiting.clone())));
+    let options = RunOptions {
+        event_observer: Some(std::sync::Arc::new(WaitingResource(waiting.clone()))),
+        ..Default::default()
+    };
     let invocation = Interpreter.create_run(
         &checked,
         EntryPoint {

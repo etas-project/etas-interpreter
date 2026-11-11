@@ -220,26 +220,26 @@ flow main(input: string) -> string {
     assert!(result.events.iter().any(|event| matches!(
         event,
         WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
-            id: HostRequestId(0),
+            id,
             kind: etas_host::HostRequestKind::Model,
             metadata,
             authority,
             trace,
             started_at_unix_micros,
-        }) if authority.grants == vec![HostActionGrant::allow("Agentic", "infer")]
+        }) if *id == requests[0].id && authority.grants == vec![HostActionGrant::allow("Agentic", "infer")]
             && trace == &TraceContext::root(TraceId(42))
-            && metadata.qualified_action == "Agentic.infer"
+            && metadata.qualified_action == "Agentic.step"
             && metadata.payload_digest.len() == 64
             && *started_at_unix_micros > 0
     )));
     assert!(result.events.iter().any(|event| matches!(
         event,
         WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
-            id: HostRequestId(0),
+            id,
             outcome: etas_host::HostOutcome::Succeeded,
             finished_at_unix_micros,
             ..
-        }) if *finished_at_unix_micros > 0
+        }) if *id == requests[0].id && *finished_at_unix_micros > 0
     )));
 }
 
@@ -304,7 +304,7 @@ flow main() -> string {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(trace_ids, vec![HostRequestId(0), HostRequestId(0)]);
+    assert_eq!(trace_ids, vec![host.model_requests()[0].id; 2]);
     assert!(result.events.iter().any(|event| matches!(
         event,
         WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
@@ -573,8 +573,8 @@ flow main() -> string {
     host.seed_model_response_text_with_usage(
         "one",
         Some(etas_host::ModelUsage {
-            input_tokens: 1,
-            output_tokens: 1,
+            input_tokens: Some(1),
+            output_tokens: Some(1),
             cost: Some(etas_host::ModelCostUsage {
                 micros: 30,
                 currency: "USD".to_owned(),

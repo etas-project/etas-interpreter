@@ -244,9 +244,13 @@ fn model_response_snapshot_preserves_nested_host_payloads_without_reserializing(
                 tool: "inspect".into(),
                 args: HostSupportValue::List(vec![HostSupportValue::Json(payload)].into()),
             }],
-            usage: Some(ModelUsageValue {
-                input_tokens: 3,
-                output_tokens: 5,
+            usage: Some(etas_host::ModelUsage {
+                input_tokens: None,
+                output_tokens: Some(5),
+                cost: Some(etas_host::ModelCostUsage {
+                    micros: u128::MAX,
+                    currency: "USD".into(),
+                }),
             }),
         });
         let saved = ValueSnapshot::capture(&value).unwrap();

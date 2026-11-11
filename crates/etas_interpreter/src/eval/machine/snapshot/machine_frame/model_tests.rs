@@ -1,32 +1,30 @@
 use etas_core::{SourceId, Span, TextSize};
-use etas_hir::HirItemId;
-use etas_host::{
-    HostRequestId, HostValue, ModelContent, ModelMessage, ModelName, ModelRequest, ModelRole,
-    ModelToolCall,
-};
+use etas_host::{HostRequestId, ModelContent, ModelMessage, ModelName, ModelRequest, ModelRole};
 
 use crate::{
     api::HostExecutionContext,
-    control::{Continuation, ModelDecode, PendingModel, SourceToolBinding},
+    control::{Continuation, ModelDecode, PendingModel},
     eval::machine::{
-        frame::{EvalFrame, ModelLoopFrame, ModelRepairState, SourceToolReturnFrame},
+        frame::{EvalFrame, ModelRequestFrame},
         state::EvalMachine,
     },
-    orchestration::{MachineFrameSnapshot, ModelLoopFrameSnapshot, SourceToolReturnFrameSnapshot},
+    orchestration::{MachineFrameSnapshot, ModelRequestFrameSnapshot},
     testing::allocation::measure,
 };
 
-fn model_frame(width: usize) -> ModelLoopFrame {
+fn model_frame(width: usize) -> ModelRequestFrame {
     let host = HostExecutionContext::default();
-    ModelLoopFrame {
+    ModelRequestFrame {
         boundary_request_id: etas_host::HostRequestId(0),
         pending: PendingModel {
             request: ModelRequest {
+                action: etas_host::ModelAction::Infer,
                 id: HostRequestId(7),
                 provider: None,
                 model: ModelName("test-model".into()),
                 messages: (0..width)
                     .map(|_| ModelMessage {
+                        provider_data: Vec::new(),
                         role: ModelRole::User,
                         content: vec![ModelContent::Text("x".repeat(1024))],
                         tool_call_id: None,
@@ -43,42 +41,21 @@ fn model_frame(width: usize) -> ModelLoopFrame {
                 budget: host.budget,
             },
             decode: ModelDecode::String,
-            max_tool_rounds: 9,
-            source_tools: vec![],
             span: Span::empty(SourceId(7), TextSize::ZERO),
             continuation: Continuation::Return,
         },
-        round: 3,
-        repair: ModelRepairState {
-            attempts: 2,
-            last_kind: Some("schema".into()),
-        },
-        last_tool_error: Some("retryable".into()),
-        remaining_tool_calls: vec![ModelToolCall {
-            id: "next".into(),
-            tool: "helper".into(),
-            args: HostValue::String("payload".into()),
-        }],
-        completed_tool_result: true,
-        current_host_tool: None,
         boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
         outer_continuation: Continuation::Finish,
     }
 }
 
-fn assert_model(actual: &ModelLoopFrameSnapshot, expected: &ModelLoopFrameSnapshot) {
+fn assert_model(actual: &ModelRequestFrameSnapshot, expected: &ModelRequestFrameSnapshot) {
     assert_eq!(
         actual.pending.request.messages,
         expected.pending.request.messages
     );
     assert_eq!(actual.pending.request.id, expected.pending.request.id);
     assert_eq!(actual.pending.request.model, expected.pending.request.model);
-    assert_eq!(actual.round, expected.round);
-    assert_eq!(actual.repair.attempts, expected.repair.attempts);
-    assert_eq!(actual.repair.last_kind, expected.repair.last_kind);
-    assert_eq!(actual.last_tool_error, expected.last_tool_error);
-    assert_eq!(actual.remaining_tool_calls, expected.remaining_tool_calls);
-    assert_eq!(actual.completed_tool_result, expected.completed_tool_result);
     assert_eq!(actual.boundary_key, expected.boundary_key);
     assert!(matches!(
         actual.pending.continuation,
@@ -91,13 +68,13 @@ fn assert_model(actual: &ModelLoopFrameSnapshot, expected: &ModelLoopFrameSnapsh
 }
 
 #[test]
-fn model_and_source_tool_capture_share_pending_outer_and_machine_locals() {
+fn model_request_capture_shares_pending_outer_and_machine_locals() {
     use crate::{
         control::Frame, eval::machine::frame::ExprFrame, orchestration::ContinuationSnapshot,
         value::InterpValue,
     };
     use etas_hir::{HirBlockId, SymbolId};
-    for source_tool in [false, true] {
+    {
         let mut locals = Frame::from_snapshot(vec![(SymbolId(0), InterpValue::i32(7))]).unwrap();
         let continuation = || Continuation::ContinueBlock {
             block: HirBlockId(1),
@@ -111,23 +88,7 @@ fn model_and_source_tool_capture_share_pending_outer_and_machine_locals() {
         machine.push_frame(EvalFrame::Expr(ExprFrame {
             continuation: continuation(),
         }));
-        machine.push_frame(if source_tool {
-            EvalFrame::SourceToolReturn(SourceToolReturnFrame {
-                tool_call_id: "call-1".into(),
-                tool_name: "helper".into(),
-                binding: SourceToolBinding {
-                    name: "helper".into(),
-                    qualified_name: None,
-                    item: HirItemId(3),
-                },
-                args: HostValue::String("input".into()),
-                boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
-                output_schema: None,
-                model_loop: Box::new(model),
-            })
-        } else {
-            EvalFrame::ModelLoop(Box::new(model))
-        });
+        machine.push_frame(EvalFrame::ModelRequest(Box::new(model)));
         let saved = machine.snapshot().unwrap();
         let MachineFrameSnapshot::Expr {
             continuation: ContinuationSnapshot::ContinueBlock { frame: first, .. },
@@ -136,8 +97,7 @@ fn model_and_source_tool_capture_share_pending_outer_and_machine_locals() {
             panic!("expr")
         };
         let model = match &saved.frames[1] {
-            MachineFrameSnapshot::ModelLoop(model) => &**model,
-            MachineFrameSnapshot::SourceToolReturn(tool) => &*tool.model_loop,
+            MachineFrameSnapshot::ModelRequest(model) => &**model,
             _ => panic!("model"),
         };
         for continuation in [&model.pending.continuation, &model.outer_continuation] {
@@ -157,13 +117,13 @@ fn machine_snapshot_copies_model_payload_only_into_durable_output() {
     for width in [1000, 2000, 4000] {
         let model = model_frame(width);
         let (expected, direct) = measure(|| {
-            ModelLoopFrameSnapshot::capture(&model, &mut super::super::CaptureContext::default())
+            ModelRequestFrameSnapshot::capture(&model, &mut super::super::CaptureContext::default())
                 .unwrap()
         });
         let mut machine = EvalMachine::new();
-        machine.push_frame(EvalFrame::ModelLoop(Box::new(model)));
+        machine.push_frame(EvalFrame::ModelRequest(Box::new(model)));
         let (snapshot, cost) = measure(|| machine.snapshot().unwrap());
-        let MachineFrameSnapshot::ModelLoop(actual) = &snapshot.frames[0] else {
+        let MachineFrameSnapshot::ModelRequest(actual) = &snapshot.frames[0] else {
             panic!("model frame")
         };
         assert_model(actual, &expected);
@@ -172,66 +132,13 @@ fn machine_snapshot_copies_model_payload_only_into_durable_output() {
         assert!(
             cost.bytes
                 <= direct.bytes
-                    + size_of::<ModelLoopFrameSnapshot>()
+                    + size_of::<ModelRequestFrameSnapshot>()
                     + size_of::<MachineFrameSnapshot>()
         );
-        let EvalFrame::ModelLoop(mut runtime) = machine.pop_frame().unwrap() else {
+        let EvalFrame::ModelRequest(mut runtime) = machine.pop_frame().unwrap() else {
             panic!("model frame")
         };
         runtime.pending.request.messages[0].content = vec![ModelContent::Text("changed".into())];
-        runtime.remaining_tool_calls.clear();
         assert_model(actual, &expected);
-    }
-}
-
-#[test]
-fn machine_snapshot_copies_source_tool_arguments_only_into_durable_output() {
-    for width in [1000, 2000, 4000] {
-        let tool = SourceToolReturnFrame {
-            tool_call_id: "call-1".into(),
-            tool_name: "helper".into(),
-            binding: SourceToolBinding {
-                name: "helper".into(),
-                qualified_name: Some("test.helper".into()),
-                item: HirItemId(3),
-            },
-            args: HostValue::List(
-                (0..width)
-                    .map(|_| HostValue::String("x".repeat(1024)))
-                    .collect(),
-            ),
-            boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
-            output_schema: None,
-            model_loop: Box::new(model_frame(1)),
-        };
-        let (expected, direct) = measure(|| {
-            SourceToolReturnFrameSnapshot::capture(
-                &tool,
-                &mut super::super::CaptureContext::default(),
-            )
-            .unwrap()
-        });
-        let mut machine = EvalMachine::new();
-        machine.push_frame(EvalFrame::SourceToolReturn(tool));
-        let (snapshot, cost) = measure(|| machine.snapshot().unwrap());
-        let MachineFrameSnapshot::SourceToolReturn(actual) = &snapshot.frames[0] else {
-            panic!("tool frame")
-        };
-        assert_eq!(actual.args, expected.args);
-        assert_eq!(actual.tool_call_id, expected.tool_call_id);
-        assert_eq!(
-            actual.binding.qualified_name,
-            expected.binding.qualified_name
-        );
-        assert_eq!(actual.boundary_key, expected.boundary_key);
-        assert_model(&actual.model_loop, &expected.model_loop);
-        eprintln!("machine source tool n={width}: {cost:?}, direct={direct:?}");
-        assert!(cost.count <= direct.count + 1);
-        assert!(cost.bytes <= direct.bytes + size_of::<MachineFrameSnapshot>());
-        let EvalFrame::SourceToolReturn(mut runtime) = machine.pop_frame().unwrap() else {
-            panic!("tool frame")
-        };
-        runtime.args = HostValue::String("changed".into());
-        assert_eq!(actual.args, expected.args);
     }
 }

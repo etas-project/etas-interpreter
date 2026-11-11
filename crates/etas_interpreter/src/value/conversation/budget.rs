@@ -19,7 +19,7 @@ pub(super) struct MessageView<'a, P: ?Sized> {
 
 pub(super) struct ViewBudget<'a> {
     pub limits: &'a StorageLimits,
-    session: &'a str,
+    session: Option<&'a str>,
     bytes: usize,
     nodes: usize,
 }
@@ -31,7 +31,7 @@ pub(super) fn exceeded() -> String {
 impl<'a> ViewBudget<'a> {
     pub fn new(
         limits: &'a StorageLimits,
-        session: &'a str,
+        session: Option<&'a str>,
         messages: usize,
     ) -> Result<Self, String> {
         limits.validate().map_err(|e| e.message)?;
@@ -44,7 +44,9 @@ impl<'a> ViewBudget<'a> {
             bytes: 0,
             nodes: 0,
         };
-        budget.charge(session.len(), 0)?;
+        if let Some(session) = session {
+            budget.charge(session.len(), 0)?;
+        }
         Ok(budget)
     }
 
@@ -70,7 +72,7 @@ impl<'a> ViewBudget<'a> {
         &mut self,
         message: MessageView<'_, P>,
     ) -> Result<(), String> {
-        if message.session != Some(self.session) {
+        if message.session != self.session {
             return Err("conversation message belongs to another session".into());
         }
         self.envelope(message, 0)
@@ -122,13 +124,13 @@ impl<'a> ViewBudget<'a> {
             self.charge(cursor.len(), 0)?;
         }
         if let Some(fence) = fence {
-            if fence.session_id() != self.session {
+            if Some(fence.session_id()) != self.session {
                 return Err("conversation history fence belongs to another session".into());
             }
             self.charge(fence.as_token().len(), 0)?;
         }
         if let Some(context) = context {
-            if context.fence.session_id() != self.session {
+            if Some(context.fence.session_id()) != self.session {
                 return Err("conversation selected context belongs to another session".into());
             }
             context.storage_size(self.limits).map_err(|e| e.message)?;

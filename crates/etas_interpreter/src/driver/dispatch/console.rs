@@ -19,7 +19,7 @@ type ConsoleCall<'host> =
 
 pub(in crate::driver) enum ConsoleDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingConsoleDispatch<'host>),
+    Pending(Box<PendingConsoleDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingConsoleDispatch<'host> {
@@ -89,11 +89,11 @@ pub(in crate::driver) async fn begin<'host>(
         console.request.trace.clone(),
         |operation| host.console(operation, console.request.clone()),
     ) {
-        Ok(pending) => ConsoleDispatchStart::Pending(PendingConsoleDispatch {
+        Ok(pending) => ConsoleDispatchStart::Pending(Box::new(PendingConsoleDispatch {
             console,
             key,
             pending,
-        }),
+        })),
         Err(error) => {
             ConsoleDispatchStart::Complete(Some(eval.console_host_error_signal(console, error)))
         }

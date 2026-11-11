@@ -85,10 +85,18 @@ pub(super) fn compare_node<'c>(
                 {
                     return Comparison::Ready(false);
                 }
-                if std::ptr::eq(av.messages.as_ptr(), bv.messages.as_ptr()) {
+                if av.protocol.is_none()
+                    && bv.protocol.is_none()
+                    && std::ptr::eq(av.messages.as_ptr(), bv.messages.as_ptr())
+                {
                     return Comparison::Ready(true);
                 }
-                Children::Messages(av.messages.clone(), bv.messages.clone())
+                Children::Conversation {
+                    a: av.messages.clone(),
+                    b: bv.messages.clone(),
+                    protocol_a: av.protocol.clone(),
+                    protocol_b: bv.protocol.clone(),
+                }
             }
             (V::Tuple(av), V::Tuple(bv)) => {
                 if av.len() != bv.len() {

@@ -8,7 +8,7 @@ use etas_frontend::{
         service::NativeCodeSyntaxOperations,
     },
 };
-use std::{collections::BTreeMap, sync::Arc};
+use std::sync::Arc;
 
 mod applications;
 mod cancel_edit;
@@ -18,7 +18,7 @@ mod descriptors;
 mod flows;
 mod method_snapshots;
 
-fn prepared(
+pub(super) fn prepared(
     source: &str,
     retained: &[&str],
 ) -> (
@@ -46,6 +46,13 @@ fn prepared_project(
     let output = Frontend.check_project(input);
     assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
     let checked = output.checked.unwrap();
+    let definitions = definitions_for(&checked);
+    (checked, definitions)
+}
+
+pub(super) fn definitions_for(
+    checked: &etas_frontend::CheckedProgram,
+) -> Arc<crate::api::code::PreparedCodeDefinitions> {
     let key = |name: &[u8]| {
         PackageKey::from_canonical_fingerprint(CodeFingerprint::of_bytes(
             "etas.test.compiler-definitions",
@@ -53,9 +60,9 @@ fn prepared_project(
         ))
     };
     let origins = DefinitionOrigins {
-        source_modules: DefinitionOrigins::declared_source_modules(&checked, key(b"app")).unwrap(),
+        source_modules: DefinitionOrigins::declared_source_modules(checked, key(b"app")).unwrap(),
         standard_package: key(b"std"),
-        external_definitions: BTreeMap::new(),
+        external_definitions: DefinitionOrigins::checked_external_definitions(checked).unwrap(),
     };
     let catalog =
         Arc::new(DefinitionCatalog::build(checked.clone(), &origins, Default::default()).unwrap());
@@ -64,10 +71,7 @@ fn prepared_project(
         Arc::new(NativeCodeSyntaxOperations::default()),
         Default::default(),
     ));
-    (
-        checked,
-        Arc::new(crate::api::code::PreparedCodeDefinitions::new(store)),
-    )
+    Arc::new(crate::api::code::PreparedCodeDefinitions::new(store))
 }
 
 async fn execute(checked: &etas_frontend::CheckedProgram, options: RunOptions) -> RunResult {
@@ -217,9 +221,13 @@ flow main() -> bool {
 "#,
         &["app.main.Worker"],
     );
-    assert!(checked.types.std_intrinsic_calls.values().any(|call| {
-        call.intrinsic == etas_std::intrinsic::runtime::CODE_PARSE_BODY
-    }));
+    assert!(
+        checked
+            .types
+            .std_intrinsic_calls
+            .values()
+            .any(|call| { call.intrinsic == etas_std::intrinsic::runtime::CODE_PARSE_BODY })
+    );
     let result = execute(
         &checked,
         RunOptions {

@@ -19,7 +19,7 @@ type CommandCall<'host> =
 
 pub(in crate::driver) enum CommandDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingCommandDispatch<'host>),
+    Pending(Box<PendingCommandDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingCommandDispatch<'host> {
@@ -98,11 +98,11 @@ pub(in crate::driver) async fn begin<'host>(
         command.request.trace.clone(),
         |operation| host.command(operation, command.request.clone()),
     ) {
-        Ok(pending) => CommandDispatchStart::Pending(PendingCommandDispatch {
+        Ok(pending) => CommandDispatchStart::Pending(Box::new(PendingCommandDispatch {
             command,
             key,
             pending,
-        }),
+        })),
         Err(error) => CommandDispatchStart::Complete(retry_or_report(
             eval,
             machine,

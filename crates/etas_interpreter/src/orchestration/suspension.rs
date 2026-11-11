@@ -33,6 +33,9 @@ pub(crate) struct ExecutionProgramSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ActionOriginSnapshot {
+    ControllerStep {
+        inference: HirExprId,
+    },
     Source {
         expr: HirExprId,
         bindings: Vec<(String, TypeId)>,
@@ -67,6 +70,7 @@ pub(crate) struct SuspendedProgramSnapshot {
     pub handlers: HandlerSnapshot,
     pub retries: RetrySnapshot,
     pub model_policy: ModelExecutionPolicySnapshot,
+    pub agent_context: Option<Box<super::AgentRequestContextSnapshot>>,
     pub action: ActionInvocationSnapshot,
     pub span: Span,
 }
@@ -91,6 +95,7 @@ fn references(mut work: Vec<&ContinuationSnapshot>) -> Vec<u32> {
             ContinuationSnapshot::HandleBoundary { inner, .. }
             | ContinuationSnapshot::ReenterHandler { boundary: inner }
             | ContinuationSnapshot::RestoreModelPolicy { inner, .. }
+            | ContinuationSnapshot::AgentExecutionScope { inner, .. }
             | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => work.push(inner),
             ContinuationSnapshot::CallBoundary { outer, .. }
             | ContinuationSnapshot::HandlerDispatch { outer, .. } => work.push(outer),
@@ -139,6 +144,7 @@ impl super::MachineSnapshot {
                 }
                 ContinuationSnapshot::ReenterHandler { boundary: inner }
                 | ContinuationSnapshot::RestoreModelPolicy { inner, .. }
+                | ContinuationSnapshot::AgentExecutionScope { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => work.push(inner),
                 ContinuationSnapshot::CallBoundary { outer, .. }
                 | ContinuationSnapshot::HandlerDispatch { outer, .. } => work.push(outer),

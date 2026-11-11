@@ -151,6 +151,7 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         (V::Bytes(a), V::Bytes(b)) => a == b,
         (V::Json(a), V::Json(b)) => a == b,
         (V::StdConstant(a), V::StdConstant(b)) => a == b,
+        (V::Schema(a), V::Schema(b)) => a == b,
         (V::Prompt(a), V::Prompt(b)) => a == b,
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
@@ -301,6 +302,11 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         }
         (V::Message(a), V::Message(b)) => message(a, b, pending),
         (V::Conversation(a), V::Conversation(b)) => {
+            match (&a.protocol, &b.protocol) {
+                (Some(a), Some(b)) => pending.push((a, b)),
+                (None, None) => {}
+                _ => return false,
+            }
             a.selected_context == b.selected_context
                 && a.session == b.session
                 && a.history_fence == b.history_fence

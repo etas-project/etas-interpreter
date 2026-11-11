@@ -85,6 +85,8 @@ enum Frame {
         header: Box<ConversationHeader>,
         source: MessageList,
         values: Vec<crate::orchestration::MessageSnapshot>,
+        protocol_source: Option<SharedValue>,
+        protocol: Option<ValueSnapshot>,
     },
     Unary {
         kind: UnaryKind,
@@ -162,6 +164,8 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
             header: Box::new(ConversationHeader::capture(value)),
             source: value.messages.clone(),
             values: Vec::with_capacity(value.messages.len()),
+            protocol_source: value.protocol.clone(),
+            protocol: None,
         },
         InterpValue::Existential(value) => Frame::Unary {
             kind: UnaryKind::Existential(ExistentialHeader::capture(value)),
@@ -316,10 +320,24 @@ impl Frame {
     fn next(&self, cache: &mut CaptureContext) -> Result<Option<Started>, String> {
         let mut start = |value| start(value, cache);
         match self {
-            Self::Conversation { source, values, .. } => source
-                .get(values.len())
-                .map(|message| start(&message.payload))
-                .transpose(),
+            Self::Conversation {
+                source,
+                values,
+                protocol_source,
+                protocol,
+                ..
+            } => {
+                if let Some(message) = source.get(values.len()) {
+                    start(&message.payload).map(Some)
+                } else if protocol.is_none() {
+                    protocol_source
+                        .as_ref()
+                        .map(|value| start(value))
+                        .transpose()
+                } else {
+                    Ok(None)
+                }
+            }
             Self::Unary {
                 source,
                 value: None,
@@ -346,11 +364,17 @@ impl Frame {
 
     fn accept(&mut self, value: ValueSnapshot) -> Result<(), String> {
         match self {
-            Self::Conversation { source, values, .. } => {
-                let message = source
-                    .get(values.len())
-                    .ok_or("checkpoint conversation lost its current message")?;
-                values.push(MessageHeader::capture(message).snapshot(SnapshotBox::new(value)));
+            Self::Conversation {
+                source,
+                values,
+                protocol,
+                ..
+            } => {
+                if let Some(message) = source.get(values.len()) {
+                    values.push(MessageHeader::capture(message).snapshot(SnapshotBox::new(value)));
+                } else {
+                    *protocol = Some(value);
+                }
             }
             Self::Unary { value: current, .. } => {
                 if current.is_some() {
@@ -392,7 +416,12 @@ impl Frame {
 
     fn finish(self) -> Result<ValueSnapshot, String> {
         Ok(match self {
-            Self::Conversation { header, values, .. } => header.snapshot(values),
+            Self::Conversation {
+                header,
+                values,
+                protocol,
+                ..
+            } => header.snapshot(values, protocol),
             Self::Unary { kind, value, .. } => {
                 let value =
                     SnapshotBox::new(value.ok_or("checkpoint unary builder has no payload")?);

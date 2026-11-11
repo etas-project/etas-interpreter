@@ -45,20 +45,21 @@ pub(super) async fn validate(
                 continuation: Continuation::BlockValue,
             });
             match super::drive::execute_entry(&mut scoped, signal, host).await {
-                EvaluationOutcome::Completed(InterpValue::Number(NumericValue::I32(order)))
-                    if order < 0 => {}
-                EvaluationOutcome::Completed(InterpValue::Number(NumericValue::I32(_))) => {
-                    return Err(invalid(
-                        &mut scoped,
-                        "restored ordered keys are duplicate or out-of-order under their checked comparison",
-                    ));
-                }
-                EvaluationOutcome::Completed(_) => {
-                    return Err(invalid(
-                        &mut scoped,
-                        "restored key comparison did not return i32",
-                    ));
-                }
+                EvaluationOutcome::Completed(value) => match *value {
+                    InterpValue::Number(NumericValue::I32(order)) if order < 0 => {}
+                    InterpValue::Number(NumericValue::I32(_)) => {
+                        return Err(invalid(
+                            &mut scoped,
+                            "restored ordered keys are duplicate or out-of-order under their checked comparison",
+                        ));
+                    }
+                    _ => {
+                        return Err(invalid(
+                            &mut scoped,
+                            "restored key comparison did not return i32",
+                        ));
+                    }
+                },
                 outcome => return Err(outcome),
             }
         }

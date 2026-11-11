@@ -11,6 +11,11 @@ impl EvalContext<'_> {
     ) -> ControlSignal {
         use AgentSupportCallable as S;
         match kind {
+            S::ConversationFromPrompt
+            | S::ConversationAppendStep
+            | S::ConversationAppendResults => {
+                self.execute_conversation_assembly(kind, checked, args, span)
+            }
             S::PromptNew => ControlSignal::Value(InterpValue::Prompt(Default::default())),
             S::PromptSystem | S::PromptUser | S::PromptAssistant | S::PromptData => {
                 let [InterpValue::Prompt(messages), value] = args.as_slice() else {

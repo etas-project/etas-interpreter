@@ -17,6 +17,7 @@ pub(in crate::api::codec) fn encode(
                 "id": id, "scope": task.scope, "program": task.program,
                 "local": { "parent": task.local.parent,
                     "model_policy": machine::model_policy_snapshot(&task.local.model_policy),
+                    "agent_context": machine::agent_context::request_json(task.local.agent_context.as_deref()),
                     "handlers": task.local.handlers, "retries": task.local.retries,
                     "cancellation": task.local.cancellation },
                 "handler_floor": task.handler_floor, "state": task.state,
@@ -130,6 +131,11 @@ pub(in crate::api::codec) fn decode(
             scope: field(entry, "scope")?,
             program,
             local: TaskLocalSnapshot {
+                agent_context: machine::agent_context::request_from_json(required_obj(
+                    local,
+                    "agent_context",
+                )?)
+                .map_err(InterpreterCodecError::new)?,
                 parent: field(local, "parent")?,
                 model_policy: machine::model_policy_from_snapshot(required_obj(
                     local,

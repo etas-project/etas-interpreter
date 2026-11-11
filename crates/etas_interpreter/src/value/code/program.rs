@@ -24,8 +24,14 @@ impl CheckedExecutionProgram {
         revisions: Option<&crate::api::code::PreparedRevisionSet>,
     ) -> Result<Self, String> {
         use crate::orchestration::{CheckpointProgramReference, ExecutionRootSnapshot as R};
-        if matches!(saved.program, CheckpointProgramReference::Source) && source.revision.is_none()
-        {
+        let owns_program = match (&saved.program, &source.revision) {
+            (CheckpointProgramReference::Source, None) => true,
+            (CheckpointProgramReference::Revision { revision: saved }, Some(current)) => {
+                **saved == crate::orchestration::CheckpointCodeRevision::for_revision(current)
+            }
+            _ => false,
+        };
+        if owns_program {
             let root = match saved.root {
                 R::Item(item) => etas_frontend::CheckedCallableRoot::Item(item),
                 R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(expr),
@@ -41,7 +47,7 @@ impl CheckedExecutionProgram {
                 checked: source.checked.clone(),
                 plan: Arc::new(plan),
                 definitions: source.definitions.clone(),
-                revision: None,
+                revision: source.revision.clone(),
             });
         }
         revisions

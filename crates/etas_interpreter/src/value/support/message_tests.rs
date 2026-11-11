@@ -18,8 +18,9 @@ fn message(payload: InterpValue) -> MessageValue {
 
 fn conversation(messages: Vec<MessageValue>) -> InterpValue {
     InterpValue::Conversation(ConversationValue {
+        protocol: None,
         selected_context: None,
-        session: String::new(),
+        session: Some(String::new()),
         history_fence: None,
         messages: messages.into(),
         cursor: None,

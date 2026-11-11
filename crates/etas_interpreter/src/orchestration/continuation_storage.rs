@@ -69,6 +69,7 @@ impl Drop for ContinuationSnapshotLink {
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
                 | ContinuationSnapshot::ReenterHandler { boundary: inner }
                 | ContinuationSnapshot::HandleBoundary { inner, .. }
+                | ContinuationSnapshot::AgentExecutionScope { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. } => next = inner.0.take(),
                 ContinuationSnapshot::CallBoundary { outer, .. }
                 | ContinuationSnapshot::HandlerDispatch { outer, .. } => next = outer.0.take(),

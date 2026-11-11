@@ -25,9 +25,6 @@ impl Serialize for CodeMetadataPayload {
                 "GenericOwner",
                 value,
             ),
-            Self::Tool(value) => {
-                serializer.serialize_newtype_variant("CodeMetadataPayload", 11, "Tool", value)
-            }
             Self::StaticValue(value) => serializer.serialize_newtype_variant(
                 "CodeMetadataPayload",
                 12,

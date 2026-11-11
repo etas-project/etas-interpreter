@@ -49,7 +49,37 @@ impl EvalContext<'_> {
         if let Err(fault) = self.consume_residual_permit(&perform) {
             return ControlSignal::Fault(Box::new(fault));
         }
+        let previous = perform
+            .inference
+            .clone()
+            .map(|context| self.enter_agent_context(context));
         let signal = match *boundary {
+            crate::control::DefaultActionBoundary::AgentControllerStep {
+                inference,
+                conversation,
+                span,
+            } => {
+                match crate::control::CheckedAgentOperation::controller(
+                    self.checked,
+                    inference,
+                    crate::control::AgentOperationKind::Step,
+                ) {
+                    Ok(operation) => {
+                        let Some(fact) = self.checked.types.agent_inferences.get(&inference) else {
+                            return ControlSignal::missing_checked_fact(
+                                "controller has no inference fact",
+                                span,
+                            );
+                        };
+                        self.execute_checked_agent_step(
+                            &operation,
+                            vec![conversation, InterpValue::Schema(fact.output)],
+                            span,
+                        )
+                    }
+                    Err(error) => ControlSignal::missing_checked_fact(error, span),
+                }
+            }
             crate::control::DefaultActionBoundary::Console(pending) => {
                 ControlSignal::Console(pending)
             }
@@ -80,6 +110,9 @@ impl EvalContext<'_> {
                 span,
             } => self.execute_directory_list_default(path, max_entries, max_bytes, span),
         };
+        if let Some(previous) = previous {
+            self.restore_agent_context(previous);
+        }
         self.continue_chain_signal(signal, perform.continuation)
     }
 

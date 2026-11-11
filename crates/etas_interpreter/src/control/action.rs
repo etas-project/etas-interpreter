@@ -45,6 +45,9 @@ impl CheckedActionInvocation {
         };
         let execution = revisions.execution_snapshot(native)?;
         let proof = match origin {
+            ActionOriginSnapshot::ControllerStep { inference } => {
+                Self::controller_step(execution, *inference)?
+            }
             ActionOriginSnapshot::Source {
                 expr,
                 bindings,
@@ -130,6 +133,18 @@ impl CheckedActionInvocation {
         ))
     }
 
+    pub(crate) fn controller_step(
+        execution: crate::value::CheckedExecutionProgram,
+        inference: etas_hir::HirExprId,
+    ) -> Result<Self, String> {
+        let abi = crate::plan::checked_action::controller_step(&execution, inference)?;
+        Ok(Self::with_abi(
+            execution.checked.clone(),
+            abi,
+            ActionEvidence::native(execution, NativeActionOrigin::ControllerStep(inference)),
+        ))
+    }
+
     fn with_abi(
         program: CheckedProgram,
         abi: crate::plan::checked_action::CheckedActionAbi,
@@ -186,6 +201,11 @@ impl CheckedActionInvocation {
 
 #[derive(Clone, Debug)]
 pub enum DefaultActionBoundary {
+    AgentControllerStep {
+        inference: etas_hir::HirExprId,
+        conversation: crate::value::InterpValue,
+        span: etas_core::Span,
+    },
     Console(Box<super::PendingConsole>),
     Native {
         kind: crate::intrinsic::dispatch::StdCallable,

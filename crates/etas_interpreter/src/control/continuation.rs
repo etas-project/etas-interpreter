@@ -14,6 +14,15 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    ToolInvocationStart(Box<crate::eval::tool::ToolInvocation>),
+    ToolInvocationResult(Box<crate::eval::tool::ToolInvocation>),
+    /// Restore the caller's scoped agent identity and model policy on exit.
+    AgentExecutionState(Box<super::AgentExecutionState>),
+    /// Reenter suspended code once, then restore the state of its resumer.
+    AgentExecutionScope {
+        state: Box<super::AgentExecutionState>,
+        inner: ContinuationLink,
+    },
     PackExistential {
         expr: HirExprId,
         frame: Frame,
@@ -34,7 +43,6 @@ pub enum Continuation {
     /// Correlates a governed action's completed outcome with the scopes that
     /// observed it, then continues with the outcome value.
     ResidualOutcome(super::residual::ResidualAttemptTag),
-    SourceToolReturn(crate::eval::machine::SourceToolContinuation),
     ContinueBlock {
         block: HirBlockId,
         next_stmt_index: usize,
@@ -335,6 +343,8 @@ pub enum Continuation {
         span: Span,
         model_policy: Box<crate::api::ModelExecutionPolicy>,
     },
+    AgentControllerStep(Box<crate::eval::agent::controller::AgentController>),
+    AgentControllerTool(Box<crate::eval::agent::controller::AgentController>),
     ScopedModelPolicy {
         policy: Box<crate::api::ModelExecutionPolicy>,
         inner: ContinuationLink,

@@ -11,6 +11,7 @@ import std.runtime.checkpoint;
 flow main(ticket: SessionId, text: string) -> bool {
     let config = SessionConfig { id = ticket, context = SummaryPlusRecent(8), retention = Days(90) };
     let initial = Conversation.load(config);
+    if initial.session != Some(ticket) { return false; }
     let before = history_page(config, None(), 1);
     let content = SessionContextContent { text = text, provenance = {"producer" => "app-v2"} };
     let operation = prepare_context(config, before.fence, content);

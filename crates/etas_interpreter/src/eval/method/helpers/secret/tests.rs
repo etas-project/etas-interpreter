@@ -305,8 +305,9 @@ fn iterative_secret_scan_covers_each_supported_container_child() {
                 fields: vec![Value::Unit, child.clone()].into(),
             },
             Value::Conversation(ConversationValue {
+                protocol: None,
                 selected_context: None,
-                session: String::new(),
+                session: Some(String::new()),
                 history_fence: None,
                 cursor: None,
                 messages: vec![message(Value::Unit), message(child)].into(),

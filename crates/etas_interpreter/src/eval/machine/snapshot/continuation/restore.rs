@@ -17,6 +17,7 @@ enum UnaryParent {
         frame: Box<LocalsSnapshot>,
     },
     ScopedModelPolicy(Box<ModelExecutionPolicySnapshot>),
+    AgentExecutionScope(Box<crate::orchestration::AgentExecutionStateSnapshot>),
 }
 
 enum PendingParent {
@@ -70,6 +71,9 @@ impl ContinuationSnapshot {
                         },
                         inner,
                     ),
+                    Self::AgentExecutionScope { state, inner } => {
+                        (UnaryParent::AgentExecutionScope(state), inner)
+                    }
                     Self::ScopedModelPolicy { policy, inner } => {
                         (UnaryParent::ScopedModelPolicy(policy), inner)
                     }
@@ -193,6 +197,10 @@ fn restore_parent(
             handlers,
             span,
             frame: super::super::frame::restore_frame(*frame, context)?,
+        },
+        UnaryParent::AgentExecutionScope(state) => Continuation::AgentExecutionScope {
+            state: Box::new(context.agent_state(*state)?),
+            inner: child,
         },
         UnaryParent::ScopedModelPolicy(policy) => Continuation::ScopedModelPolicy {
             policy: Box::new(restore_model_policy(*policy)),

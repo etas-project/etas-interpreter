@@ -1,4 +1,8 @@
 mod action;
+mod agent_context;
+mod agent_operation;
+pub use agent_operation::CheckedAgentOperation;
+pub(crate) use agent_operation::{AgentOperationKind, AgentOperationOrigin};
 mod call_site;
 mod call_target;
 mod continuation;
@@ -12,6 +16,7 @@ pub use action::{
     CheckedActionInvocation, DefaultActionBoundary, DirectoryListReduction, FileReadReduction,
     StreamReadReduction,
 };
+pub use agent_context::{AgentExecutionState, AgentRequestContext};
 pub(crate) use call_site::{CallOrigin, ComposedInvocation, InvocationPath};
 pub use call_site::{CallSite, CallSiteKind};
 pub use call_target::CallTarget;

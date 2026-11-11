@@ -265,11 +265,26 @@ impl FakeHost {
         self.seed_model_response_text_with_usage(
             text,
             Some(etas_host::ModelUsage {
-                input_tokens: 1,
-                output_tokens: 1,
+                input_tokens: Some(1),
+                output_tokens: Some(1),
                 cost: None,
             }),
         );
+    }
+
+    pub(super) fn seed_model_output(
+        &self,
+        output: etas_host::ModelOutput,
+        usage: Option<etas_host::ModelUsage>,
+    ) {
+        self.model_responses
+            .lock()
+            .unwrap()
+            .push_back(ModelResponse {
+                id: etas_host::HostRequestId(0),
+                result: Ok(output),
+                usage,
+            });
     }
 
     pub(super) fn seed_model_response_text_with_usage(
@@ -284,12 +299,14 @@ impl FakeHost {
                 id: etas_host::HostRequestId(0),
                 result: Ok(etas_host::ModelOutput {
                     message: ModelMessage {
+                        provider_data: Vec::new(),
                         role: ModelRole::Assistant,
                         content: vec![ModelContent::Text(text.to_owned())],
                         tool_call_id: None,
                         tool_calls: Vec::new(),
                     },
-                    tool_calls: Vec::new(),
+                    termination: etas_host::ModelTermination::Complete,
+                    provider_request_id: None,
                 }),
                 usage,
             });
@@ -325,12 +342,14 @@ impl FakeHost {
                 id: etas_host::HostRequestId(0),
                 result: Ok(etas_host::ModelOutput {
                     message: ModelMessage {
+                        provider_data: Vec::new(),
                         role: ModelRole::Assistant,
                         content: vec![ModelContent::Value(value)],
                         tool_call_id: None,
                         tool_calls: Vec::new(),
                     },
-                    tool_calls: Vec::new(),
+                    termination: etas_host::ModelTermination::Complete,
+                    provider_request_id: None,
                 }),
                 usage: None,
             });
@@ -359,24 +378,22 @@ impl FakeHost {
                 id: etas_host::HostRequestId(0),
                 result: Ok(etas_host::ModelOutput {
                     message: ModelMessage {
+                        provider_data: Vec::new(),
                         role: ModelRole::Assistant,
                         content: Vec::new(),
                         tool_call_id: None,
                         tool_calls: vec![ModelToolCall {
                             id: "call-1".to_owned(),
                             tool: tool.to_owned(),
-                            args: args.clone(),
+                            args,
                         }],
                     },
-                    tool_calls: vec![ModelToolCall {
-                        id: "call-1".to_owned(),
-                        tool: tool.to_owned(),
-                        args,
-                    }],
+                    termination: etas_host::ModelTermination::Complete,
+                    provider_request_id: None,
                 }),
                 usage: Some(etas_host::ModelUsage {
-                    input_tokens: 1,
-                    output_tokens: 1,
+                    input_tokens: Some(1),
+                    output_tokens: Some(1),
                     cost: None,
                 }),
             });

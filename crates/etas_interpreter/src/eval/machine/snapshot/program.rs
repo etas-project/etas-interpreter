@@ -91,6 +91,12 @@ pub(in crate::eval::machine) fn capture(
         handler_floor: destination.handler_floor,
         outer: context.continuation(&frame.outer)?,
         parent_model_policy: capture_model_policy(&frame.parent_model_policy),
+        parent_agent_context: frame.parent_agent_context.as_ref().map(|request| {
+            Box::new(super::capture_agent_context(
+                request,
+                &mut context.revisions,
+            ))
+        }),
         span: frame.span,
         retry_depth: frame.retry_depth,
     })

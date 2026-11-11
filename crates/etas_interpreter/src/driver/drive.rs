@@ -43,7 +43,7 @@ pub(super) fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcom
 
 #[derive(Debug)]
 pub(crate) enum EvaluationOutcome {
-    Completed(InterpValue),
+    Completed(Box<InterpValue>),
     Failed(crate::api::RunFailure),
     Cancelled(etas_host::execution::CancellationCause),
 }
@@ -51,7 +51,7 @@ pub(crate) enum EvaluationOutcome {
 impl EvaluationOutcome {
     pub(crate) fn into_outcome(self) -> crate::api::RunOutcome {
         match self {
-            Self::Completed(value) => crate::api::RunOutcome::Completed(value),
+            Self::Completed(value) => crate::api::RunOutcome::Completed(*value),
             Self::Failed(failure) => crate::api::RunOutcome::Failed(failure),
             Self::Cancelled(cause) => crate::api::RunOutcome::Cancelled(cause),
         }
@@ -87,7 +87,7 @@ pub async fn execute_entry_from_snapshot(
         ));
         return evaluation_failure(eval);
     }
-    let signal = eval.execute_from_checkpoint_signal(checkpoint);
+    let signal = eval.execute_from_checkpoint_signal(checkpoint, revisions.as_deref());
     if let ControlSignal::Fault(fault) = signal {
         eval.diagnostics.push(fault.clone().into_diagnostic());
         return EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(*fault));
@@ -161,10 +161,10 @@ pub async fn execute_entry_from_snapshot(
     Box::pin(drive_eval_signal(eval, signal, host, machine)).await
 }
 
-async fn drive_eval_signal<'host>(
+async fn drive_eval_signal(
     eval: &mut EvalContext<'_>,
     mut signal: ControlSignal,
-    host: &'host dyn HostServices,
+    host: &dyn HostServices,
     mut machine: EvalMachine,
 ) -> EvaluationOutcome {
     let mut machine_has_input = machine.has_input();
@@ -252,7 +252,7 @@ async fn drive_scope<'host>(
                 return ScopeOutcome::ProgramChanged;
             }
             MachinePoll::Complete(value) => {
-                return ScopeOutcome::Finished(EvaluationOutcome::Completed(*value));
+                return ScopeOutcome::Finished(EvaluationOutcome::Completed(value));
             }
             MachinePoll::Cancelled(cause) => {
                 return ScopeOutcome::Finished(EvaluationOutcome::Cancelled(cause));

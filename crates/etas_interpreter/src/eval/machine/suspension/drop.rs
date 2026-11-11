@@ -23,6 +23,7 @@ impl Drop for ProgramContinuation {
                 Continuation::HandleBoundary { inner, .. }
                 | Continuation::ReenterHandler { boundary: inner }
                 | Continuation::RestoreModelPolicy { inner, .. }
+                | Continuation::AgentExecutionScope { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. } => work.extend(inner.into_unique()),
                 _ => {}
             }
@@ -42,13 +43,9 @@ fn discard_segment(program: SuspendedProgram, work: &mut Vec<Continuation>) {
             EvalFrame::Continuation(frame) => work.push(frame.continuation),
             EvalFrame::Handler(frame) => work.extend(frame.inner.into_unique()),
             EvalFrame::Retry(_) | EvalFrame::ResidualScope(_) => {}
-            EvalFrame::ModelLoop(frame) => {
+            EvalFrame::ModelRequest(frame) => {
                 work.push(frame.pending.continuation);
                 work.push(frame.outer_continuation);
-            }
-            EvalFrame::SourceToolReturn(frame) => {
-                work.push(frame.model_loop.pending.continuation);
-                work.push(frame.model_loop.outer_continuation);
             }
         }
     }

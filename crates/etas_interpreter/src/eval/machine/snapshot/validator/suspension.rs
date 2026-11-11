@@ -106,6 +106,14 @@ impl SnapshotValidator<'_> {
             validator.frame_owners = self.frame_owners.clone();
             validator.suspension_references = self.suspension_references.clone();
             validator.residual_references = self.residual_references.clone();
+            node.model_policy.validate()?;
+            node.boundary.parent_model_policy.validate()?;
+            if let Some(request) = &node.agent_context {
+                validator.agent_request_context(request)?;
+            }
+            if let Some(request) = &node.boundary.parent_agent_context {
+                parent_validator.agent_request_context(request)?;
+            }
             let mut local_scopes = BTreeSet::new();
             validator.validate_local_frames(&node.frames, &mut local_scopes)?;
             validator.continuation(

@@ -138,10 +138,9 @@ flow main() -> string {
             .any(|task| matches!(
                 task.machine
                     .as_ref()
-                    .and_then(|machine| machine.input.as_deref()),
-                Some(crate::orchestration::MachineInputSnapshot::Signal(
-                    crate::orchestration::ControlSignalSnapshot::Error { .. }
-                ))
+                    .and_then(|machine| machine.input.as_deref())
+                    .and_then(crate::orchestration::MachineInputSnapshot::signal),
+                Some(crate::orchestration::ControlSignalSnapshot::Error { .. })
             )),
         "Host error is committed before its handler runs"
     );
@@ -250,17 +249,19 @@ flow main() -> string {
     host.seed_model_response_text_with_usage(
         "ok",
         Some(etas_host::ModelUsage {
-            input_tokens: 2,
-            output_tokens: 3,
+            input_tokens: Some(2),
+            output_tokens: Some(3),
             cost: None,
         }),
     );
     let runtime = api::InterpreterRuntime::new(std::num::NonZeroUsize::new(4).unwrap()).unwrap();
     let options = || {
-        let mut options = RunOptions::default();
-        options.runtime = Some(runtime.clone());
-        options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
-        options.cpu_min_work = 0;
+        let mut options = RunOptions {
+            runtime: Some(runtime.clone()),
+            cpu_threads: std::num::NonZeroUsize::new(4).unwrap(),
+            cpu_min_work: 0,
+            ..Default::default()
+        };
         options
             .host_context
             .authority
@@ -461,9 +462,9 @@ flow main(input: string) -> string {
     assert_eq!(first.checkpoints.len(), 2);
     let before = &first.checkpoints[0];
     assert!(before.tasks.as_ref().unwrap().tasks.values().any(|task|
-        matches!(task.machine.as_ref().and_then(|machine| machine.input.as_deref()),
-            Some(crate::orchestration::MachineInputSnapshot::Signal(crate::orchestration::ControlSignalSnapshot::Input(
-                crate::orchestration::ContinuationInputSnapshot::Value(crate::orchestration::ValueSnapshot::String(value))))) if value.len() == 200000)),
+        matches!(task.machine.as_ref().and_then(|machine| machine.input.as_deref()).and_then(crate::orchestration::MachineInputSnapshot::signal),
+            Some(crate::orchestration::ControlSignalSnapshot::Input(
+                crate::orchestration::ContinuationInputSnapshot::Value(crate::orchestration::ValueSnapshot::String(value)))) if value.len() == 200000)),
         "checkpoint drains the admitted kernel before capturing the ready input");
     let wire =
         crate::api::codec::checkpoint_artifact_json(&["main.es".into()], "main", before).unwrap();

@@ -5,6 +5,59 @@ use crate::api::codec::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn shared_json_adt_construction_matching_and_codecs_agree() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.json.{JsonValue, parse, stringify};
+
+flow classify(value: JsonValue) -> string {
+    return match value {
+        JsonValue.Null => "null",
+        JsonValue.Bool(flag) => if flag { "true" } else { "false" },
+        JsonValue.Number(number) => if number == 3.5 { "number" } else { "wrong" },
+        JsonValue.String(text) => text,
+        JsonValue.Array(items) => classify(items[0]),
+        JsonValue.Object(fields) => match fields.get("item") {
+            Some(item) => classify(item), None => "missing",
+        },
+    };
+}
+
+
+flow main() -> bool {
+    let object = JsonValue.Object({"item" => JsonValue.Array([JsonValue.Number(3.5)])});
+    let encoded = match stringify(object) { Ok(text) => text, Err(_) => abort("encode") };
+    let decoded = match parse(encoded) { Ok(value) => value, Err(_) => abort("decode") };
+    let reversed = JsonValue.Object({"z" => JsonValue.Bool(true), "a" => JsonValue.Null});
+    let ordered = match parse("{\"a\":null,\"z\":true}") { Ok(value) => value, Err(_) => abort("decode ordered") };
+    return object == decoded
+        && reversed == ordered
+        && classify(decoded) == "number"
+        && classify(JsonValue.Null) == "null"
+        && classify(JsonValue.Bool(true)) == "true"
+        && classify(JsonValue.String("text")) == "text";
+}
+"#,
+    );
+    let host = FakeHost::new(HostServiceAvailability::default());
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::Bool(true)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn json_aliases_and_saved_content_survive_file_checkpoint_resume() {
     let checked = checked_project(
         r#"

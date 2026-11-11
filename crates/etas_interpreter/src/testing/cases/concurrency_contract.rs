@@ -324,9 +324,11 @@ flow main(values: Array<i32>) -> Array<i32> {
 "#,
     );
     let before = crate::driver::cpu::program_build_count();
-    let mut options = RunOptions::default();
-    options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
-    options.cpu_min_work = 0;
+    let options = RunOptions {
+        cpu_threads: std::num::NonZeroUsize::new(4).unwrap(),
+        cpu_min_work: 0,
+        ..Default::default()
+    };
     let result = Interpreter
         .run_checked(
             &checked,

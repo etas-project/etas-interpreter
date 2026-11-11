@@ -194,6 +194,17 @@ pub(crate) fn source_action(
         let [prompt, schema] = abi.parameters.as_slice() else {
             return Err("inference action has no checked Prompt/Schema payload contract".into());
         };
+        let method = checked
+            .types
+            .agent_methods
+            .get(&inference.method)
+            .ok_or("inference origin has no checked method context")?;
+        let [context, _] = generic_params.as_slice() else {
+            return Err("inference origin has no checked context/output parameters".into());
+        };
+        if substitute(context.subject)? != method.context_type {
+            return Err("inference origin disagrees with its checked method context".into());
+        }
         if checked.type_store.get(*prompt) != Some(&etas_types::Type::Prompt)
             || *schema != inference.schema
             || abi.output != inference.output

@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub(super) enum NativeActionOrigin {
+    ControllerStep(etas_hir::HirExprId),
     Source {
         expr: etas_hir::HirExprId,
         bindings: crate::control::GenericBindings,
@@ -61,6 +62,9 @@ impl ActionEvidence {
             return Err("projected action origin requires its owning suspended segment".into());
         };
         let origin = match &native.origin {
+            NativeActionOrigin::ControllerStep(inference) => ActionOriginSnapshot::ControllerStep {
+                inference: *inference,
+            },
             NativeActionOrigin::Source { expr, bindings } => ActionOriginSnapshot::Source {
                 expr: *expr,
                 bindings: bindings.sorted_types(),
@@ -136,6 +140,9 @@ impl ActionEvidence {
             }
         };
         let mut abi = match &native.origin {
+            NativeActionOrigin::ControllerStep(inference) => {
+                crate::plan::checked_action::controller_step(&native.execution, *inference)?
+            }
             NativeActionOrigin::Source { expr, bindings } => {
                 crate::plan::checked_action::source_action(&native.execution, *expr, bindings)?
             }

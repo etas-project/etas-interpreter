@@ -134,16 +134,28 @@ fn write<'a>(
         }
         InterpValue::Message(message) => write_message(message, slot, child),
         InterpValue::Conversation(conversation) => {
-            *slot = json!({"kind":"conversation","selected_context":null,"history_fence":conversation.history_fence.as_ref().map(|fence|fence.as_token()),"session":conversation.session,"messages":null,"cursor":conversation.cursor});
+            *slot = json!({"kind":"conversation","protocol":null,"selected_context":null,"history_fence":conversation.history_fence.as_ref().map(|fence|fence.as_token()),"session":conversation.session,"messages":null,"cursor":conversation.cursor});
             if let Some(context) = conversation.selected_context.as_deref() {
                 slot["selected_context"] = session::selected_context_json(context);
             }
-            for (message, slot) in conversation
-                .messages
-                .iter()
-                .zip(array(&mut slot["messages"], conversation.messages.len()))
-            {
-                child(Node::Message(message), slot);
+            for (name, slot) in slot.as_object_mut().unwrap() {
+                match name.as_str() {
+                    "protocol" => {
+                        if let Some(protocol) = &conversation.protocol {
+                            child(Node::Value(protocol), slot);
+                        }
+                    }
+                    "messages" => {
+                        for (message, slot) in conversation
+                            .messages
+                            .iter()
+                            .zip(array(slot, conversation.messages.len()))
+                        {
+                            child(Node::Message(message), slot);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         InterpValue::Provenance(value) => {

@@ -73,15 +73,18 @@ fn signal_json(
             "frame":snapshot::frame_json_with_budget(frame, budget)?,
             "continuation":snapshot::continuation_json_with_budget(continuation, budget)?}),
         S::Block {
+            agent_context,
             block,
             next_stmt_index,
             frame,
             continuation,
             residual,
-        } => json!({"kind":"block",
+        } => {
+            json!({"kind":"block", "agent_context": machine::agent_context::request_json(agent_context.as_deref()),
             "block":block.0, "next_stmt_index":next_stmt_index, "residual":residual,
             "frame":snapshot::frame_json_with_budget(frame, budget)?,
-            "continuation":snapshot::continuation_json_with_budget(continuation, budget)?}),
+            "continuation":snapshot::continuation_json_with_budget(continuation, budget)?})
+        }
         S::Call {
             pure,
             site,
@@ -147,11 +150,11 @@ pub(in crate::api::codec) fn decode(
     checked: &etas_frontend::CheckedProject,
 ) -> Result<I, InterpreterCodecError> {
     Ok(match required_str(value, "kind")? {
-        "signal" => I::Signal(signal_from_json(
+        "signal" => I::Signal(Box::new(signal_from_json(
             limits,
             required_obj(value, "signal")?,
             checked,
-        )?),
+        )?)),
         "enter_program" => I::EnterProgram {
             owner: field(value, "owner")?,
             call: machine::call_target_snapshot_from_json(limits, required_obj(value, "call")?)
@@ -227,6 +230,11 @@ fn signal_from_json(
             continuation: continuation()?,
         },
         "block" => S::Block {
+            agent_context: machine::agent_context::request_from_json(required_obj(
+                value,
+                "agent_context",
+            )?)
+            .map_err(InterpreterCodecError::new)?,
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,
             frame: frame()?,
@@ -361,25 +369,18 @@ fn result_from_json<T>(
 }
 
 fn model_response_json(response: &etas_host::ModelResponse) -> Value {
-    json!({"id":response.id.0, "usage":response.usage.as_ref().map(|usage| json!({"input_tokens":usage.input_tokens,
-        "output_tokens":usage.output_tokens, "cost":usage.cost.as_ref().map(|cost| json!({"micros":cost.micros.to_string(), "currency":cost.currency}))})),
-        "result":result_json(&response.result, |output| json!({"message":message_json(&output.message), "tool_calls":calls_json(&output.tool_calls)}))})
-}
-fn message_json(message: &etas_host::ModelMessage) -> Value {
-    let role = match message.role {
-        etas_host::ModelRole::System => "system",
-        etas_host::ModelRole::User => "user",
-        etas_host::ModelRole::Assistant => "assistant",
-        etas_host::ModelRole::Tool => "tool",
-    };
-    json!({"role":role, "tool_call_id":message.tool_call_id, "tool_calls":calls_json(&message.tool_calls),
-        "content":message.content.iter().map(|content| match content {
-            etas_host::ModelContent::Text(text) => json!({"kind":"text", "value":text}),
-            etas_host::ModelContent::Value(value) => json!({"kind":"value", "value":value::host_value_json(value)}),
-        }).collect::<Vec<_>>()})
-}
-fn calls_json(calls: &[etas_host::ModelToolCall]) -> Vec<Value> {
-    calls.iter().map(|call| json!({"id":call.id, "tool":call.tool, "args":value::host_value_json(&call.args)})).collect()
+    json!({"id":response.id.0, "usage":response.usage.as_ref().map(value::model_usage::encode),
+    "result":result_json(&response.result, |output| json!({
+        "message":model_host_message_json(&output.message),
+        "provider_request_id":output.provider_request_id,
+        "termination": match &output.termination {
+            etas_host::ModelTermination::Complete => json!({"kind":"complete"}),
+            etas_host::ModelTermination::Truncated => json!({"kind":"truncated"}),
+            etas_host::ModelTermination::Refused(reason) => json!({"kind":"refused","reason":reason}),
+            etas_host::ModelTermination::InvalidToolCall(reason) => json!({"kind":"invalid_tool_call","reason":reason}),
+            etas_host::ModelTermination::InvalidOutput(reason) => json!({"kind":"invalid_output","reason":reason}),
+        },
+    }))})
 }
 fn model_response_from_json(
     value: &Value,
@@ -388,72 +389,35 @@ fn model_response_from_json(
         id: HostRequestId(required_u32(value, "id")?),
         usage: match required_obj(value, "usage")? {
             Value::Null => None,
-            usage => Some(etas_host::ModelUsage {
-                input_tokens: required_u64(usage, "input_tokens")?,
-                output_tokens: required_u64(usage, "output_tokens")?,
-                cost: match required_obj(usage, "cost")? {
-                    Value::Null => None,
-                    cost => Some(etas_host::ModelCostUsage {
-                        micros: required_str(cost, "micros")?.parse().map_err(|_| {
-                            InterpreterCodecError::new("invalid checkpoint model cost")
-                        })?,
-                        currency: required_str(cost, "currency")?.into(),
-                    }),
-                },
-            }),
+            usage => Some(value::model_usage::decode(usage)?),
         },
         result: result_from_json(required_obj(value, "result")?, |output| {
             Ok(etas_host::ModelOutput {
-                message: message_from_json(required_obj(output, "message")?)?,
-                tool_calls: calls_from_json(output, "tool_calls")?,
+                message: model_host_message_from_json(required_obj(output, "message")?)?,
+                provider_request_id: match required_obj(output, "provider_request_id")? {
+                    Value::Null => None,
+                    _ => Some(required_str(output, "provider_request_id")?.into()),
+                },
+                termination: {
+                    let termination = required_obj(output, "termination")?;
+                    match required_str(termination, "kind")? {
+                        "complete" => etas_host::ModelTermination::Complete,
+                        "truncated" => etas_host::ModelTermination::Truncated,
+                        "refused" => etas_host::ModelTermination::Refused(
+                            required_str(termination, "reason")?.into(),
+                        ),
+                        "invalid_tool_call" => etas_host::ModelTermination::InvalidToolCall(
+                            required_str(termination, "reason")?.into(),
+                        ),
+                        "invalid_output" => etas_host::ModelTermination::InvalidOutput(
+                            required_str(termination, "reason")?.into(),
+                        ),
+                        _ => return Err(InterpreterCodecError::new("invalid model termination")),
+                    }
+                },
             })
         })?,
     })
-}
-fn message_from_json(value: &Value) -> Result<etas_host::ModelMessage, InterpreterCodecError> {
-    let role = match required_str(value, "role")? {
-        "system" => etas_host::ModelRole::System,
-        "user" => etas_host::ModelRole::User,
-        "assistant" => etas_host::ModelRole::Assistant,
-        "tool" => etas_host::ModelRole::Tool,
-        _ => return Err(InterpreterCodecError::new("invalid checkpoint model role")),
-    };
-    Ok(etas_host::ModelMessage {
-        role,
-        tool_call_id: required_optional_string(value, "tool_call_id")?,
-        tool_calls: calls_from_json(value, "tool_calls")?,
-        content: required_array(value, "content")?
-            .iter()
-            .map(|content| {
-                Ok(match required_str(content, "kind")? {
-                    "text" => etas_host::ModelContent::Text(required_str(content, "value")?.into()),
-                    "value" => etas_host::ModelContent::Value(value::host_value_from_json(
-                        required_obj(content, "value")?,
-                    )?),
-                    _ => {
-                        return Err(InterpreterCodecError::new(
-                            "invalid checkpoint model content",
-                        ));
-                    }
-                })
-            })
-            .collect::<Result<_, InterpreterCodecError>>()?,
-    })
-}
-fn calls_from_json(
-    value: &Value,
-    field: &'static str,
-) -> Result<Vec<etas_host::ModelToolCall>, InterpreterCodecError> {
-    required_array(value, field)?
-        .iter()
-        .map(|call| {
-            Ok(etas_host::ModelToolCall {
-                id: required_str(call, "id")?.into(),
-                tool: required_str(call, "tool")?.into(),
-                args: value::host_value_from_json(required_obj(call, "args")?)?,
-            })
-        })
-        .collect()
 }
 
 #[cfg(test)]

@@ -507,6 +507,7 @@ flow main() -> i32 {
         for _ in 0..2 {
             let mut machine = EvalMachine::for_entry(program.clone(), Vec::new());
             machine.resume(ControlSignal::pending_block(crate::control::PendingBlock {
+                agent_context: None,
                 block,
                 next_stmt_index: 0,
                 frame: captured.clone(),
@@ -594,8 +595,8 @@ flow main() -> i32 {
         let response = ModelResponse {
             id: HostRequestId(7),
             usage: Some(ModelUsage {
-                input_tokens: 3,
-                output_tokens: 5,
+                input_tokens: Some(3),
+                output_tokens: Some(5),
                 cost: Some(ModelCostUsage {
                     micros: 17,
                     currency: "USD".into(),
@@ -603,15 +604,17 @@ flow main() -> i32 {
             }),
             result: Ok(ModelOutput {
                 message: ModelMessage {
+                    provider_data: Vec::new(),
                     role: ModelRole::Assistant,
                     content: vec![
                         ModelContent::Text("ready".into()),
                         ModelContent::Value(HostValue::Bool(true)),
                     ],
                     tool_call_id: Some("prior".into()),
-                    tool_calls: vec![call.clone()],
+                    tool_calls: vec![call],
                 },
-                tool_calls: vec![call],
+                termination: etas_host::ModelTermination::Complete,
+                provider_request_id: Some("provider-request-7".into()),
             }),
         };
         let input = I::ModelResult(Ok(response.clone()));

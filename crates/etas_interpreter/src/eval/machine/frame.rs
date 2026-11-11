@@ -2,10 +2,9 @@ use etas_core::Span;
 use etas_hir::HirBlockId;
 
 use crate::{
-    control::{Continuation, ContinuationLink, Frame, PendingModel, SourceToolBinding},
+    control::{Continuation, ContinuationLink, Frame, PendingModel},
     orchestration::{ActiveHandlerArmRecord, HandlerScopeId, RetryAttemptRecord},
 };
-use etas_host::{HostSchema, HostValue, ModelToolCall};
 
 #[derive(Clone, Debug)]
 pub(crate) struct BlockFrame {
@@ -49,45 +48,13 @@ pub(crate) struct RetryFrame {
     pub frame: Frame,
 }
 
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ModelRepairState {
-    pub attempts: usize,
-    pub last_kind: Option<String>,
-}
-
 #[derive(Clone, Debug)]
-pub(crate) struct HostToolProgress {
-    pub call: ModelToolCall,
-    pub boundary_key: etas_host::replay::ReplayFingerprint,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct ModelLoopFrame {
+pub(crate) struct ModelRequestFrame {
     pub boundary_request_id: etas_host::HostRequestId,
     pub pending: PendingModel,
-    pub round: usize,
-    pub repair: ModelRepairState,
-    pub last_tool_error: Option<String>,
-    pub remaining_tool_calls: Vec<ModelToolCall>,
-    pub completed_tool_result: bool,
-    pub current_host_tool: Option<HostToolProgress>,
     pub boundary_key: etas_host::replay::ReplayFingerprint,
     pub outer_continuation: Continuation,
 }
-
-#[derive(Clone, Debug)]
-pub(crate) struct SourceToolReturnFrame {
-    pub tool_call_id: String,
-    pub tool_name: String,
-    pub binding: SourceToolBinding,
-    pub args: HostValue,
-    pub boundary_key: etas_host::replay::ReplayFingerprint,
-    pub output_schema: Option<HostSchema>,
-    pub model_loop: Box<ModelLoopFrame>,
-}
-
-#[derive(Clone, Debug)]
-pub struct SourceToolContinuation(pub(crate) Box<SourceToolReturnFrame>);
 
 #[derive(Debug)]
 pub(crate) enum EvalFrame {
@@ -98,9 +65,8 @@ pub(crate) enum EvalFrame {
     Continuation(ContinuationFrame),
     Expr(ExprFrame),
     Handler(HandlerFrame),
-    ModelLoop(Box<ModelLoopFrame>),
+    ModelRequest(Box<ModelRequestFrame>),
     Retry(RetryFrame),
-    SourceToolReturn(SourceToolReturnFrame),
     /// The residual scope of one callable invocation. Leaving it on any path
     /// visits the scope-exit protocol; an effect request handled outside it
     /// captures it into the request's continuation instead.
@@ -113,6 +79,7 @@ pub(crate) struct ProgramReturnFrame {
     pub parent: Option<super::state::ProgramScope>,
     pub parent_program: crate::value::CheckedExecutionProgram,
     pub parent_model_policy: crate::api::ModelExecutionPolicy,
+    pub parent_agent_context: Option<Box<crate::control::AgentRequestContext>>,
     pub call: super::scoped_call::ProgramCall,
     pub outer: Continuation,
     pub span: Span,
@@ -122,7 +89,6 @@ pub(crate) struct ProgramReturnFrame {
 impl EvalFrame {
     pub(crate) fn from_continuation(continuation: Continuation) -> Self {
         match continuation {
-            Continuation::SourceToolReturn(saved) => Self::SourceToolReturn(*saved.0),
             Continuation::CallBoundary {
                 caller,
                 span,
@@ -198,10 +164,7 @@ impl EvalFrame {
                 next_stmt_index: frame.next_stmt_index,
                 frame: frame.frame,
             },
-            Self::ModelLoop(frame) => frame.outer_continuation,
-            Self::SourceToolReturn(frame) => {
-                Continuation::SourceToolReturn(SourceToolContinuation(Box::new(frame)))
-            }
+            Self::ModelRequest(frame) => frame.outer_continuation,
             Self::ResidualScope(scope) => Continuation::ResidualScope(scope),
         })
     }
@@ -226,8 +189,7 @@ impl EvalFrame {
                     frame: frame.frame.clone(),
                 });
             }
-            Self::ModelLoop(frame) => &frame.outer_continuation,
-            Self::SourceToolReturn(frame) => &frame.model_loop.outer_continuation,
+            Self::ModelRequest(frame) => &frame.outer_continuation,
         };
         continuation.find_retry_attempt().cloned()
     }

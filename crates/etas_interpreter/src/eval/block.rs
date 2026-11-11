@@ -14,6 +14,7 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         ControlSignal::pending_block(PendingBlock {
+            agent_context: None,
             block,
             next_stmt_index: start_stmt_index,
             frame: frame.clone(),
