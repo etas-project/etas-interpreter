@@ -1,7 +1,8 @@
 use std::{future::Future, pin::Pin};
 
 use etas_host::{
-    BrowserProtocolOperation, BrowserProtocolPayload, BrowserProtocolResponse, FilesystemEntry,
+    BrowserProtocolOperation, BrowserProtocolPayload, BrowserProtocolResponse, CommandProcessEvent,
+    CommandProcessOperation, CommandProcessPayload, CommandProcessResponse, FilesystemEntry,
     FilesystemOperation, FilesystemResponse, HostError, HostRequestKind, HostTraceRequest,
     HostValue, PolicySubject, SecretPayload, SecretResponse, StreamFailure, StreamOperation,
     StreamPayload, StreamRead, StreamResponse, TcpConnectResponse, TlsConnectResponse,
@@ -52,6 +53,7 @@ pub(in crate::driver) struct CompletedHostBoundaryDispatch {
 
 enum HostBoundaryCompletion {
     Filesystem(HostCompletion<FilesystemResponse>),
+    CommandProcess(HostCompletion<CommandProcessResponse>),
     Tcp(HostCompletion<TcpConnectResponse>),
     Stream(HostCompletion<StreamResponse>),
     Tls(HostCompletion<TlsConnectResponse>),
@@ -171,6 +173,29 @@ pub(in crate::driver) async fn begin<'host>(
             Ok(pending) => {
                 pending_boundary(boundary, key, pending, HostBoundaryCompletion::Filesystem)
             }
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
+        HostBoundaryRequest::CommandProcess(request) => match HostDispatch::begin(
+            eval,
+            request.id,
+            HostRequestKind::Command,
+            request.trace_payload(),
+            request.authority.clone(),
+            request.trace.clone(),
+            |operation| host.command_process(operation, request),
+        ) {
+            Ok(pending) => pending_boundary(
+                boundary,
+                key,
+                pending,
+                HostBoundaryCompletion::CommandProcess,
+            ),
             Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
                 eval,
                 machine,
@@ -320,6 +345,22 @@ pub(in crate::driver) fn finish(
                     }
                     (Err(error), _) => Err(HostBoundaryFailure::Host(error)),
                 },
+                Err(error) => Err(HostBoundaryFailure::Host(error)),
+            }
+        }
+        HostBoundaryCompletion::CommandProcess(completion) => {
+            match HostDispatch::finish(eval, completion) {
+                Ok(response) => response
+                    .result
+                    .map(|payload| {
+                        host_boundary_value_from_command_process(
+                            boundary.decode,
+                            payload,
+                            eval.checked,
+                            &eval.storage_limits,
+                        )
+                    })
+                    .map_err(HostBoundaryFailure::Host),
                 Err(error) => Err(HostBoundaryFailure::Host(error)),
             }
         }
@@ -534,6 +575,7 @@ fn host_boundary_request_id(request: &HostBoundaryRequest) -> etas_host::HostReq
         HostBoundaryRequest::SessionHistory(request) => request.id,
         HostBoundaryRequest::MemoryWrite(request) => request.id,
         HostBoundaryRequest::Filesystem(request) => request.id,
+        HostBoundaryRequest::CommandProcess(request) => request.id,
         HostBoundaryRequest::Tcp(request) => request.id,
         HostBoundaryRequest::Stream(request) => request.id,
         HostBoundaryRequest::Tls(request) => request.id,
@@ -548,6 +590,7 @@ fn host_boundary_budget(request: &HostBoundaryRequest) -> &etas_host::ExecutionB
         HostBoundaryRequest::SessionHistory(request) => &request.budget,
         HostBoundaryRequest::MemoryWrite(request) => &request.budget,
         HostBoundaryRequest::Filesystem(request) => &request.budget,
+        HostBoundaryRequest::CommandProcess(request) => &request.budget,
         HostBoundaryRequest::Tcp(request) => &request.budget,
         HostBoundaryRequest::Stream(request) => &request.budget,
         HostBoundaryRequest::Tls(request) => &request.budget,
@@ -562,6 +605,7 @@ pub(in crate::driver) fn host_boundary_kind(request: &HostBoundaryRequest) -> &'
         HostBoundaryRequest::SessionHistory(_) => "session",
         HostBoundaryRequest::MemoryWrite(_) => "memory",
         HostBoundaryRequest::Filesystem(_) => "filesystem",
+        HostBoundaryRequest::CommandProcess(_) => "command process",
         HostBoundaryRequest::Tcp(_) => "tcp",
         HostBoundaryRequest::Stream(_) => "stream",
         HostBoundaryRequest::Tls(_) => "tls",
@@ -578,6 +622,7 @@ fn host_boundary_key(
         HostBoundaryRequest::SessionContext(_)
         | HostBoundaryRequest::SessionHistory(_)
         | HostBoundaryRequest::MemoryWrite(_)
+        | HostBoundaryRequest::CommandProcess(_)
         | HostBoundaryRequest::Tcp(_)
         | HostBoundaryRequest::Stream(_)
         | HostBoundaryRequest::Tls(_) => return Ok(None),
@@ -653,6 +698,69 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
         (decode, _) => Err(format!(
             "filesystem response payload does not match checked decode {:?}",
             decode
+        )),
+    }
+}
+
+pub(in crate::driver) fn host_boundary_value_from_command_process(
+    decode: HostBoundaryDecode,
+    payload: CommandProcessPayload,
+    checked: &etas_frontend::CheckedProject,
+    limits: &etas_host::StorageLimits,
+) -> Result<InterpValue, String> {
+    match (decode, payload) {
+        (
+            HostBoundaryDecode::CommandProcessHandle { result_type },
+            CommandProcessPayload::Handle { id },
+        ) => {
+            checked.type_store.get(result_type).ok_or_else(|| {
+                "command process response requires its checked CommandHandle type".to_owned()
+            })?;
+            Ok(InterpValue::HostHandle(HostHandleValue::command_process(
+                result_type,
+                id,
+            )))
+        }
+        (
+            HostBoundaryDecode::CommandProcessEvent { result_type },
+            CommandProcessPayload::Event(event),
+        ) => {
+            let (name, fields) = match event {
+                CommandProcessEvent::Output { stdout, stderr } => (
+                    "Output",
+                    vec![HostValue::Bytes(stdout), HostValue::Bytes(stderr)],
+                ),
+                CommandProcessEvent::Exited {
+                    exit_code,
+                    stdout,
+                    stderr,
+                } => (
+                    "Exited",
+                    vec![
+                        HostValue::Int(exit_code as i128),
+                        HostValue::Bytes(stdout),
+                        HostValue::Bytes(stderr),
+                    ],
+                ),
+                CommandProcessEvent::Stopped { stdout, stderr } => (
+                    "Stopped",
+                    vec![HostValue::Bytes(stdout), HostValue::Bytes(stderr)],
+                ),
+            };
+            crate::eval::host_to_checked_interp_value(
+                HostValue::Variant {
+                    name: name.to_owned(),
+                    fields,
+                },
+                result_type,
+                checked,
+                limits,
+            )
+        }
+        (HostBoundaryDecode::Unit, CommandProcessPayload::Unit) => Ok(InterpValue::Unit),
+        (decode, payload) => Err(format!(
+            "command process response payload {:?} does not match decode {:?}",
+            payload, decode
         )),
     }
 }
@@ -808,6 +916,7 @@ pub(in crate::driver) fn host_boundary_policy_subject(
         }
         HostBoundaryRequest::MemoryWrite(request) => super::memory_commit::policy_subject(request),
         HostBoundaryRequest::Filesystem(request) => filesystem_policy_subject(request),
+        HostBoundaryRequest::CommandProcess(request) => command_process_policy_subject(request),
         HostBoundaryRequest::Tcp(request) => tcp_policy_subject(request),
         HostBoundaryRequest::Stream(request) => stream_policy_subject(request),
         HostBoundaryRequest::Tls(request) => tls_policy_subject(request),
@@ -853,6 +962,65 @@ pub(in crate::driver) fn filesystem_policy_subject(
             ),
             ("resource".to_owned(), HostValue::String(resource)),
         ],
+    }
+}
+
+pub(in crate::driver) fn command_process_policy_subject(
+    request: &etas_host::CommandProcessRequest,
+) -> PolicySubject {
+    let (operation, qualified_action, resource, program, argc) = match &request.operation {
+        CommandProcessOperation::Start { argv, .. } => {
+            let program = argv.first().cloned().unwrap_or_default();
+            (
+                "start",
+                "Command.start",
+                program.clone(),
+                Some(program),
+                Some(argv.len()),
+            )
+        }
+        CommandProcessOperation::Reconnect { process } => (
+            "reconnect",
+            "Command.reconnect",
+            process.clone(),
+            None,
+            None,
+        ),
+        CommandProcessOperation::Read { process, .. } => {
+            ("read", "Command.read", process.clone(), None, None)
+        }
+        CommandProcessOperation::Write { process, .. }
+        | CommandProcessOperation::CloseStdin { process } => {
+            ("write", "Command.write", process.clone(), None, None)
+        }
+        CommandProcessOperation::Stop { process } => {
+            ("stop", "Command.stop", process.clone(), None, None)
+        }
+    };
+    let mut attributes = vec![
+        (
+            "action_kind".to_owned(),
+            HostValue::String("command".to_owned()),
+        ),
+        (
+            "qualified_action".to_owned(),
+            HostValue::String(qualified_action.to_owned()),
+        ),
+        (
+            "operation".to_owned(),
+            HostValue::String(operation.to_owned()),
+        ),
+        ("resource".to_owned(), HostValue::String(resource)),
+    ];
+    if let Some(program) = program {
+        attributes.push(("program".to_owned(), HostValue::String(program)));
+    }
+    if let Some(argc) = argc {
+        attributes.push(("argc".to_owned(), HostValue::UInt(argc as u128)));
+    }
+    PolicySubject {
+        kind: "command".to_owned(),
+        attributes,
     }
 }
 

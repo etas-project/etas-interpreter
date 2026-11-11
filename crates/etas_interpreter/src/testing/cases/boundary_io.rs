@@ -2,6 +2,74 @@ use super::super::*;
 use etas_host::ApprovalGrant;
 
 #[tokio::test(flavor = "current_thread")]
+async fn command_dispatch_uses_the_authority_recorded_by_its_policy_approval() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.host.command.{command, run};
+
+flow main() -> i32 ![Command.run<DefaultCommandSandbox>] {
+    return run(command("/bin/echo", ["approved"]), DefaultCommandSandbox).exit_code;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Command,
+        HostRequirementKind::Approval,
+    ]));
+    let approval_id = HostRequestId(907);
+    host.seed_command_output(0, b"approved\n", b"");
+    host.seed_policy_decision(PolicyDecision::RequireApproval {
+        request: ApprovalRequest {
+            id: approval_id,
+            reason: "command requires approval".to_owned(),
+            requested_grants: Vec::new(),
+            trace: TraceContext::root(TraceId(94)),
+        },
+    });
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            RunOptions {
+                host_context: api::HostExecutionContext {
+                    authority: AuthorityContext {
+                        grants: vec![HostActionGrant::allow("Command", "run")],
+                        policy: boundary_policy_context(HostValue::String("command-policy".into())),
+                        ..AuthorityContext::deny_all()
+                    },
+                    trace: TraceContext::root(TraceId(94)),
+                    ..api::HostExecutionContext::default()
+                },
+                ..RunOptions::default()
+            },
+        )
+        .await
+        .unwrap();
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(host.command_call_count(), 1);
+    let requests = host.command_requests();
+    assert_eq!(requests[0].authority.approvals.len(), 1);
+    assert_eq!(requests[0].authority.approvals[0].id, approval_id);
+    let traced = result.events.iter().find_map(|event| match event {
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
+            kind: etas_host::HostRequestKind::Command,
+            authority,
+            ..
+        }) => Some(authority),
+        _ => None,
+    });
+    let traced = traced.expect("command request start must be traced");
+    assert_eq!(traced.approvals.len(), 1);
+    assert_eq!(traced.approvals[0].id, approval_id);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn repeated_read_line_and_identical_writes_are_distinct_boundary_occurrences() {
     let checked = checked_project(
         r#"
@@ -758,6 +826,87 @@ flow main() -> CommandResult ![Command.run<DefaultCommandSandbox>]
         vec![HostActionGrant::allow("Command", "run")]
     );
     assert_eq!(requests[0].trace, TraceContext::root(TraceId(77)));
+}
+
+#[cfg(unix)]
+#[tokio::test(flavor = "current_thread")]
+async fn background_command_supports_input_output_stop_and_reconnect() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.host.command.{CommandEvent, CommandHandle, close_stdin, command, id, read, reconnect, start, stop, write};
+import std.codec.text.utf8_encode;
+
+flow main() -> bool ![
+    Command.start<DefaultCommandSandbox>,
+    Command.reconnect<DefaultCommandSandbox>,
+    Command.read<CommandHandle>,
+    Command.write<CommandHandle>,
+    Command.stop<CommandHandle>
+] {
+    let process = start(command("/bin/cat", []), DefaultCommandSandbox);
+    let attached = reconnect(id(process), DefaultCommandSandbox);
+    write(attached, utf8_encode("ping"));
+    close_stdin(process);
+    let output = read(attached, 1024);
+    let output_ok = match output {
+        CommandEvent.Output(stdout, stderr) => stdout == utf8_encode("ping") && stderr == utf8_encode(""),
+        CommandEvent.Exited(code, stdout, stderr) => code == 0 && stdout == utf8_encode("ping") && stderr == utf8_encode(""),
+        CommandEvent.Stopped(_, _) => false,
+    };
+
+    let sleeper = start(command("/bin/sh", ["-c", "sleep 30"]), DefaultCommandSandbox);
+    let stopped = stop(sleeper);
+    return output_ok && match stopped {
+        CommandEvent.Stopped(_, _) => true,
+        _ => false,
+    };
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Command]));
+    let options = RunOptions {
+        host_context: api::HostExecutionContext {
+            authority: AuthorityContext {
+                grants: vec![
+                    HostActionGrant::allow("Command", "start"),
+                    HostActionGrant::allow("Command", "reconnect"),
+                    HostActionGrant::allow("Command", "read"),
+                    HostActionGrant::allow("Command", "write"),
+                    HostActionGrant::allow("Command", "stop"),
+                ],
+                sandbox: SandboxPolicy::allow_listed(
+                    etas_host::FilesystemPolicy::deny_all(),
+                    etas_host::NetworkPolicy::deny_all(),
+                    etas_host::CommandPolicy::allow_trusted_programs(vec![
+                        "/bin/cat".to_owned(),
+                        "/bin/sh".to_owned(),
+                    ]),
+                    etas_host::DestructiveOpPolicy::deny_all(),
+                ),
+                ..AuthorityContext::deny_all()
+            },
+            trace: TraceContext::root(TraceId(78)),
+            ..api::HostExecutionContext::default()
+        },
+        ..RunOptions::default()
+    };
+
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.expect("entry item"),
+            },
+            Vec::new(),
+            &host,
+            options,
+        )
+        .await
+        .expect("execution lifecycle infrastructure");
+
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&value::InterpValue::Bool(true)));
 }
 
 #[tokio::test(flavor = "current_thread")]

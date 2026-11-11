@@ -37,7 +37,7 @@ pub(in crate::driver) struct CompletedCommandDispatch {
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,
-    command: PendingCommand,
+    mut command: PendingCommand,
     machine: &mut EvalMachine,
 ) -> CommandDispatchStart<'host> {
     let key = match eval.command_boundary_key(&command) {
@@ -85,6 +85,10 @@ pub(in crate::driver) async fn begin<'host>(
     {
         return CommandDispatchStart::Complete(None);
     }
+    // Policy evaluation may record a scoped approval grant. Dispatch the
+    // boundary with that current authority rather than the snapshot captured
+    // when the pending command was first constructed.
+    command.request.authority = eval.host_authority();
     match HostDispatch::begin(
         eval,
         request_id,

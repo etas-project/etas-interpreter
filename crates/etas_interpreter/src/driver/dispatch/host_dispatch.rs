@@ -412,6 +412,23 @@ impl TraceableHostResponse for CommandResponse {
     }
 }
 
+impl TraceableHostResponse for etas_host::CommandProcessResponse {
+    fn response_id(&self) -> HostRequestId {
+        self.id
+    }
+
+    fn outcome(&self) -> HostOutcome {
+        match &self.result {
+            Ok(_) => HostOutcome::Succeeded,
+            Err(error) => HostOutcome::Failed(error.clone()),
+        }
+    }
+
+    fn command_isolation(&self) -> Option<etas_host::CommandIsolationReport> {
+        self.isolation.clone()
+    }
+}
+
 impl TraceableHostResponse for ModelResponse {
     fn response_id(&self) -> HostRequestId {
         self.id

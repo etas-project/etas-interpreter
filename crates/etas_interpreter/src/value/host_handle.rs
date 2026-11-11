@@ -8,6 +8,7 @@ pub(crate) enum HostHandleKind {
     TlsStream,
     SecretValue,
     BrowserSession,
+    CommandProcess,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -22,6 +23,7 @@ enum HostHandlePayload {
     TlsStream(TlsStreamRef),
     SecretValue(SecretRef),
     BrowserSession(String),
+    CommandProcess(String),
 }
 
 impl HostHandleValue {
@@ -53,6 +55,13 @@ impl HostHandleValue {
         }
     }
 
+    pub(crate) fn command_process(nominal_type: etas_types::TypeId, id: String) -> Self {
+        Self {
+            nominal_type,
+            payload: HostHandlePayload::CommandProcess(id),
+        }
+    }
+
     pub fn nominal_type(&self) -> etas_types::TypeId {
         self.nominal_type
     }
@@ -70,6 +79,7 @@ impl HostHandleValue {
             HostHandlePayload::TlsStream(_) => HostHandleKind::TlsStream,
             HostHandlePayload::SecretValue(_) => HostHandleKind::SecretValue,
             HostHandlePayload::BrowserSession(_) => HostHandleKind::BrowserSession,
+            HostHandlePayload::CommandProcess(_) => HostHandleKind::CommandProcess,
         }
     }
 
@@ -79,6 +89,7 @@ impl HostHandleValue {
             HostHandleKind::TlsStream => "tls_stream",
             HostHandleKind::SecretValue => "secret_value",
             HostHandleKind::BrowserSession => "browser_session",
+            HostHandleKind::CommandProcess => "command_process",
         }
     }
 
@@ -86,7 +97,9 @@ impl HostHandleValue {
         match &self.payload {
             HostHandlePayload::TcpStream(stream) => Some(stream.as_byte_stream()),
             HostHandlePayload::TlsStream(stream) => Some(stream.as_byte_stream()),
-            HostHandlePayload::SecretValue(_) | HostHandlePayload::BrowserSession(_) => None,
+            HostHandlePayload::SecretValue(_)
+            | HostHandlePayload::BrowserSession(_)
+            | HostHandlePayload::CommandProcess(_) => None,
         }
     }
 
@@ -95,7 +108,8 @@ impl HostHandleValue {
             HostHandlePayload::TcpStream(stream) => Some(stream.clone()),
             HostHandlePayload::TlsStream(_)
             | HostHandlePayload::SecretValue(_)
-            | HostHandlePayload::BrowserSession(_) => None,
+            | HostHandlePayload::BrowserSession(_)
+            | HostHandlePayload::CommandProcess(_) => None,
         }
     }
 
@@ -104,7 +118,8 @@ impl HostHandleValue {
             HostHandlePayload::SecretValue(reference) => Some(reference.clone()),
             HostHandlePayload::TcpStream(_)
             | HostHandlePayload::TlsStream(_)
-            | HostHandlePayload::BrowserSession(_) => None,
+            | HostHandlePayload::BrowserSession(_)
+            | HostHandlePayload::CommandProcess(_) => None,
         }
     }
 
@@ -113,7 +128,18 @@ impl HostHandleValue {
             HostHandlePayload::BrowserSession(id) => Some(id),
             HostHandlePayload::TcpStream(_)
             | HostHandlePayload::TlsStream(_)
-            | HostHandlePayload::SecretValue(_) => None,
+            | HostHandlePayload::SecretValue(_)
+            | HostHandlePayload::CommandProcess(_) => None,
+        }
+    }
+
+    pub(crate) fn command_process_id(&self) -> Option<&str> {
+        match &self.payload {
+            HostHandlePayload::CommandProcess(id) => Some(id),
+            HostHandlePayload::TcpStream(_)
+            | HostHandlePayload::TlsStream(_)
+            | HostHandlePayload::SecretValue(_)
+            | HostHandlePayload::BrowserSession(_) => None,
         }
     }
 }
