@@ -99,7 +99,7 @@ async fn runtime_resource_guards_overlap_distinct_keys_and_wait_for_equal_keys()
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn runtime_resource_guards_serialize_unresolved_selectors() {
+async fn runtime_resource_guards_coarsen_dynamic_keys_to_their_store() {
     for (key, prepare) in [("key + \"\"", ""), ("key", "key = \"same\";")] {
         let checked = memory_tasks_prepared(key, "\"a\", \"b\"", prepare);
         let mut host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
@@ -122,7 +122,19 @@ async fn runtime_resource_guards_serialize_unresolved_selectors() {
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert_eq!(probe.peak.load(std::sync::atomic::Ordering::SeqCst), 1);
         assert_eq!(host.memory_call_count(), 2);
-        assert!(result.events.iter().any(|e| matches!(e, WorkflowEvent::ScopeSerialized { reason, .. } if reason == "unresolved_resource_selector")));
+        assert!(!result.events.iter().any(|e| matches!(
+            e,
+            WorkflowEvent::ScopeSerialized { reason, .. }
+                if reason == "unresolved_resource_selector"
+        )));
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::TaskWaitingResource { .. }))
+                .count(),
+            1
+        );
     }
 }
 
@@ -335,6 +347,86 @@ flow main() -> i32 {{
             2
         );
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_owner_allows_a_disjoint_child_with_dynamic_memory_keys() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.read_line;
+import std.task.{run, start, Scheduler};
+import std.text.from_i32;
+alias Schema = MemoryRegion<{ Values: Store<string, i32> }>;
+let Owner = std.memory.region<Schema>(stable_id = "owner-records", store = "owner");
+let Peer = std.memory.region<Schema>(stable_id = "peer-records", store = "peer");
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        Owner.Values.put("owner", 1);
+        let child = start(() => {
+            var index: i32 = 0;
+            while index < 2 limit Iterations(2) {
+                Peer.Values.put("part-" + from_i32(index), index);
+                index = index + 1;
+            }
+            return 0;
+        });
+        read_line();
+        return 0;
+    });
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[
+        HostRequirementKind::DurableMemory,
+        HostRequirementKind::Console,
+    ]));
+    let gate = host.pause_console_completion();
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+
+    let (result, writes_while_waiting) =
+        tokio::time::timeout(std::time::Duration::from_secs(2), async {
+            tokio::join!(invocation.execute(), async {
+                gate.started.notified().await;
+                let progressed =
+                    tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                        while host.memory_call_count() < 3 {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .is_ok();
+                gate.release.add_permits(1);
+                progressed
+            })
+        })
+        .await
+        .expect("the dynamic collector should progress while console input is pending");
+    let result = result.unwrap();
+
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert!(writes_while_waiting);
+    assert_eq!(result.value(), Some(&InterpValue::i32(0)));
+    assert_eq!(host.memory_call_count(), 3);
+    assert!(!result.events.iter().any(|event| matches!(
+        event,
+        WorkflowEvent::ScopeSerialized { reason, .. }
+            if reason == "unresolved_resource_selector"
+    )));
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::TaskWaitingResource { .. }))
+    );
 }
 impl api::RunEventObserver for WaitingResource {
     fn observe(&self, event: &WorkflowEvent) {
