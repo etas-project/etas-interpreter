@@ -389,9 +389,18 @@ impl EvalContext<'_> {
         if concurrency_plan.resource_guards {
             self.scheduler.guard_scope(scope);
         }
-        if self.resource_owner_needs_serial(&target) {
-            self.unresolved_resource_scope();
-        }
+        let scheduler = InterpValue::Scheduler(crate::value::SchedulerHandleValue::new(scope));
+        let resources = if self.scheduler.requires_resource_guards(scope) {
+            match self.task_resource_keys(&target, std::slice::from_ref(&scheduler)) {
+                Some(keys) => keys,
+                None => {
+                    self.unresolved_resource_scope();
+                    Vec::new()
+                }
+            }
+        } else {
+            Vec::new()
+        };
         if let Some(reason) = serialization_reason(&concurrency_plan.decision) {
             self.scheduler.serialize_scope(scope);
             self.events
@@ -405,9 +414,7 @@ impl EvalContext<'_> {
             purity: crate::control::CallPurity::Ordinary,
             site: None,
             target,
-            args: vec![InterpValue::Scheduler(
-                crate::value::SchedulerHandleValue::new(scope),
-            )],
+            args: vec![scheduler],
             span,
             continuation: Continuation::BlockValue,
         }));
@@ -424,6 +431,9 @@ impl EvalContext<'_> {
             Err(error) => return ControlSignal::runtime_fault(error.to_string(), span),
         };
         if let Err(error) = self.scheduler.set_scope_owner(scope, owner) {
+            return ControlSignal::runtime_fault(error.to_string(), span);
+        }
+        if let Err(error) = self.scheduler.attach_resources(owner, resources) {
             return ControlSignal::runtime_fault(error.to_string(), span);
         }
         self.events
