@@ -9,47 +9,6 @@ use crate::driver::scheduler::{EffectIdentity, FrozenSelector, RuntimeResourceKe
 use crate::value::InterpValue;
 
 impl EvalContext<'_> {
-    pub(super) fn resource_owner_needs_serial(&self, target: &CallTarget) -> bool {
-        let plan = match target {
-            CallTarget::FlowItem(item) => self.checked.concurrency.resource_callables.get(item),
-            CallTarget::Lambda { expr, .. } => self.checked.concurrency.resource_closures.get(expr),
-            _ => None,
-        };
-        let Some(plan) = plan else {
-            return true;
-        };
-        let mut pending = vec![plan];
-        let mut visited = HashSet::new();
-        while let Some(plan) = pending.pop() {
-            if plan.opaque_memory || !plan.resources.is_empty() {
-                return true;
-            }
-            for call in &plan.calls {
-                if self
-                    .checked
-                    .cpu_parallel
-                    .callables
-                    .get(&call.callable)
-                    .is_some_and(|fact| fact.eligible)
-                {
-                    continue;
-                }
-                if visited.insert(call.callable) {
-                    let Some(plan) = self
-                        .checked
-                        .concurrency
-                        .resource_callables
-                        .get(&call.callable)
-                    else {
-                        return true;
-                    };
-                    pending.push(plan);
-                }
-            }
-        }
-        false
-    }
-
     pub(super) fn task_resource_keys(
         &mut self,
         target: &CallTarget,

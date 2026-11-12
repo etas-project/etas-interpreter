@@ -243,6 +243,99 @@ flow main() -> string {
             .any(|e| matches!(e, WorkflowEvent::ScopeSerialized { .. }))
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_owner_memory_guards_allow_disjoint_children_and_block_conflicts() {
+    for (child_region, expected_while_console_waits) in [("Peer", 2), ("Owner", 1)] {
+        let checked = checked_project(&format!(
+            r#"
+module app.main;
+import std.io.read_line;
+import std.task.{{run, start, Scheduler}};
+alias Schema = MemoryRegion<{{ Values: Store<string, i32> }}>;
+let Owner = std.memory.region<Schema>(stable_id = "owner-records", store = "owner");
+let Peer = std.memory.region<Schema>(stable_id = "peer-records", store = "peer");
+flow main() -> i32 {{
+    return run((scheduler: Scheduler) => {{
+        Owner.Values.put("owner", 1);
+        let child = start(() => {{
+            {child_region}.Values.put("owner", 1);
+            return 0;
+        }});
+        read_line();
+        return 0;
+    }});
+}}
+"#,
+        ));
+        let mut host = FakeHost::new(availability(&[
+            HostRequirementKind::DurableMemory,
+            HostRequirementKind::Console,
+        ]));
+        let gate = host.pause_console_completion();
+        let invocation = Interpreter.create_run(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        );
+
+        let (result, observed_while_waiting) =
+            tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                tokio::join!(invocation.execute(), async {
+                    gate.started.notified().await;
+                    tokio::time::timeout(std::time::Duration::from_millis(250), async {
+                        while host.memory_call_count() < 2 {
+                            tokio::task::yield_now().await;
+                        }
+                    })
+                    .await
+                    .ok();
+                    let observed = host.memory_call_count();
+                    gate.release.add_permits(1);
+                    observed
+                })
+            })
+            .await
+            .expect("the run owner and child should settle after console input is released");
+        let result = result.unwrap();
+
+        assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+        assert_eq!(result.value(), Some(&InterpValue::i32(0)));
+        assert_eq!(
+            observed_while_waiting, expected_while_console_waits,
+            "child region: {child_region}"
+        );
+        assert_eq!(host.memory_call_count(), 2);
+        assert!(!result.events.iter().any(|event| matches!(
+            event,
+            WorkflowEvent::ScopeSerialized { reason, .. }
+                if reason == "unresolved_resource_selector"
+        )));
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .filter(|event| matches!(event, WorkflowEvent::TaskWaitingResource { .. }))
+                .count(),
+            usize::from(child_region == "Owner")
+        );
+        assert_eq!(
+            result
+                .events
+                .iter()
+                .filter(|event| matches!(
+                    event,
+                    WorkflowEvent::TaskResourcesAcquired { permits: 1, .. }
+                ))
+                .count(),
+            2
+        );
+    }
+}
 impl api::RunEventObserver for WaitingResource {
     fn observe(&self, event: &WorkflowEvent) {
         if matches!(event, WorkflowEvent::TaskWaitingResource { .. }) {
