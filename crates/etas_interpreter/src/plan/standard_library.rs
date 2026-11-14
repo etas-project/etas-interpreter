@@ -170,8 +170,20 @@ impl StandardLibraryProgram {
             definitions: None,
             revision: None,
         };
-        let (_, value) = super::code::RevisionProjection::Original(self.bridge.clone())
-            .value(
+        let scope = match identity.as_method() {
+            Some(method) => etas_code::descriptor::GenericOwner::Method(method.clone()),
+            None => etas_code::descriptor::GenericOwner::Declaration(
+                identity
+                    .as_declaration()
+                    .ok_or("std callable has no canonical owner")?
+                    .clone(),
+            ),
+        };
+        let value = self
+            .bridge
+            .value_to_original_scoped(
+                checked,
+                &scope,
                 binding.ty,
                 InterpValue::Callable(CallTarget::FlowItem(binding.item)),
                 &execution,

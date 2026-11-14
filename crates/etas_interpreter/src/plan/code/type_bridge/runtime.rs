@@ -20,6 +20,8 @@ pub(super) struct Direction {
     target_types: TypeLookupIndex,
     checked_types: HashMap<TypeId, Option<TypeId>>,
     relocation_types: HashMap<TypeId, TypeId>,
+    scoped_types: BTreeMap<(etas_code::descriptor::GenericOwner, TypeId), Option<TypeId>>,
+    effect_parameters: BTreeMap<etas_code::descriptor::GenericOwner, HashMap<String, String>>,
 }
 
 impl RuntimeTypeBridge {
@@ -64,7 +66,25 @@ impl Direction {
                 relocation_types.entry(*source).or_insert(*target);
             }
         }
+        let mut effect_parameters = BTreeMap::<_, HashMap<_, _>>::new();
+        for parameter in &source.descriptors().data().binders {
+            if parameter.kind != etas_code::descriptor::GenericParameterKind::EffectRow {
+                continue;
+            }
+            if let Some(to) = target.descriptors().data().binders.iter().find(|to| {
+                to.owner == parameter.owner
+                    && to.position == parameter.position
+                    && to.kind == parameter.kind
+            }) {
+                effect_parameters
+                    .entry(parameter.owner.clone())
+                    .or_default()
+                    .insert(parameter.name.clone(), to.name.clone());
+            }
+        }
         Ok(Self {
+            scoped_types: checked.clone(),
+            effect_parameters,
             correspondence,
             target_types: TypeLookupIndex::new(&to.type_store),
             checked_types,
@@ -99,6 +119,40 @@ impl Direction {
         .map_err(Error::RuntimeType)
     }
 
+    pub fn get_in_scope(
+        &self,
+        source: &CheckedProgram,
+        target: &CheckedProgram,
+        scope: &etas_code::descriptor::GenericOwner,
+        ty: TypeId,
+    ) -> Result<TypeId, Error> {
+        if let Some(mapped) = self.scoped_types.get(&(scope.clone(), ty)) {
+            return mapped.ok_or_else(|| Error::MissingType {
+                scope: scope.clone(),
+                ty,
+            });
+        }
+        let mut declarations = self.correspondence.declarations().clone();
+        for ((owner, from), to) in &self.scoped_types {
+            if owner == scope
+                && let Some(to) = to
+            {
+                declarations.entry(*from).or_insert(*to);
+            }
+        }
+        let empty = HashMap::new();
+        TypeSubstitutionEngine::relocating(TypeRelocationInput {
+            source: &source.type_store,
+            target: &target.type_store,
+            declaration_types: &declarations,
+            target_types: &self.target_types,
+            effect_names: self.correspondence.effect_names(),
+        })
+        .with_relocated_effect_parameters(self.effect_parameters.get(scope).unwrap_or(&empty))
+        .substitute(ty)
+        .map_err(Error::RuntimeType)
+    }
+
     pub fn row(
         &self,
         source: &CheckedProgram,
@@ -122,6 +176,7 @@ impl Direction {
         target: &CheckedProgram,
         ty: TypeId,
         parameters: &[(TypeId, TypeId)],
+        effect_parameters: &HashMap<String, String>,
     ) -> Result<TypeId, Error> {
         let mut declarations = self.correspondence.declarations().clone();
         for (from, to) in parameters {
@@ -141,6 +196,7 @@ impl Direction {
             target_types: &self.target_types,
             effect_names: self.correspondence.effect_names(),
         })
+        .with_relocated_effect_parameters(effect_parameters)
         .substitute(ty)
         .map_err(Error::RuntimeType)
     }

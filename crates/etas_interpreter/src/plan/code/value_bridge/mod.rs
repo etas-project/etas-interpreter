@@ -75,7 +75,7 @@ impl RevisionTypeBridge {
         execution: &crate::value::CheckedExecutionProgram,
     ) -> Result<InterpValue, RevisionValueBridgeError> {
         let target = self
-            .to_candidate(program, scope, ty)
+            .runtime_to_candidate_scoped(program, scope, ty)
             .map_err(RevisionValueBridgeError::Type)?;
         convert_scoped(
             program,
@@ -97,7 +97,7 @@ impl RevisionTypeBridge {
         execution: &crate::value::CheckedExecutionProgram,
     ) -> Result<InterpValue, RevisionValueBridgeError> {
         let target = self
-            .to_original(program, scope, ty)
+            .runtime_to_original_scoped(program, scope, ty)
             .map_err(RevisionValueBridgeError::Type)?;
         convert_scoped(
             program,

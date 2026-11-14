@@ -339,6 +339,15 @@ impl Walk<'_> {
                     vec![(left, right, value.into_value())],
                 );
             }
+            (Type::SchedulerHandle, Type::SchedulerHandle) => {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Scheduler(handle) = value else {
+                    return Err(wrong("Scheduler", &value));
+                };
+                // Both checked programs execute in the same scheduler runtime;
+                // the scope owner is retained and enforced by scheduler transfers.
+                self.values.push(InterpValue::Scheduler(handle));
+            }
             (Type::Function(left), Type::Function(right)) => {
                 let execution = self.execution.ok_or(Failure::ExecutableScopeRequired)?;
                 let InterpValue::Callable(call) = value else {

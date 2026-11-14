@@ -159,12 +159,20 @@ fn validate(
             Ok((a.subject, b.subject))
         })
         .collect::<Result<Vec<(TypeId, TypeId)>, Error>>()?;
+    let effect_parameters = a
+        .generic_params
+        .iter()
+        .zip(&b.generic_params)
+        .filter(|(parameter, _)| parameter.kind == etas_types::CallableGenericParamKind::Effect)
+        .map(|(from, to)| (from.name.clone(), to.name.clone()))
+        .collect();
     let map = |ty| {
         types.forward.get_with_parameters(
             original.checked_program(),
             candidate.checked_program(),
             ty,
             &parameters,
+            &effect_parameters,
         )
     };
     for (a, b) in a

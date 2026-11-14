@@ -251,6 +251,34 @@ impl RevisionTypeBridge {
         self.runtime_types.backward.get(source, &self.original, ty)
     }
 
+    pub(crate) fn runtime_to_candidate_scoped(
+        &self,
+        source: &CheckedProgram,
+        scope: &GenericOwner,
+        ty: TypeId,
+    ) -> Result<TypeId, RevisionTypeBridgeError> {
+        if !std::sync::Arc::ptr_eq(source, &self.original) {
+            return Err(RevisionTypeBridgeError::WrongProgram);
+        }
+        self.runtime_types
+            .forward
+            .get_in_scope(source, &self.candidate, scope, ty)
+    }
+
+    pub(crate) fn runtime_to_original_scoped(
+        &self,
+        source: &CheckedProgram,
+        scope: &GenericOwner,
+        ty: TypeId,
+    ) -> Result<TypeId, RevisionTypeBridgeError> {
+        if !std::sync::Arc::ptr_eq(source, &self.candidate) {
+            return Err(RevisionTypeBridgeError::WrongProgram);
+        }
+        self.runtime_types
+            .backward
+            .get_in_scope(source, &self.original, scope, ty)
+    }
+
     pub(crate) fn runtime_row_to_candidate(
         &self,
         source: &CheckedProgram,
