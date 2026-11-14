@@ -405,8 +405,8 @@ fn continuation_leaf_from_snapshot(
         "while_loop" => ContinuationSnapshot::WhileLoop {
             cond: HirExprId(required_u32(value, "cond")?),
             body: HirBlockId(required_u32(value, "body")?),
-            iteration: required_u32(value, "iteration")?,
-            max_iterations: required_u32(value, "max_iterations")?,
+            iteration: required_u64(value, "iteration")?,
+            max_iterations: required_u64(value, "max_iterations")?,
             resume_after_body: required_bool(value, "resume_after_body")?,
             span: span_from_snapshot(required(value, "span")?)?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,

@@ -19,8 +19,8 @@ pub(super) struct WhileLoopResume {
     pub value: InterpValue,
     pub cond: HirExprId,
     pub body: HirBlockId,
-    pub iteration: u32,
-    pub max_iterations: u32,
+    pub iteration: u64,
+    pub max_iterations: u64,
     pub resume_after_body: bool,
     pub span: Span,
 }
@@ -36,7 +36,7 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         let iterations = match self.loop_iterations(limits, span) {
-            Ok(iterations) => iterations as usize,
+            Ok(iterations) => iterations.min(usize::MAX as u64) as usize,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
         let loop_scope = frame.snapshot_symbols();
@@ -303,8 +303,8 @@ impl<'a> EvalContext<'a> {
         &mut self,
         cond: HirExprId,
         body: HirBlockId,
-        start_iteration: u32,
-        max_iterations: u32,
+        start_iteration: u64,
+        max_iterations: u64,
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
@@ -487,7 +487,7 @@ impl<'a> EvalContext<'a> {
         ))
     }
 
-    fn loop_iterations(&self, limits: &[HirExprId], span: Span) -> Result<u32, ExecutionFault> {
+    fn loop_iterations(&self, limits: &[HirExprId], span: Span) -> Result<u64, ExecutionFault> {
         for limit in limits {
             let limit = self.resolve_limit_expr(*limit)?;
             if let (
@@ -495,13 +495,7 @@ impl<'a> EvalContext<'a> {
                 crate::eval::limit::RuntimeLimitValue::Count(iterations),
             ) = (limit.kind, limit.value)
             {
-                return u32::try_from(iterations.max(1)).map_err(|_| {
-                    ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        limit.span,
-                        "Iterations(...) limit exceeds the interpreter loop counter range",
-                    )
-                });
+                return Ok(iterations.max(1));
             }
         }
         Err(ExecutionFault::new(

@@ -847,8 +847,8 @@ pub(crate) enum ContinuationSnapshot {
     WhileLoop {
         cond: HirExprId,
         body: HirBlockId,
-        iteration: u32,
-        max_iterations: u32,
+        iteration: u64,
+        max_iterations: u64,
         resume_after_body: bool,
         span: Span,
         frame: LocalsSnapshot,

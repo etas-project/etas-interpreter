@@ -53,6 +53,15 @@ requires model support, but does not expose that action as the agent's public
 effect. Default-handled standard actions likewise remain visible in action and
 trace facts without escaping in the public effect row.
 
+Source std library images restored by the frontend execute through the same
+checked-HIR path. The cross-process test copies the maintained text assembly,
+changes only `join`'s body, removes the original source and executes the archived
+body through private generic and spec-method calls. SDK provider selection and
+ordinary application linking remain integration work.
+
+`Iterations` accepts the full `u64` count range used by the std sources. While
+loop continuations and checkpoint codecs preserve that range across resume.
+
 ## Heap-Backed Calls
 
 Source calls run on the heap-backed `EvalMachine` frame stack rather than by
