@@ -187,11 +187,13 @@ impl EvalContext<'_> {
             MethodTarget::BoundSpec { .. } => {
                 unreachable!("prepared witness resolves the generic target")
             }
-            MethodTarget::External { .. } => {
-                return Err(missing(
-                    "external method has no materialized executable body",
-                ));
-            }
+            MethodTarget::External { identity } => self
+                .plan
+                .standard_library
+                .as_ref()
+                .ok_or_else(|| missing("external method has no materialized executable body"))?
+                .method(identity)
+                .map_err(|reason| missing(&reason))?,
         };
         if bindings.types.is_empty() && bindings.parameters.is_empty() && bindings.rows.is_empty() {
             return Ok(target);

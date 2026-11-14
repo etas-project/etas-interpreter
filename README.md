@@ -63,6 +63,10 @@ planning. Generic arguments use frontend-prepared invocation proofs.
 SDK-defined record and enum values retain the same canonical owner identity as
 the archived bodies. Named standard enum constructors use their checked field
 layout for construction and matching.
+Imported SDK implementation methods use their canonical method identities and
+the same scoped checked-body path, including generic spec calls. Opaque native
+filesystem errors preserve their checked identity and host payload when a source
+handler returns them across that boundary.
 
 These calls reuse the caller's evaluation machine, handlers, budget, cancellation
 and trace. Source callables require their checked artifact body and never select

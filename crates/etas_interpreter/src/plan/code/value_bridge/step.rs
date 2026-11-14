@@ -71,6 +71,23 @@ impl Walk<'_> {
             self.values.push(InterpValue::WorkspacePath(path));
             return Ok(());
         }
+        if self.source.types.known_std_types.filesystem_io_error == Some(from)
+            && self.target.types.known_std_types.filesystem_io_error == Some(to)
+        {
+            // The filesystem host boundary constructs this opaque error with
+            // a string payload; its representation is not a public type alias.
+            let InterpValue::Nominal { ty, value } = value else {
+                return Err(wrong("Nominal", &value));
+            };
+            if ty != from {
+                return Err(Failure::WrongNominalIdentity { actual: ty });
+            }
+            if !matches!(value.as_ref(), InterpValue::String(_)) {
+                return Err(wrong("String", value.as_ref()));
+            }
+            self.values.push(InterpValue::Nominal { ty: to, value });
+            return Ok(());
+        }
         if let InterpValue::Callable(crate::control::CallTarget::AgentRevision(agent)) = value {
             let revision = self
                 .revision

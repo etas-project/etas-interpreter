@@ -1,4 +1,7 @@
-use std::{collections::BTreeMap, sync::Arc};
+use std::{
+    collections::{BTreeMap, BTreeSet},
+    sync::Arc,
+};
 
 use etas_frontend::{
     CheckedProgram,
@@ -21,7 +24,8 @@ use crate::{
 pub(crate) struct StandardLibraryProgram {
     prepared: Arc<PreparedProgram>,
     bridge: Arc<RevisionTypeBridge>,
-    callables: BTreeMap<StdSymbolId, LibraryCallable>,
+    aliases: BTreeMap<StdSymbolId, etas_code::CallableId>,
+    callables: BTreeMap<etas_code::CallableId, LibraryCallable>,
 }
 
 #[derive(Debug)]
@@ -45,6 +49,8 @@ impl StandardLibraryProgram {
         let prepared = super::prepare_program(library)
             .map_err(|errors| format!("std body preparation failed: {errors:?}"))?;
         let mut callables = BTreeMap::new();
+        let mut aliases = BTreeMap::new();
+        let mut identities = BTreeSet::new();
         for symbol in program.std_registry.symbols() {
             if !program.symbols.iter().any(|import| matches!(&import.def, etas_hir::SymbolDef::ImportAlias { path, .. } if program.std_registry.lookup_qualified(path).is_some_and(|decl| decl.id == symbol.id))) {
                 continue;
@@ -52,19 +58,27 @@ impl StandardLibraryProgram {
             let Some(binding) = program.std_registry.body_binding(symbol.id) else {
                 continue;
             };
-            let id = &binding.callable;
+            aliases.insert(symbol.id, binding.callable.clone());
+            identities.insert(binding.callable.clone());
+        }
+        for method in program.types.methods.entries() {
+            if let etas_types::method::MethodTarget::External { identity } = &method.target {
+                let callable = etas_code::CallableId::method(identity.clone());
+                if bodies.item_owner(&callable).is_some() {
+                    identities.insert(callable);
+                }
+            }
+        }
+        for identity in identities {
+            let id = &identity;
             let item = bodies.item_owner(id).ok_or_else(|| {
-                format!(
-                    "std artifact {} is missing its checked implementation",
-                    symbol.qualified_path.join(".")
-                )
+                format!("std artifact {id:?} is missing its checked implementation")
             })?;
             let signature = match library.types.item_signatures.get(&item) {
                 Some(ItemSignature::Flow(signature)) => signature,
                 _ => {
                     return Err(format!(
-                        "std artifact {} body has no checked callable signature",
-                        symbol.qualified_path.join(".")
+                        "std artifact {id:?} body has no checked callable signature"
                     ));
                 }
             };
@@ -86,8 +100,7 @@ impl StandardLibraryProgram {
                     .map_err(|e| e.to_string())?
             {
                 return Err(format!(
-                    "std artifact {} body differs from its public interface",
-                    symbol.qualified_path.join(".")
+                    "std artifact {id:?} body differs from its public interface"
                 ));
             }
             let contract = library
@@ -118,25 +131,33 @@ impl StandardLibraryProgram {
                 .find_map(|(id, ty)| {
                     matches!(ty, Type::Function(candidate) if candidate == &flow).then_some(id)
                 })
-                .ok_or_else(|| {
-                    format!(
-                        "std artifact {} has no checked function type",
-                        symbol.qualified_path.join(".")
-                    )
-                })?;
-            callables.insert(symbol.id, LibraryCallable { item, ty });
+                .ok_or_else(|| format!("std artifact {id:?} has no checked function type"))?;
+            callables.insert(identity, LibraryCallable { item, ty });
         }
         Ok(Some(Arc::new(Self {
             prepared,
             bridge,
+            aliases,
             callables,
         })))
     }
 
     pub(crate) fn callable(&self, symbol: StdSymbolId) -> Result<CallTarget, String> {
+        let identity = self
+            .aliases
+            .get(&symbol)
+            .ok_or("std artifact has no canonical callable binding")?;
+        self.project(identity)
+    }
+
+    pub(crate) fn method(&self, method: &etas_code::MethodId) -> Result<CallTarget, String> {
+        self.project(&etas_code::CallableId::method(method.clone()))
+    }
+
+    fn project(&self, identity: &etas_code::CallableId) -> Result<CallTarget, String> {
         let binding = self
             .callables
-            .get(&symbol)
+            .get(identity)
             .ok_or("std artifact is missing a checked body binding")?;
         let checked = self.prepared.checked();
         let plan = self
