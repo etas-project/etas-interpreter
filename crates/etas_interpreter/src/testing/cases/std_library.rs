@@ -13,10 +13,7 @@ fn stored_std_library_executes_generic_and_spec_bodies_in_another_process() {
         let path = std::path::PathBuf::from(path);
         let image = LibraryHirImage::decode(&std::fs::read(&path).unwrap()).unwrap();
         let loaded = image
-            .into_checked(
-                &path.parent().unwrap().join("installed-std"),
-                std::sync::Arc::new(etas_std::standard_registry()),
-            )
+            .into_checked_from_image(&path.parent().unwrap().join("installed-std"))
             .unwrap();
         let host = FakeHost::new(HostServiceAvailability::default());
         let result = crate::api::run_checked_blocking(
@@ -42,7 +39,7 @@ fn stored_std_library_executes_generic_and_spec_bodies_in_another_process() {
 
     let root = std::env::temp_dir().join(format!("etas-std-body-{}", std::process::id()));
     let source = root.join("library/std/text/probe.es");
-    let owner = PackageKey::from_name_and_version("std", "0.2.3").unwrap();
+    let owner = PackageKey::from_name_and_version("std", "0.2.4").unwrap();
     for marker in ["first", "changed"] {
         std::fs::create_dir_all(source.parent().unwrap()).unwrap();
         let assembly =
