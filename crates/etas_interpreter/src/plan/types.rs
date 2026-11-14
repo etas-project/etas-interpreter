@@ -11,6 +11,7 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub struct InterpreterPlan {
+    pub(crate) standard_library: Option<Arc<super::standard_library::StandardLibraryProgram>>,
     pub(super) prepared: Arc<PreparedProgram>,
     pub(super) program: etas_frontend::CheckedProject,
     pub root: etas_frontend::CheckedCallableRoot,
@@ -36,6 +37,7 @@ pub struct InterpreterPlan {
 /// Checked program-wide data has no executable root or invocation authority.
 #[derive(Debug)]
 pub(crate) struct PreparedProgram {
+    pub(super) standard_library: Option<Arc<super::standard_library::StandardLibraryProgram>>,
     pub(super) program: etas_frontend::CheckedProject,
     pub(super) known_std_types: crate::eval::KnownStdTypes,
     pub(super) spec_facts: Arc<std::sync::OnceLock<etas_types::SpecFacts>>,

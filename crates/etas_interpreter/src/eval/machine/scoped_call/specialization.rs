@@ -136,6 +136,27 @@ impl ProgramSpecialization {
             &destination_bindings,
         )
         .map_err(|error| format!("generic destination signature is not materialized: {error}"))?;
+        if let ProgramCallTarget::Callable(call) = call.target() {
+            let mut target = call.target_ref();
+            while let CallTarget::Specialized { target: inner, .. } = target {
+                target = inner;
+            }
+            if let CallTarget::FlowItem(item) = target {
+                let mut types = destination_bindings
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), *ty))
+                    .collect::<Vec<_>>();
+                types.sort_by(|left, right| left.0.cmp(&right.0));
+                destination
+                    .checked
+                    .checked_callable_application(
+                        *item,
+                        &types,
+                        &destination_bindings.sorted_rows(),
+                    )
+                    .map_err(|error| error.to_string())?;
+            }
+        }
         Ok(Self {
             presented_types: types,
             presented_parameters: parameters,

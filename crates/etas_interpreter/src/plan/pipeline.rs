@@ -126,6 +126,13 @@ pub(crate) fn prepare_program_with_residual_binding(
         )]);
     };
     Ok(Arc::new(PreparedProgram {
+        standard_library: super::standard_library::StandardLibraryProgram::prepare(project)
+            .map_err(|reason| {
+                vec![diagnostics::missing_checked_fact(
+                    diagnostics::primary_span(project),
+                    reason,
+                )]
+            })?,
         program: project.clone(),
         known_std_types: crate::eval::KnownStdTypes::from_checked(project),
         spec_facts: Arc::new(std::sync::OnceLock::new()),
@@ -220,6 +227,7 @@ impl PreparedProgram {
             )]);
         };
         Ok(InterpreterPlan {
+            standard_library: self.standard_library.clone(),
             prepared: self.clone(),
             program: self.program.clone(),
             root,

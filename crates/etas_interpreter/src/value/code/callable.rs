@@ -385,6 +385,17 @@ fn checked_item_application(
     ) {
         return Ok(None);
     }
+    // An installed generic std declaration is a checked template. Its call-site
+    // bindings are supplied when the scoped call is specialized, before entry.
+    if program.compile_options.standard_library_mode
+        == etas_frontend::StandardLibraryMode::SourceBootstrap
+        && bindings.is_empty()
+        && bindings.rows.is_empty()
+        && bindings.parameters.is_empty()
+        && matches!(program.types.item_signatures.get(&item), Some(etas_types::ItemSignature::Flow(signature)) if !signature.generic_params.is_empty())
+    {
+        return Ok(None);
+    }
     program
         .checked_callable_application(
             item,

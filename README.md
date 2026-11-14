@@ -53,6 +53,22 @@ requires model support, but does not expose that action as the agent's public
 effect. Default-handled standard actions likewise remain visible in action and
 trace facts without escaping in the public effect row.
 
+Source std library images restored by the frontend execute through the same
+checked-HIR path. The cross-process test copies the maintained text assembly,
+changes only `join`'s body, removes the original source and executes the archived
+body through private generic and spec-method calls. An ordinary application can
+also call an installed source std flow directly or as a function value. The
+checked public interface and canonical body identity are compared before
+planning. Generic arguments use frontend-prepared invocation proofs.
+
+These calls reuse the caller's evaluation machine, handlers, budget, cancellation
+and trace. Source callables require their checked artifact body and never select
+an intrinsic substitute. Artifact checkpoint/resume and the remaining declaration
+and module migration gates are still pending.
+
+`Iterations` accepts the full `u64` count range used by the std sources. While
+loop continuations and checkpoint codecs preserve that range across resume.
+
 ## Heap-Backed Calls
 
 Source calls run on the heap-backed `EvalMachine` frame stack rather than by

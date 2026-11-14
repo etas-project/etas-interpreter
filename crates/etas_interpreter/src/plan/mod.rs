@@ -16,6 +16,7 @@ mod records;
 pub(crate) mod residual;
 mod resources;
 mod slots;
+mod standard_library;
 mod types;
 mod validate;
 mod variants;

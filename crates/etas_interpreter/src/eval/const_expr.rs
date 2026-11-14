@@ -226,7 +226,9 @@ impl<'a> EvalContext<'a> {
                         span,
                     ),
                 SymbolDef::ImportAlias { path, .. } => {
-                    if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
+                    if let Some(target) = self.artifact_std_callable(symbol, span)? {
+                        Ok(InterpValue::Callable(target))
+                    } else if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
                         if constructor.arity == 0 {
                             self.eval_variant_constructor(
                                 symbol,

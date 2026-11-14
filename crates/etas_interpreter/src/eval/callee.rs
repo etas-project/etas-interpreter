@@ -2,6 +2,41 @@ use super::*;
 use etas_frontend::AstItemRef;
 
 impl<'a> EvalContext<'a> {
+    pub(super) fn artifact_std_callable(
+        &self,
+        symbol: SymbolId,
+        span: Span,
+    ) -> Result<Option<CallTarget>, crate::control::ExecutionFault> {
+        let Some(symbol) = self.checked.symbols.get(symbol) else {
+            return Ok(None);
+        };
+        let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+            return Ok(None);
+        };
+        let Some(declaration) = self.checked.std_registry.lookup_qualified(path) else {
+            return Ok(None);
+        };
+        if self
+            .checked
+            .std_registry
+            .body_binding(declaration.id)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let missing = |reason| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                reason,
+            )
+        };
+        let library = self.plan.standard_library.as_ref().ok_or_else(|| {
+            missing("standard library artifact is missing its checked body owner".to_owned())
+        })?;
+        library.callable(declaration.id).map(Some).map_err(missing)
+    }
+
     pub(super) fn eval_std_callable_value(
         &mut self,
         expr: HirExprId,
@@ -15,7 +50,6 @@ impl<'a> EvalContext<'a> {
             return Ok(None);
         };
         if frame.get(symbol).is_some()
-            || self.std_intrinsic(symbol).is_none()
             || !matches!(
                 self.checked
                     .types
@@ -34,14 +68,20 @@ impl<'a> EvalContext<'a> {
                 message,
             )
         };
-        self.checked
-            .checked_callable_owner(etas_frontend::CheckedCallableRoot::StdReference(expr))
-            .map_err(|error| missing(error.to_string()))?;
-        let target = self
-            .resolve_static_call_target(expr, frame, span)?
-            .ok_or_else(|| {
-                missing("checked standard callable reference has no native target".to_owned())
-            })?;
+        let target = if let Some(target) = self.artifact_std_callable(symbol, span)? {
+            target
+        } else {
+            if self.std_intrinsic(symbol).is_none() {
+                return Ok(None);
+            }
+            self.checked
+                .checked_callable_owner(etas_frontend::CheckedCallableRoot::StdReference(expr))
+                .map_err(|error| missing(error.to_string()))?;
+            self.resolve_static_call_target(expr, frame, span)?
+                .ok_or_else(|| {
+                    missing("checked standard callable reference has no native target".to_owned())
+                })?
+        };
         // Keep the checked template ABI and its lexical substitutions together;
         // the callable may outlive the generic frame that created it.
         let target = if frame.generic_bindings().is_empty() {
@@ -278,6 +318,9 @@ impl<'a> EvalContext<'a> {
                 Some(self.source_tool_call_target(*item, span)?)
             }
             SymbolDef::ImportAlias { path, .. } => {
+                if let Some(target) = self.artifact_std_callable(symbol, span)? {
+                    return Ok(Some(target));
+                }
                 if self.plan.dispatch.enum_constructor(symbol).is_some() {
                     return Ok(Some(CallTarget::EnumVariant(symbol)));
                 }
@@ -341,6 +384,9 @@ impl<'a> EvalContext<'a> {
                 Some(self.source_tool_call_target(*item, span)?)
             }
             SymbolDef::ImportAlias { path, .. } => {
+                if let Some(target) = self.artifact_std_callable(symbol, span)? {
+                    return Ok(Some(target));
+                }
                 if self.plan.dispatch.enum_constructor(symbol).is_some() {
                     return Ok(Some(CallTarget::EnumVariant(symbol)));
                 }
