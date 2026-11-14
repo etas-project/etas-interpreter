@@ -45,6 +45,7 @@ impl EvalMachine {
         self.push_frame(EvalFrame::ProgramReturn(Box::new(ProgramReturnFrame {
             site,
             parent,
+            parent_handler_floor: ctx.handler_floor,
             parent_program: source,
             parent_model_policy: ctx.task.model_policy.clone(),
             call: call.clone(),

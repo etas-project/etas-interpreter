@@ -21,12 +21,17 @@ struct NativeActionEvidence {
     origin: NativeActionOrigin,
 }
 
+enum ProjectionOwner {
+    Revision(Arc<PreparedCodeRevision>),
+    StandardLibrary(Arc<etas_frontend::StandardLibrary>),
+}
+
 enum EvidenceNode {
     Native(Box<NativeActionEvidence>),
     Projected {
         source: ActionEvidence,
         edge: RevisionProjection,
-        owner: Arc<PreparedCodeRevision>,
+        owner: ProjectionOwner,
     },
 }
 
@@ -90,12 +95,16 @@ impl ActionEvidence {
     }
 
     pub(super) fn project(&self, edge: RevisionProjection) -> Result<Self, String> {
-        let owner = edge
-            .runtime_owner()
-            .ok_or("action projection has no pinned native revision owner")?;
-        if !Arc::ptr_eq(owner.type_bridge().candidate_program(), owner.program()) {
-            return Err("action projection has an inconsistent native revision owner".into());
-        }
+        let owner = if let Some(owner) = edge.runtime_owner() {
+            if !Arc::ptr_eq(owner.type_bridge().candidate_program(), owner.program()) {
+                return Err("action projection has an inconsistent native revision owner".into());
+            }
+            ProjectionOwner::Revision(owner)
+        } else if let Some(owner) = edge.standard_library_owner() {
+            ProjectionOwner::StandardLibrary(owner.clone())
+        } else {
+            return Err("action projection has no pinned checked program owner".into());
+        };
         Ok(Self(Some(Arc::new(EvidenceNode::Projected {
             source: self.clone(),
             edge,
@@ -120,15 +129,35 @@ impl ActionEvidence {
                     edge,
                     owner,
                 } => {
-                    let bridge = owner.type_bridge();
-                    let candidate_edge = Arc::ptr_eq(edge.target(), bridge.candidate_program())
-                        && Arc::ptr_eq(edge.source(), bridge.original_program());
-                    let original_edge = Arc::ptr_eq(edge.source(), bridge.candidate_program())
-                        && Arc::ptr_eq(edge.target(), bridge.original_program());
-                    if !candidate_edge && !original_edge {
-                        return Err(
-                            "action projection does not belong to its pinned revision".into()
-                        );
+                    match owner {
+                        ProjectionOwner::Revision(owner) => {
+                            let bridge = owner.type_bridge();
+                            let candidate_edge =
+                                Arc::ptr_eq(edge.target(), bridge.candidate_program())
+                                    && Arc::ptr_eq(edge.source(), bridge.original_program());
+                            let original_edge =
+                                Arc::ptr_eq(edge.source(), bridge.candidate_program())
+                                    && Arc::ptr_eq(edge.target(), bridge.original_program());
+                            if !candidate_edge && !original_edge {
+                                return Err(
+                                    "action projection does not belong to its pinned revision"
+                                        .into(),
+                                );
+                            }
+                        }
+                        ProjectionOwner::StandardLibrary(owner) => {
+                            if !edge
+                                .standard_library_owner()
+                                .is_some_and(|selected| Arc::ptr_eq(selected, owner))
+                                || (!Arc::ptr_eq(edge.source(), &owner.program)
+                                    && !Arc::ptr_eq(edge.target(), &owner.program))
+                            {
+                                return Err(
+                                    "action projection does not belong to its pinned std library"
+                                        .into(),
+                                );
+                            }
+                        }
                     }
                     edges.push(edge);
                     current = source;

@@ -42,6 +42,7 @@ impl std::error::Error for RevisionTypeBridgeError {}
 /// authorize a caller-supplied graph as executable evidence.
 pub struct RevisionTypeBridge {
     runtime_owner: std::sync::OnceLock<std::sync::Weak<crate::api::code::PreparedCodeRevision>>,
+    standard_library: Option<std::sync::Arc<etas_frontend::StandardLibrary>>,
     original: CheckedProgram,
     candidate: CheckedProgram,
     forward: BTreeMap<(GenericOwner, TypeId), Option<TypeId>>,
@@ -69,8 +70,20 @@ impl RevisionTypeBridge {
     pub(crate) fn for_standard_library(
         original: &DefinitionCatalog,
         library: &DefinitionCatalog,
+        owner: &std::sync::Arc<etas_frontend::StandardLibrary>,
     ) -> Result<Self, RevisionTypeBridgeError> {
-        Self::catalog_correspondence(original, library)
+        if !std::sync::Arc::ptr_eq(library.checked_program(), &owner.program)
+            || !original
+                .checked_program()
+                .standard_library
+                .as_ref()
+                .is_some_and(|selected| std::sync::Arc::ptr_eq(selected, owner))
+        {
+            return Err(RevisionTypeBridgeError::WrongProgram);
+        }
+        let mut bridge = Self::catalog_correspondence(original, library)?;
+        bridge.standard_library = Some(owner.clone());
+        Ok(bridge)
     }
     pub(crate) fn from_catalogs(
         candidate: &CheckedCandidate,
@@ -189,6 +202,7 @@ impl RevisionTypeBridge {
         let actions = actions::ActionBridge::new(original, compiled, &runtime_types)?;
         Ok(Self {
             runtime_owner: Default::default(),
+            standard_library: None,
             original: original.checked_program().clone(),
             candidate: compiled.checked_program().clone(),
             forward,
@@ -224,6 +238,12 @@ impl RevisionTypeBridge {
         &self,
     ) -> Option<std::sync::Arc<crate::api::code::PreparedCodeRevision>> {
         self.runtime_owner.get().and_then(std::sync::Weak::upgrade)
+    }
+
+    pub(crate) fn standard_library_owner(
+        &self,
+    ) -> Option<&std::sync::Arc<etas_frontend::StandardLibrary>> {
+        self.standard_library.as_ref()
     }
     pub fn candidate_program(&self) -> &CheckedProgram {
         &self.candidate

@@ -264,6 +264,15 @@ impl EvalMachine {
                     super::frame::ProgramReturnFrame {
                         site: Some(frame.call_site.restore(context)?),
                         parent: scope.clone(),
+                        parent_handler_floor: scope.as_ref().map_or_else(
+                            || {
+                                resources
+                                    .task
+                                    .as_ref()
+                                    .map_or(0, |task| task.inherited_handlers)
+                            },
+                            |scope| scope.handler_floor,
+                        ),
                         parent_program,
                         parent_model_policy: super::snapshot::program::restore_model_policy(
                             frame.parent_model_policy,

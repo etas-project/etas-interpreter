@@ -164,10 +164,7 @@ impl EvalMachine {
             )
             .map_err(fail)?;
             proof = projection.target().clone();
-            let start = boundary
-                .parent
-                .as_ref()
-                .map_or(0, |scope| scope.handler_floor);
+            let start = boundary.parent_handler_floor;
             let relocated = relocated_perform(
                 proof.clone(),
                 boundary.span,

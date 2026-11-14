@@ -58,10 +58,7 @@ impl ProgramContinuation {
                 .resuming_program
                 .checkpoint_identity(&mut context.revisions),
             parent_scoped: boundary.parent.is_some(),
-            parent_handler_floor: boundary
-                .parent
-                .as_ref()
-                .map_or(0, |scope| scope.handler_floor),
+            parent_handler_floor: boundary.parent_handler_floor,
             boundary: Box::new(boundary_snapshot),
             frames,
             continuation,
@@ -183,6 +180,7 @@ pub(in crate::eval::machine) fn restore_graph(
                 program: parent.clone(),
                 handler_floor: saved.parent_handler_floor,
             }),
+            parent_handler_floor: saved.parent_handler_floor,
             parent_program: parent.clone(),
             parent_model_policy: crate::eval::machine::snapshot::program::restore_model_policy(
                 saved.boundary.parent_model_policy.clone(),

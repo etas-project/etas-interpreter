@@ -56,7 +56,7 @@ impl SnapshotValidator<'_> {
                     "suspended program is referenced from a different checked parent".into(),
                 );
             }
-            if (!node.parent_scoped && node.parent_handler_floor != 0)
+            if (!node.parent_scoped && node.parent_handler_floor != self.inherited_handlers)
                 || node.parent_handler_floor > node.boundary.handler_floor
                 || !matches!(node.boundary.outer, ContinuationSnapshot::BlockValue)
                 || node

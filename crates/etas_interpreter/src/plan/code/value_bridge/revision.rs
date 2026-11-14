@@ -22,6 +22,11 @@ impl RevisionProjection {
             Self::Candidate(bridge) | Self::Original(bridge) => bridge.runtime_owner(),
         }
     }
+    pub(crate) fn standard_library_owner(&self) -> Option<&Arc<etas_frontend::StandardLibrary>> {
+        match self {
+            Self::Candidate(bridge) | Self::Original(bridge) => bridge.standard_library_owner(),
+        }
+    }
     pub(crate) fn source(&self) -> &CheckedProgram {
         match self {
             Self::Candidate(bridge) => bridge.original_program(),

@@ -43,7 +43,7 @@ impl StandardLibraryProgram {
         let caller = catalog(program)?;
         let bodies = catalog(library)?;
         let bridge = Arc::new(
-            RevisionTypeBridge::for_standard_library(&caller, &bodies)
+            RevisionTypeBridge::for_standard_library(&caller, &bodies, standard)
                 .map_err(|e| e.to_string())?,
         );
         let prepared = super::prepare_program(library)

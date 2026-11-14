@@ -111,6 +111,7 @@ pub(crate) enum EvalFrame {
 pub(crate) struct ProgramReturnFrame {
     pub site: Option<crate::control::CallSite>,
     pub parent: Option<super::state::ProgramScope>,
+    pub parent_handler_floor: usize,
     pub parent_program: crate::value::CheckedExecutionProgram,
     pub parent_model_policy: crate::api::ModelExecutionPolicy,
     pub call: super::scoped_call::ProgramCall,
