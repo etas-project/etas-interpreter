@@ -9,10 +9,11 @@ impl<'a> EvalContext<'a> {
         let ResolveResult::Resolved(symbol) = path?.resolution else {
             return None;
         };
-        matches!(
-            self.checked.symbols.get(symbol)?.def,
-            SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. }
-        )
+        (self.plan.dispatch.enum_constructor(symbol).is_some()
+            || matches!(
+                self.checked.symbols.get(symbol)?.def,
+                SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. }
+            ))
         .then_some(symbol)
     }
 

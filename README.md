@@ -60,6 +60,9 @@ body through private generic and spec-method calls. An ordinary application can
 also call an installed source std flow directly or as a function value. The
 checked public interface and canonical body identity are compared before
 planning. Generic arguments use frontend-prepared invocation proofs.
+SDK-defined record and enum values retain the same canonical owner identity as
+the archived bodies. Named standard enum constructors use their checked field
+layout for construction and matching.
 
 These calls reuse the caller's evaluation machine, handlers, budget, cancellation
 and trace. Source callables require their checked artifact body and never select
