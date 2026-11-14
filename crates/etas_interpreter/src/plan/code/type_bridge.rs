@@ -66,6 +66,12 @@ impl std::fmt::Debug for RevisionTypeBridge {
 }
 
 impl RevisionTypeBridge {
+    pub(crate) fn for_standard_library(
+        original: &DefinitionCatalog,
+        library: &DefinitionCatalog,
+    ) -> Result<Self, RevisionTypeBridgeError> {
+        Self::catalog_correspondence(original, library)
+    }
     pub(crate) fn from_catalogs(
         candidate: &CheckedCandidate,
         original: &DefinitionCatalog,
