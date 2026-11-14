@@ -109,6 +109,39 @@ impl Direction {
                 }
             }
         }
+        // A bundled method's impl binders are not callable-owned binders.
+        // Relate them through the checked canonical method import as well.
+        for (owner, importer, reverse) in [(source, target, false), (target, source, true)] {
+            for imported in &importer.checked_program().types.external_methods {
+                let callable = etas_code::CallableId::method(imported.identity.clone());
+                let Some(item) = owner.item_owner(&callable) else {
+                    continue;
+                };
+                let Some(authored) = owner
+                    .checked_program()
+                    .types
+                    .type_impl_methods
+                    .values()
+                    .find(|method| method.body == item)
+                else {
+                    continue;
+                };
+                for (from, to) in authored.owner_params.iter().zip(&imported.owner_params) {
+                    if from.kind != etas_types::CallableGenericParamKind::Type {
+                        continue;
+                    }
+                    let (from, to) = if reverse { (to, from) } else { (from, to) };
+                    for scope in [
+                        etas_code::descriptor::GenericOwner::Implementation(
+                            imported.identity.implementation().clone(),
+                        ),
+                        etas_code::descriptor::GenericOwner::Method(imported.identity.clone()),
+                    ] {
+                        scoped_types.insert((scope, from.subject), Some(to.subject));
+                    }
+                }
+            }
+        }
         let mut checked_types = HashMap::new();
         for ((_, ty), target) in &scoped_types {
             if let Some(target) = target {

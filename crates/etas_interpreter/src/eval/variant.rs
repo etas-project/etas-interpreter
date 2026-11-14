@@ -82,6 +82,16 @@ impl<'a> EvalContext<'a> {
                 ),
             ));
         }
+        if matches!(
+            self.checked.type_store.get(result),
+            Some(etas_types::Type::Result { .. })
+        ) && self.checked.types.known_std_types.result_enum == Some(owner)
+        {
+            return Ok(InterpValue::Variant {
+                name: name.into(),
+                fields: fields.into(),
+            });
+        }
         Ok(InterpValue::Nominal {
             ty: result,
             value: InterpValue::Variant {
@@ -129,6 +139,7 @@ impl<'a> EvalContext<'a> {
 
     fn enum_owner(&self, ty: etas_types::TypeId) -> Option<etas_types::TypeId> {
         match self.checked.type_store.get(ty)? {
+            etas_types::Type::Result { .. } => self.checked.types.known_std_types.result_enum,
             etas_types::Type::Enum(_) => Some(ty),
             etas_types::Type::Applied { constructor, .. }
                 if matches!(
