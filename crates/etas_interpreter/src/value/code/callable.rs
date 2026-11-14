@@ -96,8 +96,13 @@ impl ScopedCallableValue {
                     return Err("unscoped callable has no native execution environment in the source program".into());
                 }
                 let root = callable_root(execution, &target)?;
-                let application =
-                    validate_signature(source, root, &target, projection.signature())?;
+                let application = validate_signature_with_projection(
+                    source,
+                    root,
+                    &target,
+                    projection.signature(),
+                    Some(&projection),
+                )?;
                 let plan = execution
                     .plan
                     .select_callable(source, root)
@@ -327,6 +332,16 @@ fn validate_signature(
     target: &CallTarget,
     expected: &FlowType,
 ) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
+    validate_signature_with_projection(program, root, target, expected, None)
+}
+
+fn validate_signature_with_projection(
+    program: &CheckedProgram,
+    root: CheckedCallableRoot,
+    target: &CallTarget,
+    expected: &FlowType,
+    projection: Option<&CallableValueProjection>,
+) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
     let mut bindings = crate::control::GenericBindings::new();
     let mut target = target;
     loop {
@@ -368,6 +383,16 @@ fn validate_signature(
         }
     }
     validate_signature_bindings(program, root, expected, &bindings)?;
+    // A checked implementation dictionary can carry a generic method template.
+    // The scoped call supplies and validates its concrete arguments before entry.
+    if bindings.types.is_empty()
+        && bindings.parameters.is_empty()
+        && bindings.rows.is_empty()
+        && let Some(projection) = projection
+        && projection.is_checked_method_template(root)?
+    {
+        return Ok(None);
+    }
     checked_item_application(program, root, &bindings)
 }
 

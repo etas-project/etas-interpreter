@@ -169,6 +169,7 @@ impl StandardLibraryProgram {
             plan: Arc::new(plan),
             definitions: None,
             revision: None,
+            foreign: None,
         };
         let scope = match identity.as_method() {
             Some(method) => etas_code::descriptor::GenericOwner::Method(method.clone()),

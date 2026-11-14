@@ -65,12 +65,14 @@ struct WitnessKey {
 pub(crate) struct PreparedWitness {
     pub target: MethodTarget,
     pub parameters: Vec<(String, String)>,
+    pub parameter_types: Vec<(TypeId, TypeId)>,
     pub owner_bindings: Vec<(TypeId, TypeId)>,
 }
 
 struct WitnessSelection<'a> {
     target: &'a MethodTarget,
     parameters: &'a [(String, String)],
+    parameter_types: &'a [(TypeId, TypeId)],
     owner_bindings: &'a [(TypeId, TypeId)],
 }
 
@@ -138,8 +140,13 @@ impl MethodDispatchPlan {
                 let signature = required
                     .signature_in(&project.types)
                     .ok_or("method witness has no checked requirement signature")?;
-                let parameters = required
-                    .implementation_generic_parameters(signature, &entry.signature)?
+                let pairs =
+                    required.implementation_generic_parameters(signature, &entry.signature)?;
+                let parameter_types = pairs
+                    .iter()
+                    .map(|(required, provided)| (required.subject, provided.subject))
+                    .collect();
+                let parameters = pairs
                     .into_iter()
                     .map(|(required, provided)| (required.name.clone(), provided.name.clone()))
                     .collect();
@@ -153,6 +160,7 @@ impl MethodDispatchPlan {
                 let witness = PreparedWitness {
                     target: entry.target.clone(),
                     parameters,
+                    parameter_types,
                     owner_bindings,
                 };
                 if result.witnesses.insert(key, witness).is_some() {
@@ -432,6 +440,7 @@ impl MethodDispatchPlan {
             let WitnessSelection {
                 target,
                 parameters,
+                parameter_types,
                 owner_bindings,
             } = if let Some(object) = object {
                 if object.object_type() != subject {
@@ -447,6 +456,7 @@ impl MethodDispatchPlan {
                 WitnessSelection {
                     target: &witness.target,
                     parameters: &witness.parameters,
+                    parameter_types: &witness.parameter_types,
                     owner_bindings: &witness.owner_bindings,
                 }
             };
@@ -464,7 +474,26 @@ impl MethodDispatchPlan {
                     .map(|(_, actual)| actual.clone())
                     .ok_or("method witness has no effect binder mapping")?;
             }
-            bindings.parameters.extend_from_slice(owner_bindings);
+            // Requirement-local Self and parent binders are not implementation
+            // parameters. Rebind only the declaration's checked method binders.
+            let mut parameter_bindings = bindings
+                .parameters
+                .into_iter()
+                .filter_map(|(parameter, argument)| {
+                    parameter_types
+                        .iter()
+                        .find(|(required, _)| *required == parameter)
+                        .map(|(_, provided)| (*provided, argument))
+                })
+                .collect::<HashMap<_, _>>();
+            for ((_, provided), (_, name)) in parameter_types.iter().zip(parameters) {
+                if let Some((_, argument)) = bindings.types.iter().find(|(bound, _)| bound == name)
+                {
+                    parameter_bindings.insert(*provided, *argument);
+                }
+            }
+            parameter_bindings.extend(owner_bindings.iter().copied());
+            bindings.parameters = parameter_bindings.into_iter().collect();
             target
         } else {
             &fact.target
@@ -525,6 +554,7 @@ impl MethodDispatchPlan {
             return Ok(WitnessSelection {
                 target: &prepared.target,
                 parameters: &prepared.parameters,
+                parameter_types: &prepared.parameter_types,
                 owner_bindings: &prepared.owner_bindings,
             });
         }

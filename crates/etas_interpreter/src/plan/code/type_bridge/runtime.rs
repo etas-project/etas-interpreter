@@ -45,8 +45,72 @@ impl Direction {
         checked: &BTreeMap<(etas_code::descriptor::GenericOwner, TypeId), Option<TypeId>>,
     ) -> Result<Self, Error> {
         let to = target.checked_program();
+        let mut scoped_types = checked.clone();
+        let mut effect_parameters = BTreeMap::<_, HashMap<_, _>>::new();
+        for (library, owner, reverse) in [
+            (target.checked_program(), source.checked_program(), false),
+            (source.checked_program(), target.checked_program(), true),
+        ] {
+            for identity in library.foreign_methods() {
+                let (origin, _, _) = library
+                    .foreign_method(identity)
+                    .expect("listed checked foreign method");
+                if !std::sync::Arc::ptr_eq(origin.hir.shared_program(), owner.hir.shared_program())
+                {
+                    continue;
+                }
+                let method = crate::plan::code::checked_foreign_method(library, owner, identity)
+                    .map_err(Error::InvalidRuntimeInterface)?;
+                for (from, to, scope) in [
+                    (
+                        &method.source.owner_params,
+                        &method.imported.owner_params,
+                        etas_code::descriptor::GenericOwner::Implementation(
+                            identity.implementation().clone(),
+                        ),
+                    ),
+                    (
+                        &method.source.signature.generic_params,
+                        &method.imported.signature.generic_params,
+                        etas_code::descriptor::GenericOwner::Method(identity.clone()),
+                    ),
+                ] {
+                    if from.len() != to.len() || from.iter().zip(to).any(|(a, b)| a.kind != b.kind)
+                    {
+                        return Err(Error::InvalidRuntimeInterface(
+                            "foreign method changed its checked binder shape".into(),
+                        ));
+                    }
+                    for (from, to) in from.iter().zip(to) {
+                        let (from, to) = if reverse { (to, from) } else { (from, to) };
+                        if from.kind == etas_types::CallableGenericParamKind::Type {
+                            for scope in [
+                                scope.clone(),
+                                etas_code::descriptor::GenericOwner::Method(identity.clone()),
+                            ] {
+                                let key = (scope, from.subject);
+                                if scoped_types
+                                    .get(&key)
+                                    .copied()
+                                    .flatten()
+                                    .is_some_and(|previous| previous != to.subject)
+                                {
+                                    return Err(Error::InvalidRuntimeInterface("foreign method conflicts with an existing checked binder correspondence".into()));
+                                }
+                                scoped_types.insert(key, Some(to.subject));
+                            }
+                        } else {
+                            effect_parameters
+                                .entry(scope.clone())
+                                .or_default()
+                                .insert(from.name.clone(), to.name.clone());
+                        }
+                    }
+                }
+            }
+        }
         let mut checked_types = HashMap::new();
-        for ((_, ty), target) in checked {
+        for ((_, ty), target) in &scoped_types {
             if let Some(target) = target {
                 checked_types
                     .entry(*ty)
@@ -66,7 +130,6 @@ impl Direction {
                 relocation_types.entry(*source).or_insert(*target);
             }
         }
-        let mut effect_parameters = BTreeMap::<_, HashMap<_, _>>::new();
         for parameter in &source.descriptors().data().binders {
             if parameter.kind != etas_code::descriptor::GenericParameterKind::EffectRow {
                 continue;
@@ -83,7 +146,7 @@ impl Direction {
             }
         }
         Ok(Self {
-            scoped_types: checked.clone(),
+            scoped_types,
             effect_parameters,
             correspondence,
             target_types: TypeLookupIndex::new(&to.type_store),

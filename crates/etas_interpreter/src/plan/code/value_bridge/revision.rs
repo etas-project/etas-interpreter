@@ -46,6 +46,24 @@ impl RevisionProjection {
         }
         .map_err(|error| error.to_string())
     }
+
+    pub(crate) fn value_in_scope(
+        &self,
+        scope: &etas_code::descriptor::GenericOwner,
+        ty: TypeId,
+        value: crate::value::InterpValue,
+        execution: &crate::value::CheckedExecutionProgram,
+    ) -> Result<crate::value::InterpValue, String> {
+        match self {
+            Self::Candidate(bridge) => {
+                bridge.value_to_candidate_scoped(self.source(), scope, ty, value, execution)
+            }
+            Self::Original(bridge) => {
+                bridge.value_to_original_scoped(self.source(), scope, ty, value, execution)
+            }
+        }
+        .map_err(|error| error.to_string())
+    }
     pub(crate) fn action(
         &self,
         action: &etas_effects::ActionRef,

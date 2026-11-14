@@ -160,6 +160,7 @@ pub(super) async fn resume(
                 plan: Arc::new(plan.clone()),
                 definitions: options.code_definitions.clone(),
                 revision: prepared.cloned(),
+                foreign: None,
             },
             checkpoint,
             options.checkpoint_revisions.clone(),

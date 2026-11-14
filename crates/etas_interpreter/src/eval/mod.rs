@@ -138,6 +138,7 @@ use etas_host::{
 pub(crate) struct EvalContext<'a> {
     pub(crate) handler_floor: usize,
     pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
+    foreign: Option<std::sync::Arc<crate::value::ForeignExecutionLink>>,
     code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     code_syntax: std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
@@ -304,6 +305,7 @@ impl<'a> EvalContext<'a> {
         scoped.handler_floor = handler_floor;
         scoped.current_task = crate::driver::scheduler::TaskIdentity::Scheduled(task_id);
         scoped.revision = program.revision.as_ref();
+        scoped.foreign = program.foreign.clone();
         scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
         scoped
     }
@@ -330,6 +332,7 @@ impl<'a> EvalContext<'a> {
         scoped.handler_floor = handler_floor;
         scoped.current_task = current_task;
         scoped.revision = program.revision.as_ref();
+        scoped.foreign = program.foreign.clone();
         scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
         scoped
     }
@@ -343,6 +346,7 @@ impl<'a> EvalContext<'a> {
                 .clone(),
             definitions: self.code_definitions.clone(),
             revision: self.revision.cloned(),
+            foreign: self.foreign.clone(),
         }
     }
     pub(crate) fn scheduling_decision(&mut self, span: Span) -> safe_point::SafePointDecision {
@@ -411,6 +415,7 @@ impl<'a> EvalContext<'a> {
             ),
             handler_floor: 0,
             revision: None,
+            foreign: None,
             code_definitions,
             syntax_limits,
             runtime,

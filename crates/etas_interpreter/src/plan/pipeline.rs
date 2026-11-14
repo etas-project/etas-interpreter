@@ -170,6 +170,7 @@ impl PreparedProgram {
                 plan: plan.clone(),
                 definitions: None,
                 revision: None,
+                foreign: None,
             },
             ty,
             target,

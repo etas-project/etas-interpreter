@@ -28,12 +28,28 @@ impl EvalMachine {
     ) -> Result<MachinePoll, ExecutionFault> {
         let missing =
             |reason| ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason);
-        let destination = call.destination().map_err(missing)?;
+        let mut destination = call.destination().map_err(missing)?;
         let source = self.program_scope.as_ref().map_or_else(
             || ctx.checked_execution_program(),
             |scope| scope.program.clone(),
         );
         let args = call.arguments(&source, args).map_err(missing)?;
+        if destination.foreign.is_none()
+            && destination.checked.foreign_methods().next().is_some()
+            && let Some(projection) = call
+                .action_projections()
+                .map_err(missing)?
+                .into_iter()
+                .find(|edge| {
+                    Arc::ptr_eq(edge.source(), &destination.checked)
+                        && Arc::ptr_eq(edge.target(), &source.checked)
+                })
+        {
+            destination.foreign = Some(Arc::new(crate::value::ForeignExecutionLink {
+                owner: source.clone(),
+                projection,
+            }));
+        }
         if self.checkpoint_root.is_none() {
             self.checkpoint_root = Some(super::snapshot::CheckpointRoot {
                 program: source.clone(),

@@ -21,6 +21,32 @@ pub(crate) struct CallableValueProjection {
 }
 
 impl CallableValueProjection {
+    pub(crate) fn is_checked_method_template(
+        &self,
+        root: etas_frontend::CheckedCallableRoot,
+    ) -> Result<bool, String> {
+        let etas_frontend::CheckedCallableRoot::Item(item) = root else {
+            return Ok(false);
+        };
+        for identity in self.target.foreign_methods() {
+            let (origin, owner, _) = self
+                .target
+                .foreign_method(identity)
+                .expect("listed foreign method");
+            if owner != item
+                || !Arc::ptr_eq(
+                    origin.hir.shared_program(),
+                    self.source.hir.shared_program(),
+                )
+            {
+                continue;
+            }
+            let method =
+                crate::plan::code::checked_foreign_method(&self.target, &self.source, identity)?;
+            return Ok(!method.source.signature.generic_params.is_empty());
+        }
+        Ok(false)
+    }
     pub(crate) fn action_projection(&self) -> Result<Option<super::RevisionProjection>, String> {
         match &self.revision {
             Some(edge) => Ok(Some(edge.clone())),

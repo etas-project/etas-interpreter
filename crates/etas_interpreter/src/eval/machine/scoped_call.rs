@@ -109,6 +109,7 @@ impl ProgramCall {
                     .frozen_agent()
                     .is_none()
                     .then(|| call.prepared().clone()),
+                foreign: None,
             }),
         }
     }

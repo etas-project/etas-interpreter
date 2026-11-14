@@ -33,6 +33,7 @@ impl PreparedRevisionProgram<'_> {
             plan,
             definitions: Some(self.definitions),
             revision: self.revision,
+            foreign: None,
         }
     }
 }

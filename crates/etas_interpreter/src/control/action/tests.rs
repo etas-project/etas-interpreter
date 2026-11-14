@@ -20,6 +20,7 @@ fn execution(source: &str) -> CheckedExecutionProgram {
         plan,
         definitions: None,
         revision: None,
+        foreign: None,
     }
 }
 

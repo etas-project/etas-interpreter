@@ -30,6 +30,7 @@ fn source_invocation(prepared: &Arc<PreparedCodeRevision>) -> CheckedActionInvoc
             plan,
             definitions: Some(prepared.source_definitions.clone()),
             revision: None,
+            foreign: None,
         },
         expr,
         &Default::default(),

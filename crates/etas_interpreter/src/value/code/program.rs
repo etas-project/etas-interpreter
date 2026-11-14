@@ -15,6 +15,79 @@ pub(crate) struct CheckedExecutionProgram {
     pub plan: Arc<InterpreterPlan>,
     pub definitions: Option<Arc<PreparedCodeDefinitions>>,
     pub revision: Option<Arc<PreparedCodeRevision>>,
+    pub foreign: Option<Arc<ForeignExecutionLink>>,
+}
+
+/// A live code link supplied by the caller of an installed library body.
+/// It retains code ownership while invocation authority remains in EvalRunState.
+#[derive(Clone, Debug)]
+pub(crate) struct ForeignExecutionLink {
+    pub owner: CheckedExecutionProgram,
+    pub projection: crate::plan::code::RevisionProjection,
+}
+
+impl ForeignExecutionLink {
+    pub(crate) fn method(
+        &self,
+        library: &CheckedProgram,
+        identity: &etas_code::MethodId,
+    ) -> Result<crate::control::CallTarget, String> {
+        if !Arc::ptr_eq(self.projection.source(), library)
+            || !Arc::ptr_eq(self.projection.target(), &self.owner.checked)
+        {
+            return Err("foreign method link disagrees with its checked program boundary".into());
+        }
+        let method =
+            crate::plan::code::checked_foreign_method(library, &self.owner.checked, identity)?;
+        let signature = match self.owner.checked.types.item_signatures.get(&method.item) {
+            Some(etas_types::ItemSignature::Flow(signature)) => signature,
+            _ => return Err("foreign method has no checked callable signature".into()),
+        };
+        let contract = self
+            .owner
+            .checked
+            .effects
+            .public_contracts
+            .iter()
+            .find(|contract| contract.item == method.item)
+            .ok_or("foreign method has no checked public effect contract")?;
+        let parameters = signature
+            .generic_params
+            .iter()
+            .filter(|parameter| parameter.kind == etas_types::CallableGenericParamKind::Effect)
+            .map(|parameter| parameter.name.clone())
+            .collect::<Vec<_>>();
+        let row = etas_effects::facts::checked_type_effect_row(
+            &contract.public_row,
+            &self.owner.checked.effect_registry,
+            &parameters,
+        )?;
+        let flow = etas_types::FlowType {
+            input: signature.params.clone(),
+            output: signature.output,
+            effects: Some(row),
+        };
+        let ty = self
+            .owner
+            .checked
+            .type_store
+            .iter()
+            .find_map(|(ty, candidate)| {
+                matches!(candidate, etas_types::Type::Function(candidate) if *candidate == flow)
+                    .then_some(ty)
+            })
+            .ok_or("foreign method has no materialized checked ABI")?;
+        let value = self.projection.reversed().value_in_scope(
+            &etas_code::descriptor::GenericOwner::Method(identity.clone()),
+            ty,
+            crate::value::InterpValue::Callable(crate::control::CallTarget::FlowItem(method.item)),
+            &self.owner,
+        )?;
+        let crate::value::InterpValue::Callable(target) = value else {
+            return Err("foreign method projection produced a non-callable value".into());
+        };
+        Ok(target)
+    }
 }
 
 impl CheckedExecutionProgram {
@@ -42,6 +115,7 @@ impl CheckedExecutionProgram {
                 plan: Arc::new(plan),
                 definitions: source.definitions.clone(),
                 revision: None,
+                foreign: source.foreign.clone(),
             });
         }
         revisions
