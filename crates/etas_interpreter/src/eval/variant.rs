@@ -84,6 +84,23 @@ impl<'a> EvalContext<'a> {
         }
         if matches!(
             self.checked.type_store.get(result),
+            Some(etas_types::Type::Option(_))
+        ) && self.checked.types.known_std_types.option_enum == Some(owner)
+        {
+            return Ok(match name.as_str() {
+                "Some" => InterpValue::OptionSome(
+                    fields
+                        .into_iter()
+                        .next()
+                        .expect("checked Some payload")
+                        .into(),
+                ),
+                "None" => InterpValue::OptionNone,
+                _ => unreachable!("checked Option role variants"),
+            });
+        }
+        if matches!(
+            self.checked.type_store.get(result),
             Some(etas_types::Type::Result { .. })
         ) && self.checked.types.known_std_types.result_enum == Some(owner)
         {
@@ -140,6 +157,7 @@ impl<'a> EvalContext<'a> {
     fn enum_owner(&self, ty: etas_types::TypeId) -> Option<etas_types::TypeId> {
         match self.checked.type_store.get(ty)? {
             etas_types::Type::Result { .. } => self.checked.types.known_std_types.result_enum,
+            etas_types::Type::Option(_) => self.checked.types.known_std_types.option_enum,
             etas_types::Type::Enum(_) => Some(ty),
             etas_types::Type::Applied { constructor, .. }
                 if matches!(
@@ -211,8 +229,10 @@ impl<'a> EvalContext<'a> {
             )
         })?;
         let args = match self.checked.type_store.get(output) {
-            Some(etas_types::Type::Applied { args, .. }) => args.as_slice(),
-            _ => &[],
+            Some(etas_types::Type::Applied { args, .. }) => args.clone(),
+            Some(etas_types::Type::Result { ok, err }) => vec![*ok, *err],
+            Some(etas_types::Type::Option(inner)) => vec![*inner],
+            _ => Vec::new(),
         };
         if args.len() != layout.type_params.len() {
             return Err(self.enum_fact_fault(

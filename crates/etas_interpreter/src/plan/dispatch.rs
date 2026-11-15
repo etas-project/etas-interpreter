@@ -100,7 +100,9 @@ impl IntrinsicDispatchTable {
                 continue;
             };
             if let Some(std_symbol) = project.std_registry.lookup_qualified(path)
-                && std_symbol.enum_owner.is_some()
+                && (std_symbol.enum_owner.is_some()
+                    || (std_symbol.kind == etas_std::StdSymbolKind::Constructor
+                        && project.std_registry.body_binding(std_symbol.id).is_some()))
             {
                 let etas_std::StdDecl::Flow(declaration) = &std_symbol.decl else {
                     errors.push(format!(
