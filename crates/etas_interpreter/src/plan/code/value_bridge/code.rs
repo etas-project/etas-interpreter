@@ -12,6 +12,15 @@ impl Walk<'_> {
         let source = &self.source.types.known_std_types.code;
         let target = &self.target.types.known_std_types.code;
         let paired = |left, right| left == Some(from) && right == Some(to);
+        let callable_definition = |program: &etas_frontend::CheckedProgram, ty, known| {
+            let constructor = match program.type_store.get(ty) {
+                Some(Type::Applied { constructor, args }) if args.len() == 1 => {
+                    TypeId(constructor.0)
+                }
+                _ => ty,
+            };
+            known == Some(constructor)
+        };
         match value {
             InterpValue::AgentDefinition(value) => {
                 let applied = |program: &etas_frontend::CheckedProgram, ty, known| matches!(program.type_store.get(ty), Some(Type::Applied { constructor, args }) if Some(TypeId(constructor.0)) == known && args.len() == 1);
@@ -35,7 +44,8 @@ impl Walk<'_> {
             }
             InterpValue::CallableDefinition(value)
                 if value.ty() == from
-                    && paired(source.callable_definition, target.callable_definition) =>
+                    && callable_definition(self.source, from, source.callable_definition)
+                    && callable_definition(self.target, to, target.callable_definition) =>
             {
                 if !std::sync::Arc::ptr_eq(value.program(), self.source) {
                     return Err(Failure::WrongProgram);
