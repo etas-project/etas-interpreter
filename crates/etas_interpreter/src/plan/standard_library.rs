@@ -35,6 +35,12 @@ struct LibraryCallable {
 }
 
 impl StandardLibraryProgram {
+    pub(crate) fn prepared(&self) -> &Arc<PreparedProgram> {
+        &self.prepared
+    }
+    pub(crate) fn bridge(&self) -> &Arc<RevisionTypeBridge> {
+        &self.bridge
+    }
     pub(super) fn prepare(program: &CheckedProgram) -> Result<Option<Arc<Self>>, String> {
         let Some(standard) = &program.standard_library else {
             return Ok(None);

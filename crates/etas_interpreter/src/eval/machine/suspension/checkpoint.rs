@@ -54,9 +54,7 @@ impl ProgramContinuation {
         let continuation = context.continuation(&saved.continuation)?;
         let action = context.action_origin(&saved.projection, &continuation)?;
         Ok(SuspendedProgramSnapshot {
-            parent: saved
-                .resuming_program
-                .checkpoint_identity(&mut context.revisions),
+            parent: context.execution_identity(&saved.resuming_program)?,
             parent_scoped: boundary.parent.is_some(),
             parent_handler_floor: boundary.parent_handler_floor,
             boundary: Box::new(boundary_snapshot),

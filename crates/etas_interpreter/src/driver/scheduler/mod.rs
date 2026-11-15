@@ -175,17 +175,14 @@ impl TaskScheduler {
 
     pub(crate) fn capture_continuations(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
         capture: impl FnMut(
             TaskIdentity,
             Option<&crate::value::CheckedExecutionProgram>,
             &crate::control::Continuation,
         ) -> Result<u32, String>,
     ) -> Result<ContinuationArenaSnapshot, String> {
-        self.continuations.capture(revisions, capture)
+        self.continuations.capture(context, capture)
     }
 
     pub(crate) fn consume_continuation(

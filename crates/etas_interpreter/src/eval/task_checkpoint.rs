@@ -77,7 +77,7 @@ impl TaskCapture {
     ) -> Result<u32, String> {
         let index =
             u32::try_from(self.auxiliary.len()).map_err(|_| "too many task continuations")?;
-        let program = program.checkpoint_identity(&mut self.context.revisions);
+        let program = self.context.execution_identity(program)?;
         let continuation = self.context.continuation(continuation)?;
         self.auxiliary.push(AuxiliaryContinuationSnapshot {
             program,
@@ -149,9 +149,20 @@ impl super::EvalContext<'_> {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        root_capture.context.bind_program(&root.program);
+        for capture in captures.values_mut() {
+            capture.context.bind_program(&root.program);
+        }
         let mut revisions = BTreeMap::new();
+        let mut identity_context = CaptureContext::default();
+        identity_context.bind_program(&root.program);
+        for task in tasks.values() {
+            if let Some(program) = &task.program {
+                identity_context.bind_program(program);
+            }
+        }
         let continuations = self.scheduler.capture_continuations(
-            &mut revisions,
+            &mut identity_context,
             |origin, program, continuation| {
                 let program =
                     program.ok_or("task continuation has no checked execution program")?;
@@ -164,6 +175,7 @@ impl super::EvalContext<'_> {
                 }
             },
         )?;
+        revisions.extend(identity_context.revisions);
         let mut scope_owners = BTreeMap::new();
         scope_owners.insert(self.task.execution.id().as_u64(), TaskIdentity::Root);
         for (id, task) in tasks {
@@ -261,7 +273,7 @@ impl super::EvalContext<'_> {
                         })
                         .transpose()?,
                     scope: task.scope,
-                    program: program.checkpoint_identity(&mut capture.context.revisions),
+                    program: capture.context.execution_identity(program)?,
                     local: TaskLocalSnapshot {
                         parent: task
                             .local
@@ -361,6 +373,9 @@ impl super::EvalContext<'_> {
             .snapshot(&root.program.plan.residual)?;
         saved.residual.validate_counters()?;
         root.program.checkpoint_identity(&mut revisions);
+        let metadata = self
+            .scheduler
+            .capture_metadata(continuations, &mut root_capture.context)?;
         revisions.extend(root_capture.context.revisions);
         Ok(CapturedTaskCheckpoint {
             root: CapturedMachineSnapshot {
@@ -370,7 +385,7 @@ impl super::EvalContext<'_> {
                 revisions,
             },
             scheduler: TaskSchedulerSnapshot {
-                metadata: self.scheduler.capture_metadata(continuations)?,
+                metadata,
                 tasks: saved_tasks,
                 counters: crate::orchestration::TaskRunCountersSnapshot {
                     step: self.next_step,

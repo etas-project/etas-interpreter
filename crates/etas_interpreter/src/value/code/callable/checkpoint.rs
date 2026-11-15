@@ -1,6 +1,6 @@
 use super::*;
 use crate::orchestration::{
-    CallableProjectionSnapshot, CheckpointCodeRevision, CheckpointProgramReference,
+    CallableProjectionOrigin, CallableProjectionSnapshot, CheckpointCodeRevision,
     ScopedCallableMetadata,
 };
 
@@ -129,42 +129,58 @@ impl ScopedCallableValue {
     }
     pub(crate) fn checkpoint_metadata(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            Arc<crate::api::code::PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<ScopedCallableMetadata, String> {
-        let native_program = match &self.native.program.revision {
-            Some(revision) => {
-                revisions.insert(revision.revision().key(), revision.clone());
-                CheckpointProgramReference::Revision {
-                    revision: Box::new(CheckpointCodeRevision::for_revision(revision)),
-                }
+        for projection in &self.projections {
+            if let Some(owner) = projection.revision_owner() {
+                context.bind_revision(owner);
             }
-            None => CheckpointProgramReference::Source,
-        };
+        }
+        context.bind_program(&self.native.program);
+        let native_program = context.program_reference(&self.native.program.checked)?;
         let mut projections = Vec::with_capacity(self.projections.len());
         for projection in &self.projections {
-            let owner = projection
-                .revision_owner()
-                .ok_or("checkpoint callable projection has no pinned native revision owner")?;
             let edge = projection
                 .action_projection()?
                 .ok_or("checkpoint callable projection has no revision edge")?;
-            let to_candidate = Arc::ptr_eq(edge.target(), owner.program());
-            let external = owner
-                .saved_external_type_bridge()
-                .is_some_and(|bridge| edge.uses_bridge(bridge));
-            if !external && !edge.uses_bridge(owner.type_bridge()) {
-                return Err(
-                    "checkpoint callable projection has an unowned checked type bridge".into(),
-                );
-            }
-            revisions.insert(owner.revision().key(), owner.clone());
+            let (origin, to_candidate) = if let Some(library) = edge.standard_library_owner() {
+                let to_candidate = Arc::ptr_eq(edge.target(), &library.program);
+                let owner = if to_candidate {
+                    edge.source()
+                } else {
+                    edge.target()
+                };
+                (
+                    CallableProjectionOrigin::StandardLibrary {
+                        owner: Box::new(context.program_reference(owner)?),
+                    },
+                    to_candidate,
+                )
+            } else {
+                let owner = projection
+                    .revision_owner()
+                    .ok_or("checkpoint callable projection has no pinned native revision owner")?;
+                let to_candidate = Arc::ptr_eq(edge.target(), owner.program());
+                let external = owner
+                    .saved_external_type_bridge()
+                    .is_some_and(|bridge| edge.uses_bridge(bridge));
+                if !external && !edge.uses_bridge(owner.type_bridge()) {
+                    return Err(
+                        "checkpoint callable projection has an unowned checked type bridge".into(),
+                    );
+                }
+                context.bind_revision(owner);
+                (
+                    CallableProjectionOrigin::Revision {
+                        revision: Box::new(CheckpointCodeRevision::for_revision(owner)),
+                        external,
+                    },
+                    to_candidate,
+                )
+            };
             projections.push(CallableProjectionSnapshot {
-                revision: CheckpointCodeRevision::for_revision(owner),
+                origin,
                 to_candidate,
-                external,
                 from: projection.source().1,
                 to: projection.target().1,
             });

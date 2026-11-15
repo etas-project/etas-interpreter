@@ -162,6 +162,11 @@ impl<'a> EvalContext<'a> {
                 })?;
             }
             Some(set)
+        } else if checked.standard_library.is_some() {
+            Some(
+                crate::api::code::PreparedRevisionSet::new(checked.clone())
+                    .with_source_definitions(root.program.definitions.clone()),
+            )
         } else {
             None
         };

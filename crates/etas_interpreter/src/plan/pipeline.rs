@@ -151,6 +151,11 @@ pub(crate) fn prepare_program_with_residual_binding(
 }
 
 impl PreparedProgram {
+    pub(crate) fn standard_library(
+        &self,
+    ) -> Option<&Arc<super::standard_library::StandardLibraryProgram>> {
+        self.standard_library.as_ref()
+    }
     pub(crate) fn checked(&self) -> &CheckedProject {
         &self.program
     }

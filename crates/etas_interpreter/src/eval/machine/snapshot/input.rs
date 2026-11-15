@@ -29,7 +29,7 @@ impl EvalMachine {
                             .or(owner)
                             .ok_or("pending program entry has no checked owner")?;
                         MachineInputSnapshot::EnterProgram {
-                            owner: parent.checkpoint_identity(&mut context.revisions),
+                            owner: context.execution_identity(parent)?,
                             call: context.call_target(&call.call_target())?,
                             args: capture_values(args, context)?,
                             span: *span,
@@ -67,16 +67,15 @@ impl EvalMachine {
                     } => {
                         let program =
                             program.ok_or("pending program entry has no checked restore owner")?;
-                        let parent =
-                            if owner == program.checkpoint_identity(&mut Default::default()) {
-                                program.clone()
-                            } else {
-                                context
-                                    .revisions
-                                    .as_ref()
-                                    .ok_or("pending program entry has no prepared revision set")?
-                                    .execution_snapshot(&owner)?
-                            };
+                        let parent = if let Some(revisions) = &context.revisions {
+                            revisions.execution_snapshot(&owner)?
+                        } else if owner == program.checkpoint_identity(&mut Default::default()) {
+                            program.clone()
+                        } else {
+                            return Err(
+                                "pending program entry has no prepared program environment".into(),
+                            );
+                        };
                         let previous = context.execution_program.clone();
                         context.select_program(parent.checked.clone());
                         context.execution_program = Some(parent.clone());
@@ -379,7 +378,9 @@ impl ContinuationInputSnapshot {
             Self::Finish(value) => ContinuationInput::Finish(value.restore_with(context)?),
             Self::Break => ContinuationInput::Break,
             Self::Continue => ContinuationInput::Continue,
-            Self::RetryFailure { span, message } => ContinuationInput::RetryFailure { span, message },
+            Self::RetryFailure { span, message } => {
+                ContinuationInput::RetryFailure { span, message }
+            }
         })
     }
 }

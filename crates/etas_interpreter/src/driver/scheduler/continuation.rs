@@ -65,10 +65,7 @@ pub(crate) struct ContinuationEntrySnapshot {
 impl ContinuationArena {
     pub(super) fn capture(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
         mut capture: impl FnMut(
             TaskIdentity,
             Option<&crate::value::CheckedExecutionProgram>,
@@ -86,7 +83,8 @@ impl ContinuationArena {
                         program: entry
                             .program
                             .as_ref()
-                            .map(|program| program.checkpoint_identity(revisions)),
+                            .map(|program| context.execution_identity(program))
+                            .transpose()?,
                         owner: entry.owner,
                         origin: entry.origin,
                         continuation: entry

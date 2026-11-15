@@ -23,12 +23,9 @@ impl ActionProjection {
     }
     pub(crate) fn checkpoint_origin(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            Arc<crate::api::code::PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
-        self.source.checkpoint_origin(revisions)
+        self.source.checkpoint_origin(context)
     }
     pub(crate) fn new(
         source: CheckedActionInvocation,

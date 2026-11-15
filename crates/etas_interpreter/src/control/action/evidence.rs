@@ -54,10 +54,7 @@ impl ActionEvidence {
     }
     pub(super) fn checkpoint(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            Arc<PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
         use crate::orchestration::{
             ActionInvocationSnapshot, ActionOriginSnapshot, CallTargetSnapshot,
@@ -84,7 +81,7 @@ impl ActionEvidence {
             },
         };
         Ok(ActionInvocationSnapshot::Native {
-            native: native.execution.checkpoint_identity(revisions),
+            native: context.execution_identity(&native.execution)?,
             origin,
         })
     }

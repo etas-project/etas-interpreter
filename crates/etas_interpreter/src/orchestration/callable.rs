@@ -10,6 +10,23 @@ pub(crate) enum CheckpointProgramReference {
     Revision {
         revision: Box<CheckpointCodeRevision>,
     },
+    StandardLibrary {
+        owner: Box<CheckpointProgramReference>,
+    },
+}
+
+#[derive(
+    Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub(crate) enum CallableProjectionOrigin {
+    Revision {
+        revision: Box<CheckpointCodeRevision>,
+        external: bool,
+    },
+    StandardLibrary {
+        owner: Box<CheckpointProgramReference>,
+    },
 }
 
 #[derive(
@@ -17,9 +34,8 @@ pub(crate) enum CheckpointProgramReference {
 )]
 #[serde(deny_unknown_fields)]
 pub(crate) struct CallableProjectionSnapshot {
-    pub revision: CheckpointCodeRevision,
+    pub origin: CallableProjectionOrigin,
     pub to_candidate: bool,
-    pub external: bool,
     pub from: TypeId,
     pub to: TypeId,
 }

@@ -47,6 +47,7 @@ impl TaskScheduler {
     pub(crate) fn capture_metadata(
         &self,
         continuations: ContinuationArenaSnapshot,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<TaskSchedulerMetadataSnapshot, String> {
         assert!(
             self.checkpoint_barrier,
@@ -62,21 +63,22 @@ impl TaskScheduler {
                 .iter()
                 .filter_map(|(id, task)| {
                     task.start.as_ref().map(|call| {
-                        (
+                        Ok((
                             *id,
                             TaskTypeSnapshot {
-                                program: task
-                                    .program
-                                    .as_ref()
-                                    .expect("started task has a checked program")
-                                    .checkpoint_identity(&mut Default::default())
+                                program: context
+                                    .execution_identity(
+                                        task.program
+                                            .as_ref()
+                                            .expect("started task has a checked program"),
+                                    )?
                                     .program,
                                 ty: call.result_type,
                             },
-                        )
+                        ))
                     })
                 })
-                .collect(),
+                .collect::<Result<_, String>>()?,
             next_scope: self.next_scope,
             next_task: self.next_task,
             groups: self
@@ -365,7 +367,9 @@ mod tests {
         ));
         scheduler.take_resource_events();
         scheduler.begin_checkpoint_barrier();
-        let metadata = scheduler.capture_metadata(Default::default()).unwrap();
+        let metadata = scheduler
+            .capture_metadata(Default::default(), &mut Default::default())
+            .unwrap();
         let metadata =
             crate::api::codec::checkpoint::scheduler::roundtrip_scheduler_metadata(&metadata);
         let payloads = std::mem::take(&mut scheduler.tasks);
@@ -394,7 +398,9 @@ mod tests {
             "only the blocked task takes a new permit after restore"
         );
         restored.begin_checkpoint_barrier();
-        let metadata = restored.capture_metadata(Default::default()).unwrap();
+        let metadata = restored
+            .capture_metadata(Default::default(), &mut Default::default())
+            .unwrap();
         let metadata =
             crate::api::codec::checkpoint::scheduler::roundtrip_scheduler_metadata(&metadata);
         let payloads = std::mem::take(&mut restored.tasks);

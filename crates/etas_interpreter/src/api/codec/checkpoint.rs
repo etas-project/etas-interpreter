@@ -47,6 +47,14 @@ pub fn checkpoint_from_json_with_revisions(
     checked: &etas_frontend::CheckedProject,
     revisions: Option<&std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
 ) -> Result<InterpreterCheckpoint, InterpreterCodecError> {
+    let standard_revisions;
+    let revisions = if revisions.is_none() && checked.standard_library.is_some() {
+        standard_revisions =
+            std::sync::Arc::new(crate::api::code::PreparedRevisionSet::new(checked.clone()));
+        Some(&standard_revisions)
+    } else {
+        revisions
+    };
     limits
         .validate()
         .map_err(|e| InterpreterCodecError::new(e.message))?;

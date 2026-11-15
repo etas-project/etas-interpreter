@@ -29,6 +29,7 @@ pub(crate) struct SharedFrameCapture(
 /// owned by the borrowed root, including its captured frames. No cache escapes.
 #[derive(Default)]
 pub(crate) struct CaptureContext {
+    programs: HashMap<usize, crate::orchestration::CheckpointProgramReference>,
     pub(crate) revisions: std::collections::BTreeMap<
         etas_code::RevisionKey,
         std::sync::Arc<crate::api::code::PreparedCodeRevision>,
@@ -53,6 +54,75 @@ pub(crate) struct CaptureContext {
 }
 
 impl CaptureContext {
+    fn register_program(
+        &mut self,
+        program: &etas_frontend::CheckedProgram,
+        identity: crate::orchestration::CheckpointProgramReference,
+    ) {
+        let key = std::sync::Arc::as_ptr(program) as usize;
+        self.programs.entry(key).or_insert_with(|| identity.clone());
+        if let Some(library) = &program.standard_library {
+            self.programs
+                .entry(std::sync::Arc::as_ptr(&library.program) as usize)
+                .or_insert(
+                    crate::orchestration::CheckpointProgramReference::StandardLibrary {
+                        owner: Box::new(identity),
+                    },
+                );
+        }
+    }
+
+    pub(crate) fn bind_revision(
+        &mut self,
+        revision: &std::sync::Arc<crate::api::code::PreparedCodeRevision>,
+    ) {
+        self.revisions
+            .insert(revision.revision().key(), revision.clone());
+        self.register_program(
+            revision.type_bridge().original_program(),
+            crate::orchestration::CheckpointProgramReference::Source,
+        );
+        self.register_program(
+            revision.program(),
+            crate::orchestration::CheckpointProgramReference::Revision {
+                revision: Box::new(crate::orchestration::CheckpointCodeRevision::for_revision(
+                    revision,
+                )),
+            },
+        );
+    }
+
+    pub(crate) fn bind_program(&mut self, program: &crate::value::CheckedExecutionProgram) {
+        if let Some(revision) = &program.revision {
+            self.bind_revision(revision);
+        } else if self.programs.is_empty() {
+            self.register_program(
+                &program.checked,
+                crate::orchestration::CheckpointProgramReference::Source,
+            );
+        }
+    }
+
+    pub(crate) fn program_reference(
+        &self,
+        program: &etas_frontend::CheckedProgram,
+    ) -> Result<crate::orchestration::CheckpointProgramReference, String> {
+        self.programs
+            .get(&(std::sync::Arc::as_ptr(program) as usize))
+            .cloned()
+            .ok_or_else(|| "checkpoint program has no checked source, revision or std owner".into())
+    }
+
+    pub(crate) fn execution_identity(
+        &mut self,
+        program: &crate::value::CheckedExecutionProgram,
+    ) -> Result<crate::orchestration::ExecutionProgramSnapshot, String> {
+        self.bind_program(program);
+        let mut identity = program.checkpoint_identity(&mut self.revisions);
+        identity.program = self.program_reference(&program.checked)?;
+        Ok(identity)
+    }
+
     pub(crate) fn for_tasks(frames: &SharedFrameCapture) -> Self {
         Self {
             task_handles: true,
@@ -96,7 +166,7 @@ impl CaptureContext {
         }
         match found {
             Some(id) => Ok(crate::orchestration::ActionInvocationSnapshot::FromSuspension { id }),
-            None => projection.checkpoint_origin(&mut self.revisions),
+            None => projection.checkpoint_origin(self),
         }
     }
 

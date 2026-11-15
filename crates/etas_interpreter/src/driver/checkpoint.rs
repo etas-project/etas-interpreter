@@ -523,7 +523,10 @@ flow main() -> i32 {
         }
         captured.insert(symbol, InterpValue::i32(99));
         eval.scheduler.begin_checkpoint_barrier();
-        let scheduler = eval.scheduler.capture_metadata(Default::default()).unwrap();
+        let scheduler = eval
+            .scheduler
+            .capture_metadata(Default::default(), &mut Default::default())
+            .unwrap();
         eval.scheduler.end_checkpoint_barrier();
         let frames = SharedFrameRestore::default();
         let limits = eval.storage_limits.clone();

@@ -338,6 +338,9 @@ impl EvalMachine {
         residual_counters: (u64, u64, u64),
     ) -> Result<super::snapshot::CapturedMachineSnapshot, String> {
         let mut context = super::snapshot::CaptureContext::default();
+        if let Some(root) = &self.checkpoint_root {
+            context.bind_program(&root.program);
+        }
         let args = self
             .checkpoint_root
             .as_ref()
@@ -388,6 +391,18 @@ impl EvalMachine {
         residual_counters: (u64, u64, u64),
         program: Option<&crate::value::CheckedExecutionProgram>,
     ) -> Result<MachineSnapshot, String> {
+        if let Some(root) = &self.checkpoint_root {
+            context.bind_program(&root.program);
+        }
+        if let Some(program) = program {
+            context.bind_program(program);
+        }
+        for frame in &self.stack {
+            if let EvalFrame::ProgramReturn(frame) = frame {
+                context.bind_program(&frame.parent_program);
+                context.bind_program(&frame.call.destination()?);
+            }
+        }
         let input = self.capture_input(
             context,
             self.checkpoint_root

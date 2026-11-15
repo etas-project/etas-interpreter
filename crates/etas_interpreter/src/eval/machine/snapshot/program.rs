@@ -311,19 +311,71 @@ fn validate_callable_site(
     span: etas_core::Span,
     ty: etas_types::TypeId,
 ) -> Result<(), String> {
-    let (receiver, _) = site.receiver(parent, span)?;
+    let (receiver, expression) = site.receiver(parent, span)?;
     let expected = *parent
         .types
         .expr_types
         .get(&receiver)
         .ok_or("scoped callable boundary has no checked receiver type")?;
-    let bindings = site.frame.generic_bindings();
-    let expected = bindings
-        .substitution(&parent.type_store)
-        .substitute(expected)
+    let mut bindings = site.frame.generic_bindings();
+    if let Some(expression) = expression {
+        let checked = crate::control::CheckedCallBindings::resolve(parent, expression, &bindings)?;
+        bindings.types.extend(checked.types);
+        bindings.parameters.extend(checked.parameters);
+        bindings.rows.extend(checked.rows);
+    }
+    let (Some(etas_types::Type::Function(expected)), Some(etas_types::Type::Function(actual))) =
+        (parent.type_store.get(expected), parent.type_store.get(ty))
+    else {
+        return Err("scoped callable boundary has no checked function ABI".into());
+    };
+    let mut substitution = bindings.substitution(&parent.type_store);
+    let parameters = expected
+        .input
+        .iter()
+        .map(|ty| {
+            substitution
+                .substitute(*ty)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let output = substitution
+        .substitute(expected.output)
         .map_err(|error| error.to_string())?;
-    if expected != ty {
+    let actual_parameters = actual
+        .input
+        .iter()
+        .map(|ty| {
+            substitution
+                .substitute(*ty)
+                .map_err(|error| error.to_string())
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    let actual_output = substitution
+        .substitute(actual.output)
+        .map_err(|error| error.to_string())?;
+    let actual_effects = actual
+        .effects
+        .clone()
+        .map(|row| {
+            substitution
+                .substitute_effect_row(row)
+                .map_err(|error| error.to_string())
+        })
+        .transpose()?;
+    let effects_match = match &expected.effects {
+        Some(row) => {
+            Some(
+                substitution
+                    .substitute_effect_row(row.clone())
+                    .map_err(|error| error.to_string())?,
+            ) == actual_effects
+        }
+        None => true, // An inferred receiver row carries no explicit row bound.
+    };
+    if parameters != actual_parameters || output != actual_output || !effects_match {
         return Err("scoped callable boundary differs from its checked call site type".into());
     }
+
     Ok(())
 }

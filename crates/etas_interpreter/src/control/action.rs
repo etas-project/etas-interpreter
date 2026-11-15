@@ -25,13 +25,10 @@ impl CheckedActionInvocation {
     }
     pub(crate) fn checkpoint_origin(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
         self.validate_origin()?;
-        self.evidence.checkpoint(revisions)
+        self.evidence.checkpoint(context)
     }
 
     pub(crate) fn restore_origin(

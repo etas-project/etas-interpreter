@@ -15,7 +15,8 @@ pub(crate) use task::{
 mod cooperative;
 pub(crate) use call_target_storage::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 pub(crate) use callable::{
-    CallableProjectionSnapshot, CheckpointProgramReference, ScopedCallableMetadata,
+    CallableProjectionOrigin, CallableProjectionSnapshot, CheckpointProgramReference,
+    ScopedCallableMetadata,
 };
 pub(crate) use cooperative::{
     ContinuationInputSnapshot, ControlSignalSnapshot, MachineInputSnapshot,

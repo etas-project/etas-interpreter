@@ -87,27 +87,8 @@ impl SnapshotValidator<'_> {
         if std::sync::Arc::ptr_eq(&program, self.checked) {
             return Ok(output);
         }
-        let (source, output) = match &saved.program {
-            P::Source => (program, output),
-            P::Revision { revision } => {
-                let revision = self
-                    .revisions
-                    .ok_or("Task signature requires prepared revisions")?
-                    .checked_revision(revision)?;
-                let bridge = revision.type_bridge();
-                let output = bridge
-                    .runtime_to_original(&program, output)
-                    .map_err(|error| error.to_string())?;
-                (bridge.original_program().clone(), output)
-            }
-        };
-        match self.execution_revision {
-            Some(revision) => revision
-                .type_bridge()
-                .runtime_to_candidate(&source, output)
-                .map_err(|error| error.to_string()),
-            None if std::sync::Arc::ptr_eq(&source, self.checked) => Ok(output),
-            None => Err("Task output belongs to a different checked program".into()),
-        }
+        self.revisions
+            .ok_or("Task output requires its checked program environment")?
+            .project_type(&saved.program, self.checked, output)
     }
 }
