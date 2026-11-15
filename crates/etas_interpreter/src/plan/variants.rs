@@ -153,7 +153,12 @@ impl NamedVariantLayoutTable {
             };
             let symbol_data = project
                 .symbols
-                .get(symbol)
+                .get(
+                    project
+                        .hir
+                        .canonical_source_symbol(symbol)
+                        .unwrap_or(symbol),
+                )
                 .ok_or("record constructor has an invalid symbol")?;
             if symbol_data.kind != SymbolKind::EnumVariant {
                 continue;
@@ -192,7 +197,12 @@ impl NamedVariantLayoutTable {
             };
             let symbol_data = project
                 .symbols
-                .get(symbol)
+                .get(
+                    project
+                        .hir
+                        .canonical_source_symbol(symbol)
+                        .unwrap_or(symbol),
+                )
                 .ok_or("record pattern has an invalid symbol")?;
             if symbol_data.kind != SymbolKind::EnumVariant {
                 continue;

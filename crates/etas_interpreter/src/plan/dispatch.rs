@@ -99,6 +99,31 @@ impl IntrinsicDispatchTable {
             let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
                 continue;
             };
+            if let Some(target) = project.hir.canonical_source_symbol(symbol.id)
+                && let Some(source) = project.symbols.get(target)
+                && matches!(
+                    source.def,
+                    SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. }
+                )
+            {
+                let (_, _, variant) = project
+                    .types
+                    .enum_constructor(&project.type_store, source)
+                    .ok_or_else(|| {
+                        vec![format!(
+                            "source enum alias {} has no checked constructor layout",
+                            path.join(".")
+                        )]
+                    })?;
+                enum_constructors.insert(
+                    symbol.id,
+                    StdEnumConstructor {
+                        name: variant.name.clone(),
+                        arity: variant.fields.len(),
+                    },
+                );
+                continue;
+            }
             if let Some(std_symbol) = project.std_registry.lookup_qualified(path)
                 && (std_symbol.enum_owner.is_some()
                     || (std_symbol.kind == etas_std::StdSymbolKind::Constructor
