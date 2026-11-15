@@ -1248,7 +1248,11 @@ impl<'a> EvalContext<'a> {
                 self.workspace_path(path, span).map(|path| {
                     (
                         FilesystemOperation::Stat { path },
-                        HostBoundaryDecode::FilesystemStat,
+                        HostBoundaryDecode::FilesystemStat {
+                            nominal: matches!(self.checked.type_store.get(checked_call.result_type),
+                                Some(etas_types::Type::Nominal(nominal)) if nominal.representation.is_some())
+                                .then_some(checked_call.result_type),
+                        },
                     )
                 })
             }

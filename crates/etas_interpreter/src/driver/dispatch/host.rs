@@ -685,15 +685,22 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
             )))
         }
         (HostBoundaryDecode::Unit, FilesystemEntry::Unit) => Ok(InterpValue::Unit),
-        (HostBoundaryDecode::FilesystemStat, FilesystemEntry::Stat(stat)) => {
-            Ok(InterpValue::Record(RecordValue::new(vec![
+        (HostBoundaryDecode::FilesystemStat { nominal }, FilesystemEntry::Stat(stat)) => {
+            let record = InterpValue::Record(RecordValue::new(vec![
                 ("is_file".to_owned(), InterpValue::Bool(stat.is_file)),
                 ("is_dir".to_owned(), InterpValue::Bool(stat.is_dir)),
                 (
                     "len".to_owned(),
                     InterpValue::Number(crate::value::NumericValue::U64(stat.len)),
                 ),
-            ])))
+            ]));
+            Ok(match nominal {
+                Some(ty) => InterpValue::Nominal {
+                    ty,
+                    value: record.into(),
+                },
+                None => record,
+            })
         }
         (decode, _) => Err(format!(
             "filesystem response payload does not match checked decode {:?}",

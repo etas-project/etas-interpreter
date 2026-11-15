@@ -421,7 +421,9 @@ pub enum HostBoundaryDecode {
     Bytes,
     Unit,
     PathList,
-    FilesystemStat,
+    FilesystemStat {
+        nominal: Option<etas_types::TypeId>,
+    },
     FileReadLimited {
         max_bytes: usize,
     },
