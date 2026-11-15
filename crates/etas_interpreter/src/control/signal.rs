@@ -147,6 +147,7 @@ pub enum ContinuationInput {
     Finish(InterpValue),
     Break,
     Continue,
+    RetryFailure { span: Span, message: String },
 }
 
 #[derive(Clone, Debug)]

@@ -237,6 +237,12 @@ impl ControlSignalSnapshot {
                 ContinuationInput::Finish(value) => ControlSignal::Finish(value),
                 ContinuationInput::Break => ControlSignal::Break,
                 ContinuationInput::Continue => ControlSignal::Continue,
+                input @ ContinuationInput::RetryFailure { .. } => {
+                    ControlSignal::pending_continuation(PendingContinuation {
+                        continuation: Continuation::BlockValue,
+                        input,
+                    })
+                }
             },
             Self::Apply {
                 continuation,
@@ -359,6 +365,10 @@ impl ContinuationInputSnapshot {
             ContinuationInput::Finish(value) => Self::Finish(context.value(value)?),
             ContinuationInput::Break => Self::Break,
             ContinuationInput::Continue => Self::Continue,
+            ContinuationInput::RetryFailure { span, message } => Self::RetryFailure {
+                span: *span,
+                message: message.clone(),
+            },
         })
     }
     fn restore(self, context: &mut RestoreContext) -> Result<ContinuationInput, String> {
@@ -369,6 +379,7 @@ impl ContinuationInputSnapshot {
             Self::Finish(value) => ContinuationInput::Finish(value.restore_with(context)?),
             Self::Break => ContinuationInput::Break,
             Self::Continue => ContinuationInput::Continue,
+            Self::RetryFailure { span, message } => ContinuationInput::RetryFailure { span, message },
         })
     }
 }

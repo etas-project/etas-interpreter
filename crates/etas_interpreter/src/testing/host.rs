@@ -219,7 +219,7 @@ impl FakeHost {
             .clone()
     }
 
-    pub(super) fn model_call_count(&self) -> usize {
+    pub(crate) fn model_call_count(&self) -> usize {
         self.model_calls.load(Ordering::SeqCst)
     }
 
@@ -261,7 +261,7 @@ impl FakeHost {
             .clone()
     }
 
-    pub(super) fn seed_model_response_text(&self, text: &str) {
+    pub(crate) fn seed_model_response_text(&self, text: &str) {
         self.seed_model_response_text_with_usage(
             text,
             Some(etas_host::ModelUsage {
@@ -295,7 +295,7 @@ impl FakeHost {
             });
     }
 
-    pub(super) fn seed_model_error(&self, code: HostErrorCode, message: &str) {
+    pub(crate) fn seed_model_error(&self, code: HostErrorCode, message: &str) {
         self.model_errors
             .lock()
             .expect("model errors lock")

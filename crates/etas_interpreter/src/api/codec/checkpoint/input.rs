@@ -118,6 +118,11 @@ fn continuation_input_json(
     input: &C,
     budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
+    if let C::RetryFailure { span, message } = input {
+        let value = json!({"kind":"retry_failure", "span":span_json(*span), "message":message});
+        budget.json_metadata(&value)?;
+        return Ok(value);
+    }
     let (kind, value) = match input {
         C::Value(value) => ("value", Some(value)),
         C::Return(value) => ("return", Some(value)),
@@ -125,6 +130,7 @@ fn continuation_input_json(
         C::Finish(value) => ("finish", Some(value)),
         C::Break => ("break", None),
         C::Continue => ("continue", None),
+        C::RetryFailure { .. } => unreachable!(),
     };
     Ok(
         json!({"kind":kind, "value":value.map(|value| snapshot::value_json_with_budget(value, budget)).transpose()?}),
@@ -284,6 +290,10 @@ fn continuation_input_from_json(
         "finish" => C::Finish(payload()?),
         "break" => C::Break,
         "continue" => C::Continue,
+        "retry_failure" => C::RetryFailure {
+            span: span_from_json(required_obj(value, "span")?)?,
+            message: required_str(value, "message")?.to_owned(),
+        },
         kind => {
             return Err(InterpreterCodecError::new(format!(
                 "unknown continuation input `{kind}`"

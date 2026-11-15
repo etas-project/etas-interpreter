@@ -219,6 +219,12 @@ impl EvalMachine {
                         ContinuationInput::Continue => {
                             ctx.propagate_loop_control_frame(ControlSignal::Continue, first)
                         }
+                        ContinuationInput::RetryFailure { span, message } => {
+                            match self.propagate_retry_failure(ctx, first, span, message) {
+                                Ok(signal) => signal,
+                                Err(poll) => return poll,
+                            }
+                        }
                     }
                 }
                 ControlSignal::Checkpoint(pending) => {

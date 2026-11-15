@@ -49,7 +49,7 @@ pub(crate) fn edit_checked_hir<R>(
     Ok(result)
 }
 
-fn full_model_capabilities() -> ModelProviderCapabilities {
+pub(crate) fn full_model_capabilities() -> ModelProviderCapabilities {
     ModelProviderCapabilities {
         supports_forced_tool_output: true,
         supports_json_schema_response_format: true,

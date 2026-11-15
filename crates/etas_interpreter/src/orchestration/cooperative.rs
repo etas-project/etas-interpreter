@@ -71,6 +71,7 @@ pub(crate) enum ContinuationInputSnapshot {
     Finish(ValueSnapshot),
     Break,
     Continue,
+    RetryFailure { span: Span, message: String },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]

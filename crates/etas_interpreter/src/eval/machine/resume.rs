@@ -1,8 +1,15 @@
 use etas_core::Span;
 
-use crate::{control::ControlSignal, eval::EvalContext};
+use crate::{
+    control::{Continuation, ContinuationInput, ControlSignal, PendingContinuation},
+    eval::EvalContext,
+};
 
-use super::state::{EvalMachine, MachineInput};
+use super::{
+    MachinePoll,
+    frame::EvalFrame,
+    state::{EvalMachine, MachineInput},
+};
 
 impl EvalMachine {
     pub(crate) fn resume(&mut self, signal: ControlSignal) {
@@ -102,34 +109,124 @@ impl EvalMachine {
         span: Span,
         message: String,
     ) -> Option<ControlSignal> {
-        if let Some(signal) =
-            ctx.retry_boundary_failure_signal(boundary_continuation, span, &message)
-        {
-            return Some(signal);
-        }
+        // The dynamic retry stack belongs to this task across checked programs.
+        // Defer execution until the machine has unwound to the owning program.
+        (!ctx.task.retry_stack.is_empty())
+            .then(|| retry_failure(boundary_continuation, span, message))
+    }
 
-        for index in (0..self.frames().len()).rev() {
-            if let super::frame::EvalFrame::ProgramReturn(frame) = &self.frames()[index] {
-                // A host failure without an enclosing retry is terminal. Keep
-                // its original diagnostic instead of requesting a retry bridge.
-                if frame.retry_depth == 0 {
-                    return None;
+    pub(super) fn propagate_retry_failure(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+        continuation: Continuation,
+        span: Span,
+        message: String,
+    ) -> Result<ControlSignal, MachinePoll> {
+        match continuation {
+            attempt @ Continuation::RetryAttempt { .. } => {
+                return Ok(ctx
+                    .retry_boundary_failure_signal(attempt, span, &message)
+                    .expect("retry attempt handles its boundary failure"));
+            }
+            Continuation::CallBoundary { outer, .. }
+            | Continuation::ScopedModelPolicy { inner: outer, .. } => {
+                return Ok(retry_failure(outer.into_value(), span, message));
+            }
+            Continuation::HandlerDispatch { outer, deferred } => {
+                if let Some(token) = deferred {
+                    ctx.scheduler
+                        .dispose_continuation(token, ctx.current_task)
+                        .map_err(|error| {
+                            MachinePoll::Fault(crate::control::ExecutionFault::new(
+                                etas_core::AnalysisDiagnosticCode::UnhandledRuntimeError,
+                                span,
+                                error.to_string(),
+                            ))
+                        })?;
                 }
-                return Some(ControlSignal::missing_checked_fact(
-                    "cross-revision retry requires a checked continuation transition",
+                return Ok(retry_failure(outer.into_value(), span, message));
+            }
+            Continuation::HandleBoundary {
+                scope_id,
+                inner,
+                handlers,
+                span: boundary_span,
+                frame,
+            } => {
+                if !matches!(*inner, Continuation::BlockValue) {
+                    self.push_continuation_frames(Continuation::HandleBoundary {
+                        scope_id,
+                        inner: Continuation::BlockValue.into(),
+                        handlers,
+                        span: boundary_span,
+                        frame,
+                    });
+                    return Ok(retry_failure(inner.into_value(), span, message));
+                }
+                ctx.close_handler_scope(scope_id, boundary_span)
+                    .map_err(MachinePoll::Fault)?;
+            }
+            Continuation::RestoreModelPolicy { previous, inner } => {
+                if !matches!(*inner, Continuation::BlockValue) {
+                    self.push_continuation_frames(Continuation::RestoreModelPolicy {
+                        previous,
+                        inner: Continuation::BlockValue.into(),
+                    });
+                    return Ok(retry_failure(inner.into_value(), span, message));
+                }
+                ctx.task.model_policy = *previous;
+            }
+            Continuation::ReenterHandler { boundary } => {
+                // Forwarding already closed this scope. Abandon its saved body
+                // without reopening the handler or closing it a second time.
+                let Continuation::HandleBoundary { inner, .. } = boundary.into_value() else {
+                    unreachable!("handler reentry owns its saved handler boundary")
+                };
+                return Ok(retry_failure(inner.into_value(), span, message));
+            }
+            Continuation::ResidualScope(scope) => {
+                ctx.exit_residual_scope(
+                    &scope,
+                    crate::control::residual::ResidualExitKind::ErrorPropagation,
                     span,
+                )
+                .map_err(MachinePoll::Fault)?;
+            }
+            Continuation::SourceToolReturn(saved) => {
+                return Ok(retry_failure(
+                    saved.0.model_loop.outer_continuation,
+                    span,
+                    message,
                 ));
             }
-            let Some(continuation) = self.frames()[index].retry_continuation() else {
-                continue;
-            };
-            if let Some(signal) = ctx.retry_boundary_failure_signal(continuation, span, &message) {
-                self.truncate_to(index);
-                return Some(signal);
-            }
+            _ => {}
         }
-        None
+
+        let Some(frame) = self.pop_frame() else {
+            return Err(MachinePoll::Fault(crate::control::ExecutionFault::new(
+                etas_core::AnalysisDiagnosticCode::UnhandledRuntimeError,
+                span,
+                message,
+            )));
+        };
+        let continuation = match frame {
+            EvalFrame::ProgramReturn(frame) => {
+                return Err(self.unwind_program_retry_failure(ctx, *frame, message));
+            }
+            EvalFrame::PureBoundary(_) => Continuation::BlockValue,
+            frame => frame
+                .into_continuation()
+                .expect("program-local retry frame"),
+        };
+        Ok(retry_failure(continuation, span, message))
     }
+}
+
+fn retry_failure(continuation: Continuation, span: Span, message: String) -> ControlSignal {
+    ControlSignal::pending_continuation(PendingContinuation {
+        continuation,
+        input: ContinuationInput::RetryFailure { span, message },
+    })
 }
 
 #[cfg(test)]

@@ -18,6 +18,7 @@ mod checkpoint_nominal;
 mod flows;
 mod native_actions;
 mod origins;
+mod retry;
 mod source_bindings;
 
 fn frozen(source: &str) -> Arc<FrozenDefinitionEnvironment> {

@@ -171,6 +171,33 @@ impl EvalMachine {
         MachinePoll::ProgramChanged
     }
 
+    pub(super) fn unwind_program_retry_failure(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+        frame: ProgramReturnFrame,
+        message: String,
+    ) -> MachinePoll {
+        if let Err(reason) = self.checked_program_exit(ctx, &frame) {
+            return MachinePoll::Fault(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                frame.span,
+                reason,
+            ));
+        }
+        ctx.task.model_policy = frame.parent_model_policy;
+        self.program_scope = frame.parent;
+        self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
+            PendingContinuation {
+                continuation: frame.outer,
+                input: ContinuationInput::RetryFailure {
+                    span: frame.span,
+                    message,
+                },
+            },
+        )));
+        MachinePoll::ProgramChanged
+    }
+
     fn checked_program_exit(
         &self,
         ctx: &EvalContext<'_>,

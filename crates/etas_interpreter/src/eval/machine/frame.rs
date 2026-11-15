@@ -207,29 +207,4 @@ impl EvalFrame {
         })
     }
 
-    pub(crate) fn retry_continuation(&self) -> Option<Continuation> {
-        let continuation = match self {
-            Self::PureBoundary(_) => return None,
-            Self::ProgramReturn(_) => return None,
-            Self::Block(frame) => &frame.continuation,
-            Self::Call(frame) => &frame.continuation,
-            Self::Continuation(frame) => &frame.continuation,
-            Self::Expr(frame) => &frame.continuation,
-            Self::Handler(_) | Self::ResidualScope(_) => return None,
-            Self::Retry(frame) => {
-                return Some(Continuation::RetryAttempt {
-                    retry: frame.retry.clone(),
-                    body: frame.body,
-                    attempts: frame.attempts,
-                    next_attempt: frame.next_attempt,
-                    block: frame.block,
-                    next_stmt_index: frame.next_stmt_index,
-                    frame: frame.frame.clone(),
-                });
-            }
-            Self::ModelLoop(frame) => &frame.outer_continuation,
-            Self::SourceToolReturn(frame) => &frame.model_loop.outer_continuation,
-        };
-        continuation.find_retry_attempt().cloned()
-    }
 }

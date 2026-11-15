@@ -153,7 +153,7 @@ impl SnapshotValidator<'_> {
             C::Value(value) | C::Return(value) | C::Resume(value) | C::Finish(value) => {
                 self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)
             }
-            C::Break | C::Continue => Ok(()),
+            C::Break | C::Continue | C::RetryFailure { .. } => Ok(()),
         }
     }
 }
