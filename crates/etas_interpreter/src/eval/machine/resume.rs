@@ -109,10 +109,12 @@ impl EvalMachine {
         }
 
         for index in (0..self.frames().len()).rev() {
-            if matches!(
-                self.frames()[index],
-                super::frame::EvalFrame::ProgramReturn(_)
-            ) {
+            if let super::frame::EvalFrame::ProgramReturn(frame) = &self.frames()[index] {
+                // A host failure without an enclosing retry is terminal. Keep
+                // its original diagnostic instead of requesting a retry bridge.
+                if frame.retry_depth == 0 {
+                    return None;
+                }
                 return Some(ControlSignal::missing_checked_fact(
                     "cross-revision retry requires a checked continuation transition",
                     span,
