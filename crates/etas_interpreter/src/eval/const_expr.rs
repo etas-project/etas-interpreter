@@ -241,10 +241,7 @@ impl<'a> EvalContext<'a> {
                         }
                     } else if let Some(value) = self.eval_std_value_alias(symbol, path, span)? {
                         Ok(value)
-                    } else if let Some(item) = self
-                        .source_item_for_import_path(path)
-                        .and_then(|ast_item| self.hir_item_for_ast_item(&ast_item))
-                    {
+                    } else if let Some(item) = self.source_item_id_for_import_path(path) {
                         match self.checked.hir.items.get(item) {
                             Some(HirItem::TopLevelLet(item)) => self
                                 .eval_global_symbol_with_cycle_check(item.symbol, span, visiting),

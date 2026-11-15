@@ -103,7 +103,9 @@ pub(super) fn lower(
                     return Err("checked type member call has an invalid member path".into());
                 };
                 if source.is_none_or(|source| source.name != *method) {
-                    return Err("checked type member name differs from its selected declaration".into());
+                    return Err(
+                        "checked type member name differs from its selected declaration".into(),
+                    );
                 }
                 if method_fact.is_none() {
                     validate_collection_subject(

@@ -68,6 +68,19 @@ public flow runtime_probe() -> string {
             text: std::fs::read_to_string(&source).unwrap(),
             kind: SourceKind::SourceProjectFile,
         });
+        let native = root.join("library/std/text/native.es");
+        let maintained = etas_std::library::source_checkout_manifest()
+            .parent()
+            .unwrap()
+            .join("library/std/text/native.es");
+        let text = std::fs::read_to_string(maintained).unwrap();
+        std::fs::write(&native, &text).unwrap();
+        input.sources.push(SourceInput {
+            id: SourceId(2),
+            path: Some(native),
+            text,
+            kind: SourceKind::SourceProjectFile,
+        });
         input.project_root = root.clone();
         input.source_root = Some(root.join("library"));
         input.entry.flow = "runtime_probe".into();
@@ -75,19 +88,18 @@ public flow runtime_probe() -> string {
             segments: vec!["std".into(), "text".into()],
         });
         input.environment.local_source_package = Some(owner);
-        input.environment.stable_source_keys = vec![ProjectStableSourceKeyInput {
-            source: SourceId(1),
-            key: StableSourceKey::new(
-                StableSourceOrigin::Package(owner),
-                &[
-                    "library".into(),
-                    "std".into(),
-                    "text".into(),
-                    "probe.es".into(),
-                ],
-            )
-            .unwrap(),
-        }];
+        input.environment.stable_source_keys =
+            [(SourceId(1), "probe.es"), (SourceId(2), "native.es")]
+                .into_iter()
+                .map(|(source, file)| ProjectStableSourceKeyInput {
+                    source,
+                    key: StableSourceKey::new(
+                        StableSourceOrigin::Package(owner),
+                        &["library".into(), "std".into(), "text".into(), file.into()],
+                    )
+                    .unwrap(),
+                })
+                .collect();
         let output = Frontend.check_standard_library_source(input);
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
         let image = LibraryHirImage::from_checked(&output.checked.unwrap(), owner, &root).unwrap();

@@ -102,30 +102,26 @@ impl IntrinsicDispatchTable {
             if let Some(std_symbol) = project.std_registry.lookup_qualified(path)
                 && (std_symbol.enum_owner.is_some()
                     || (std_symbol.kind == etas_std::StdSymbolKind::Constructor
-                        && project.std_registry.body_binding(std_symbol.id).is_some()))
+                        && (project.std_registry.body_binding(std_symbol.id).is_some()
+                            || (project.hir.source_import_targets.contains_key(&symbol.id)
+                                && matches!(project.types.symbol_types.get(&symbol.id),
+                                    Some(etas_types::SymbolTypeFact::Flow { signature })
+                                        if signature.params.is_empty())))))
             {
-                let etas_std::StdDecl::Flow(declaration) = &std_symbol.decl else {
-                    errors.push(format!(
-                        "standard enum constructor {} has no signature",
-                        path.join(".")
-                    ));
-                    continue;
-                };
-                if !matches!(
-                    project.types.symbol_types.get(&symbol.id),
-                    Some(etas_types::SymbolTypeFact::Flow { .. })
-                ) {
+                let Some(etas_types::SymbolTypeFact::Flow { signature }) =
+                    project.types.symbol_types.get(&symbol.id)
+                else {
                     errors.push(format!(
                         "standard enum constructor {} has no checked signature",
                         path.join(".")
                     ));
                     continue;
-                }
+                };
                 enum_constructors.insert(
                     symbol.id,
                     StdEnumConstructor {
                         name: std_symbol.name.clone(),
-                        arity: declaration.params.len(),
+                        arity: signature.params.len(),
                     },
                 );
                 continue;
