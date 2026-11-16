@@ -1270,3 +1270,70 @@ flow main() -> i32 ![] {
         );
     }
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn ready_parent_keeps_its_nearest_handler_and_restores_its_completed_wait() {
+    const SOURCE: &str = r#"module app.main;
+import std.task.{run, start, await, Scheduler};
+import std.runtime.checkpoint.checkpoint;
+effect Probe { action value() -> i32; }
+flow main() -> i32 {
+    return handle { run((scheduler: Scheduler) => {
+        return handle {
+            let ready = start(() => { return 1; });
+            let requesting = start(() => { return perform Probe.value(); });
+            let first = await(ready);
+            first + await(requesting) + 2
+        } with { Probe.value() => { checkpoint("ready-parent"); resume 40; } };
+    }) } with { Probe.value() => { resume 99; } };
+}
+"#;
+    let checked = checked_project(SOURCE);
+    let host = FakeHost::new(HostServiceAvailability {
+        checkpoint: true,
+        ..Default::default()
+    });
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(43)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let bytes = api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
+    let artifact = api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+    let current = checked_project(SOURCE);
+    let revisions = std::sync::Arc::new(api::code::PreparedRevisionSet::new(current.clone()));
+    let checkpoint = api::codec::checkpoint_from_json_with_revisions(
+        &Default::default(),
+        &artifact,
+        &current,
+        Some(&revisions),
+    )
+    .unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &current,
+            &checkpoint,
+            &host,
+            RunOptions {
+                checkpoint_revisions: Some(revisions),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+    assert!(resumed.checkpoints.is_empty());
+}

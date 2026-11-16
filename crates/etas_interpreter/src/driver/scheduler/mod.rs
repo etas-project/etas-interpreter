@@ -202,6 +202,13 @@ impl TaskScheduler {
         self.continuations.dispose(token, origin)
     }
 
+    pub(crate) fn continuation_program(
+        &self,
+        token: crate::value::ContinuationTokenValue,
+    ) -> Result<Option<crate::value::CheckedExecutionProgram>, SchedulerError> {
+        self.continuations.program(token)
+    }
+
     pub(crate) fn spawn(
         &mut self,
         parent: &crate::eval::TaskLocalState,
@@ -471,20 +478,12 @@ impl TaskScheduler {
         self.checkpoint_barrier = false;
     }
 
-    /// Commit completed Host operations without running the task or changing
-    /// FIFO order, active slots, resource permits, or waiter ownership.
     pub(crate) fn take_checkpoint_task(&mut self, handle: TaskHandle) -> ScheduledTask {
         assert!(
             self.checkpoint_barrier,
             "checkpoint task access requires a barrier"
         );
-        let task = self
-            .tasks
-            .remove(&handle.task)
-            .expect("completed Host task exists");
-        assert_eq!(task.scope, handle.owner);
-        assert_eq!(task.state, TaskState::Ready);
-        task
+        self.take_ready_task(handle)
     }
 
     pub(crate) fn restore_checkpoint_task(&mut self, handle: TaskHandle, task: ScheduledTask) {
@@ -492,11 +491,24 @@ impl TaskScheduler {
             self.checkpoint_barrier,
             "checkpoint task access requires a barrier"
         );
+        self.restore_ready_task(handle, task);
+    }
+
+    /// Commit a completed input without running source or changing admission,
+    /// FIFO order, active slots, resource permits, or waiter ownership.
+    pub(crate) fn take_ready_task(&mut self, handle: TaskHandle) -> ScheduledTask {
+        let task = self.tasks.remove(&handle.task).expect("ready task exists");
+        assert_eq!(task.scope, handle.owner);
+        assert_eq!(task.state, TaskState::Ready);
+        task
+    }
+
+    pub(crate) fn restore_ready_task(&mut self, handle: TaskHandle, task: ScheduledTask) {
         assert_eq!(task.scope, handle.owner);
         assert_eq!(task.state, TaskState::Ready);
         assert!(
             self.tasks.insert(handle.task, task).is_none(),
-            "checkpoint task restored once"
+            "ready task restored once"
         );
     }
 
@@ -1057,12 +1069,26 @@ impl TaskScheduler {
         self.terminal(handle, TaskOutcome::Cancelled(cause))
     }
 
+    pub(crate) fn next_ready_wakeup(&self) -> Option<TaskHandle> {
+        self.wakeups.iter().find_map(|(id, pending)| {
+            let task = self.tasks.get(id)?;
+            (task.state == TaskState::Ready && !pending.is_empty()).then_some(TaskHandle {
+                owner: task.scope,
+                task: *id,
+            })
+        })
+    }
+
     pub(crate) fn take_wakeup(
         &mut self,
         handle: TaskHandle,
     ) -> Result<Option<TaskWakeup>, SchedulerError> {
         let id = self.resolve_id(handle)?;
-        Ok(self.wakeups.get_mut(&id).and_then(VecDeque::pop_front))
+        let wakeup = self.wakeups.get_mut(&id).and_then(VecDeque::pop_front);
+        if self.wakeups.get(&id).is_some_and(VecDeque::is_empty) {
+            self.wakeups.remove(&id);
+        }
+        Ok(wakeup)
     }
 
     pub(crate) fn has_unsettled_tasks(&self) -> bool {

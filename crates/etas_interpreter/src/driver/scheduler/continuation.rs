@@ -239,6 +239,20 @@ impl ContinuationArena {
         })
     }
 
+    pub(super) fn program(
+        &self,
+        token: ContinuationTokenValue,
+    ) -> Result<Option<crate::value::CheckedExecutionProgram>, SchedulerError> {
+        let entry = self
+            .entries
+            .get(&token.continuation)
+            .ok_or(SchedulerError::UnknownContinuation)?;
+        if entry.owner != token.owner {
+            return Err(SchedulerError::WrongOwner);
+        }
+        Ok(entry.program.clone())
+    }
+
     pub(super) fn dispose(
         &mut self,
         token: ContinuationTokenValue,

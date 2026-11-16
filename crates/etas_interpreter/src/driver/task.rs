@@ -105,7 +105,7 @@ pub(super) async fn resume_root_wait<'host>(
             ..
         } => match outcome {
             TaskOutcome::Completed(value) => {
-                validate_continuation_value(eval, &value, output, span)?;
+                validate_continuation_value(eval, token, &value, output, span)?;
                 machine.transfer_from(token, continuation, value);
                 eval.events.push(WorkflowEvent::ContinuationTransferred {
                     scope: token.owner.0,
@@ -161,7 +161,7 @@ pub(super) async fn control_from_root<'host>(
                 task: None,
                 kind: "requeue".to_owned(),
             });
-            validate_continuation_value(eval, &value, consumed.output, span)?;
+            validate_continuation_value(eval, token, &value, consumed.output, span)?;
             machine.transfer_from(token, consumed.continuation, value);
             eval.events.push(WorkflowEvent::ContinuationTransferred {
                 scope: token.owner.0,
@@ -390,6 +390,103 @@ async fn await_outcome<'host>(
     }
 }
 
+/// Commit completed waits without executing user code. A ready parent must own
+/// its input before a sibling can delegate a request to its lexical Handler.
+fn drain_task_wakeups(eval: &mut EvalContext<'_>) -> Result<bool, EvaluationOutcome> {
+    let mut progressed = false;
+    while let Some(handle) = eval.scheduler.next_ready_wakeup() {
+        progressed = true;
+        let wakeup = eval
+            .scheduler
+            .take_wakeup(handle)
+            .map_err(|error| scheduler_failure(eval, error))?;
+        let mut task = eval.scheduler.take_ready_task(handle);
+        if let Err(outcome) = resume_task_wakeup(eval, handle, &mut task, wakeup) {
+            // The coordinator owns this machine lease; no user body is run.
+            task.state = super::scheduler::TaskState::Running;
+            finish_task(eval, handle, task, outcome)?;
+        } else {
+            eval.scheduler.restore_ready_task(handle, task);
+        }
+    }
+    Ok(progressed)
+}
+
+fn resume_task_wakeup(
+    eval: &mut EvalContext<'_>,
+    handle: TaskHandle,
+    task: &mut ScheduledTask,
+    wakeup: Option<TaskWakeup>,
+) -> Result<(), EvaluationOutcome> {
+    match wakeup {
+        Some(TaskWakeup::Task {
+            completed: _,
+            outcome,
+        }) => {
+            eval.events.push(WorkflowEvent::TaskReady {
+                scope: handle.owner.0,
+                task: handle.task.0,
+            });
+            let continuation = task
+                .waiting_continuation
+                .take()
+                .ok_or_else(|| task_fault(eval, "awakened task has no saved await continuation"))?;
+            match continuation {
+                TaskResume::Await(continuation) => {
+                    task.machine
+                        .resume(signal_from_outcome(outcome, continuation)?);
+                }
+                TaskResume::Transfer {
+                    token,
+                    continuation,
+                    output,
+                    span,
+                } => match outcome {
+                    TaskOutcome::Completed(value) => {
+                        validate_continuation_value(eval, token, &value, output, span)?;
+                        task.machine.transfer_from(token, continuation, value);
+                    }
+                    TaskOutcome::Raised(perform) => {
+                        let Ok(signal) =
+                            signal_from_outcome(TaskOutcome::Raised(perform), continuation)
+                        else {
+                            unreachable!("typed error produces a control signal")
+                        };
+                        task.machine.resume(signal);
+                    }
+                    TaskOutcome::Failed(failure) => {
+                        return Err(EvaluationOutcome::Failed(failure));
+                    }
+                    TaskOutcome::Cancelled(cause) => {
+                        return Err(EvaluationOutcome::Cancelled(cause));
+                    }
+                },
+                TaskResume::Run(_) | TaskResume::Handler { .. } => {
+                    return Err(task_fault(eval, "task wakeup has a scope continuation"));
+                }
+            }
+        }
+        Some(TaskWakeup::Scope { scope, outcome }) => {
+            eval.events.push(WorkflowEvent::TaskReady {
+                scope: handle.owner.0,
+                task: handle.task.0,
+            });
+            let continuation = task
+                .waiting_continuation
+                .take()
+                .ok_or_else(|| task_fault(eval, "scope wakeup has no saved run continuation"))?;
+            let TaskResume::Run(continuation) = continuation else {
+                return Err(task_fault(eval, "scope wakeup has a task continuation"));
+            };
+            record_scope_exit(eval, scope, &outcome);
+            task.machine
+                .resume(signal_from_outcome(outcome, continuation)?);
+        }
+        None => {}
+    }
+    Ok(())
+}
+
 async fn drive_one_with_root<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,
@@ -404,6 +501,9 @@ async fn drive_one_with_root<'host>(
             HostOwner::Root => return Ok(true),
             HostOwner::Task(handle) => wake_from_host(eval, handle, operation)?,
         }
+    }
+    if drain_task_wakeups(eval)? {
+        return Ok(true);
     }
     let ready = eval.scheduler.dispatch_ready();
     record_resource_events(eval);
@@ -429,88 +529,9 @@ async fn drive_one_with_root<'host>(
         .take_running(handle)
         .map_err(|error| scheduler_failure(eval, error))?;
 
-    match wakeup {
-        Some(TaskWakeup::Task {
-            completed: _,
-            outcome,
-        }) => {
-            eval.events.push(WorkflowEvent::TaskReady {
-                scope: handle.owner.0,
-                task: handle.task.0,
-            });
-            let continuation = task
-                .waiting_continuation
-                .take()
-                .ok_or_else(|| task_fault(eval, "awakened task has no saved await continuation"))?;
-            match continuation {
-                TaskResume::Await(continuation) => {
-                    match signal_from_outcome(outcome, continuation) {
-                        Ok(signal) => task.machine.resume(signal),
-                        Err(outcome) => {
-                            finish_task(eval, handle, task, outcome)?;
-                            return Ok(true);
-                        }
-                    }
-                }
-                TaskResume::Transfer {
-                    token,
-                    continuation,
-                    output,
-                    span,
-                } => match outcome {
-                    TaskOutcome::Completed(value) => {
-                        if let Err(outcome) =
-                            validate_continuation_value(eval, &value, output, span)
-                        {
-                            finish_task(eval, handle, task, outcome)?;
-                            return Ok(true);
-                        }
-                        task.machine.transfer_from(token, continuation, value);
-                    }
-                    TaskOutcome::Raised(perform) => {
-                        let Ok(signal) =
-                            signal_from_outcome(TaskOutcome::Raised(perform), continuation)
-                        else {
-                            unreachable!("typed error produces a control signal")
-                        };
-                        task.machine.resume(signal);
-                    }
-                    TaskOutcome::Failed(failure) => {
-                        finish_task(eval, handle, task, EvaluationOutcome::Failed(failure))?;
-                        return Ok(true);
-                    }
-                    TaskOutcome::Cancelled(cause) => {
-                        finish_task(eval, handle, task, EvaluationOutcome::Cancelled(cause))?;
-                        return Ok(true);
-                    }
-                },
-                TaskResume::Run(_) | TaskResume::Handler { .. } => {
-                    return Err(task_fault(eval, "task wakeup has a scope continuation"));
-                }
-            }
-        }
-        Some(TaskWakeup::Scope { scope, outcome }) => {
-            eval.events.push(WorkflowEvent::TaskReady {
-                scope: handle.owner.0,
-                task: handle.task.0,
-            });
-            let continuation = task
-                .waiting_continuation
-                .take()
-                .ok_or_else(|| task_fault(eval, "scope wakeup has no saved run continuation"))?;
-            let TaskResume::Run(continuation) = continuation else {
-                return Err(task_fault(eval, "scope wakeup has a task continuation"));
-            };
-            record_scope_exit(eval, scope, &outcome);
-            match signal_from_outcome(outcome, continuation) {
-                Ok(signal) => task.machine.resume(signal),
-                Err(outcome) => {
-                    finish_task(eval, handle, task, outcome)?;
-                    return Ok(true);
-                }
-            }
-        }
-        None => {}
+    if let Err(outcome) = resume_task_wakeup(eval, handle, &mut task, wakeup) {
+        finish_task(eval, handle, task, outcome)?;
+        return Ok(true);
     }
 
     if task.cpu_capsule.is_some() && eval.cpu_jobs.len() >= eval.cpu_executor.capacity().get() {
@@ -813,9 +834,13 @@ async fn drive_one_with_root<'host>(
                         task: Some(handle.task.0),
                         kind: "requeue".to_owned(),
                     });
-                    if let Err(outcome) =
-                        validate_continuation_value(&mut child, &value, consumed.output, span)
-                    {
+                    if let Err(outcome) = validate_continuation_value(
+                        &mut child,
+                        token,
+                        &value,
+                        consumed.output,
+                        span,
+                    ) {
                         drop(child);
                         finish_task(eval, handle, task, outcome)?;
                         return Ok(true);
@@ -911,9 +936,9 @@ async fn drive_one_with_root<'host>(
                             };
                             match outcome {
                                 TaskOutcome::Completed(value) => {
-                                    if let Err(outcome) =
-                                        validate_continuation_value(eval, &value, output, span)
-                                    {
+                                    if let Err(outcome) = validate_continuation_value(
+                                        eval, token, &value, output, span,
+                                    ) {
                                         finish_task(eval, handle, task, outcome)?;
                                         return Ok(true);
                                     }
@@ -1814,13 +1839,22 @@ fn scheduler_failure(eval: &mut EvalContext<'_>, error: SchedulerError) -> Evalu
 
 fn validate_continuation_value(
     eval: &mut EvalContext<'_>,
+    token: crate::value::ContinuationTokenValue,
     value: &InterpValue,
     expected: etas_types::TypeId,
     span: etas_core::Span,
 ) -> Result<(), EvaluationOutcome> {
+    let program = eval
+        .scheduler
+        .continuation_program(token)
+        .map_err(|error| scheduler_failure(eval, error))?;
+    let checked = program
+        .as_ref()
+        .map_or(eval.checked, |program| &program.checked);
+    let plan = program.as_ref().map_or(eval.plan, |program| &program.plan);
     crate::value::contract::runtime::validate_value(
-        eval.checked,
-        eval.plan,
+        checked,
+        plan,
         value,
         expected,
         &eval.storage_limits,
