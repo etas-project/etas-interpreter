@@ -64,9 +64,15 @@ impl ActionBridge {
             else {
                 continue;
             };
-            if other.decl != symbol.decl {
+            let etas_std::StdDecl::EffectAction(other_declaration) = &other.decl else {
+                return Err(invalid("standard action execution contract is missing"));
+            };
+            // Checked source signatures may use canonical nominal paths and
+            // source-owned binders. Payloads used across this boundary were
+            // checked above; native dispatch and authority must stay identical.
+            if execution_contract(declaration) != execution_contract(other_declaration) {
                 return Err(invalid(
-                    "standard action declaration changed across the frozen environment",
+                    "standard action execution contract changed across the frozen environment",
                 ));
             }
             let id = etas_effects::EffectActionId(id);
@@ -209,4 +215,17 @@ fn validate(
 
 fn invalid(reason: &str) -> Error {
     Error::InvalidRuntimeInterface(reason.into())
+}
+
+fn execution_contract(action: &etas_std::EffectActionDecl) -> impl PartialEq + '_ {
+    (
+        &action.owner,
+        &action.name,
+        action.stable_id,
+        &action.runtime_requirement,
+        action.high_impact_ack,
+        action.compiler_role,
+        &action.default_handler_effects,
+        &action.default_handler_effect_tail,
+    )
 }
