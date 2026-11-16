@@ -226,7 +226,8 @@ mod tests {
             let handle = eval.scheduler.dispatch_ready().unwrap();
             let mut child = eval.scheduler.take_running(handle).unwrap();
             let inherited = child.local.inherited_handler_records().to_vec();
-            let mut child_ctx = eval.scheduled_task_context(&program, &mut child.local, handle.task, 0);
+            let mut child_ctx =
+                eval.scheduled_task_context(&program, &mut child.local, handle.task, 0);
             let perform = match child.machine.run_until_yield(&mut child_ctx) {
                 MachinePoll::Yield(PendingBoundary::Perform(perform)) => perform,
                 _ => panic!("child did not request its inherited Handler"),
@@ -315,14 +316,18 @@ mod tests {
                 .await
                 .unwrap();
                 let saved = eval.checkpoints.last().unwrap();
-                let artifact = crate::api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap();
-                let bytes =
-                    crate::api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
                 let artifact =
-                    crate::api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+                    crate::api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap();
+                let bytes =
+                    crate::api::codec::checkpoint_file_to_bytes(artifact, Default::default())
+                        .unwrap();
+                let artifact =
+                    crate::api::codec::checkpoint_file_from_bytes(&bytes, Default::default())
+                        .unwrap();
                 let current = checked_project(SOURCE);
-                let revisions =
-                    std::sync::Arc::new(crate::api::code::PreparedRevisionSet::new(current.clone()));
+                let revisions = std::sync::Arc::new(crate::api::code::PreparedRevisionSet::new(
+                    current.clone(),
+                ));
                 let checkpoint = crate::api::codec::checkpoint_from_json_with_revisions(
                     &Default::default(),
                     &artifact,
@@ -346,8 +351,10 @@ mod tests {
                 assert_eq!(resumed.value(), Some(&InterpValue::i32(42)));
             } else {
                 match root.run_until_yield(&mut eval) {
-                    MachinePoll::Yield(PendingBoundary::Task(control)) => assert!(matches!(*control,
-                            PendingTaskControl::ResumeHandled { task, value, .. } if task == handle && value == InterpValue::i32(40))),
+                    MachinePoll::Yield(PendingBoundary::Task(control)) => {
+                        assert!(matches!(*control,
+                            PendingTaskControl::ResumeHandled { task, value, .. } if task == handle && value == InterpValue::i32(40)))
+                    }
                     _ => panic!("capturing the wait changed the live Handler resume"),
                 }
                 eval.scheduler.restore_running(handle, child).unwrap();
@@ -665,6 +672,7 @@ flow main() -> i32 {
         for _ in 0..2 {
             let mut machine = EvalMachine::for_entry(program.clone(), Vec::new());
             machine.resume(ControlSignal::pending_block(crate::control::PendingBlock {
+                agent_context: None,
                 block,
                 next_stmt_index: 0,
                 frame: captured.clone(),
@@ -755,8 +763,8 @@ flow main() -> i32 {
         let response = ModelResponse {
             id: HostRequestId(7),
             usage: Some(ModelUsage {
-                input_tokens: 3,
-                output_tokens: 5,
+                input_tokens: Some(3),
+                output_tokens: Some(5),
                 cost: Some(ModelCostUsage {
                     micros: 17,
                     currency: "USD".into(),
@@ -764,15 +772,17 @@ flow main() -> i32 {
             }),
             result: Ok(ModelOutput {
                 message: ModelMessage {
+                    provider_data: Vec::new(),
                     role: ModelRole::Assistant,
                     content: vec![
                         ModelContent::Text("ready".into()),
                         ModelContent::Value(HostValue::Bool(true)),
                     ],
                     tool_call_id: Some("prior".into()),
-                    tool_calls: vec![call.clone()],
+                    tool_calls: vec![call],
                 },
-                tool_calls: vec![call],
+                termination: etas_host::ModelTermination::Complete,
+                provider_request_id: Some("provider-request-7".into()),
             }),
         };
         let input = I::ModelResult(Ok(response.clone()));

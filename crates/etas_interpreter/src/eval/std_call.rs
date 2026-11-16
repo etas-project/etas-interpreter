@@ -82,6 +82,9 @@ impl<'a> EvalContext<'a> {
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
     ) -> ControlSignal {
         match kind {
+            StdCallable::ToolInvoke => self.execute_tool_invoke(checked_call, call_args, span),
+            StdCallable::AgentStep => self.execute_agent_step(checked_call, call_args, span),
+            StdCallable::ToolReference => self.eval_tool_reference(checked_call.origin, span),
             StdCallable::AgentSupport(kind) => {
                 self.execute_agent_support_callable(kind, checked_call, call_args, span)
             }
@@ -606,7 +609,10 @@ impl<'a> EvalContext<'a> {
                     CONSOLE_STDIN_READ_LINE_ACTION,
                 )
             }
-            ConsoleCallable::Print | ConsoleCallable::PrintLn | ConsoleCallable::EPrintLn => {
+            ConsoleCallable::Print
+            | ConsoleCallable::PrintLn
+            | ConsoleCallable::EPrint
+            | ConsoleCallable::EPrintLn => {
                 let text = match call_args.as_slice() {
                     [InterpValue::String(text)] => text.clone(),
                     args => {
@@ -629,6 +635,10 @@ impl<'a> EvalContext<'a> {
                         text: text.into_string(),
                         newline: true,
                     },
+                    ConsoleCallable::EPrint => ConsoleOperation::WriteStderr {
+                        text: text.into_string(),
+                        newline: false,
+                    },
                     ConsoleCallable::EPrintLn => ConsoleOperation::WriteStderr {
                         text: text.into_string(),
                         newline: true,
@@ -639,7 +649,9 @@ impl<'a> EvalContext<'a> {
                     ConsoleCallable::Print | ConsoleCallable::PrintLn => {
                         CONSOLE_STDOUT_WRITE_ACTION
                     }
-                    ConsoleCallable::EPrintLn => CONSOLE_STDERR_WRITE_ACTION,
+                    ConsoleCallable::EPrint | ConsoleCallable::EPrintLn => {
+                        CONSOLE_STDERR_WRITE_ACTION
+                    }
                     ConsoleCallable::ReadAll | ConsoleCallable::ReadLine => unreachable!(),
                 };
                 (operation, ConsoleDecode::Unit, action)

@@ -208,6 +208,17 @@ pub(in crate::eval::machine) fn restore(
                 parent_handler_floor: scope
                     .as_ref()
                     .map_or(saved.owner_handler_floor, |scope| scope.handler_floor),
+                parent_agent_context: boundary
+                    .parent_agent_context
+                    .as_deref()
+                    .map(|request| {
+                        crate::eval::machine::snapshot::restore_agent_context(
+                            request,
+                            &parent,
+                            Some(&**revisions),
+                        )
+                    })
+                    .transpose()?,
                 parent_program: parent,
                 parent_model_policy: program::restore_model_policy(boundary.parent_model_policy),
                 call,

@@ -21,6 +21,7 @@ pub(in crate::api::codec) fn program_return_json(
         "span": span_snapshot(frame.span),
         "retry_depth": frame.retry_depth,
         "parent_model_policy": super::model::model_policy_snapshot(&frame.parent_model_policy),
+        "parent_agent_context": super::agent_context::request_json(frame.parent_agent_context.as_deref()),
         "continuation": null,
     });
     value["call"] = snapshot::call_target_json_with_budget(&frame.call, budget)?;
@@ -38,6 +39,10 @@ pub(in crate::api::codec) fn program_return_from_json(
         call: super::call_target_snapshot_from_json(limits, required(value, "call")?)?,
         call_site: call_site_from_json(limits, required(value, "call_site")?)?,
         handler_floor: required_usize(value, "handler_floor")?,
+        parent_agent_context: super::agent_context::request_from_json(required(
+            value,
+            "parent_agent_context",
+        )?)?,
         span: span_from_snapshot(required(value, "span")?)?,
         retry_depth: required_usize(value, "retry_depth")?,
         parent_model_policy: super::model::model_policy_from_snapshot(required(

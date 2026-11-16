@@ -1,11 +1,10 @@
 mod budget;
 pub(crate) mod frame;
 mod model;
-mod model_repair;
 mod program;
 mod suspension;
 mod task_handler;
-pub use frame::SourceToolContinuation;
+mod tool;
 pub use suspension::ProgramContinuation;
 pub use task_handler::TaskHandlerContinuation;
 #[cfg(test)]

@@ -82,12 +82,21 @@ impl EvalContext<'_> {
             action_symbol: etas_hir::ResolveResult::Unresolved,
             span,
         };
+        let inference = matches!(
+            &boundary,
+            DefaultActionBoundary::Native {
+                kind: crate::intrinsic::dispatch::StdCallable::AgentStep,
+                ..
+            } | DefaultActionBoundary::AgentControllerStep { .. }
+        )
+        .then(|| self.task.agent_context.clone())
+        .flatten();
         ControlSignal::pending_perform(PendingPerform {
             checked_action: Some(proof),
             default_boundary: Some(Box::new(boundary)),
             forwarded_call: None,
             expr: None,
-            inference: None,
+            inference,
             error_type: None,
             action,
             args,

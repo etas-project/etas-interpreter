@@ -8,6 +8,9 @@ pub(crate) use suspension::{
     SuspendedTaskHandlerSnapshot, TaskHandlerWaitSnapshot,
 };
 mod checkpoint;
+pub(crate) use checkpoint::{
+    AgentExecutionStateSnapshot, AgentRequestContextSnapshot, ToolInvocationSnapshot,
+};
 mod task;
 pub(crate) use task::{
     AuxiliaryContinuationSnapshot, RootTaskWaitSnapshot, ScheduledTaskSnapshot,
@@ -51,13 +54,12 @@ pub use checkpoint::{
     RetrySnapshot, TraceSnapshot,
 };
 pub(crate) use checkpoint::{
-    CallSiteSnapshot, CallTargetSnapshot, CheckpointAgentReference, ComposedInvocationSnapshot,
-    ContinuationSnapshot, ConversationSnapshot, FrameProgramOwners, HostToolProgressSnapshot,
+    AgentControllerSnapshot, CallSiteSnapshot, CallTargetSnapshot, CheckpointAgentReference,
+    ComposedInvocationSnapshot, ContinuationSnapshot, ConversationSnapshot, FrameProgramOwners,
     LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot,
-    MessageSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelLoopFrameSnapshot,
-    ModelRepairSnapshot, ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramReturnSnapshot,
-    SliceExprEvalSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
-    TaskValueSnapshot, ValueSnapshot,
+    MessageSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelRequestFrameSnapshot,
+    ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramReturnSnapshot,
+    SliceExprEvalSnapshot, TaskValueSnapshot, ToolInvocationOriginSnapshot, ValueSnapshot,
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{CpuWorkerId, WorkflowEvent, WorkflowEventLayer, WorkflowStepId};

@@ -1,9 +1,6 @@
 use crate::{
     eval::machine::frame::EvalFrame,
-    orchestration::{
-        ContinuationSnapshot, MachineFrameSnapshot, ModelLoopFrameSnapshot,
-        SourceToolReturnFrameSnapshot,
-    },
+    orchestration::{ContinuationSnapshot, MachineFrameSnapshot, ModelRequestFrameSnapshot},
 };
 
 use super::capture_context::CaptureContext;
@@ -57,11 +54,8 @@ impl MachineFrameSnapshot {
                 }
                 frame
             }
-            Self::ModelLoop(frame) => {
-                EvalFrame::ModelLoop(Box::new(frame.restore(current, context)?))
-            }
-            Self::SourceToolReturn(frame) => {
-                EvalFrame::SourceToolReturn(frame.restore(current, context)?)
+            Self::ModelRequest(frame) => {
+                EvalFrame::ModelRequest(Box::new(frame.restore(current, context)?))
             }
         })
     }
@@ -113,12 +107,9 @@ impl MachineFrameSnapshot {
                     frame: context.frame(&frame.frame)?,
                 },
             },
-            EvalFrame::ModelLoop(frame) => {
-                Self::ModelLoop(Box::new(ModelLoopFrameSnapshot::capture(frame, context)?))
-            }
-            EvalFrame::SourceToolReturn(frame) => {
-                Self::SourceToolReturn(SourceToolReturnFrameSnapshot::capture(frame, context)?)
-            }
+            EvalFrame::ModelRequest(frame) => Self::ModelRequest(Box::new(
+                ModelRequestFrameSnapshot::capture(frame, context)?,
+            )),
             EvalFrame::ResidualScope(scope) => Self::ResidualScope {
                 scope: context.residual_scope(scope)?,
             },

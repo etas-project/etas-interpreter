@@ -56,7 +56,7 @@ impl EvalContext<'_> {
             action: action.clone(),
             error_type: None,
             args: vec![value, InterpValue::Schema(fact.output)],
-            inference: Some(Box::new(self.task.model_policy.clone())),
+            inference: Some(Box::new(self.new_agent_context(fact.method))),
             span,
             continuation: Continuation::BlockValue,
             residual: None,
@@ -86,15 +86,25 @@ impl EvalContext<'_> {
             .action_signatures
             .get(&fact.action_symbol)
             .ok_or("inference has no checked action signature")?;
-        let [output] = signature.generic_params.as_slice() else {
-            return Err("inference action has no single checked output parameter".into());
+        let [context, output] = signature.generic_params.as_slice() else {
+            return Err("inference action has no checked context/output parameters".into());
         };
-        if output.kind != etas_types::CallableGenericParamKind::Type
+        if context.kind != etas_types::CallableGenericParamKind::Type
+            || output.kind != etas_types::CallableGenericParamKind::Type
             || signature.output != output.subject
         {
             return Err("inference output is not its checked action type parameter".into());
         }
-        let bindings = crate::control::GenericBindings::from([(output.name.clone(), fact.output)]);
+        let method = self
+            .checked
+            .types
+            .agent_methods
+            .get(&fact.method)
+            .ok_or("inference context has no checked method")?;
+        let bindings = crate::control::GenericBindings::from([
+            (context.name.clone(), method.context_type),
+            (output.name.clone(), fact.output),
+        ]);
         let proof = self.action_invocation_with_bindings(pending, &bindings)?;
         let [prompt, schema] = proof.parameters.as_slice() else {
             return Err("inference action has no checked Prompt/Schema payload contract".into());
@@ -119,7 +129,22 @@ impl EvalContext<'_> {
         ) {
             return None;
         }
-        Some(self.start_agent_model_request(expr, perform))
+        let Some(fact) = self.checked.types.agent_inferences.get(&expr) else {
+            return Some(ControlSignal::missing_checked_fact(
+                "inference has no checked output",
+                perform.span,
+            ));
+        };
+        Some(
+            if matches!(
+                self.agent_model_decode(fact.output),
+                ModelDecode::ModelResponse
+            ) {
+                self.start_agent_model_request(expr, perform)
+            } else {
+                self.start_default_agent_controller(expr, perform)
+            },
+        )
     }
 
     fn start_agent_model_request(
@@ -182,17 +207,17 @@ impl EvalContext<'_> {
                 span,
             );
         };
-        let mut model_policy = (**policy).clone();
+        let mut model_policy = policy.policy.clone();
         if let Some(model) = &self.locked_model {
             model_policy.model = model.clone();
             model_policy.model_locked = true;
         }
-        let mut source_tools = Vec::new();
+        let mut native_tools = Vec::new();
         let mut trace_plan = Vec::new();
         if let Err(fault) = self.apply_agent_annotations(
             item,
             &mut model_policy,
-            &mut source_tools,
+            &mut native_tools,
             &mut trace_plan,
         ) {
             return ControlSignal::Fault(Box::new(fault));
@@ -215,6 +240,7 @@ impl EvalContext<'_> {
                 Some(schema)
             }
             ModelDecode::String | ModelDecode::ModelResponse => None,
+            ModelDecode::Step { .. } => unreachable!("legacy inference does not decode a step"),
         };
         if let Err(fault) =
             self.model_provider_supports_request(&model_policy, response_schema.is_some(), span)
@@ -238,12 +264,14 @@ impl EvalContext<'_> {
         self.next_host_request += 1;
         ControlSignal::pending_model(PendingModel {
             request: ModelRequest {
+                action: etas_host::ModelAction::Infer,
                 id: request_id,
                 provider: model_policy.provider.clone(),
                 model: model_policy.model.clone(),
                 messages: prompt
                     .into_iter()
                     .map(|message| ModelMessage {
+                        provider_data: Vec::new(),
                         role: match message.role {
                             crate::value::PromptRole::System => ModelRole::System,
                             crate::value::PromptRole::User | crate::value::PromptRole::Data => {
@@ -269,8 +297,6 @@ impl EvalContext<'_> {
                 budget,
             },
             decode,
-            max_tool_rounds: model_policy.max_tool_rounds,
-            source_tools,
             span,
             continuation: perform.continuation.clone(),
         })

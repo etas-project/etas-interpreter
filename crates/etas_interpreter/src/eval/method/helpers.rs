@@ -256,8 +256,9 @@ mod tests {
         };
         assert!(prompt_data_contains_secret(&secret));
         let conversation = InterpValue::Conversation(ConversationValue {
+            protocol: None,
             selected_context: None,
-            session: "session".into(),
+            session: Some("session".into()),
             history_fence: None,
             cursor: None,
             messages: vec![MessageValue {

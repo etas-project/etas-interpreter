@@ -11,7 +11,7 @@ use super::host_dispatch::{ApprovalCall, HostCompletion, HostDispatch, PendingHo
 
 pub(in crate::driver) enum ApprovalDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingApprovalDispatch<'host>),
+    Pending(Box<PendingApprovalDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingApprovalDispatch<'host> {
@@ -87,12 +87,12 @@ pub(in crate::driver) fn begin<'host>(
     match HostDispatch::begin_approval(eval, request.clone(), authority, |operation| {
         host.approval(operation, request)
     }) {
-        Ok(pending) => ApprovalDispatchStart::Pending(PendingApprovalDispatch {
+        Ok(pending) => ApprovalDispatchStart::Pending(Box::new(PendingApprovalDispatch {
             perform,
             key,
             request_id,
             pending,
-        }),
+        })),
         Err(error) => ApprovalDispatchStart::Complete(finish_error(eval, perform, error)),
     }
 }

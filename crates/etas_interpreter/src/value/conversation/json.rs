@@ -29,7 +29,10 @@ fn array<'a>(value: &'a Value, key: &str) -> Result<&'a [Value], String> {
 // Inspect borrowed JSON before the codec clones strings or allocates message/payload vectors.
 pub(crate) fn validate_json(value: &Value, limits: &StorageLimits) -> Result<(), String> {
     let messages = array(value, "messages")?;
-    let mut budget = ViewBudget::new(limits, text(value, "session")?, messages.len())?;
+    let mut budget = ViewBudget::new(limits, optional(value, "session")?, messages.len())?;
+    if let protocol @ Value::Object(_) = field(value, "protocol")? {
+        protocol.measure(&mut budget, 0)?;
+    }
     for key in ["cursor", "history_fence"] {
         if let Some(value) = optional(value, key)? {
             budget.charge(value.len(), 0)?;
@@ -74,6 +77,17 @@ impl Payload for Value {
     fn measure(&self, budget: &mut ViewBudget<'_>, depth: usize) -> Result<(), String> {
         budget.node(depth)?;
         match text(self, "kind")? {
+            "prompt" => {
+                let messages = array(self, "messages")?;
+                if messages.len() > budget.limits.max_scan_rows {
+                    return Err(super::budget::exceeded());
+                }
+                for message in messages {
+                    budget.node(depth + 1)?;
+                    budget.charge(text(message, "text")?.len(), depth + 1)?;
+                }
+                Ok(())
+            }
             "message" => {
                 let provenance = match field(self, "provenance")? {
                     Value::Null => None,

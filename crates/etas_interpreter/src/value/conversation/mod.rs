@@ -1,13 +1,16 @@
+mod assembly;
 mod budget;
+pub(crate) use assembly::{append_prompt, append_results, append_step, from_prompt};
 mod context;
 mod json;
 mod payload;
+pub(crate) mod protocol;
 #[cfg(test)]
 mod tests;
 
 use super::ConversationValue;
 use crate::orchestration::ConversationSnapshot;
-use budget::{MessageView, ViewBudget};
+use budget::{MessageView, Payload, ViewBudget};
 use etas_host::StorageLimits;
 
 pub use context::PublishedContextValue;
@@ -17,7 +20,7 @@ pub(crate) fn validate_message(
     value: &super::MessageValue,
     limits: &StorageLimits,
 ) -> Result<(), String> {
-    ViewBudget::new(limits, value.session.as_deref().unwrap_or(""), 1)?.envelope(
+    ViewBudget::new(limits, value.session.as_deref(), 1)?.envelope(
         MessageView {
             id: &value.id,
             session: value.session.as_deref(),
@@ -38,7 +41,7 @@ pub(crate) fn validate_message_snapshot(
     value: &crate::orchestration::MessageSnapshot,
     limits: &StorageLimits,
 ) -> Result<(), String> {
-    ViewBudget::new(limits, value.session.as_deref().unwrap_or(""), 1)?.envelope(
+    ViewBudget::new(limits, value.session.as_deref(), 1)?.envelope(
         MessageView {
             id: &value.id,
             session: value.session.as_deref(),
@@ -56,12 +59,16 @@ pub(crate) fn validate_message_snapshot(
 }
 
 pub(crate) fn validate(value: &ConversationValue, limits: &StorageLimits) -> Result<(), String> {
-    let mut budget = ViewBudget::new(limits, &value.session, value.messages.len())?;
+    let mut budget = ViewBudget::new(limits, value.session.as_deref(), value.messages.len())?;
     budget.metadata(
         value.cursor.as_deref(),
         value.history_fence.as_ref(),
         value.selected_context.as_deref(),
     )?;
+    if let Some(protocol) = &value.protocol {
+        protocol::validate(protocol, limits.max_scan_rows).map_err(|error| error.message)?;
+        protocol.measure(&mut budget, 0)?;
+    }
     for message in &value.messages {
         budget.message(MessageView {
             id: &message.id,
@@ -83,12 +90,15 @@ pub(crate) fn validate_snapshot(
     value: &ConversationSnapshot,
     limits: &StorageLimits,
 ) -> Result<(), String> {
-    let mut budget = ViewBudget::new(limits, &value.session, value.messages.len())?;
+    let mut budget = ViewBudget::new(limits, value.session.as_deref(), value.messages.len())?;
     budget.metadata(
         value.cursor.as_deref(),
         value.history_fence.as_ref(),
         value.selected_context.as_deref(),
     )?;
+    if let Some(protocol) = &value.protocol {
+        protocol.measure(&mut budget, 0)?;
+    }
     for message in &value.messages {
         budget.message(MessageView {
             id: &message.id,

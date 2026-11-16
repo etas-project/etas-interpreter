@@ -10,29 +10,69 @@ fn continuation_leaf_from_snapshot(
     kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match kind {
+        "agent_controller_step" | "agent_controller_tool" => {
+            let decode = |key| {
+                crate::api::codec::value::snapshot_from_json_with_limits(
+                    limits,
+                    required(value, key)?,
+                )
+                .map_err(|error| error.to_string())
+            };
+            let state = Box::new(crate::orchestration::AgentControllerSnapshot {
+                inference: HirExprId(required_u32(value, "inference")?),
+                conversation: decode("conversation")?,
+                calls: decode("calls")?,
+                next_call: required_usize(value, "next_call")?,
+                results: required_values(limits, value, "results")?,
+                round: required_usize(value, "round")?,
+                repairs: required_usize(value, "repairs")?,
+                max_tool_rounds: required_usize(value, "max_tool_rounds")?,
+                span: span_from_snapshot(required(value, "span")?)?,
+            });
+            if kind == "agent_controller_step" {
+                ContinuationSnapshot::AgentControllerStep(state)
+            } else {
+                ContinuationSnapshot::AgentControllerTool(state)
+            }
+        }
+        "tool_invocation_start" | "tool_invocation_result" => {
+            use crate::orchestration::ToolInvocationOriginSnapshot as Origin;
+            let invocation = Box::new(crate::orchestration::ToolInvocationSnapshot {
+                call: match required_str(value, "origin_kind")? {
+                    "standard" => Origin::Standard(call_target_snapshot_from_json(
+                        limits,
+                        required(value, "call")?,
+                    )?),
+                    "controller" => Origin::Controller {
+                        inference: HirExprId(required_u32(required(value, "call")?, "inference")?),
+                    },
+                    _ => return Err("invalid tool invocation origin".into()),
+                },
+                input: crate::api::codec::value::snapshot_from_json_with_limits(
+                    limits,
+                    required(value, "input")?,
+                )
+                .map_err(|error| error.to_string())?,
+                context: super::super::agent_context::request_from_json(required(
+                    value, "context",
+                )?)?
+                .ok_or("native tool invocation has no checked context")?,
+                request: etas_host::HostRequestId(required_u32(value, "request")?),
+                span: span_from_snapshot(required(value, "span")?)?,
+            });
+            if kind == "tool_invocation_start" {
+                ContinuationSnapshot::ToolInvocationStart(invocation)
+            } else {
+                ContinuationSnapshot::ToolInvocationResult(invocation)
+            }
+        }
+        "agent_execution_state" => ContinuationSnapshot::AgentExecutionState(Box::new(
+            super::super::agent_context::state_from_json(required(value, "state")?)?,
+        )),
         "pack_existential" => ContinuationSnapshot::PackExistential {
             expr: HirExprId(required_u32(value, "expr")?),
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
-        "source_tool_return" => {
-            let source = required(value, "source_tool")?;
-            let model = required(source, "model_loop")?;
-            // Native model state is a leaf: execution continuations stay in the machine/chain.
-            for child in [
-                required(model, "outer_continuation")?,
-                required(required(model, "pending")?, "continuation")?,
-            ] {
-                if required_str(child, "kind")? != "block_value" {
-                    return Err("source tool continuation contains an unexpected nested execution continuation".into());
-                }
-            }
-            ContinuationSnapshot::SourceToolReturn(Box::new(
-                crate::api::codec::checkpoint::source_tool_return_frame_from_json(
-                    limits, source, checked,
-                )
-                .map_err(|error| error.to_string())?,
-            ))
-        }
         "directory_list_reduction" => ContinuationSnapshot::DirectoryListReduction {
             call: call_target_snapshot_from_json(limits, required(value, "call")?)?,
             args: required_values(limits, value, "args")?,

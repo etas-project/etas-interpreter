@@ -135,13 +135,23 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
         V::Message(value) => message(value, slot, pending),
         V::Conversation(value) => {
             *slot = json!({"kind":"conversation", "selected_context":value.selected_context.as_deref().map(codec::value::session::selected_context_json),
-                "history_fence":value.history_fence.as_ref().map(|f|f.as_token()), "session":value.session, "cursor":value.cursor, "messages":null});
-            for (message, slot) in value
-                .messages
-                .iter()
-                .zip(array(&mut slot["messages"], value.messages.len()))
-            {
-                pending.push((Node::Message(message), slot));
+                "protocol":null, "history_fence":value.history_fence.as_ref().map(|f|f.as_token()), "session":value.session, "cursor":value.cursor, "messages":null});
+            for (name, slot) in slot.as_object_mut().unwrap() {
+                match name.as_str() {
+                    "protocol" => {
+                        if let Some(protocol) = &value.protocol {
+                            pending.push((Node::Value(protocol), slot));
+                        }
+                    }
+                    "messages" => {
+                        for (message, slot) in
+                            value.messages.iter().zip(array(slot, value.messages.len()))
+                        {
+                            pending.push((Node::Message(message), slot));
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         V::Callable(target) => {

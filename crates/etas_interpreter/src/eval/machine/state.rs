@@ -275,6 +275,17 @@ impl EvalMachine {
                             },
                             |scope| scope.handler_floor,
                         ),
+                        parent_agent_context: frame
+                            .parent_agent_context
+                            .as_ref()
+                            .map(|request| {
+                                super::snapshot::restore_agent_context(
+                                    request,
+                                    &parent_program,
+                                    resources.revisions.as_deref(),
+                                )
+                            })
+                            .transpose()?,
                         parent_program,
                         parent_model_policy: super::snapshot::program::restore_model_policy(
                             frame.parent_model_policy,
@@ -334,6 +345,7 @@ impl EvalMachine {
             .map(|snapshot| snapshot.machine)
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_snapshot(
         &self,
         args: &[InterpValue],
@@ -379,6 +391,7 @@ impl EvalMachine {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_machine(
         &self,
         context: &mut super::snapshot::CaptureContext,

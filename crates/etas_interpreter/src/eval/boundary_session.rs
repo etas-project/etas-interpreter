@@ -246,13 +246,14 @@ fn conversation_from_session_result(
                 .map(|message| message_value_from_session_message(message, payload_type, checked))
                 .collect::<Result<Vec<_>, _>>()?;
             let conversation = crate::value::ConversationValue {
+                protocol: None,
                 selected_context: match policy {
                     etas_host::ContextPolicy::SummaryPlusRecent { .. } => {
                         published_context.clone().map(Into::into)
                     }
                     _ => None,
                 },
-                session: session.id.clone(),
+                session: Some(session.id.clone()),
                 history_fence: Some(fence.clone()),
                 messages: messages.into(),
                 cursor: cursor.as_ref().map(|cursor| cursor.opaque.clone()),

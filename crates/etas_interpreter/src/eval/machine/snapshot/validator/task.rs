@@ -7,6 +7,9 @@ impl SnapshotValidator<'_> {
         task: &crate::orchestration::ScheduledTaskSnapshot,
     ) -> Result<(), String> {
         task.local.model_policy.validate()?;
+        if let Some(request) = &task.local.agent_context {
+            self.agent_request_context(request)?;
+        }
         let Some(machine) = &task.machine else {
             return Ok(());
         };

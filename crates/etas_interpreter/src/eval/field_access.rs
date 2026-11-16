@@ -362,7 +362,14 @@ impl<'a> EvalContext<'a> {
                 )),
             },
             InterpValue::Conversation(conversation) => match field {
-                "session" => self.session_id_value(conversation.session, span),
+                "session" => conversation
+                    .session
+                    .map(|id| {
+                        self.session_id_value(id, span)
+                            .map(|id| InterpValue::OptionSome(id.into()))
+                    })
+                    .transpose()
+                    .map(|id| id.unwrap_or(InterpValue::OptionNone)),
                 "messages" => Ok(InterpValue::Array(ArrayValue::new(
                     conversation
                         .messages

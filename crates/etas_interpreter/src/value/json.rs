@@ -1,7 +1,9 @@
 use std::hash::{Hash, Hasher};
 
 mod storage;
+mod variant;
 pub use storage::{JsonArray, JsonObject};
+pub(crate) use variant::{construct, project};
 
 use super::{
     HostJsonSupportValue as Json,
@@ -10,7 +12,7 @@ use super::{
 
 enum Children<'a> {
     Array(std::slice::Iter<'a, Json>),
-    Object(std::slice::Iter<'a, (String, Json)>),
+    Object(storage::JsonObjectIter<'a>),
 }
 
 pub(crate) fn validate(value: &Json) -> Result<(), String> {
@@ -43,7 +45,9 @@ impl<'a> Children<'a> {
     fn next(&mut self) -> Option<(Option<&'a str>, &'a Json)> {
         match self {
             Self::Array(values) => values.next().map(|v| (None, v)),
-            Self::Object(fields) => fields.next().map(|(k, v)| (Some(k.as_str()), v)),
+            Self::Object(fields) => fields
+                .next()
+                .map(|(key, value)| (Some(key.as_str()), value)),
         }
     }
 }
@@ -68,8 +72,8 @@ fn node<'a>(a: &'a Json, b: &'a Json) -> Comparison<Cursor<'a>> {
         }
         (Json::Object(a), Json::Object(b)) if a.len() == b.len() => {
             return Comparison::Pending(Cursor(
-                Children::Object(a.iter()),
-                Children::Object(b.iter()),
+                Children::Object(a.canonical_iter()),
+                Children::Object(b.canonical_iter()),
             ));
         }
         _ => false,
@@ -127,7 +131,7 @@ fn hash_node<'a>(value: &'a Json, state: &mut impl Hasher) -> Option<Children<'a
         }
         Json::Object(fields) => {
             fields.len().hash(state);
-            return Some(Children::Object(fields.iter()));
+            return Some(Children::Object(fields.canonical_iter()));
         }
     }
     None

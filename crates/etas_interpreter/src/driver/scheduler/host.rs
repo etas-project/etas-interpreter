@@ -51,7 +51,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_console(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::console::PendingConsoleDispatch<'host>,
+        pending: Box<crate::driver::dispatch::console::PendingConsoleDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();
@@ -66,7 +66,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_command(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::command::PendingCommandDispatch<'host>,
+        pending: Box<crate::driver::dispatch::command::PendingCommandDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();
@@ -81,7 +81,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_host(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::host::PendingHostBoundaryDispatch<'host>,
+        pending: Box<crate::driver::dispatch::host::PendingHostBoundaryDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();
@@ -96,7 +96,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_tool(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::tool::PendingToolHostDispatch<'host>,
+        pending: Box<crate::driver::dispatch::tool::PendingToolHostDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();
@@ -111,7 +111,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_model(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::model::PendingModelHostDispatch<'host>,
+        pending: Box<crate::driver::dispatch::model::PendingModelHostDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();
@@ -126,7 +126,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_approval(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::approval::PendingApprovalDispatch<'host>,
+        pending: Box<crate::driver::dispatch::approval::PendingApprovalDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();
@@ -141,7 +141,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_compiler(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::compiler::PendingCompilerDispatch<'host>,
+        pending: Box<crate::driver::dispatch::compiler::PendingCompilerDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();
@@ -156,7 +156,7 @@ impl<'host> TaskHostReactor<'host> {
     pub(in crate::driver) fn start_memory(
         &mut self,
         owner: HostOwner,
-        pending: crate::driver::dispatch::memory::PendingMemoryDispatch<'host>,
+        pending: Box<crate::driver::dispatch::memory::PendingMemoryDispatch<'host>>,
     ) -> HostWait {
         let operation = pending.operation_state();
         let wait = operation.wait();

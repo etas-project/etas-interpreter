@@ -35,17 +35,16 @@ impl EvalMachine {
                             deferred: Some(candidate), ..
                         } if candidate == token
                     )
+            ) || matches!(
+                frame,
+                super::frame::EvalFrame::Handler(frame)
+                    if matches!(
+                        &*frame.inner,
+                        crate::control::Continuation::HandlerDispatch {
+                            deferred: Some(candidate), ..
+                        } if *candidate == token
+                    )
             )
-                || matches!(
-                    frame,
-                    super::frame::EvalFrame::Handler(frame)
-                        if matches!(
-                            &*frame.inner,
-                            crate::control::Continuation::HandlerDispatch {
-                                deferred: Some(candidate), ..
-                            } if *candidate == token
-                        )
-                )
         });
         let boundary =
             boundary.expect("deferred continuation transfer must retain its handler boundary");
@@ -192,12 +191,8 @@ impl EvalMachine {
                 )
                 .map_err(MachinePoll::Fault)?;
             }
-            Continuation::SourceToolReturn(saved) => {
-                return Ok(retry_failure(
-                    saved.0.model_loop.outer_continuation,
-                    span,
-                    message,
-                ));
+            Continuation::AgentExecutionState(previous) => {
+                ctx.restore_agent_context(*previous);
             }
             _ => {}
         }

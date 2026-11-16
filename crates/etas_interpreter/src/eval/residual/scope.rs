@@ -51,6 +51,14 @@ impl EvalContext<'_> {
             None => None,
         };
         ControlSignal::pending_block(PendingBlock {
+            agent_context: self
+                .checked
+                .types
+                .agent_methods
+                .values()
+                .find(|method| method.body == item)
+                .map(|method| method.symbol)
+                .map(|method| Box::new(self.new_agent_context(method))),
             block: body,
             next_stmt_index: 0,
             frame: frame.clone(),

@@ -233,7 +233,7 @@ pub(super) async fn settle<'host>(
     machine: &mut crate::eval::machine::EvalMachine,
 ) -> EvaluationOutcome {
     machine.root_wait = Some(RootTaskWait::Settling(match &outcome {
-        EvaluationOutcome::Completed(value) => TaskOutcome::Completed(value.clone()),
+        EvaluationOutcome::Completed(value) => TaskOutcome::Completed((**value).clone()),
         EvaluationOutcome::Failed(failure) => TaskOutcome::Failed(failure.clone()),
         EvaluationOutcome::Cancelled(cause) => TaskOutcome::Cancelled(cause.clone()),
     }));
@@ -253,7 +253,7 @@ pub(super) fn take_root_settlement(
         unreachable!()
     };
     Some(match outcome {
-        TaskOutcome::Completed(value) => EvaluationOutcome::Completed(value),
+        TaskOutcome::Completed(value) => EvaluationOutcome::Completed(Box::new(value)),
         TaskOutcome::Failed(failure) => EvaluationOutcome::Failed(failure),
         TaskOutcome::Cancelled(cause) => EvaluationOutcome::Cancelled(cause),
         TaskOutcome::Raised(_) => {
@@ -610,9 +610,9 @@ async fn drive_one_with_root<'host>(
             eval.scheduled_task_context(&program, &mut task.local, handle.task, handler_floor);
         let span = crate::diagnostics::item_span(child.checked, child.entry_item);
         let readiness = if handler_floor == 0 {
-            crate::host::validate_host_readiness(&child.plan, host.availability(), span)
+            crate::host::validate_host_readiness(child.plan, host.availability(), span)
         } else {
-            crate::host::validate_execution_support(&child.plan, span)
+            crate::host::validate_execution_support(child.plan, span)
         };
         if !readiness.is_empty() {
             child.diagnostics.extend(readiness);
@@ -626,7 +626,7 @@ async fn drive_one_with_root<'host>(
             MachinePoll::ProgramChanged => continue,
             MachinePoll::Complete(value) => {
                 drop(child);
-                finish_task(eval, handle, task, EvaluationOutcome::Completed(*value))?;
+                finish_task(eval, handle, task, EvaluationOutcome::Completed(value))?;
                 return Ok(true);
             }
             MachinePoll::Cancelled(cause) => {
@@ -1668,7 +1668,7 @@ pub(super) fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, 
                 let started = std::time::Instant::now();
                 let value = value.thaw();
                 telemetry.timings.output_thaw = started.elapsed();
-                EvaluationOutcome::Completed(value)
+                EvaluationOutcome::Completed(Box::new(value))
             }
             Err(crate::driver::cpu::CpuExecutionFailure::Cancelled(reason)) => {
                 task.local
@@ -1780,7 +1780,7 @@ fn finish_task(
         .restore_running(handle, task)
         .map_err(|error| scheduler_failure(eval, error))?;
     let result = match outcome {
-        EvaluationOutcome::Completed(value) => eval.scheduler.complete(handle, value),
+        EvaluationOutcome::Completed(value) => eval.scheduler.complete(handle, *value),
         EvaluationOutcome::Failed(failure) => eval.scheduler.fail(handle, failure),
         EvaluationOutcome::Cancelled(cause) => eval.scheduler.cancelled(handle, cause),
     };

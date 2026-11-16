@@ -21,9 +21,9 @@ impl EvalMachine {
         owner: Option<&CheckedExecutionProgram>,
     ) -> Result<MachineInputSnapshot, String> {
         Ok(match input {
-            MachineInput::Signal(signal) => {
-                MachineInputSnapshot::Signal(ControlSignalSnapshot::capture(signal, context)?)
-            }
+            MachineInput::Signal(signal) => MachineInputSnapshot::Signal(Box::new(
+                ControlSignalSnapshot::capture(signal, context)?,
+            )),
             MachineInput::EnterProgram { call, args, span } => {
                 let parent = self
                     .stack
@@ -132,6 +132,12 @@ impl ControlSignalSnapshot {
                 continuation: context.continuation(&pending.continuation)?,
             },
             ControlSignal::Block(pending) => Self::Block {
+                agent_context: pending.agent_context.as_ref().map(|request| {
+                    Box::new(super::capture_agent_context(
+                        request,
+                        &mut context.revisions,
+                    ))
+                }),
                 block: pending.block,
                 next_stmt_index: pending.next_stmt_index,
                 frame: context.frame(&pending.frame)?,
@@ -228,7 +234,9 @@ impl ControlSignalSnapshot {
                     inference: perform
                         .inference
                         .as_deref()
-                        .map(super::capture_model_policy)
+                        .map(|request| {
+                            super::capture_agent_context(request, &mut context.revisions)
+                        })
                         .map(Box::new),
                     args: capture_values(&perform.args, context)?,
                     span: perform.span,
@@ -297,7 +305,9 @@ impl ControlSignalSnapshot {
                     action,
                     error_type: None,
                     inference: inference
-                        .map(|policy| Box::new(super::restore_model_policy(*policy))),
+                        .as_deref()
+                        .map(|request| context.agent_context(request))
+                        .transpose()?,
                     args: restore_values(args, context)?,
                     span,
                     continuation,
@@ -344,6 +354,7 @@ impl ControlSignalSnapshot {
                 continuation: continuation.restore_with(context)?,
             }),
             Self::Block {
+                agent_context,
                 block,
                 next_stmt_index,
                 frame,
@@ -372,6 +383,10 @@ impl ControlSignalSnapshot {
                     })
                     .transpose()?;
                 ControlSignal::pending_block(PendingBlock {
+                    agent_context: agent_context
+                        .as_ref()
+                        .map(|request| context.agent_context(request))
+                        .transpose()?,
                     block,
                     next_stmt_index,
                     frame: context.frame(frame)?,

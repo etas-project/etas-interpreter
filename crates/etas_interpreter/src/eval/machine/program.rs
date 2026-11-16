@@ -64,6 +64,7 @@ impl EvalMachine {
             parent_handler_floor: ctx.handler_floor,
             parent_program: source,
             parent_model_policy: ctx.task.model_policy.clone(),
+            parent_agent_context: ctx.task.agent_context.clone(),
             call: call.clone(),
             outer,
             span,
@@ -124,6 +125,7 @@ impl EvalMachine {
             Err(reason) => return fail(reason),
         };
         ctx.task.model_policy = frame.parent_model_policy;
+        ctx.task.agent_context = frame.parent_agent_context;
         self.program_scope = frame.parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
             PendingContinuation {
@@ -166,6 +168,7 @@ impl EvalMachine {
         let error = PendingPerform::typed_error(ty, payload, frame.span, Continuation::BlockValue);
         self.push_continuation_frames(frame.outer);
         ctx.task.model_policy = frame.parent_model_policy;
+        ctx.task.agent_context = frame.parent_agent_context;
         self.program_scope = frame.parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_perform(error)));
         MachinePoll::ProgramChanged

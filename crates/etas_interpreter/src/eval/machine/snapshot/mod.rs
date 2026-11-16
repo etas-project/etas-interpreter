@@ -1,3 +1,4 @@
+mod agent_context;
 mod call_site;
 mod call_target;
 #[cfg(test)]
@@ -17,6 +18,7 @@ mod message_tests;
 mod model;
 pub(crate) mod ordering;
 pub(crate) mod program;
+mod tool;
 mod validator;
 mod value;
 mod value_capture;
@@ -24,6 +26,7 @@ pub(crate) mod value_compare;
 mod value_membership;
 mod value_restore;
 
+pub(crate) use agent_context::{capture_agent_context, restore_agent_context};
 pub(crate) use capture_context::{CaptureContext, SharedFrameCapture};
 pub(in crate::eval::machine) use frame::RestoredResidualState;
 pub(in crate::eval::machine) use frame::SuspensionRestoreTable;

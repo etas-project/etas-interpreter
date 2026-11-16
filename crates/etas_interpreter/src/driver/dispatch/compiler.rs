@@ -18,7 +18,7 @@ type CompilerCall<'host> = std::pin::Pin<
 pub(in crate::driver) enum CompilerDispatchStart<'host> {
     NotCompiler(Box<PendingPerform>),
     Complete(ControlSignal),
-    Pending(PendingCompilerDispatch<'host>),
+    Pending(Box<PendingCompilerDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingCompilerDispatch<'host> {
@@ -60,11 +60,11 @@ pub(in crate::driver) async fn begin<'host>(
     )
     .await
     {
-        Ok(pending) => CompilerDispatchStart::Pending(PendingCompilerDispatch {
+        Ok(pending) => CompilerDispatchStart::Pending(Box::new(PendingCompilerDispatch {
             invocation,
             perform,
             pending,
-        }),
+        })),
         Err(error) => CompilerDispatchStart::Complete(compiler_error(eval, perform, error)),
     }
 }

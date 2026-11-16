@@ -69,6 +69,12 @@ impl ProgramContinuation {
             model_policy: crate::eval::machine::snapshot::program::capture_model_policy(
                 &saved.model_policy,
             ),
+            agent_context: saved.agent_context.as_ref().map(|request| {
+                Box::new(crate::eval::machine::snapshot::capture_agent_context(
+                    request,
+                    &mut context.revisions,
+                ))
+            }),
             action,
             span: saved.span,
         })
@@ -205,6 +211,18 @@ pub(in crate::eval::machine) fn restore_graph(
             }),
             parent_handler_floor: saved.parent_handler_floor,
             parent_program: parent.clone(),
+            parent_agent_context: saved
+                .boundary
+                .parent_agent_context
+                .as_ref()
+                .map(|request| {
+                    crate::eval::machine::snapshot::restore_agent_context(
+                        request,
+                        &parent,
+                        Some(revisions),
+                    )
+                })
+                .transpose()?,
             parent_model_policy: crate::eval::machine::snapshot::program::restore_model_policy(
                 saved.boundary.parent_model_policy.clone(),
             ),
@@ -250,6 +268,17 @@ pub(in crate::eval::machine) fn restore_graph(
             model_policy: crate::eval::machine::snapshot::program::restore_model_policy(
                 saved.model_policy.clone(),
             ),
+            agent_context: saved
+                .agent_context
+                .as_ref()
+                .map(|request| {
+                    crate::eval::machine::snapshot::restore_agent_context(
+                        request,
+                        &parent,
+                        Some(revisions),
+                    )
+                })
+                .transpose()?,
             projection,
             resuming_program: parent,
             depth: CallDepthLease {

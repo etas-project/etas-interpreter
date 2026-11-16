@@ -23,6 +23,21 @@ impl ContinuationSnapshot {
             Continuation::TaskResume(pending) => Self::TaskResume {
                 id: context.task_suspension(pending)?,
             },
+            Continuation::AgentControllerStep(state) => Self::AgentControllerStep(
+                crate::orchestration::AgentControllerSnapshot::capture(state, context)?,
+            ),
+            Continuation::AgentControllerTool(state) => Self::AgentControllerTool(
+                crate::orchestration::AgentControllerSnapshot::capture(state, context)?,
+            ),
+            Continuation::ToolInvocationStart(invocation) => Self::ToolInvocationStart(
+                crate::orchestration::ToolInvocationSnapshot::capture(invocation, context)?,
+            ),
+            Continuation::ToolInvocationResult(invocation) => Self::ToolInvocationResult(
+                crate::orchestration::ToolInvocationSnapshot::capture(invocation, context)?,
+            ),
+            Continuation::AgentExecutionState(state) => {
+                Self::AgentExecutionState(Box::new(context.agent_state(state)))
+            }
             Continuation::PackExistential { expr, frame } => Self::PackExistential {
                 expr: *expr,
                 frame: context.frame(frame)?,
@@ -77,9 +92,6 @@ impl ContinuationSnapshot {
             Continuation::ResidualOutcome(tag) => Self::ResidualOutcome {
                 attempt: context.residual_attempt(tag)?,
             },
-            Continuation::SourceToolReturn(saved) => Self::SourceToolReturn(Box::new(
-                crate::orchestration::SourceToolReturnFrameSnapshot::capture(&saved.0, context)?,
-            )),
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -585,6 +597,7 @@ impl ContinuationSnapshot {
             | Continuation::HandlerDispatch { .. }
             | Continuation::ReenterHandler { .. }
             | Continuation::HandleBoundary { .. }
+            | Continuation::AgentExecutionScope { .. }
             | Continuation::ScopedModelPolicy { .. }
             | Continuation::Chain { .. } => {
                 return Err("continuation capture expected a leaf, not an owned edge".into());
@@ -598,6 +611,15 @@ impl ContinuationSnapshot {
 
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
+            Self::ToolInvocationStart(invocation) => {
+                Continuation::ToolInvocationStart(invocation.restore(context)?)
+            }
+            Self::ToolInvocationResult(invocation) => {
+                Continuation::ToolInvocationResult(invocation.restore(context)?)
+            }
+            Self::AgentExecutionState(state) => {
+                Continuation::AgentExecutionState(Box::new(context.agent_state(*state)?))
+            }
             Self::PackExistential { expr, frame } => Continuation::PackExistential {
                 expr,
                 frame: super::frame::restore_frame(frame, context)?,
@@ -609,15 +631,6 @@ impl ContinuationSnapshot {
             }
             Self::ResidualOutcome { attempt } => {
                 Continuation::ResidualOutcome(context.residual_attempt(attempt)?)
-            }
-            Self::SourceToolReturn(saved) => {
-                let current = context
-                    .current_host
-                    .clone()
-                    .ok_or("source tool continuation has no restore Host context")?;
-                Continuation::SourceToolReturn(crate::eval::machine::SourceToolContinuation(
-                    Box::new(saved.restore(&current, context)?),
-                ))
             }
             Self::DirectoryListReduction {
                 call,
@@ -1174,6 +1187,12 @@ impl ContinuationSnapshot {
                 next_index,
                 span,
             },
+            Self::AgentControllerStep(state) => {
+                Continuation::AgentControllerStep(state.restore(context)?)
+            }
+            Self::AgentControllerTool(state) => {
+                Continuation::AgentControllerTool(state.restore(context)?)
+            }
             Self::AgentInference {
                 expr,
                 span,
@@ -1188,6 +1207,7 @@ impl ContinuationSnapshot {
             | Self::HandlerDispatch { .. }
             | Self::ReenterHandler { .. }
             | Self::HandleBoundary { .. }
+            | Self::AgentExecutionScope { .. }
             | Self::ScopedModelPolicy { .. }
             | Self::Chain { .. } => {
                 return Err("continuation restore expected a leaf, not an owned edge".into());

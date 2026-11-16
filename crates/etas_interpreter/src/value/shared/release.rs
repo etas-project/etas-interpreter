@@ -15,7 +15,10 @@ enum Children {
     List(ListValue),
     PriorityQueue(crate::value::priority_queue::PriorityQueueIntoIter),
     Ordered(crate::value::ordered::IntoValues),
-    Messages(std::vec::IntoIter<crate::value::MessageValue>),
+    Messages(
+        std::vec::IntoIter<crate::value::MessageValue>,
+        Option<Value>,
+    ),
     Range {
         start: Option<Box<Value>>,
         end: Option<Box<Value>>,
@@ -38,7 +41,7 @@ impl Children {
             Self::List(values) => values.is_empty(),
             Self::PriorityQueue(_) => false,
             Self::Ordered(_) => false,
-            Self::Messages(values) => values.len() == 0,
+            Self::Messages(values, protocol) => values.len() == 0 && protocol.is_none(),
             Self::Range { start, end } => start.is_none() && end.is_none(),
         }
     }
@@ -65,7 +68,9 @@ impl Iterator for Children {
             Self::List(values) => values.pop_unique_front_for_drop(),
             Self::PriorityQueue(values) => values.next(),
             Self::Ordered(values) => values.next(),
-            Self::Messages(values) => values.next().map(Value::Message),
+            Self::Messages(values, protocol) => protocol
+                .take()
+                .or_else(|| values.next().map(Value::Message)),
             Self::Range { start, end } => start.take().or_else(|| end.take()).map(|value| *value),
         }
     }
@@ -167,10 +172,16 @@ pub(crate) fn release_value(mut current: Value) {
                 current = *predicate;
                 continue;
             }
-            Value::Conversation(conversation) => conversation
-                .messages
-                .into_unique_messages()
-                .map(|messages| Children::Messages(messages.into_iter())),
+            Value::Conversation(conversation) => Some(Children::Messages(
+                conversation
+                    .messages
+                    .into_unique_messages()
+                    .unwrap_or_default()
+                    .into_iter(),
+                conversation
+                    .protocol
+                    .and_then(|value| value.try_into_value().ok()),
+            )),
             Value::Range(range) => Some(Children::Range {
                 start: Some(range.start),
                 end: Some(range.end),

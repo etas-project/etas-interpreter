@@ -206,11 +206,8 @@ impl Coverage<'_, '_> {
                     pending.push(Task::Restore(scope));
                     pending.push(Task::Link(outer));
                 }
-                ContinuationSnapshot::SourceToolReturn(saved) => {
-                    pending.push(Task::Node(&saved.model_loop.pending.continuation));
-                    pending.push(Task::Node(&saved.model_loop.outer_continuation));
-                }
                 ContinuationSnapshot::RestoreModelPolicy { inner, .. }
+                | ContinuationSnapshot::AgentExecutionScope { inner, .. }
                 | ContinuationSnapshot::ScopedModelPolicy { inner, .. }
                 | ContinuationSnapshot::HandleBoundary { inner, .. }
                 | ContinuationSnapshot::ReenterHandler { boundary: inner }
@@ -400,7 +397,10 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         } => (call_site_node(site.kind), &site.frame),
         ProgramResume { .. }
         | TaskResume { .. }
-        | SourceToolReturn(_)
+        | ToolInvocationStart(_)
+        | ToolInvocationResult(_)
+        | AgentControllerStep(_)
+        | AgentControllerTool(_)
         | ReenterHandler { .. }
         | FileReadReduction { .. }
         | DirectoryListReduction { .. }
@@ -414,6 +414,7 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         | PromptValueMethodArg { .. }
         | ComposedCall { site: None, .. }
         | RestoreModelPolicy { .. }
+        | AgentExecutionState(_)
         | CallBoundary { .. }
         | TryExpr { .. }
         | MemoryClearDeleteAll { .. }
@@ -422,6 +423,7 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         | HandleBoundary { .. }
         | AgentInference { .. }
         | ScopedModelPolicy { .. }
+        | AgentExecutionScope { .. }
         | Chain { .. }
         | Return
         | Resume

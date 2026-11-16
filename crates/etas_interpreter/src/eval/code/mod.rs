@@ -11,6 +11,7 @@ mod project;
 mod report;
 mod signature;
 mod spec;
+mod tool_reference;
 pub(super) use definition_fields::{agent_field, callable_field};
 
 use etas_code::definition::DefinitionOperationError;

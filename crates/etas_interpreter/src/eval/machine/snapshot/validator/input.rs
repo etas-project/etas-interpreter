@@ -46,7 +46,7 @@ impl SnapshotValidator<'_> {
     }
 
     fn input(&self, input: &I) -> Result<(), String> {
-        let I::Signal(signal) = input else {
+        let Some(signal) = input.signal() else {
             return Ok(());
         };
         if let Some(continuation) = input.continuation_root() {
@@ -85,8 +85,8 @@ impl SnapshotValidator<'_> {
                 if !matches!(continuation, ContinuationSnapshot::TaskResume { .. }) {
                     return Err("delegated Handler request has no caller segment".into());
                 }
-                if let Some(policy) = inference {
-                    policy.validate()?;
+                if let Some(request) = inference {
+                    self.agent_request_context(request)?;
                 }
                 if let Some(attempt) = residual {
                     self.residual_references
@@ -105,12 +105,16 @@ impl SnapshotValidator<'_> {
                 self.frame(frame, "checkpoint pending expression")
             }
             S::Block {
+                agent_context,
                 block,
                 next_stmt_index,
                 frame,
                 residual,
                 ..
             } => {
+                if let Some(request) = agent_context {
+                    self.agent_request_context(request)?;
+                }
                 self.block(*block, "checkpoint pending block")?;
                 if *next_stmt_index > self.checked.hir.blocks.get(*block).unwrap().stmts.len() {
                     return Err(

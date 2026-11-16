@@ -7,8 +7,11 @@ use etas_std::{StdDecl, StdLimitKind};
 use etas_types::{PrimitiveType, SymbolTypeFact, ToolSignature, Type, TypeId};
 use serde_json::Value;
 
+mod context;
+pub(crate) mod controller;
 mod inference;
 mod method;
+mod step;
 
 impl<'a> EvalContext<'a> {
     pub(super) fn execute_agent_call(
@@ -188,7 +191,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         item: HirItemId,
         policy: &mut crate::api::ModelExecutionPolicy,
-        source_tools: &mut Vec<SourceToolBinding>,
+        native_tools: &mut Vec<super::tool::NativeToolBinding>,
         trace_plan: &mut Vec<String>,
     ) -> Result<(), ExecutionFault> {
         let annotations = self
@@ -204,11 +207,13 @@ impl<'a> EvalContext<'a> {
                     self.apply_agent_model_annotation(&annotation, policy)?;
                 }
                 "tools" => {
-                    let (tools, bindings, tool_choice) =
-                        self.agent_tools_annotation(&annotation)?;
-                    policy.tools = tools;
+                    let (bindings, tool_choice) = self.agent_tools_annotation(&annotation)?;
+                    policy.tools = bindings
+                        .iter()
+                        .map(|binding| binding.schema.clone())
+                        .collect();
                     policy.tool_choice = tool_choice;
-                    *source_tools = bindings;
+                    *native_tools = bindings;
                 }
                 "limits" => {
                     self.apply_agent_limits_annotation(&annotation, policy)?;
@@ -273,9 +278,8 @@ impl<'a> EvalContext<'a> {
     fn agent_tools_annotation(
         &mut self,
         annotation: &etas_hir::HirAnnotation,
-    ) -> Result<(Vec<ToolSchema>, Vec<SourceToolBinding>, ModelToolChoice), ExecutionFault> {
+    ) -> Result<(Vec<super::tool::NativeToolBinding>, ModelToolChoice), ExecutionFault> {
         let mut tools = Vec::new();
-        let mut bindings = Vec::new();
         let mut required_choice = false;
         for arg in &annotation.args {
             let value = match arg {
@@ -318,9 +322,8 @@ impl<'a> EvalContext<'a> {
                     ));
                 }
             };
-            let (arg_tools, arg_bindings) = self.agent_tool_schemas(value, annotation.span)?;
+            let arg_tools = self.agent_tool_schemas(value, annotation.span)?;
             tools.extend(arg_tools);
-            bindings.extend(arg_bindings);
         }
         let tool_choice = if required_choice {
             match tools.as_slice() {
@@ -331,13 +334,33 @@ impl<'a> EvalContext<'a> {
                         "`@tools` choice `required` needs at least one tool",
                     ));
                 }
-                [tool] => ModelToolChoice::RequiredTool(tool.tool.name.clone()),
+                [tool] => ModelToolChoice::RequiredTool(tool.schema.tool.name.clone()),
                 _ => ModelToolChoice::RequiredAny,
             }
         } else {
             ModelToolChoice::Auto
         };
-        Ok((tools, bindings, tool_choice))
+        Ok((tools, tool_choice))
+    }
+
+    pub(in crate::eval) fn agent_tool_surface(
+        &mut self,
+        agent: HirItemId,
+    ) -> Result<Vec<super::tool::NativeToolBinding>, ExecutionFault> {
+        let annotations = self
+            .checked
+            .hir
+            .item_annotations
+            .get(&agent)
+            .cloned()
+            .unwrap_or_default();
+        let mut tools = Vec::new();
+        for annotation in annotations {
+            if annotation_name(&annotation) == "tools" {
+                tools = self.agent_tools_annotation(&annotation)?.0;
+            }
+        }
+        Ok(tools)
     }
 
     fn apply_agent_limits_annotation(
@@ -594,7 +617,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         expr: HirExprId,
         span: Span,
-    ) -> Result<(Vec<ToolSchema>, Vec<SourceToolBinding>), ExecutionFault> {
+    ) -> Result<Vec<super::tool::NativeToolBinding>, ExecutionFault> {
         let Some(expr_data) = self.checked.hir.exprs.get(expr) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -614,22 +637,17 @@ impl<'a> EvalContext<'a> {
         };
 
         let mut tools = Vec::with_capacity(elems.len());
-        let mut bindings = Vec::with_capacity(elems.len());
         for elem in elems {
-            let (schema, binding) = self.agent_tool_schema(*elem, span)?;
-            tools.push(schema);
-            if let Some(binding) = binding {
-                bindings.push(binding);
-            }
+            tools.push(self.agent_tool_schema(*elem, span)?);
         }
-        Ok((tools, bindings))
+        Ok(tools)
     }
 
     fn agent_tool_schema(
         &mut self,
         expr: HirExprId,
         fallback_span: Span,
-    ) -> Result<(ToolSchema, Option<SourceToolBinding>), ExecutionFault> {
+    ) -> Result<super::tool::NativeToolBinding, ExecutionFault> {
         let Some(expr_data) = self.checked.hir.exprs.get(expr) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -684,11 +702,7 @@ impl<'a> EvalContext<'a> {
             };
             (
                 self.tool_input_schema(symbol, tool_item, &signature, span)?,
-                Some(SourceToolBinding {
-                    name: symbol_data.name.clone(),
-                    qualified_name: Some(qualified_name.clone()),
-                    item: tool_item,
-                }),
+                Some(SourceToolBinding { item: tool_item }),
                 ToolRef::source(symbol_data.name.clone(), qualified_name),
             )
         } else {
@@ -714,14 +728,16 @@ impl<'a> EvalContext<'a> {
         } else {
             Some(self.host_schema_for_type(signature.output, span, 0)?)
         };
-        Ok((
-            ToolSchema {
+        Ok(super::tool::NativeToolBinding {
+            symbol,
+            schema: ToolSchema {
                 tool,
                 input,
                 output,
             },
-            binding,
-        ))
+            source: binding,
+            output: signature.output,
+        })
     }
 
     fn external_tool_qualified_name(&self, symbol: SymbolId) -> Option<String> {

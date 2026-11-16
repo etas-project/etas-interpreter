@@ -5,24 +5,28 @@ use crate::value::HostJsonSupportValue as Json;
 // These backings expose no mutation. Checkpoint capture and ordinary value reads
 // share them; host/codec ingress transfers already-validated owned child buffers.
 macro_rules! storage {
-    ($name:ident, $node:ident, $element:ty, $cursor:ident) => {
+    ($name:ident, $node:ident, $element:ty, $cursor:ident $(, $field:ident: $ty:ty = $initialize:expr)?) => {
         #[derive(Clone, PartialEq, Eq)]
         pub struct $name(Rc<$node>);
 
         #[derive(PartialEq, Eq)]
-        struct $node(Vec<$element>);
+        struct $node {
+            values: Vec<$element>,
+            $($field: $ty,)?
+        }
 
         impl $name {
             fn into_unique(self) -> Option<Vec<$element>> {
                 Rc::try_unwrap(self.0)
                     .ok()
-                    .map(|mut node| std::mem::take(&mut node.0))
+                    .map(|mut node| std::mem::take(&mut node.values))
             }
         }
 
         impl From<Vec<$element>> for $name {
             fn from(values: Vec<$element>) -> Self {
-                Self(Rc::new($node(values)))
+                $(let $field = ($initialize)(&values);)?
+                Self(Rc::new($node { values, $($field,)? }))
             }
         }
 
@@ -35,7 +39,7 @@ macro_rules! storage {
         impl Deref for $name {
             type Target = [$element];
             fn deref(&self) -> &Self::Target {
-                &self.0.0
+                &self.0.values
             }
         }
 
@@ -55,14 +59,51 @@ macro_rules! storage {
 
         impl Drop for $node {
             fn drop(&mut self) {
-                release(Cursor::$cursor(std::mem::take(&mut self.0).into_iter()));
+                release(Cursor::$cursor(std::mem::take(&mut self.values).into_iter()));
             }
         }
     };
 }
 
 storage!(JsonArray, ArrayNode, Json, Array);
-storage!(JsonObject, ObjectNode, (String, Json), Object);
+storage!(JsonObject, ObjectNode, (String, Json), Object,
+    order: Option<Box<[usize]>> = canonical_order);
+
+fn canonical_order(fields: &[(String, Json)]) -> Option<Box<[usize]>> {
+    if fields.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
+        return None;
+    }
+    let mut order = (0..fields.len()).collect::<Vec<_>>();
+    order.sort_by(|left, right| fields[*left].0.cmp(&fields[*right].0));
+    Some(order.into_boxed_slice())
+}
+
+pub(crate) struct JsonObjectIter<'a> {
+    object: &'a JsonObject,
+    next: usize,
+}
+
+impl JsonObject {
+    pub(crate) fn canonical_iter(&self) -> JsonObjectIter<'_> {
+        JsonObjectIter {
+            object: self,
+            next: 0,
+        }
+    }
+}
+
+impl<'a> Iterator for JsonObjectIter<'a> {
+    type Item = &'a (String, Json);
+    fn next(&mut self) -> Option<Self::Item> {
+        let index = match &self.object.0.order {
+            Some(order) => *order.get(self.next)?,
+            None => self.next,
+        };
+        let value = self.object.0.values.get(index)?;
+        self.next += 1;
+        Some(value)
+    }
+}
 
 enum Cursor {
     Array(std::vec::IntoIter<Json>),

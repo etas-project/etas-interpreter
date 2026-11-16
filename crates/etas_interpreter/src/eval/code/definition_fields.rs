@@ -42,7 +42,23 @@ pub(in crate::eval) fn agent_field(
             view.declared_tools()
                 .map_err(|error| error.to_string())?
                 .iter()
-                .map(|tool| p.metadata(element, M::Tool(tool.clone())))
+                .map(|tool| {
+                    let revision = definition
+                        .backend()
+                        .catalog()
+                        .tool_reference(tool, definition.backend().syntax_operations())
+                        .map_err(|error| error.to_string())?;
+                    p.record(
+                        element,
+                        vec![
+                            ("id", V::String(tool.fingerprint().to_string().into())),
+                            (
+                                "revision",
+                                V::String(revision.key().fingerprint().to_string().into()),
+                            ),
+                        ],
+                    )
+                })
                 .collect::<Result<Vec<_>, _>>()
                 .map(|tools| V::Array(tools.into()))
         }

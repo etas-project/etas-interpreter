@@ -149,7 +149,10 @@ impl EncodingBudget {
                     (values.len().checked_mul(2).ok_or_else(exhausted)?, 0)
                 }
                 ValueSnapshot::Record(fields) => (fields.len(), 0),
-                ValueSnapshot::Conversation(value) => (value.messages.len(), 0),
+                ValueSnapshot::Conversation(value) => (
+                    value.messages.len() + usize::from(value.protocol.is_some()),
+                    0,
+                ),
                 ValueSnapshot::Bytes(bytes) => (0, bytes.len()),
                 ValueSnapshot::Prompt(messages) => (0, messages.len()),
                 ValueSnapshot::Json(_) => (1, 0),
@@ -176,7 +179,11 @@ impl EncodingBudget {
             },
             Node::Model(part) => model_work(part)?,
             Node::Frame(frame) => (
-                frame.locals.len().checked_add(usize::from(frame.parent.is_some())).ok_or_else(exhausted)?,
+                frame
+                    .locals
+                    .len()
+                    .checked_add(usize::from(frame.parent.is_some()))
+                    .ok_or_else(exhausted)?,
                 frame
                     .type_bindings
                     .len()

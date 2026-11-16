@@ -144,6 +144,27 @@ impl<'a> EvalContext<'a> {
             }
             HirPat::Variant { path, args, .. } => {
                 let expected_name = self.variant_name_from_path(path, span)?;
+                if let InterpValue::Json(value) = value {
+                    if self.checked.types.pattern_types.get(&pat).copied()
+                        != self.checked.types.known_std_types.json_value
+                    {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "JSON pattern has no canonical checked JsonValue identity",
+                        ));
+                    }
+                    let (name, fields) = crate::value::json::project(value);
+                    if name != expected_name || args.len() != fields.len() {
+                        return Ok(false);
+                    }
+                    for (pat, field) in args.iter().zip(&fields) {
+                        if !self.match_pattern(*pat, field, frame, span)? {
+                            return Ok(false);
+                        }
+                    }
+                    return Ok(true);
+                }
                 match pattern_projection_value(value) {
                     InterpValue::OptionNone if expected_name == "None" => Ok(args.is_empty()),
                     InterpValue::OptionSome(inner) if expected_name == "Some" => {

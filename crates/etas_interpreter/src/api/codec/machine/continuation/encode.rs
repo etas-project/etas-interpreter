@@ -12,20 +12,45 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     continuation: &'a Continuation,
     slot: &'a mut Value,
     pending: &mut Pending<'a>,
-    budget: &mut crate::api::codec::snapshot::EncodingBudget,
+    _budget: &mut crate::api::codec::snapshot::EncodingBudget,
 ) -> Result<(), crate::api::codec::InterpreterCodecError> {
     match continuation {
+        Continuation::AgentControllerStep(state) | Continuation::AgentControllerTool(state) => {
+            object! { slot, pending;
+                "kind": json!(if matches!(continuation, Continuation::AgentControllerStep(_)) { "agent_controller_step" } else { "agent_controller_tool" }),
+                "inference": json!(state.inference.0), "conversation": Node::Value(&state.conversation),
+                "calls": Node::Value(&state.calls), "next_call": json!(state.next_call), "results": Node::Values(&state.results),
+                "round": json!(state.round), "repairs": json!(state.repairs), "max_tool_rounds": json!(state.max_tool_rounds), "span": json!(span_snapshot(state.span)),
+            }
+        }
+        Continuation::ToolInvocationStart(invocation)
+        | Continuation::ToolInvocationResult(invocation) => {
+            use crate::orchestration::ToolInvocationOriginSnapshot as Origin;
+            let (kind, call): (&str, crate::api::codec::snapshot::Field<'a>) =
+                match &invocation.call {
+                    Origin::Standard(call) => ("standard", Node::CallTarget(call).into()),
+                    Origin::Controller { inference } => {
+                        ("controller", json!({"inference":inference.0}).into())
+                    }
+                };
+            object! { slot, pending;
+            "kind": json!(if matches!(continuation, Continuation::ToolInvocationStart(_)) { "tool_invocation_start" } else { "tool_invocation_result" }),
+            "origin_kind": json!(kind), "call": call, "input": Node::Value(&invocation.input),
+            "context": json!(super::super::agent_context::request_json(Some(&invocation.context))),
+            "request": json!(invocation.request.0), "span": json!(span_snapshot(invocation.span)),
+            }
+        }
+        Continuation::AgentExecutionState(state) => {
+            *slot = json!({ "kind": "agent_execution_state", "state": super::super::agent_context::state_json(state) });
+        }
+        Continuation::AgentExecutionScope { state, inner } => object! { slot, pending;
+            "kind": json!("agent_execution_scope"),
+            "state": json!(super::super::agent_context::state_json(state)),
+            "inner": Node::Continuation(inner),
+        },
         Continuation::PackExistential { expr, frame } => object! { slot, pending;
             "kind": json!("pack_existential"), "expr": json!(expr.0), "frame": Node::Frame(frame),
         },
-        Continuation::SourceToolReturn(frame) => {
-            frame
-                .validate_continuation()
-                .map_err(crate::api::codec::InterpreterCodecError::new)?;
-            *slot = json!({ "kind": "source_tool_return", "source_tool": null });
-            slot["source_tool"] =
-                crate::api::codec::checkpoint::source_tool_return_frame_json(frame, budget)?;
-        }
         Continuation::DirectoryListReduction {
             call,
             args,
