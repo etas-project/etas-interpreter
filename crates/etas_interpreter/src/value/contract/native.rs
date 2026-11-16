@@ -368,3 +368,25 @@ pub(crate) fn selection_query<'a>(
         _ => Err("memory query is missing its checked argument type or value".into()),
     }
 }
+
+/// Private ABI used by the runtime Money constructor. Public source cannot
+/// inspect or construct this payload without its checked native role.
+pub(crate) fn money_payload(value: Value<'_>) -> Result<(), String> {
+    use super::view::Node;
+    let Node::Record(2, fields) = value.node() else {
+        return Err("Money requires its private amount/currency payload".into());
+    };
+    let (mut amount, mut currency) = (false, false);
+    for (name, value) in fields {
+        match (name, value.node()) {
+            ("amount", Node::Number(_)) if !amount => amount = true,
+            ("currency", Node::String(_)) if !currency => currency = true,
+            _ => return Err("Money has an invalid private payload field".into()),
+        }
+    }
+    if amount && currency {
+        Ok(())
+    } else {
+        Err("Money private payload is incomplete".into())
+    }
+}

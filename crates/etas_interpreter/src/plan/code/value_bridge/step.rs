@@ -88,6 +88,34 @@ impl Walk<'_> {
             self.values.push(InterpValue::Nominal { ty: to, value });
             return Ok(());
         }
+        if self
+            .source
+            .types
+            .known_std_types
+            .runtime_type(etas_std::RuntimeTypeRole::Money)
+            == Some(from)
+            && self
+                .target
+                .types
+                .known_std_types
+                .runtime_type(etas_std::RuntimeTypeRole::Money)
+                == Some(to)
+        {
+            // This payload is the runtime's private Money representation, not
+            // a public source record. Both types carry the verified native role.
+            let InterpValue::Nominal { ty, value } = value else {
+                return Err(wrong("Nominal", &value));
+            };
+            if ty != from {
+                return Err(Failure::WrongNominalIdentity { actual: ty });
+            }
+            crate::value::contract::money_payload(crate::value::contract::Value::Runtime(
+                value.as_ref(),
+            ))
+            .map_err(Failure::InvalidField)?;
+            self.values.push(InterpValue::Nominal { ty: to, value });
+            return Ok(());
+        }
         if let InterpValue::Callable(crate::control::CallTarget::AgentRevision(agent)) = value {
             let revision = self
                 .revision

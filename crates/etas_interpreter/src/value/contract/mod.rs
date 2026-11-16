@@ -7,7 +7,7 @@ mod view;
 
 use etas_frontend::CheckedProject;
 use etas_types::{PrimitiveType as P, Type, TypeId};
-pub(crate) use native::selection_query;
+pub(crate) use native::{money_payload, selection_query};
 use std::collections::{HashMap, HashSet};
 use view::{Identity, MapKind, Node, SequenceKind};
 pub(crate) use view::{Target, Value};
@@ -129,6 +129,12 @@ pub(crate) fn validate<'a>(
                 if text.chunks().flat_map(str::chars).take(2).count() == 1 => {}
             (Type::Primitive(primitive), Node::Number(number))
                 if *primitive == number.primitive() => {}
+            (_, Node::Nominal(actual, inner))
+                if actual == expected
+                    && known.runtime_type(etas_std::RuntimeTypeRole::Money) == Some(expected) =>
+            {
+                money_payload(inner)?;
+            }
             (_, Node::Nominal(actual, inner)) if actual == expected => {
                 if is_enum(store, expected) {
                     pending.push(Task::Visit(Seed::new(inner, expected), true));
