@@ -47,6 +47,14 @@ impl RevisionProjection {
         .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn callable_type(&self, ty: TypeId) -> Result<TypeId, String> {
+        match self {
+            Self::Candidate(bridge) => bridge.callable_projection_type(self.source(), ty, true),
+            Self::Original(bridge) => bridge.callable_projection_type(self.source(), ty, false),
+        }
+        .map_err(|error| error.to_string())
+    }
+
     pub(crate) fn value_in_scope(
         &self,
         scope: &etas_code::descriptor::GenericOwner,

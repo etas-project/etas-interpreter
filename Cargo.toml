@@ -9,17 +9,17 @@ license = "MIT OR Apache-2.0"
 repository = "https://github.com/etas-project/etas-interpreter"
 
 [workspace.dependencies]
-etas_core = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_core" }
-etas_code = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_code" }
-etas_builtin = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_builtin" }
-etas_host = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_host" }
-etas_std = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_std" }
-etas_utils = { git = "https://github.com/etas-project/etas-core.git", rev = "0c90607d26d88f2f0c5fa9cca4fb88bc813dc836", package = "etas_utils" }
-etas_frontend = { git = "https://github.com/etas-project/etas-frontend.git", rev = "e1257db20a0b7c589977e2555350d392dbc88f88", package = "etas_frontend" }
-etas_hir = { git = "https://github.com/etas-project/etas-frontend.git", rev = "e1257db20a0b7c589977e2555350d392dbc88f88", package = "etas_hir" }
-etas_hir_analysis = { git = "https://github.com/etas-project/etas-frontend.git", rev = "e1257db20a0b7c589977e2555350d392dbc88f88", package = "etas_hir_analysis" }
-etas_effects = { git = "https://github.com/etas-project/etas-frontend.git", rev = "e1257db20a0b7c589977e2555350d392dbc88f88", package = "etas_effects" }
-etas_types = { git = "https://github.com/etas-project/etas-frontend.git", rev = "e1257db20a0b7c589977e2555350d392dbc88f88", package = "etas_types" }
+etas_core = { git = "https://github.com/etas-project/etas-core.git", rev = "113a5e01f3719bc5c0e1c1706300656a98cf186c", package = "etas_core" }
+etas_code = { git = "https://github.com/etas-project/etas-core.git", rev = "113a5e01f3719bc5c0e1c1706300656a98cf186c", package = "etas_code" }
+etas_builtin = { git = "https://github.com/etas-project/etas-core.git", rev = "113a5e01f3719bc5c0e1c1706300656a98cf186c", package = "etas_builtin" }
+etas_host = { git = "https://github.com/etas-project/etas-core.git", rev = "113a5e01f3719bc5c0e1c1706300656a98cf186c", package = "etas_host" }
+etas_std = { git = "https://github.com/etas-project/etas-core.git", rev = "113a5e01f3719bc5c0e1c1706300656a98cf186c", package = "etas_std" }
+etas_utils = { git = "https://github.com/etas-project/etas-core.git", rev = "113a5e01f3719bc5c0e1c1706300656a98cf186c", package = "etas_utils" }
+etas_frontend = { git = "https://github.com/etas-project/etas-frontend.git", rev = "d2e6840e34a33b43e1581854c596bb77930656e4", package = "etas_frontend" }
+etas_hir = { git = "https://github.com/etas-project/etas-frontend.git", rev = "d2e6840e34a33b43e1581854c596bb77930656e4", package = "etas_hir" }
+etas_hir_analysis = { git = "https://github.com/etas-project/etas-frontend.git", rev = "d2e6840e34a33b43e1581854c596bb77930656e4", package = "etas_hir_analysis" }
+etas_effects = { git = "https://github.com/etas-project/etas-frontend.git", rev = "d2e6840e34a33b43e1581854c596bb77930656e4", package = "etas_effects" }
+etas_types = { git = "https://github.com/etas-project/etas-frontend.git", rev = "d2e6840e34a33b43e1581854c596bb77930656e4", package = "etas_types" }
 blake3 = "1.8.5"
 serde_json = "1"
 serde = { version = "1", features = ["derive"] }

@@ -367,6 +367,22 @@ impl Walk<'_> {
                     vec![(left, right, value.into_value())],
                 );
             }
+            (Type::Task(_), Type::Task(_)) => {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Task(handle) = value else {
+                    return Err(wrong("Task", &value));
+                };
+                // Only the checked type changes programs. Task ownership and its
+                // result program remain in the shared scheduler's task entry.
+                self.values.push(InterpValue::Task(handle));
+            }
+            (Type::Continuation(_), Type::Continuation(_)) => {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Continuation(token) = value else {
+                    return Err(wrong("Continuation", &value));
+                };
+                self.values.push(InterpValue::Continuation(token));
+            }
             (Type::SchedulerHandle, Type::SchedulerHandle) => {
                 self.execution.ok_or(Failure::ExecutableScopeRequired)?;
                 let InterpValue::Scheduler(handle) = value else {

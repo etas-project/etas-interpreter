@@ -124,6 +124,22 @@ pub(crate) fn source_action(
                 action_bindings.types.insert(name.clone(), actual);
                 action_bindings.parameters.insert(parameter.subject, actual);
             }
+            for (name, row) in &instantiation.effect_row_bindings {
+                if !generic_params.iter().any(|parameter| {
+                    parameter.name == *name
+                        && parameter.kind == etas_types::CallableGenericParamKind::Effect
+                }) {
+                    return Err("action origin references an undeclared effect parameter".into());
+                }
+                let actual = bindings
+                    .substitution(&checked.type_store)
+                    .substitute_effect_row(row.clone())
+                    .map_err(|error| error.to_string())?;
+                etas_types::TypeSubstitutionEngine::existing(&checked.type_store, &HashMap::new())
+                    .validate_closed_effect_argument(&actual)
+                    .map_err(|error| error.to_string())?;
+                action_bindings.rows.insert(name.clone(), actual);
+            }
         }
     }
     let substitute = |ty| {

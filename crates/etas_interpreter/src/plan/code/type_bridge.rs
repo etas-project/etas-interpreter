@@ -271,6 +271,39 @@ impl RevisionTypeBridge {
         self.runtime_types.backward.get(source, &self.original, ty)
     }
 
+    /// Callable snapshots may retain a checked generic declaration template.
+    /// Its row binders are related by that declaration's frozen interface.
+    pub(crate) fn callable_projection_type(
+        &self,
+        source: &CheckedProgram,
+        ty: TypeId,
+        to_candidate: bool,
+    ) -> Result<TypeId, RevisionTypeBridgeError> {
+        let (expected, target, callables, direction) = if to_candidate {
+            (
+                &self.original,
+                &self.candidate,
+                &self.original_callables,
+                &self.runtime_types.forward,
+            )
+        } else {
+            (
+                &self.candidate,
+                &self.original,
+                &self.candidate_callables,
+                &self.runtime_types.backward,
+            )
+        };
+        if !std::sync::Arc::ptr_eq(source, expected) {
+            return Err(RevisionTypeBridgeError::WrongProgram);
+        }
+        let scope = checked_callable_template_scope(source, callables, ty);
+        match scope {
+            Some(scope) => direction.get_in_scope(source, target, &scope, ty),
+            None => direction.get(source, target, ty),
+        }
+    }
+
     pub(crate) fn runtime_to_candidate_scoped(
         &self,
         source: &CheckedProgram,
@@ -480,4 +513,45 @@ fn key(
             ),
         )
     })
+}
+
+fn checked_callable_template_scope(
+    source: &CheckedProgram,
+    callables: &BTreeMap<etas_code::CallableId, etas_hir::HirItemId>,
+    ty: TypeId,
+) -> Option<GenericOwner> {
+    let etas_types::Type::Function(flow) = source.type_store.get(ty)? else {
+        return None;
+    };
+    let matches = |signature: &etas_types::CallableSignature| {
+        !signature.generic_params.is_empty()
+            && signature.params == flow.input
+            && signature.output == flow.output
+            && signature.effects == flow.effects
+    };
+    for (callable, item) in callables {
+        let signature = match source.types.item_signatures.get(item) {
+            Some(ItemSignature::Flow(signature) | ItemSignature::Tool(signature)) => signature,
+            _ => continue,
+        };
+        if matches(signature) {
+            return callable
+                .as_declaration()
+                .map(|definition| GenericOwner::Declaration(definition.clone()))
+                .or_else(|| {
+                    callable
+                        .as_method()
+                        .map(|method| GenericOwner::Method(method.clone()))
+                });
+        }
+    }
+    for (symbol, signature) in &source.types.std_callable_signatures {
+        if matches(signature) {
+            let callable = &source.std_registry.body_binding(*symbol)?.callable;
+            return callable
+                .as_declaration()
+                .map(|definition| GenericOwner::Declaration(definition.clone()));
+        }
+    }
+    None
 }

@@ -88,7 +88,7 @@ impl CallableValueProjection {
         from: TypeId,
         to: TypeId,
     ) -> Result<Self, String> {
-        if edge.runtime_type(from)? != to {
+        if edge.callable_type(from)? != to {
             return Err(
                 "checkpoint callable projection differs from its checked type bridge".into(),
             );

@@ -226,6 +226,12 @@ fn execution_contract(action: &etas_std::EffectActionDecl) -> impl PartialEq + '
         action.high_impact_ack,
         action.compiler_role,
         &action.default_handler_effects,
-        &action.default_handler_effect_tail,
+        action.default_handler_effect_tail.as_ref().map(|name| {
+            action
+                .type_params
+                .iter()
+                .position(|parameter| &parameter.name == name)
+                .expect("checked default-handler row binder")
+        }),
     )
 }

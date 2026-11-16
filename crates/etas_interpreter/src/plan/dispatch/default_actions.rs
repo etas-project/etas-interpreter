@@ -187,9 +187,16 @@ pub(super) fn lower(
             .get(expr)
             .map(|fact| fact.type_bindings.iter().cloned().collect())
             .unwrap_or_default();
+        let rows = project
+            .types
+            .generic_instantiations
+            .get(expr)
+            .map(|fact| fact.effect_row_bindings.iter().cloned().collect())
+            .unwrap_or_default();
         let substitute = |ty| {
             etas_types::TypeSubstitutionEngine::existing(&project.type_store, &bindings)
                 .with_type_parameters(&selector_types)
+                .with_effect_arguments(&rows)
                 .substitute(ty)
                 .map_err(|error| format!("standard action ABI is not materialized: {error}"))
         };
@@ -198,11 +205,21 @@ pub(super) fn lower(
             .iter()
             .map(|ty| substitute(*ty))
             .collect::<Result<Vec<_>, _>>()?;
+        let names = std::collections::HashMap::new();
+        let mut payload_rows =
+            etas_types::TypeSubstitutionEngine::existing(&project.type_store, &names)
+                .with_effect_arguments(&rows);
         let payload_parameters = adapter
             .payload
             .iter()
-            .map(|index| fact.parameters[*index])
-            .collect::<Vec<_>>();
+            .map(|index| {
+                payload_rows
+                    .substitute(fact.parameters[*index])
+                    .map_err(|error| {
+                        format!("standard action payload row is not materialized: {error}")
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if action_parameters != payload_parameters {
             return Err("standard action payload differs from its checked declaration ABI".into());
         }

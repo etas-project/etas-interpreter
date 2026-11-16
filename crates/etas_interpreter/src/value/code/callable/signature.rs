@@ -8,6 +8,12 @@ pub(crate) fn validate_snapshot_signature(
     bindings: &crate::control::GenericBindings,
     specs: &etas_types::SpecFacts,
 ) -> Result<(), String> {
+    // Snapshot restoration retains the same std template accepted when the
+    // callable value was created. The scoped invocation checks concrete rows.
+    if is_standard_template(checked, root, bindings) {
+        validate_signature_bindings(checked, root, expected, bindings)?;
+        return super::effects::validate_snapshot_effects(checked, root, expected, bindings);
+    }
     if let CheckedCallableRoot::Item(item) = root {
         let callable = match checked.types.item_signatures.get(&item) {
             Some(
