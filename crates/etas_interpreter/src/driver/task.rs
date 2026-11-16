@@ -18,8 +18,9 @@ use super::{
     dispatch,
     drive::{EvaluationOutcome, evaluation_failure},
     scheduler::{
-        AwaitDecision, CompletedTaskHost, HostOwner, RootTaskWait, ScheduledTask, SchedulerError,
-        ScopeDecision, TaskHandle, TaskHostReactor, TaskOutcome, TaskResume, TaskWakeup,
+        AwaitDecision, CompletedTaskHost, HostOwner, ReadyTaskHost, RootTaskWait, ScheduledTask,
+        SchedulerError, ScopeDecision, TaskHandle, TaskHostReactor, TaskOutcome, TaskResume,
+        TaskWakeup,
     },
 };
 
@@ -77,7 +78,7 @@ pub(super) async fn resume_root_wait<'host>(
         RootTaskWait::Run { scope } => {
             await_scope_outcome(eval, host, reactor, *scope, machine).await?
         }
-        RootTaskWait::Host => return await_root_host(eval, host, reactor, machine).await,
+        RootTaskWait::Host(_) => return await_root_host(eval, host, reactor, machine).await,
         RootTaskWait::Settling(_) => {
             unreachable!("root settlement is driven after body completion")
         }
@@ -116,7 +117,7 @@ pub(super) async fn resume_root_wait<'host>(
             }
             outcome => machine.resume(signal_from_outcome(outcome, continuation)?),
         },
-        RootTaskWait::Host | RootTaskWait::Settling(_) | RootTaskWait::Ready(_) => {
+        RootTaskWait::Host(_) | RootTaskWait::Settling(_) | RootTaskWait::Ready(_) => {
             unreachable!("root wait kind is unchanged")
         }
     }
@@ -284,7 +285,8 @@ async fn settle_tasks<'host>(
         return root;
     }
 
-    while eval.scheduler.has_unsettled_tasks() || !eval.cpu_jobs.is_empty() {
+    while eval.scheduler.has_unsettled_tasks() || !eval.cpu_jobs.is_empty() || reactor.has_pending()
+    {
         if let Some(failure) = primary_failure(eval) {
             root = failure;
             if let Err(outcome) = cancel_and_drain(eval, host, reactor, machine).await {
@@ -311,7 +313,8 @@ async fn cancel_and_drain<'host>(
         .cancel_unsettled(etas_host::execution::CancellationReason::ChildFailed)
         .map_err(|error| scheduler_failure(eval, error))?;
     record_cancellation_events(eval);
-    while eval.scheduler.has_unsettled_tasks() || !eval.cpu_jobs.is_empty() {
+    while eval.scheduler.has_unsettled_tasks() || !eval.cpu_jobs.is_empty() || reactor.has_pending()
+    {
         match drive_one_with_root(eval, host, reactor, Some(machine)).await {
             Ok(true) => {}
             Ok(false) => return Err(scheduler_deadlock(eval)),
@@ -330,15 +333,16 @@ pub(super) async fn await_root_host<'host>(
     if machine.has_input() {
         return Ok(());
     }
-    machine.root_wait = Some(RootTaskWait::Host);
     loop {
         if machine.root_wait.is_none() {
             return Ok(());
         }
-        if let Some(completed) = reactor.take_root_completed() {
-            commit_host_completion(eval, machine, completed)?;
-            machine.root_wait = None;
-            return Ok(());
+        if let Some(RootTaskWait::Host(wait)) = &machine.root_wait {
+            if let Some(input) = wait.take_input() {
+                machine.root_wait = None;
+                machine.restore_task_input(input);
+                return Ok(());
+            }
         }
         if let Some(failure) = primary_failure(eval) {
             eval.scheduler
@@ -496,11 +500,9 @@ async fn drive_one_with_root<'host>(
     if drain_cpu_completions(eval)? {
         return Ok(true);
     }
-    if let Some((owner, operation)) = reactor.poll_ready().await {
-        match owner {
-            HostOwner::Root => return Ok(true),
-            HostOwner::Task(handle) => wake_from_host(eval, handle, operation)?,
-        }
+    if let Some(completed) = reactor.poll_ready().await {
+        settle_host_reply(eval, completed)?;
+        return Ok(true);
     }
     if drain_task_wakeups(eval)? {
         return Ok(true);
@@ -512,12 +514,10 @@ async fn drive_one_with_root<'host>(
             wait_for_cpu_or_host(eval, reactor).await?;
             return Ok(true);
         }
-        let Some((owner, operation)) = reactor.wait_next().await else {
+        let Some(completed) = reactor.wait_next().await else {
             return Ok(false);
         };
-        if let HostOwner::Task(handle) = owner {
-            wake_from_host(eval, handle, operation)?;
-        }
+        settle_host_reply(eval, completed)?;
         return Ok(true);
     };
     let wakeup = eval
@@ -622,15 +622,6 @@ async fn drive_one_with_root<'host>(
             return Ok(true);
         }
 
-        if let Some(completed) = reactor.take_completed(handle) {
-            if let Err(outcome) = commit_host_completion(&mut child, &mut task.machine, completed) {
-                drop(child);
-                finish_task(eval, handle, task, outcome)?;
-                return Ok(true);
-            }
-            continue;
-        }
-
         let boundary = match task.machine.run_until_yield(&mut child) {
             MachinePoll::ProgramChanged => continue,
             MachinePoll::Complete(value) => {
@@ -697,6 +688,19 @@ async fn drive_one_with_root<'host>(
                         RootTaskWait::Ready(input) => {
                             task.machine.restore_task_input(*input);
                             continue;
+                        }
+                        RootTaskWait::Host(wait) => {
+                            if let Some(input) = wait.take_input() {
+                                task.machine.restore_task_input(input);
+                                continue;
+                            }
+                            let operation = wait.operation_id();
+                            task.host_wait = Some(wait);
+                            eval.scheduler
+                                .restore_running(handle, task)
+                                .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                                .map_err(|error| scheduler_failure(eval, error))?;
+                            return Ok(true);
                         }
                         RootTaskWait::Await {
                             target,
@@ -1010,6 +1014,11 @@ async fn drive_one_with_root<'host>(
                         continue;
                     };
                     let wait = match caller.state {
+                        super::scheduler::TaskState::Waiting(super::scheduler::TaskWait::Host(
+                            _,
+                        )) => RootTaskWait::Host(
+                            caller.host_wait.take().expect("caller owns its Host wait"),
+                        ),
                         super::scheduler::TaskState::Ready => RootTaskWait::Ready(Box::new(
                             caller
                                 .machine
@@ -1100,6 +1109,7 @@ async fn drive_one_with_root<'host>(
                             .expect("unmatched caller retains its wait")
                         {
                             RootTaskWait::Ready(input) => caller.machine.restore_task_input(*input),
+                            RootTaskWait::Host(wait) => caller.host_wait = Some(wait),
                             RootTaskWait::Await { continuation, .. } => {
                                 caller.waiting_continuation = Some(TaskResume::Await(continuation))
                             }
@@ -1265,16 +1275,13 @@ async fn drive_one_with_root<'host>(
                             dispatch::approval::ApprovalDispatchStart::Pending(pending) => {
                                 let operation = pending.operation_id();
                                 drop(child);
+                                let wait = reactor.start_approval(HostOwner::Task(handle), pending);
+                                assert_eq!(wait.operation_id(), operation);
+                                task.host_wait = Some(wait);
                                 eval.scheduler
                                     .restore_running(handle, task)
                                     .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                                     .map_err(|error| scheduler_failure(eval, error))?;
-                                let registered =
-                                    reactor.start_approval(HostOwner::Task(handle), pending);
-                                assert_eq!(
-                                    registered, operation,
-                                    "registered host operation changed id"
-                                );
                                 return Ok(true);
                             }
                         }
@@ -1282,15 +1289,13 @@ async fn drive_one_with_root<'host>(
                     dispatch::compiler::CompilerDispatchStart::Pending(pending) => {
                         let operation = pending.operation_id();
                         drop(child);
+                        let wait = reactor.start_compiler(HostOwner::Task(handle), pending);
+                        assert_eq!(wait.operation_id(), operation);
+                        task.host_wait = Some(wait);
                         eval.scheduler
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_compiler(HostOwner::Task(handle), pending);
-                        assert_eq!(
-                            registered, operation,
-                            "registered host operation changed id"
-                        );
                         return Ok(true);
                     }
                 }
@@ -1312,15 +1317,13 @@ async fn drive_one_with_root<'host>(
                     dispatch::model::ModelDispatchStart::Pending(pending) => {
                         let operation = pending.operation_id();
                         drop(child);
+                        let wait = reactor.start_model(HostOwner::Task(handle), pending);
+                        assert_eq!(wait.operation_id(), operation);
+                        task.host_wait = Some(wait);
                         eval.scheduler
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_model(HostOwner::Task(handle), pending);
-                        assert_eq!(
-                            registered, operation,
-                            "registered host operation changed id"
-                        );
                         return Ok(true);
                     }
                 }
@@ -1337,15 +1340,13 @@ async fn drive_one_with_root<'host>(
                     dispatch::tool::ToolDispatchStart::Pending(pending) => {
                         let operation = pending.operation_id();
                         drop(child);
+                        let wait = reactor.start_tool(HostOwner::Task(handle), pending);
+                        assert_eq!(wait.operation_id(), operation);
+                        task.host_wait = Some(wait);
                         eval.scheduler
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_tool(HostOwner::Task(handle), pending);
-                        assert_eq!(
-                            registered, operation,
-                            "registered host operation changed id"
-                        );
                         return Ok(true);
                     }
                 }
@@ -1362,12 +1363,13 @@ async fn drive_one_with_root<'host>(
                     dispatch::memory::MemoryDispatchStart::Pending(pending) => {
                         let operation = pending.operation_id();
                         drop(child);
+                        let wait = reactor.start_memory(HostOwner::Task(handle), pending);
+                        assert_eq!(wait.operation_id(), operation);
+                        task.host_wait = Some(wait);
                         eval.scheduler
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_memory(HostOwner::Task(handle), pending);
-                        assert_eq!(registered, operation);
                         return Ok(true);
                     }
                 }
@@ -1387,15 +1389,13 @@ async fn drive_one_with_root<'host>(
                     dispatch::console::ConsoleDispatchStart::Pending(pending) => {
                         let operation = pending.operation_id();
                         drop(child);
+                        let wait = reactor.start_console(HostOwner::Task(handle), pending);
+                        assert_eq!(wait.operation_id(), operation);
+                        task.host_wait = Some(wait);
                         eval.scheduler
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_console(HostOwner::Task(handle), pending);
-                        assert_eq!(
-                            registered, operation,
-                            "registered host operation changed id"
-                        );
                         return Ok(true);
                     }
                 }
@@ -1413,15 +1413,13 @@ async fn drive_one_with_root<'host>(
                     dispatch::command::CommandDispatchStart::Pending(pending) => {
                         let operation = pending.operation_id();
                         drop(child);
+                        let wait = reactor.start_command(HostOwner::Task(handle), pending);
+                        assert_eq!(wait.operation_id(), operation);
+                        task.host_wait = Some(wait);
                         eval.scheduler
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_command(HostOwner::Task(handle), pending);
-                        assert_eq!(
-                            registered, operation,
-                            "registered host operation changed id"
-                        );
                         return Ok(true);
                     }
                 }
@@ -1438,15 +1436,13 @@ async fn drive_one_with_root<'host>(
                     dispatch::host::HostBoundaryDispatchStart::Pending(pending) => {
                         let operation = pending.operation_id();
                         drop(child);
+                        let wait = reactor.start_host(HostOwner::Task(handle), pending);
+                        assert_eq!(wait.operation_id(), operation);
+                        task.host_wait = Some(wait);
                         eval.scheduler
                             .restore_running(handle, task)
                             .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
                             .map_err(|error| scheduler_failure(eval, error))?;
-                        let registered = reactor.start_host(HostOwner::Task(handle), pending);
-                        assert_eq!(
-                            registered, operation,
-                            "registered host operation changed id"
-                        );
                         return Ok(true);
                     }
                 }
@@ -1456,6 +1452,100 @@ async fn drive_one_with_root<'host>(
             PendingBoundary::Checkpoint { .. } => unreachable!("checkpoint handled above"),
         };
         task.machine.resume(signal);
+    }
+}
+
+/// Settle a native reply in its issuing program, independently of the owner's
+/// current Handler arm. The saved wait holds its input until resumed/captured.
+pub(super) fn settle_host_reply(
+    eval: &mut EvalContext<'_>,
+    ready: ReadyTaskHost,
+) -> Result<(), EvaluationOutcome> {
+    let ReadyTaskHost {
+        owner,
+        operation,
+        completed,
+    } = ready;
+    let stage = |ctx: &mut EvalContext<'_>| {
+        operation.context.run(ctx, |ctx| {
+            let mut input = crate::eval::machine::EvalMachine::new();
+            let diagnostics = ctx.diagnostics.len();
+            let result = commit_host_completion(ctx, &mut input, completed);
+            if !operation.is_waiting() {
+                // The continuation was abandoned. Accounting, write evidence and
+                // trace still settle; its reply cannot fail the continuing arm.
+                ctx.diagnostics.truncate(diagnostics);
+                return Ok(());
+            }
+            result?;
+            operation.complete_input(
+                input
+                    .take_task_input()
+                    .expect("Host completion has an input"),
+            );
+            Ok(())
+        })
+    };
+    match owner {
+        HostOwner::Root => stage(eval),
+        HostOwner::Task(handle) => {
+            let mut task = eval.scheduler.take_host_owner(handle);
+            let program = task
+                .program
+                .clone()
+                .expect("Host owner has a checked program");
+            let mut child = eval.scheduled_task_context(
+                &program,
+                &mut task.local,
+                handle.task,
+                task.handler_floor,
+            );
+            let result = stage(&mut child);
+            drop(child);
+            let active = task
+                .host_wait
+                .as_ref()
+                .is_some_and(|wait| wait.operation_id() == operation.id());
+            if active && result.is_ok() {
+                let wait = task.host_wait.take().expect("active Host wait");
+                task.machine
+                    .restore_task_input(wait.take_input().expect("settled Host input"));
+            }
+            eval.scheduler.restore_host_owner(handle, task);
+            result?;
+            if eval
+                .scheduler
+                .finish_host_drain(handle)
+                .map_err(|error| scheduler_failure(eval, error))?
+            {
+                let outcome = eval
+                    .scheduler
+                    .outcome(handle)
+                    .expect("settled Host owner")
+                    .expect("body outcome");
+                let name = match outcome {
+                    TaskOutcome::Completed(_) => "completed",
+                    TaskOutcome::Raised(_) => "raised",
+                    TaskOutcome::Failed(_) => "failed",
+                    TaskOutcome::Cancelled(_) => "cancelled",
+                };
+                record_cancellation_events(eval);
+                eval.events.push(WorkflowEvent::TaskSettled {
+                    scope: handle.owner.0,
+                    task: handle.task.0,
+                    outcome: name.to_owned(),
+                });
+                eval.events.push(WorkflowEvent::TaskCleanupCompleted {
+                    scope: handle.owner.0,
+                    task: handle.task.0,
+                });
+                return Ok(());
+            }
+            if active {
+                wake_from_host(eval, handle, operation.id())?;
+            }
+            Ok(())
+        }
     }
 }
 
@@ -1497,8 +1587,8 @@ pub(super) async fn wait_for_cpu_or_host(
     tokio::select! {
         _ = executor.completion_signal().notified() => {},
         completed = reactor.wait_next(), if reactor.has_pending() => {
-            if let Some((HostOwner::Task(handle), operation)) = completed {
-                wake_from_host(eval, handle, operation)?;
+            if let Some(completed) = completed {
+                settle_host_reply(eval, completed)?;
             }
         }
     }
@@ -1698,6 +1788,14 @@ fn finish_task(
         .and_then(|()| eval.scheduler.apply_group_policy(handle))
         .map_err(|error| scheduler_failure(eval, error))?;
     record_cancellation_events(eval);
+    if !eval
+        .scheduler
+        .state(handle)
+        .map_err(|error| scheduler_failure(eval, error))?
+        .is_terminal()
+    {
+        return Ok(());
+    }
     eval.events.push(WorkflowEvent::TaskSettled {
         scope: handle.owner.0,
         task: handle.task.0,
@@ -1722,6 +1820,14 @@ fn finish_raised_task(
         .and_then(|()| eval.scheduler.apply_group_policy(handle))
         .map_err(|error| scheduler_failure(eval, error))?;
     record_cancellation_events(eval);
+    if !eval
+        .scheduler
+        .state(handle)
+        .map_err(|error| scheduler_failure(eval, error))?
+        .is_terminal()
+    {
+        return Ok(());
+    }
     eval.events.push(WorkflowEvent::TaskSettled {
         scope: handle.owner.0,
         task: handle.task.0,

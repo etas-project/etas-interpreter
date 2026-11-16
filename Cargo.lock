@@ -431,7 +431,7 @@ dependencies = [
 
 [[package]]
 name = "etas_interpreter"
-version = "0.15.2"
+version = "0.15.3"
 dependencies = [
  "blake3",
  "etas_builtin",

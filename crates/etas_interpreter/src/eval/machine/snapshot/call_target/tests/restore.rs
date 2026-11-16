@@ -158,6 +158,7 @@ fn lambda(id: u64, value: i32) -> CallTargetSnapshot {
     CallTargetSnapshot::Lambda {
         expr: HirExprId(4),
         captured: LocalsSnapshot {
+            parent: None,
             handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
@@ -455,6 +456,7 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                         evaluated_args: vec![],
                         span,
                         frame: LocalsSnapshot {
+                            parent: None,
                             handler_activations: Default::default(),
                             residual_invocation: None,
                             effect_row_bindings: Vec::new(),

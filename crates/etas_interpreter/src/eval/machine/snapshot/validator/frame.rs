@@ -12,6 +12,9 @@ impl SnapshotValidator<'_> {
         }
         let mut pending = vec![(frame.clone(), true)];
         let mut children = Vec::new();
+        if let Some(parent) = &frame.parent {
+            children.push(((**parent).clone(), false));
+        }
         for (_, value) in frame.locals.iter() {
             super::super::frame_dependencies::snapshot_frames(value, &mut children);
         }
@@ -25,6 +28,9 @@ impl SnapshotValidator<'_> {
                         .insert(frame.id, FrameValidation::Complete(frame));
                 } else if !self.frame_state(&frame, context)? {
                     let mut children = Vec::new();
+                    if let Some(parent) = &frame.parent {
+                        children.push(((**parent).clone(), false));
+                    }
                     for (_, value) in frame.locals.iter() {
                         super::super::frame_dependencies::snapshot_frames(value, &mut children);
                     }

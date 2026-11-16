@@ -4,11 +4,13 @@ pub(crate) struct FrameComparison {
     left: Frame,
     right: Frame,
     slot: usize,
+    parent_done: bool,
     restored_keys: std::vec::IntoIter<SymbolId>,
 }
 
 pub(crate) enum FrameComparisonStep<T> {
     Child(T),
+    Frames(Frame, Frame),
     Complete(bool),
 }
 
@@ -26,7 +28,10 @@ impl FrameComparison {
     }
 
     pub(crate) fn new(left: &Frame, right: &Frame) -> Option<Self> {
-        if left.layout != right.layout || left.type_bindings != right.type_bindings {
+        if left.layout != right.layout
+            || left.type_bindings != right.type_bindings
+            || left.parent.is_some() != right.parent.is_some()
+        {
             return None;
         }
         let a = left.slots.try_borrow().ok()?;
@@ -54,6 +59,7 @@ impl FrameComparison {
             left: left.clone(),
             right: right.clone(),
             slot: 0,
+            parent_done: false,
             restored_keys: restored_keys.into_iter(),
         })
     }
@@ -75,6 +81,12 @@ impl FrameComparison {
             }
         }
         let Some(symbol) = self.restored_keys.next() else {
+            if !self.parent_done {
+                self.parent_done = true;
+                if let Some((a, b)) = self.left.lexical_parent().zip(self.right.lexical_parent()) {
+                    return FrameComparisonStep::Frames(a.clone(), b.clone());
+                }
+            }
             return FrameComparisonStep::Complete(true);
         };
         let (Some(a), Some(b)) = (&self.left.restored, &self.right.restored) else {

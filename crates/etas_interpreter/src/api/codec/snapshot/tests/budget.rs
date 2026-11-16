@@ -20,6 +20,7 @@ fn effect_row_metadata_is_bounded_before_checkpoint_json_allocation() {
         effect_row_bindings: rows.clone(),
     };
     let frame = LocalsSnapshot {
+        parent: None,
         handler_activations: Default::default(),
         residual_invocation: None,
         id: 1,

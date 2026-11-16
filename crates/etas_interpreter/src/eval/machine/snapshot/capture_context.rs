@@ -336,6 +336,9 @@ impl CaptureContext {
     fn frame_dependencies(&self, frame: &Frame) -> Result<Vec<(Frame, bool)>, String> {
         let mut discovery = super::frame_dependencies::Discovery::default();
         let mut result = Vec::new();
+        if let Some(parent) = frame.lexical_parent() {
+            result.push((parent.clone(), false));
+        }
         frame.try_visit_locals(|value| {
             result.extend(
                 discovery
@@ -371,6 +374,13 @@ impl CaptureContext {
         let result = frame
             .try_map_locals(|value| self.value(value))
             .map(|locals| LocalsSnapshot {
+                parent: frame
+                    .lexical_parent()
+                    .map(|parent| {
+                        self.saved_frame(parent.capture_identity())
+                            .expect("lexical parent captured before child")
+                    })
+                    .map(Rc::new),
                 handler_activations: activations,
                 residual_invocation: frame.residual_invocation(),
                 id: frame.snapshot_id(),

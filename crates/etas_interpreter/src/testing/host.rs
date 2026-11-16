@@ -165,6 +165,8 @@ impl FakeHost {
         let gate = Arc::new(ConsoleGate {
             started: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
+            signals: Mutex::new(Vec::new()),
+            pending_calls: AtomicUsize::new(usize::MAX),
         });
         self.console_gate = Some(gate.clone());
         gate
@@ -1338,10 +1340,13 @@ impl HostServices for FakeHost {
 
     fn console<'a>(
         &'a self,
-        _operation: etas_host::execution::OperationContext,
+        operation: etas_host::execution::OperationContext,
         request: ConsoleRequest,
     ) -> HostFuture<'a, Result<ConsoleResponse, HostError>> {
-        self.console_calls.fetch_add(1, Ordering::SeqCst);
+        let call_index = self.console_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = &self.console_gate {
+            gate.signals.lock().unwrap().push(operation.signal().clone());
+        }
         if let Some(error) = self
             .console_error
             .lock()
@@ -1384,11 +1389,9 @@ impl HostServices for FakeHost {
             };
             if let Some(gate) = gate {
                 gate.started.notify_one();
-                gate.release
-                    .acquire()
-                    .await
-                    .expect("test gate open")
-                    .forget();
+                if call_index < gate.pending_calls.load(Ordering::SeqCst) {
+                    gate.release.acquire().await.expect("test gate open").forget();
+                }
             }
             Ok(ConsoleResponse {
                 id: request.id,
@@ -1468,6 +1471,8 @@ impl HostServices for FakeHost {
 pub(super) struct ConsoleGate {
     pub started: tokio::sync::Notify,
     pub release: tokio::sync::Semaphore,
+    pub signals: Mutex<Vec<etas_host::execution::CancelSignal>>,
+    pub pending_calls: AtomicUsize,
 }
 
 #[derive(Default)]

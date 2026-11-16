@@ -50,6 +50,14 @@ pub(in crate::driver) struct CompletedMemoryDispatch {
 }
 
 impl PendingMemoryDispatch<'_> {
+    pub(in crate::driver) fn operation_state(
+        &self,
+    ) -> std::rc::Rc<crate::driver::scheduler::HostOperation> {
+        match &self.io {
+            MemoryIo::Read(pending) => pending.operation_state(),
+            MemoryIo::Write(pending) => pending.operation_state(),
+        }
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
         match &self.io {
             MemoryIo::Read(pending) => pending.operation_id(),
@@ -66,18 +74,6 @@ impl PendingMemoryDispatch<'_> {
             key: self.key,
             completion,
         }
-    }
-}
-
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    memory: PendingMemory,
-    machine: &mut EvalMachine,
-) -> Option<ControlSignal> {
-    match begin(eval, host, memory, machine).await {
-        MemoryDispatchStart::Complete(signal) => signal,
-        MemoryDispatchStart::Pending(pending) => finish(eval, machine, pending.poll().await),
     }
 }
 

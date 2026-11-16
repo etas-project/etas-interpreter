@@ -158,6 +158,11 @@ pub(in crate::driver) fn finish(
 }
 
 impl PendingCommandDispatch<'_> {
+    pub(in crate::driver) fn operation_state(
+        &self,
+    ) -> std::rc::Rc<crate::driver::scheduler::HostOperation> {
+        self.pending.operation_state()
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
         self.pending.operation_id()
     }

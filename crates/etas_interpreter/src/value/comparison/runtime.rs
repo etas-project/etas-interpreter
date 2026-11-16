@@ -175,6 +175,7 @@ impl EqualityCursor for Cursor<'_> {
             Children::Frames(frames) => {
                 return match frames.next(compare_node) {
                     crate::control::FrameComparisonStep::Child(child) => CursorStep::Child(child),
+                    crate::control::FrameComparisonStep::Frames(a, b) => CursorStep::Child(target::frames(&a, &b, context)),
                     crate::control::FrameComparisonStep::Complete(equal) => self.complete(equal),
                 };
             }

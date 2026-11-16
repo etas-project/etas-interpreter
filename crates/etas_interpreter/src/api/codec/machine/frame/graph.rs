@@ -107,6 +107,12 @@ fn prepare_with_budget<F: Clone>(
                         continue;
                     }
                     pending.push(Task::FinishFrame(value));
+                    pending.push(Task::Children(Children::One(
+                        value
+                            .get("parent")
+                            .and_then(optional)
+                            .map(DecodeRoot::Frame),
+                    )));
                     Children::Fields(array(value, "locals")?.iter(), "value")
                 }
                 DecodeRoot::Value(value) => value_children(value)?,

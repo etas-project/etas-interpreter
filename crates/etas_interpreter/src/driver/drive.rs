@@ -300,9 +300,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_model(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -326,9 +328,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_tool(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -383,9 +387,12 @@ async fn drive_scope<'host>(
                                     let registered =
                                         task_hosts.start_approval(HostOwner::Root, pending);
                                     assert_eq!(
-                                        registered, operation,
+                                        registered.operation_id(),
+                                        operation,
                                         "registered host operation changed id"
                                     );
+                                    machine.root_wait =
+                                        Some(super::scheduler::RootTaskWait::Host(registered));
                                     if let Err(outcome) = super::task::await_root_host(
                                         eval, host, task_hosts, machine,
                                     )
@@ -402,9 +409,12 @@ async fn drive_scope<'host>(
                             let operation = pending.operation_id();
                             let registered = task_hosts.start_compiler(HostOwner::Root, pending);
                             assert_eq!(
-                                registered, operation,
+                                registered.operation_id(),
+                                operation,
                                 "registered host operation changed id"
                             );
+                            machine.root_wait =
+                                Some(super::scheduler::RootTaskWait::Host(registered));
                             if let Err(outcome) =
                                 super::task::await_root_host(eval, host, task_hosts, machine).await
                             {
@@ -417,11 +427,23 @@ async fn drive_scope<'host>(
                 }
             }
             PendingBoundary::Memory(memory) => {
-                let Some(signal) = dispatch::memory::dispatch(eval, host, *memory, machine).await
-                else {
-                    return ScopeOutcome::Finished(evaluation_failure(eval));
-                };
-                signal
+                match dispatch::memory::begin(eval, host, *memory, machine).await {
+                    dispatch::memory::MemoryDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::memory::MemoryDispatchStart::Complete(None) => {
+                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                    }
+                    dispatch::memory::MemoryDispatchStart::Pending(pending) => {
+                        let wait = task_hosts.start_memory(HostOwner::Root, pending);
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(wait));
+                        if let Err(outcome) =
+                            super::task::await_root_host(eval, host, task_hosts, machine).await
+                        {
+                            return ScopeOutcome::Finished(outcome);
+                        }
+                        *machine_has_input = true;
+                        continue;
+                    }
+                }
             }
             PendingBoundary::Session(session) => {
                 dispatch::session::dispatch(eval, host, *session).await
@@ -436,9 +458,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_console(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -459,9 +483,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_command(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -482,9 +508,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_host(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {

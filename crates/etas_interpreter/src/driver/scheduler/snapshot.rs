@@ -262,7 +262,7 @@ impl TaskSchedulerMetadataSnapshot {
             }
             if matches!(
                 task.state,
-                TaskState::Running | TaskState::Waiting(TaskWait::Cpu(_) | TaskWait::Host(_))
+                TaskState::Running | TaskState::Waiting(TaskWait::Cpu(_) | TaskWait::Host(_) | TaskWait::HostDrain)
             ) {
                 return Err(
                     "checkpoint task is still running outside the coordinator barrier".into(),

@@ -115,8 +115,21 @@ impl TaskHandlerContinuation {
                 output: *output,
                 span: *span,
             },
-            RootTaskWait::Host => {
-                return Err("suspended Host wait must be committed before task checkpoint".into());
+            RootTaskWait::Host(wait) => {
+                let input = wait
+                    .input()
+                    .ok_or("suspended Host wait must settle before task checkpoint")?;
+                let active = saved
+                    .scope
+                    .as_ref()
+                    .map_or(&saved.owner, |scope| &scope.program);
+                let mut machine = EvalMachine::new();
+                machine.restore_task_input(input);
+                TaskHandlerWaitSnapshot::Ready(Box::new(
+                    machine
+                        .capture_input(context, Some(active))?
+                        .expect("settled Host wait has an input"),
+                ))
             }
             RootTaskWait::Settling(_) => {
                 return Err("task Handler cannot suspend a completed body".into());

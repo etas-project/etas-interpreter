@@ -290,6 +290,9 @@ impl RestoreContext {
                     }
                     entered.push(snapshot.id);
                     let mut children = Vec::new();
+                    if let Some(parent) = &snapshot.parent {
+                        children.push(((**parent).clone(), false));
+                    }
                     for (_, value) in snapshot.locals.iter() {
                         super::frame_dependencies::snapshot_frames(value, &mut children);
                     }
@@ -344,6 +347,12 @@ impl RestoreContext {
                 rows: snapshot.effect_row_bindings.iter().cloned().collect(),
             },
         )?;
+        if let Some(parent) = &snapshot.parent {
+            frame.restore_lexical_parent(
+                self.cached_frame(parent)?
+                    .expect("lexical parent restored before child"),
+            );
+        }
         for saved in &snapshot.handler_activations {
             let revisions = self
                 .revisions

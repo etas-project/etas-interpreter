@@ -176,7 +176,7 @@ impl EncodingBudget {
             },
             Node::Model(part) => model_work(part)?,
             Node::Frame(frame) => (
-                frame.locals.len(),
+                frame.locals.len().checked_add(usize::from(frame.parent.is_some())).ok_or_else(exhausted)?,
                 frame
                     .type_bindings
                     .len()

@@ -24,6 +24,24 @@ pub(super) fn frame<'a>(
     if !activations.is_empty() {
         slot["handler_activations"] = Value::Array(activations);
     }
+    if let Some(parent) = &frame.parent {
+        slot["parent"] = Value::Null;
+        // Split object fields so child slots stay disjoint on the worklist.
+        let object = slot.as_object_mut().expect("frame object");
+        for (name, slot) in object.iter_mut() {
+            if name == "parent" {
+                pending.push((Node::Frame(parent), slot));
+            } else if name == "locals" {
+                for ((symbol, value), entry) in
+                    frame.locals.iter().zip(array(slot, frame.locals.len()))
+                {
+                    *entry = json!({"symbol":symbol.0,"value":null});
+                    pending.push((Node::Value(value), &mut entry["value"]));
+                }
+            }
+        }
+        return Ok(());
+    }
     for ((symbol, value), entry) in frame
         .locals
         .iter()

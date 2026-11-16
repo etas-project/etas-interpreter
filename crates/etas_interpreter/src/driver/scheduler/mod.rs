@@ -1,6 +1,7 @@
 mod continuation;
 mod group;
 mod host;
+mod host_wait;
 mod resource;
 mod snapshot;
 mod task;
@@ -19,7 +20,9 @@ pub(crate) use continuation::{
     ContinuationArenaSnapshot, ContinuationEntrySnapshot, ContinuationState,
 };
 pub(crate) use group::{TaskGroupPolicy, TaskScopeSnapshot};
-pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, TaskHostReactor};
+pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, ReadyTaskHost, TaskHostReactor};
+pub(crate) use host_wait::HostWait;
+pub(in crate::driver) use host_wait::{HostOperation, HostOperationScope};
 pub(crate) use resource::ResourceGuardsSnapshot;
 pub(crate) use snapshot::TaskSchedulerMetadataSnapshot;
 pub(crate) use task::{
@@ -496,6 +499,21 @@ impl TaskScheduler {
 
     /// Commit a completed input without running source or changing admission,
     /// FIFO order, active slots, resource permits, or waiter ownership.
+    /// Host settlement can address a suspended wait while its owner is in a
+    /// Handler arm or already terminal; it never executes the owner's source.
+    pub(crate) fn take_host_owner(&mut self, handle: TaskHandle) -> ScheduledTask {
+        let task = self.tasks.remove(&handle.task).expect("Host owner exists");
+        assert_eq!(task.scope, handle.owner);
+        task
+    }
+    pub(crate) fn restore_host_owner(&mut self, handle: TaskHandle, task: ScheduledTask) {
+        assert_eq!(task.scope, handle.owner);
+        assert!(
+            self.tasks.insert(handle.task, task).is_none(),
+            "Host owner restored once"
+        );
+    }
+
     pub(crate) fn take_ready_task(&mut self, handle: TaskHandle) -> ScheduledTask {
         let task = self.tasks.remove(&handle.task).expect("ready task exists");
         assert_eq!(task.scope, handle.owner);
@@ -753,7 +771,7 @@ impl TaskScheduler {
         }
         if !matches!(
             task.state,
-            TaskState::Waiting(TaskWait::Task(_) | TaskWait::Scope(_))
+            TaskState::Waiting(TaskWait::Task(_) | TaskWait::Scope(_) | TaskWait::Host(_))
         ) && !(task.state == TaskState::Ready && task.machine.has_input())
         {
             return None;
@@ -1005,6 +1023,7 @@ impl TaskScheduler {
         let outcome = self.tasks[&id]
             .outcome
             .as_ref()
+            .or(self.tasks[&id].pending_outcome.as_ref())
             .ok_or(SchedulerError::InvalidTransition)?;
         let reason = match outcome {
             TaskOutcome::Completed(_)
@@ -1029,7 +1048,7 @@ impl TaskScheduler {
             _ => None,
         };
         if let Some(reason) = reason {
-            self.cancel_scope_unsettled(scope, reason)?;
+            self.cancel_scope_except(scope, reason, id)?;
         }
         Ok(())
     }
@@ -1049,7 +1068,10 @@ impl TaskScheduler {
         if !already_cancelled {
             self.cancellation_events.push((handle, reason));
         }
-        if matches!(task.state, TaskState::Waiting(TaskWait::Host(_))) {
+        if matches!(
+            task.state,
+            TaskState::Waiting(TaskWait::Host(_) | TaskWait::HostDrain)
+        ) {
             return Ok(());
         }
         let cause = task
@@ -1114,10 +1136,11 @@ impl TaskScheduler {
         Ok(())
     }
 
-    pub(crate) fn cancel_scope_unsettled(
+    fn cancel_scope_except(
         &mut self,
         scope: TaskScopeId,
         reason: etas_host::execution::CancellationReason,
+        except: TaskId,
     ) -> Result<(), SchedulerError> {
         if !self.groups.contains_key(&scope) {
             return Err(SchedulerError::WrongOwner);
@@ -1131,7 +1154,7 @@ impl TaskScheduler {
         let handles = scopes
             .iter()
             .flat_map(|scope| self.groups[scope].tasks.iter())
-            .filter(|task| !self.tasks[task].state.is_terminal())
+            .filter(|task| **task != except && !self.tasks[task].state.is_terminal())
             .map(|task| TaskHandle {
                 owner: self.tasks[task].scope,
                 task: *task,
@@ -1154,6 +1177,34 @@ impl TaskScheduler {
             })
     }
 
+    /// A language body can finish while an abandoned Host supervisor still
+    /// owns work. Retain its resource permits and result until that work settles.
+    pub(crate) fn finish_host_drain(&mut self, handle: TaskHandle) -> Result<bool, SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("Host owner exists");
+        if task.state != TaskState::Waiting(TaskWait::HostDrain)
+            || task
+                .local
+                .host_operations
+                .as_ref()
+                .is_some_and(|count| count.get() != 0)
+        {
+            return Ok(false);
+        }
+        let mut outcome = task
+            .pending_outcome
+            .take()
+            .expect("draining task has its body outcome");
+        if matches!(outcome, TaskOutcome::Completed(_) | TaskOutcome::Raised(_))
+            && let Some(cause) = task.local.execution.signal()?.cause()?
+        {
+            outcome = TaskOutcome::Cancelled(cause);
+        }
+        self.terminal(handle, outcome)?;
+        self.apply_group_policy(handle)?;
+        Ok(true)
+    }
+
     fn terminal(&mut self, handle: TaskHandle, outcome: TaskOutcome) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
         self.continuations
@@ -1162,6 +1213,19 @@ impl TaskScheduler {
             let task = self.tasks.get_mut(&id).expect("resolved task");
             if task.state.is_terminal() {
                 return Err(SchedulerError::InvalidTransition);
+            }
+            if task
+                .local
+                .host_operations
+                .as_ref()
+                .is_some_and(|count| count.get() != 0)
+            {
+                task.pending_outcome = Some(outcome);
+                task.state = TaskState::Waiting(TaskWait::HostDrain);
+                task.host_wait = None;
+                task.waiting_continuation = None;
+                task.machine = EvalMachine::new();
+                return Ok(());
             }
             let was_running = task.active_slot;
             task.active_slot = false;

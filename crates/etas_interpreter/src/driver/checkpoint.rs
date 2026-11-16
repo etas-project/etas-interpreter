@@ -56,40 +56,17 @@ async fn drain(
 ) -> Result<(), EvaluationOutcome> {
     loop {
         task::drain_cpu_completions(eval)?;
-        if let Some(completed) = reactor.take_root_completed() {
-            if let Some(scope) = root.program_scope() {
-                let mut scoped = eval.scoped_context(&scope.program, scope.handler_floor);
-                task::commit_host_completion(&mut scoped, root, completed)?;
-            } else {
-                task::commit_host_completion(eval, root, completed)?;
-            }
-            root.root_wait = None;
-        }
-        while let Some((id, completed)) = reactor.take_next_completed_task() {
-            let handle = TaskHandle {
-                owner: eval.scheduler.task_scope(id),
-                task: id,
-            };
-            let mut scheduled = eval.scheduler.take_checkpoint_task(handle);
-            let scope = scheduled.machine.program_scope();
-            let (program, floor) = match scope {
-                Some(scope) => (scope.program, scope.handler_floor),
-                None => (
-                    scheduled
-                        .program
-                        .clone()
-                        .expect("Host task has a checked program"),
-                    scheduled.handler_floor,
-                ),
-            };
-            let mut child = eval.scheduled_task_context(&program, &mut scheduled.local, id, floor);
-            let committed =
-                task::commit_host_completion(&mut child, &mut scheduled.machine, completed);
-            drop(child);
-            eval.scheduler.restore_checkpoint_task(handle, scheduled);
-            committed?;
+        while let Some(completed) = reactor.poll_ready().await {
+            task::settle_host_reply(eval, completed)?;
         }
         if eval.cpu_jobs.is_empty() && !reactor.has_pending() {
+            if let Some(super::scheduler::RootTaskWait::Host(wait)) = &root.root_wait {
+                let input = wait
+                    .take_input()
+                    .expect("checkpoint drained the root Host operation");
+                root.root_wait = None;
+                root.restore_task_input(input);
+            }
             drain_native(eval, root).await?;
             task::record_cancellation_events(eval);
             return Ok(());
@@ -576,14 +553,15 @@ mod tests {
         };
         drop(child);
         let operation = pending.operation_id();
+        let mut reactor = TaskHostReactor::new();
+        scheduled.host_wait =
+            Some(reactor.start_console(super::super::scheduler::HostOwner::Task(handle), pending));
         eval.scheduler.restore_running(handle, scheduled).unwrap();
         eval.scheduler.wait_for_host(handle, operation).unwrap();
-        let mut reactor = TaskHostReactor::new();
-        reactor.start_console(super::super::scheduler::HostOwner::Task(handle), pending);
         let mut root = EvalMachine::for_entry(program.clone(), Vec::new());
         enter(&mut eval, &mut reactor, &mut root).await.unwrap();
         assert!(!reactor.has_pending());
-        assert!(reactor.take_next_completed_task().is_none());
+        assert!(reactor.poll_ready().await.is_none());
         assert_eq!(
             eval.scheduler.state(handle).unwrap(),
             super::super::scheduler::TaskState::Ready

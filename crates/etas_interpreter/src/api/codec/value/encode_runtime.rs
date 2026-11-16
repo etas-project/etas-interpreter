@@ -58,6 +58,20 @@ fn write<'a>(
                 "effect_row_bindings":frame.generic_bindings().sorted_rows(),
                 "type_parameter_bindings":frame.generic_bindings().sorted_parameters(),
                 "type_bindings":frame.sorted_type_bindings().iter().map(|(name, ty)| json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
+            if let Some(parent) = frame.lexical_parent() {
+                slot["parent"] = Value::Null;
+                for (name, slot) in slot.as_object_mut().expect("frame object").iter_mut() {
+                    if name == "parent" {
+                        child(Node::Frame(parent), slot);
+                    } else if name == "locals" {
+                        for ((symbol, value), slot) in locals.iter().zip(array(slot, count)) {
+                            *slot = json!({"symbol":symbol.0,"value":null});
+                            child(Node::Value(value), &mut slot["value"]);
+                        }
+                    }
+                }
+                return Ok(());
+            }
             for ((symbol, value), slot) in locals.into_iter().zip(array(&mut slot["locals"], count))
             {
                 *slot = json!({"symbol":symbol.0,"value":null});

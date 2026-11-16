@@ -41,7 +41,7 @@ pub(in crate::driver) enum HostBoundaryDispatchStart<'host> {
 pub(in crate::driver) struct PendingHostBoundaryDispatch<'host> {
     boundary: PendingHostBoundary,
     key: Option<etas_host::replay::ReplayFingerprint>,
-    operation: etas_host::execution::OperationId,
+    operation: std::rc::Rc<crate::driver::scheduler::HostOperation>,
     future: Pin<Box<dyn Future<Output = HostBoundaryCompletion> + 'host>>,
 }
 
@@ -546,7 +546,7 @@ where
     Call: Future<Output = Result<Response, HostError>> + 'host,
     Wrap: FnOnce(HostCompletion<Response>) -> HostBoundaryCompletion + 'host,
 {
-    let operation = pending.operation_id();
+    let operation = pending.operation_state();
     HostBoundaryDispatchStart::Pending(PendingHostBoundaryDispatch {
         boundary,
         key,
@@ -556,8 +556,13 @@ where
 }
 
 impl PendingHostBoundaryDispatch<'_> {
+    pub(in crate::driver) fn operation_state(
+        &self,
+    ) -> std::rc::Rc<crate::driver::scheduler::HostOperation> {
+        self.operation.clone()
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
-        self.operation
+        self.operation.id()
     }
 
     pub(in crate::driver) async fn poll(self) -> CompletedHostBoundaryDispatch {

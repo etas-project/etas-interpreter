@@ -1337,3 +1337,304 @@ flow main() -> i32 {
     assert_eq!(resumed.value(), result.value());
     assert!(resumed.checkpoints.is_empty());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_waiting_parent_handles_a_child_while_its_arm_also_waits_on_host() {
+    const SOURCE: &str = r#"module app.main;
+import std.io.println;
+import std.runtime.checkpoint.checkpoint;
+import std.task.{run, start, await, Scheduler};
+effect Probe { action value() -> i32; }
+flow main() -> i32 {
+    return handle { run((scheduler: Scheduler) => {
+        return handle {
+            let child = start(() => { return perform Probe.value(); });
+            println("owner")?;
+            await(child) + 1
+        } with { Probe.value() => { println("handler")?; checkpoint("host-owner"); resume 40; } };
+    }) } with { Probe.value() => { resume 99; } };
+}
+"#;
+    let checked = checked_project(SOURCE);
+    let mut host = FakeHost::new(HostServiceAvailability {
+        checkpoint: true,
+        ..availability(&[HostRequirementKind::Console])
+    });
+    let gate = host.pause_console_completion();
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+    let (result, both_started) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            let both_started = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                while host.console_call_count() < 2 {
+                    gate.started.notified().await;
+                }
+            })
+            .await
+            .is_ok();
+            gate.release.add_permits(2);
+            both_started
+        })
+    })
+    .await
+    .expect("owner and Handler Host operations should settle");
+    let result = result.unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert!(
+        both_started,
+        "the nearest Handler must run before the owner's Host reply"
+    );
+    assert_eq!(result.value(), Some(&InterpValue::i32(41)));
+    assert_eq!(host.console_call_count(), 2);
+    assert_eq!(host.stdout_text(), "owner\nhandler\n");
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let bytes = api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
+    let artifact = api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+    let current = checked_project(SOURCE);
+    let revisions = std::sync::Arc::new(api::code::PreparedRevisionSet::new(current.clone()));
+    let checkpoint = api::codec::checkpoint_from_json_with_revisions(
+        &Default::default(),
+        &artifact,
+        &current,
+        Some(&revisions),
+    )
+    .unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &current,
+            &checkpoint,
+            &host,
+            RunOptions {
+                checkpoint_revisions: Some(revisions),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+    assert!(resumed.checkpoints.is_empty());
+    assert_eq!(
+        host.console_call_count(),
+        2,
+        "restoring a settled Host wait must not replay I/O"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn host_waiting_parent_can_finish_its_handler_and_keep_its_next_host_operation() {
+    let checked = checked_project(
+        r#"module app.main;
+import std.io.println;
+import std.task.{run, start, await, Scheduler};
+effect Probe { action value() -> i32; }
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        let value = handle {
+            let child = start(() => { return perform Probe.value(); });
+            println("abandoned")?;
+            await(child)
+        } with { Probe.value() => { finish 40; } };
+        println("continuing")?;
+        return value + 1;
+    });
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let gate = host.pause_console_completion();
+    gate.pending_calls
+        .store(1, std::sync::atomic::Ordering::SeqCst);
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+    let control = invocation.control();
+    let (result, both_started) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            let started = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                while host.console_call_count() < 2 {
+                    gate.started.notified().await;
+                }
+            })
+            .await
+            .is_ok();
+            if started {
+                let signals = gate.signals.lock().unwrap();
+                assert!(
+                    signals[0].is_cancelled(),
+                    "finish cancels its abandoned Host wait"
+                );
+                assert!(
+                    !signals[1].is_cancelled(),
+                    "the continuing caller retains its authority"
+                );
+            }
+            gate.release.add_permits(2);
+            started
+        })
+    })
+    .await
+    .expect("finish must drain the old supervisor and complete the continuing caller");
+    let result = result.unwrap();
+    assert!(
+        both_started,
+        "the caller must continue before the abandoned Host reply"
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(41)));
+    assert_eq!(host.stdout_text(), "abandoned\ncontinuing\n");
+    let original = result
+        .events
+        .iter()
+        .find_map(|event| match event {
+            WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
+                id,
+                kind: etas_host::HostRequestKind::Console,
+                ..
+            }) => Some(*id),
+            _ => None,
+        })
+        .unwrap();
+    let finished = result.events.iter().position(|event| matches!(event,
+        WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished { id, .. }) if *id == original)).unwrap();
+    let owner = result
+        .events
+        .iter()
+        .find_map(|event| match event {
+            WorkflowEvent::TaskSettled { task, outcome, .. } if outcome == "completed" => {
+                Some(*task)
+            }
+            _ => None,
+        })
+        .unwrap();
+    let cleaned = result
+        .events
+        .iter()
+        .position(|event| {
+            matches!(event,
+        WorkflowEvent::TaskCleanupCompleted { task, .. } if *task == owner)
+        })
+        .unwrap();
+    assert!(
+        finished < cleaned,
+        "the task retains resources until its abandoned Host supervisor settles"
+    );
+    let report = control.join().await.unwrap();
+    assert!(matches!(
+        report.outcome(),
+        etas_host::execution::ScopeOutcome::Completed
+    ));
+    assert_eq!(report.operations().len(), 2);
+    assert!(
+        report
+            .operations()
+            .iter()
+            .all(|operation| operation.outcome().is_some())
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn root_handler_keeps_two_child_host_waits_and_restores_the_older_one() {
+    const SOURCE: &str = r#"module app.main;
+import std.io.println;
+import std.task.{run, start, await, Scheduler};
+import std.runtime.checkpoint.checkpoint;
+effect Probe { action value(value: i32) -> i32; }
+flow main() -> i32 {
+    var handled = 0;
+    let result = handle { run((scheduler: Scheduler) => {
+        let first = start(() => { return perform Probe.value(1); });
+        let second = start(() => { return perform Probe.value(2); });
+        return await(first) + await(second);
+    }) } with { Probe.value(value) => {
+        handled = handled + 1;
+        println("handler")?;
+        if value == 2 { checkpoint("root-host-owner"); }
+        resume value;
+    } };
+    if handled != 2 { return 99; }
+    return result;
+}
+"#;
+    let checked = checked_project(SOURCE);
+    let mut host = FakeHost::new(HostServiceAvailability {
+        checkpoint: true,
+        ..availability(&[HostRequirementKind::Console])
+    });
+    let gate = host.pause_console_completion();
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        RunOptions::default(),
+    );
+    let (result, both_started) = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+        tokio::join!(invocation.execute(), async {
+            let started = tokio::time::timeout(std::time::Duration::from_millis(500), async {
+                while host.console_call_count() < 2 {
+                    gate.started.notified().await;
+                }
+            })
+            .await
+            .is_ok();
+            gate.release.add_permits(2);
+            started
+        })
+    })
+    .await
+    .expect("the root Handler must service both children while Host work is pending");
+    let result = result.unwrap();
+    assert!(
+        both_started,
+        "the root must not wait for the older reply before serving another child"
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(3)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let bytes = api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
+    let artifact = api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+    let current = checked_project(SOURCE);
+    let revisions = std::sync::Arc::new(api::code::PreparedRevisionSet::new(current.clone()));
+    let checkpoint = api::codec::checkpoint_from_json_with_revisions(
+        &Default::default(),
+        &artifact,
+        &current,
+        Some(&revisions),
+    )
+    .unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(
+            &current,
+            &checkpoint,
+            &host,
+            RunOptions {
+                checkpoint_revisions: Some(revisions),
+                ..Default::default()
+            },
+        )
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+    assert_eq!(host.console_call_count(), 2);
+}

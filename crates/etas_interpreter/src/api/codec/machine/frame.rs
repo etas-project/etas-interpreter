@@ -78,6 +78,11 @@ fn decode_snapshot_frame(
             .map_err(|error| error.to_string())
     })?;
     Ok(LocalsSnapshot {
+        parent: value
+            .get("parent")
+            .filter(|value| !value.is_null())
+            .map(|parent| cache.get(parent).map(std::rc::Rc::new))
+            .transpose()?,
         handler_activations: decoded.handler_activations,
         residual_invocation: decoded.residual_invocation,
         id: decoded.id,
@@ -108,6 +113,9 @@ fn decode_runtime_frame(
             rows: decoded.effect_row_bindings.into_iter().collect(),
         },
     )?;
+    if let Some(parent) = value.get("parent").filter(|value| !value.is_null()) {
+        frame.restore_lexical_parent(cache.get(parent)?);
+    }
     frame.set_snapshot_id(decoded.id)?;
     if let Some(invocation) = decoded.residual_invocation {
         frame.bind_residual_invocation(invocation)?;

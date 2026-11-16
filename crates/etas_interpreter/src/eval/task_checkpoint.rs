@@ -256,7 +256,7 @@ impl super::EvalContext<'_> {
                 TaskState::Raised => ScheduledTaskStateSnapshot::Raised,
                 TaskState::Failed => ScheduledTaskStateSnapshot::Failed,
                 TaskState::Cancelled => ScheduledTaskStateSnapshot::Cancelled,
-                TaskState::Running | TaskState::Waiting(TaskWait::Host(_) | TaskWait::Cpu(_)) => {
+                TaskState::Running | TaskState::Waiting(TaskWait::Host(_) | TaskWait::Cpu(_) | TaskWait::HostDrain) => {
                     return Err("task has not reached the coordinator checkpoint barrier".into());
                 }
             };
@@ -351,7 +351,7 @@ impl super::EvalContext<'_> {
                     RootTaskWait::Settling(outcome) => RootTaskWaitSnapshot::Settling(
                         root_capture.outcome(outcome, &cancellation)?,
                     ),
-                    RootTaskWait::Host => {
+                    RootTaskWait::Host(_) => {
                         return Err("root Host work has not reached the checkpoint barrier".into());
                     }
                 })
@@ -735,6 +735,8 @@ impl super::EvalContext<'_> {
                     outcome,
                     waiters: task.waiters.iter().copied().map(TaskWaiter::Task).collect(),
                     waiting_continuation,
+                    host_wait: None,
+                    pending_outcome: None,
                     source_index: task.source_index,
                     cpu_capsule,
                     active_slot: task.active_slot,

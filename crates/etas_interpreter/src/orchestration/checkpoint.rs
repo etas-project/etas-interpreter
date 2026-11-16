@@ -322,6 +322,7 @@ pub(crate) enum CallTargetSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
+    pub(crate) parent: Option<std::rc::Rc<LocalsSnapshot>>,
     pub(crate) handler_activations: Vec<super::HandlerActivationSnapshot>,
     pub(crate) id: u64,
     /// Identity of this invocation's scope, not reusable authorization.
@@ -368,6 +369,10 @@ impl LocalsSnapshot {
 
 impl Drop for LocalsSnapshot {
     fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(mut parent) = next {
+            next = std::rc::Rc::get_mut(&mut parent).and_then(|frame| frame.parent.take());
+        }
         if let Some(values) = std::rc::Rc::get_mut(&mut self.locals) {
             for (_, value) in std::mem::take(values) {
                 super::snapshot_storage::SnapshotChild::release(value);

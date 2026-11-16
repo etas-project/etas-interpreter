@@ -1629,6 +1629,7 @@ flow main() -> unit {
 
     fn empty_locals() -> LocalsSnapshot {
         LocalsSnapshot {
+            parent: None,
             handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),

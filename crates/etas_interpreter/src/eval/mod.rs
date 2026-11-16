@@ -33,6 +33,7 @@ mod field_access;
 mod file_read_limited;
 mod flow;
 mod handler;
+pub(crate) mod host_completion;
 mod host_enum;
 mod host_type_environment;
 mod host_value;

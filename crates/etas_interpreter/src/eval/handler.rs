@@ -387,13 +387,13 @@ impl<'a> EvalContext<'a> {
         if let Err(fault) = self.consume_residual_permit(&perform) {
             return Some(ControlSignal::Fault(Box::new(fault)));
         }
-        let mut handler_frame = frame.clone();
         let Some(layout) = self.plan.frames.get(handler.scope) else {
             return Some(ControlSignal::missing_checked_fact(
                 "handler arm is missing its checked frame layout",
                 handler.span,
             ));
         };
+        let mut handler_frame = frame.for_handler(layout.clone());
         let generic_request = self
             .checked
             .types
@@ -419,7 +419,6 @@ impl<'a> EvalContext<'a> {
                 }
             }
         }
-        handler_frame.install_scope_layout(layout);
         if let Err(fault) = self.bind_handler_patterns(
             &handler.patterns,
             &perform.args,

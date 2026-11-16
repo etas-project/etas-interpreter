@@ -15,11 +15,24 @@ pub(crate) use comparison::{FrameComparison, FrameComparisonStep};
 #[derive(Clone, Debug)]
 pub struct Frame {
     snapshot_id: u64,
+    parent: Option<FrameParent>,
     residual_invocation: Option<std::num::NonZeroU64>,
     layout: Arc<SlotLayoutTable>,
     slots: Rc<RefCell<SlotStorage>>,
     restored: Option<Rc<RefCell<RestoredStorage>>>,
     type_bindings: Arc<super::GenericBindings>,
+}
+
+/// Shared lexical bindings; request-local slots remain in the child frame.
+#[derive(Clone, Debug)]
+struct FrameParent(Rc<Frame>);
+impl Drop for FrameParent {
+    fn drop(&mut self) {
+        let mut next = Rc::get_mut(&mut self.0).and_then(|frame| frame.parent.take());
+        while let Some(mut parent) = next {
+            next = Rc::get_mut(&mut parent.0).and_then(|frame| frame.parent.take());
+        }
+    }
 }
 
 pub(crate) struct FrameLocals<'a> {
@@ -88,6 +101,7 @@ impl Drop for SlotStorage {
 }
 
 pub(crate) struct FrameValues {
+    _parent: Option<FrameParent>,
     slots: std::vec::IntoIter<Option<InterpValue>>,
     restored: Option<std::collections::hash_map::IntoValues<SymbolId, InterpValue>>,
 }
@@ -144,6 +158,7 @@ impl Frame {
         Self {
             snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             residual_invocation: None,
+            parent: None,
             layout,
             slots: Rc::new(RefCell::new(SlotStorage {
                 values: vec![None; slot_count],
@@ -176,8 +191,26 @@ impl Frame {
         Self::with_shared_type_bindings(layout, bindings.shared())
     }
 
+    pub(crate) fn for_handler(&self, layout: Arc<SlotLayoutTable>) -> Self {
+        let mut frame = Self::with_shared_type_bindings(layout, self.type_bindings.clone());
+        frame.residual_invocation = self.residual_invocation;
+        frame.parent = Some(FrameParent(Rc::new(self.clone())));
+        frame
+    }
+
+    pub(crate) fn lexical_parent(&self) -> Option<&Frame> {
+        self.parent.as_ref().map(|parent| parent.0.as_ref())
+    }
+
+    pub(crate) fn restore_lexical_parent(&mut self, parent: Frame) {
+        self.parent = Some(FrameParent(Rc::new(parent)));
+    }
+
     pub(crate) fn has_handler_activations(&self) -> bool {
         !self.slots.borrow().handler_activations.is_empty()
+            || self
+                .lexical_parent()
+                .is_some_and(Self::has_handler_activations)
     }
 
     pub(crate) fn handler_activations(&self) -> Vec<super::handler_activation::HandlerActivation> {
@@ -204,17 +237,25 @@ impl Frame {
         checked: &etas_frontend::CheckedProgram,
         owner: etas_hir::HirOwner,
     ) -> std::borrow::Cow<'a, super::GenericBindings> {
-        let slots = self.slots.borrow();
-        if slots.handler_activations.is_empty()
-            || super::handler_activation::parametric_continuation_call(checked, owner)
-        {
+        if super::handler_activation::parametric_continuation_call(checked, owner) {
             return std::borrow::Cow::Borrowed(&self.type_bindings);
         }
         let arm = super::handler_activation::enclosing_handler(checked, owner);
-        super::handler_activation::activation_bindings(
-            &self.type_bindings,
-            arm.and_then(|arm| slots.handler_activations.get(&arm)),
-        )
+        let mut current = Some(self);
+        while let Some(frame) = current {
+            let slots = frame.slots.borrow();
+            if let Some(activation) = arm.and_then(|arm| slots.handler_activations.get(&arm)) {
+                return std::borrow::Cow::Owned(
+                    super::handler_activation::activation_bindings(
+                        &self.type_bindings,
+                        Some(activation),
+                    )
+                    .into_owned(),
+                );
+            }
+            current = frame.lexical_parent();
+        }
+        std::borrow::Cow::Borrowed(&self.type_bindings)
     }
 
     pub(crate) fn generic_bindings(&self) -> &super::GenericBindings {
@@ -227,8 +268,18 @@ impl Frame {
         symbols: &[SymbolId],
     ) -> Result<Self, String> {
         let mut captured = Self::with_shared_type_bindings(layout, self.type_bindings.clone());
-        captured.slots.borrow_mut().handler_activations =
-            self.slots.borrow().handler_activations.clone();
+        let mut current = Some(self);
+        while let Some(frame) = current {
+            for (arm, activation) in &frame.slots.borrow().handler_activations {
+                captured
+                    .slots
+                    .borrow_mut()
+                    .handler_activations
+                    .entry(*arm)
+                    .or_insert_with(|| activation.clone());
+            }
+            current = frame.lexical_parent();
+        }
         for symbol in symbols {
             if captured.layout.resolve(*symbol).is_none() {
                 return Err(format!(
@@ -256,6 +307,7 @@ impl Frame {
         Ok(Self {
             snapshot_id: NEXT_FRAME_ID.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             residual_invocation: None,
+            parent: None,
             layout: Arc::new(SlotLayoutTable::default()),
             slots: Rc::new(RefCell::new(SlotStorage {
                 values: Vec::new(),
@@ -316,6 +368,7 @@ impl Frame {
             .and_then(|locals| Rc::try_unwrap(locals).ok())
             .map(|locals| std::mem::take(&mut locals.into_inner().0).into_values());
         FrameValues {
+            _parent: self.parent,
             slots: slots.into_iter(),
             restored,
         }
@@ -340,13 +393,22 @@ impl Frame {
     }
 
     pub fn get(&self, symbol: SymbolId) -> Option<InterpValue> {
-        let slots = self.slots.borrow();
-        if let Some(slot) = self.resolve(&slots, symbol) {
-            return slots.values[slot].clone();
+        let mut current = Some(self);
+        while let Some(frame) = current {
+            let slots = frame.slots.borrow();
+            if let Some(slot) = frame.resolve(&slots, symbol) {
+                return slots.values[slot].clone();
+            }
+            if let Some(value) = frame
+                .restored
+                .as_ref()
+                .and_then(|locals| locals.borrow().get(&symbol).cloned())
+            {
+                return Some(value);
+            }
+            current = frame.lexical_parent();
         }
-        self.restored
-            .as_ref()
-            .and_then(|locals| locals.borrow().get(&symbol).cloned())
+        None
     }
 
     pub fn insert(&mut self, symbol: SymbolId, value: InterpValue) {
@@ -368,23 +430,27 @@ impl Frame {
     }
 
     pub fn set(&mut self, symbol: SymbolId, value: InterpValue) -> bool {
-        let mut slots = self.slots.borrow_mut();
-        if let Some(index) = self.resolve(&slots, symbol) {
-            if slots.values[index].is_some() {
-                slots.values[index] = Some(value);
-                return true;
+        let mut current = Some(&*self);
+        while let Some(frame) = current {
+            let mut slots = frame.slots.borrow_mut();
+            if let Some(index) = frame.resolve(&slots, symbol) {
+                if slots.values[index].is_some() {
+                    slots.values[index] = Some(value);
+                    return true;
+                }
+                return false;
             }
-            return false;
+            if let Some(locals) = &frame.restored {
+                let mut locals = locals.borrow_mut();
+                if let std::collections::hash_map::Entry::Occupied(mut entry) = locals.entry(symbol)
+                {
+                    entry.insert(value);
+                    return true;
+                }
+            }
+            current = frame.lexical_parent();
         }
-        self.restored.as_ref().is_some_and(|locals| {
-            let mut locals = locals.borrow_mut();
-            if let std::collections::hash_map::Entry::Occupied(mut entry) = locals.entry(symbol) {
-                entry.insert(value);
-                true
-            } else {
-                false
-            }
-        })
+        false
     }
 
     /// Synchronous commit only: no evaluation or suspension while the slot is borrowed.
@@ -393,12 +459,21 @@ impl Frame {
         symbol: SymbolId,
         update: impl FnOnce(&mut InterpValue) -> R,
     ) -> Option<R> {
-        let mut slots = self.slots.borrow_mut();
-        if let Some(slot) = self.resolve(&slots, symbol) {
-            return slots.values.get_mut(slot)?.as_mut().map(update);
+        let mut current = Some(&*self);
+        while let Some(frame) = current {
+            let mut slots = frame.slots.borrow_mut();
+            if let Some(slot) = frame.resolve(&slots, symbol) {
+                return slots.values.get_mut(slot)?.as_mut().map(update);
+            }
+            if let Some(locals) = &frame.restored {
+                let mut locals = locals.borrow_mut();
+                if let Some(value) = locals.get_mut(&symbol) {
+                    return Some(update(value));
+                }
+            }
+            current = frame.lexical_parent();
         }
-        let mut locals = self.restored.as_ref()?.borrow_mut();
-        locals.get_mut(&symbol).map(update)
+        None
     }
 
     pub fn snapshot_symbols(&self) -> HashSet<SymbolId> {
@@ -467,21 +542,23 @@ impl Frame {
     }
 
     pub fn sorted_locals(&self) -> Vec<(SymbolId, InterpValue)> {
-        let slots = self.slots.borrow();
-        let mut locals = self
-            .slot_symbols(&slots)
-            .filter_map(|(symbol, index)| slots.values[index].clone().map(|value| (symbol, value)))
-            .collect::<Vec<_>>();
-        if let Some(restored) = &self.restored {
-            locals.extend(
-                restored
-                    .borrow()
-                    .iter()
-                    .map(|(symbol, value)| (*symbol, value.clone())),
-            );
+        let mut locals = std::collections::BTreeMap::new();
+        let mut current = Some(self);
+        while let Some(frame) = current {
+            let slots = frame.slots.borrow();
+            for (symbol, index) in frame.slot_symbols(&slots) {
+                if let Some(value) = &slots.values[index] {
+                    locals.entry(symbol).or_insert_with(|| value.clone());
+                }
+            }
+            if let Some(restored) = &frame.restored {
+                for (symbol, value) in restored.borrow().iter() {
+                    locals.entry(*symbol).or_insert_with(|| value.clone());
+                }
+            }
+            current = frame.lexical_parent();
         }
-        locals.sort_by_key(|(symbol, _)| symbol.0);
-        locals
+        locals.into_iter().collect()
     }
 
     pub(crate) fn try_map_locals<T, E>(
@@ -553,6 +630,7 @@ impl Frame {
     /// A first-class handler may be defined outside the applying callable.
     /// Install only its planned bindings, in shared storage so every alias keeps
     /// the same frame identity and observes the same symbol-to-slot mapping.
+    #[cfg(test)]
     pub(crate) fn install_scope_layout(&mut self, layout: &SlotLayoutTable) {
         // Restored frames already use symbolic locals rather than dense slots.
         if self.restored.is_some() {

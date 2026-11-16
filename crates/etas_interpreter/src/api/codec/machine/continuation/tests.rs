@@ -59,6 +59,7 @@ fn shared_continuation_edges_preserve_wire_and_checked_identity_validation() {
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            parent: None,
             handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
