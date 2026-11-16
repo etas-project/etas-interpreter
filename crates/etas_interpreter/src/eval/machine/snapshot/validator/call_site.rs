@@ -73,10 +73,14 @@ impl SnapshotValidator<'_> {
     ) -> Result<(), String> {
         use crate::control::CallSiteKind;
         let (CallSiteKind::Expr { expr }
+        | CallSiteKind::TaskCallback { expr }
         | CallSiteKind::Pipeline { expr }
         | CallSiteKind::PipelineStage { expr, .. }) = origin.kind;
         self.expr(expr, context)?;
         let source = &self.checked.hir.exprs[expr];
+        if matches!(origin.kind, CallSiteKind::TaskCallback { .. }) {
+            return self.dispatch.task_callback_origin(expr).map(|_| ());
+        }
         let valid = match (origin.kind, source) {
             (
                 CallSiteKind::Expr { .. },
@@ -116,7 +120,7 @@ impl SnapshotValidator<'_> {
                 .expr_types
                 .get(&receiver)
                 .ok_or("checkpoint composed invocation has no checked receiver type")?;
-            let bindings = site.frame.generic_bindings();
+            let bindings = site.bindings(self.checked);
             self.reference_target_type_with_bindings(&composition.root, ty, &bindings)?;
             composition.stages_and_index()?;
         }
@@ -279,7 +283,7 @@ impl SnapshotValidator<'_> {
         };
         self.call_target_in(target, context, call_target::ReferenceScope::CheckedSlot)?;
         let site = self.call_site(*call, args, *span, context)?;
-        let bindings = frame.generic_bindings();
+        let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*call));
         self.pending_call_target(*call, target, site, &bindings, evaluated_args.first())?;
         self.index_at_most(*next_arg_index, args.len(), context)?;
         let prefix = next_arg_index

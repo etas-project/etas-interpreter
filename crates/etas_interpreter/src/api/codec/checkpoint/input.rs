@@ -53,6 +53,22 @@ fn signal_json(
             "span":span_json(*span), "continuation":snapshot::continuation_json_with_budget(continuation, budget)?,
             "residual":residual,
         }),
+        S::HandlerRequest {
+            action,
+            inference,
+            args,
+            span,
+            continuation,
+            residual,
+        } => {
+            let mut value = json!({"kind":"handler_request", "action":action,
+                "inference":inference.as_deref().map(machine::model_policy_snapshot),
+                "span":span_json(*span), "residual":residual});
+            budget.json_metadata(&value)?;
+            value["args"] = json!(values_json(args, budget)?);
+            value["continuation"] = snapshot::continuation_json_with_budget(continuation, budget)?;
+            value
+        }
         S::Input(input) => json!({"kind":"input", "input":continuation_input_json(input, budget)?}),
         S::Apply {
             continuation,
@@ -95,6 +111,16 @@ fn signal_json(
             "args":values_json(args, budget)?, "span":span_json(*span),
             "continuation":snapshot::continuation_json_with_budget(continuation, budget)?}),
         S::Task(task) => match task {
+            T::ResumeHandled {
+                owner,
+                task,
+                handler,
+                value,
+                span,
+            } => json!({
+                "kind":"resume_handled", "owner":owner, "task":task, "handler":handler,
+                "value":snapshot::value_json_with_budget(value, budget)?, "span":span_json(*span),
+            }),
             T::Run { scope, span } => json!({"kind":"run", "scope":scope, "span":span_json(*span)}),
             T::Park {
                 owner,
@@ -219,6 +245,20 @@ fn signal_from_json(
             continuation: continuation()?,
             residual: field(value, "residual")?,
         },
+        "handler_request" => S::HandlerRequest {
+            action: field(value, "action")?,
+            inference: match required_obj(value, "inference")? {
+                Value::Null => None,
+                policy => Some(Box::new(
+                    machine::model_policy_from_snapshot(policy)
+                        .map_err(InterpreterCodecError::new)?,
+                )),
+            },
+            args: values_from_json(limits, value, "args")?,
+            span: span()?,
+            continuation: continuation()?,
+            residual: field(value, "residual")?,
+        },
         "apply" => S::Apply {
             continuation: continuation()?,
             input: continuation_input_from_json(limits, required_obj(value, "input")?)?,
@@ -254,6 +294,13 @@ fn signal_from_json(
             span: span()?,
             continuation: continuation()?,
         },
+        "resume_handled" => S::Task(T::ResumeHandled {
+            owner: required_u64(value, "owner")?,
+            task: required_u64(value, "task")?,
+            handler: field(value, "handler")?,
+            span: span()?,
+            value: value::snapshot_from_json_with_limits(limits, required_obj(value, "value")?)?,
+        }),
         "run" => S::Task(T::Run {
             scope: required_u64(value, "scope")?,
             span: span()?,

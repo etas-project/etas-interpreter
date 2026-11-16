@@ -202,14 +202,20 @@ impl<'a> EvalContext<'a> {
             .get(&expr)
             .ok_or_else(|| self.enum_fact_fault(span, "enum reference has no checked type"))?;
         let output = match self.checked.type_store.get(ty) {
-            Some(etas_types::Type::Function(signature)) => {
-                self.materialized_type(signature.output, frame.generic_bindings(), span)?
-            }
+            Some(etas_types::Type::Function(signature)) => self.materialized_type(
+                signature.output,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                span,
+            )?,
             _ => {
                 return self
                     .construct_enum_value(
                         symbol,
-                        self.materialized_type(ty, frame.generic_bindings(), span)?,
+                        self.materialized_type(
+                            ty,
+                            &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                            span,
+                        )?,
                         Vec::new(),
                         span,
                     )

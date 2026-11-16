@@ -197,7 +197,7 @@ pub struct MachineSnapshot {
     pub(crate) input: Option<Box<super::MachineInputSnapshot>>,
     pub(crate) frames: Vec<MachineFrameSnapshot>,
     pub(crate) program_owners: FrameProgramOwners,
-    pub(crate) suspended_programs: Vec<super::SuspendedProgramSnapshot>,
+    pub(crate) suspended_programs: Vec<super::SuspendedExecutionSnapshot>,
     /// Live residual monitor state referenced by frames and continuations.
     pub(crate) residual: super::ResidualMachineSnapshot,
 }
@@ -322,6 +322,7 @@ pub(crate) enum CallTargetSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
+    pub(crate) handler_activations: Vec<super::HandlerActivationSnapshot>,
     pub(crate) id: u64,
     /// Identity of this invocation's scope, not reusable authorization.
     pub(crate) residual_invocation: Option<std::num::NonZeroU64>,
@@ -336,6 +337,25 @@ pub(crate) struct LocalsSnapshot {
 impl LocalsSnapshot {
     pub(crate) fn into_unique_values(mut self) -> Option<Vec<(SymbolId, ValueSnapshot)>> {
         std::rc::Rc::get_mut(&mut self.locals).map(std::mem::take)
+    }
+    /// Descriptive bindings; frame validation rechecks their request proof.
+    pub(crate) fn bindings_at(
+        &self,
+        checked: &etas_frontend::CheckedProgram,
+        owner: etas_hir::HirOwner,
+    ) -> crate::control::GenericBindings {
+        let base = self.generic_bindings();
+        if crate::control::handler_activation::parametric_continuation_call(checked, owner) {
+            return base;
+        }
+        let Some(arm) = crate::control::handler_activation::enclosing_handler(checked, owner)
+        else {
+            return base;
+        };
+        self.handler_activations
+            .iter()
+            .find(|activation| activation.arm == arm)
+            .map_or(base, |activation| activation.bindings())
     }
     pub(crate) fn generic_bindings(&self) -> crate::control::GenericBindings {
         crate::control::GenericBindings {
@@ -579,6 +599,9 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
     },
     ProgramResume {
+        id: u32,
+    },
+    TaskResume {
         id: u32,
     },
     /// A captured residual scope; index into the checkpoint's residual scopes.
@@ -1042,6 +1065,7 @@ pub(crate) struct CallSiteSnapshot {
     pub kind: crate::control::CallSiteKind,
     pub frame: LocalsSnapshot,
     pub composition: Option<ComposedInvocationSnapshot>,
+    pub task_callback: Option<Box<CallTargetSnapshot>>,
 }
 
 #[derive(Clone, Debug)]

@@ -14,6 +14,7 @@ impl SnapshotValidator<'_> {
                 entry.program.program,
                 crate::orchestration::CheckpointProgramReference::Source
             ) && self.execution_revision.is_none()
+                && self.revisions.is_none()
             {
                 self.continuation(&entry.continuation, "task continuation", &mut scopes)?;
                 continue;

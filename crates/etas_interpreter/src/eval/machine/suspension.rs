@@ -28,6 +28,39 @@ mod drop;
 #[derive(Clone, Debug)]
 pub struct ProgramContinuation(Option<Rc<RefCell<Option<SuspendedProgram>>>>);
 
+#[derive(Clone, Debug)]
+pub(in crate::eval::machine) enum SuspendedExecution {
+    Program(ProgramContinuation),
+    Task(super::TaskHandlerContinuation),
+}
+
+impl SuspendedExecution {
+    pub(in crate::eval::machine) fn identity(&self) -> Result<usize, String> {
+        match self {
+            Self::Program(value) => value.checkpoint_identity(),
+            Self::Task(value) => value.checkpoint_identity(),
+        }
+    }
+    pub(in crate::eval::machine) fn projected_action(
+        &self,
+    ) -> Result<crate::control::CheckedActionInvocation, String> {
+        match self {
+            Self::Program(value) => value.projected_action(),
+            Self::Task(value) => value.projected_action(),
+        }
+    }
+    pub(in crate::eval::machine) fn capture(
+        &self,
+        context: &mut super::snapshot::CaptureContext,
+    ) -> Result<crate::orchestration::SuspendedExecutionSnapshot, String> {
+        use crate::orchestration::SuspendedExecutionSnapshot as Snapshot;
+        match self {
+            Self::Program(value) => value.capture(context).map(Snapshot::Program),
+            Self::Task(value) => value.capture(context).map(Snapshot::Task),
+        }
+    }
+}
+
 impl ProgramContinuation {
     pub(in crate::eval::machine) fn projected_action(
         &self,
@@ -102,6 +135,10 @@ impl EvalMachine {
                 reason,
             )
         };
+        if range.end <= ctx.task.inherited_handlers {
+            return Ok(false);
+        }
+        let range = range.start.max(ctx.task.inherited_handlers)..range.end;
         let scopes = ctx.task.handler_stack.get(range).ok_or_else(|| {
             fail("action handler search has an invalid dynamic scope range".into())
         })?;

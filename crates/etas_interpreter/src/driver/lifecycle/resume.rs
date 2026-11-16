@@ -88,7 +88,7 @@ pub(super) async fn resume(
     let result: Result<RunOutcome, String> = async {
         super::revision::validate_checkpoint(project, checkpoint, prepared)?;
         super::revision::bind_options(project, checkpoint.entry_item, prepared, &mut options)?;
-        if options.checkpoint_revisions.is_none() && project.standard_library.is_some() {
+        if options.checkpoint_revisions.is_none() {
             options.checkpoint_revisions = Some(Arc::new(
                 crate::api::code::PreparedRevisionSet::new(project.clone())
                     .with_source_definitions(options.code_definitions.clone()),

@@ -87,6 +87,16 @@ impl SnapshotValidator<'_> {
             self.type_id(*ty, &format!("{context} frame type binding"))?;
         }
         let bindings = frame.generic_bindings();
+        let mut activations = std::collections::BTreeMap::new();
+        for saved in &frame.handler_activations {
+            let revisions = self
+                .revisions
+                .ok_or("Handler frame requires freshly prepared code")?;
+            let activation = saved.restore(self.checked, revisions, &bindings)?;
+            if activations.insert(saved.arm, activation).is_some() {
+                return Err("frame duplicates a Handler activation".into());
+            }
+        }
         if frame
             .effect_row_bindings
             .iter()
@@ -146,11 +156,36 @@ impl SnapshotValidator<'_> {
                 ));
             }
             self.snapshot_value_in(value, super::call_target::ReferenceScope::CheckedSlot)?;
+            let activation = self
+                .checked
+                .symbols
+                .get(*symbol)
+                .and_then(|symbol| match &symbol.def {
+                    etas_hir::SymbolDef::PatternBinding { pattern, .. } => {
+                        crate::control::handler_activation::enclosing_handler(
+                            self.checked,
+                            etas_hir::HirOwner::Pattern(*pattern),
+                        )
+                    }
+                    _ => None,
+                })
+                .and_then(|arm| activations.get(&arm));
             self.validate_local_references(
                 *symbol,
                 value,
-                handler_bindings.get(symbol).unwrap_or(&bindings),
-            )?;
+                activation
+                    .map(|activation| &activation.bindings)
+                    .or_else(|| handler_bindings.get(symbol))
+                    .unwrap_or(&bindings),
+            )
+            .map_err(|reason| {
+                let local = self
+                    .checked
+                    .symbols
+                    .get(*symbol)
+                    .expect("validated local symbol");
+                format!("{context} local `{}`: {reason}", local.name)
+            })?;
         }
         Ok(())
     }

@@ -267,7 +267,7 @@ impl<'a> EvalContext<'a> {
                 expr,
                 symbol,
                 values,
-                frame.generic_bindings(),
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
                 record.span,
             ) {
                 Ok(value) => ControlSignal::Value(value),
@@ -280,7 +280,11 @@ impl<'a> EvalContext<'a> {
         };
         ControlSignal::Value(match nominal_type {
             Some(ty) => {
-                let ty = match self.materialized_type(ty, frame.generic_bindings(), record.span) {
+                let ty = match self.materialized_type(
+                    ty,
+                    &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                    record.span,
+                ) {
                     Ok(ty) => ty,
                     Err(fault) => return ControlSignal::Fault(Box::new(fault)),
                 };

@@ -18,6 +18,38 @@ pub(crate) struct ActionProjection {
 }
 
 impl ActionProjection {
+    pub(crate) fn checkpoint(
+        &self,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
+    ) -> Result<crate::orchestration::ActionProjectionSnapshot, String> {
+        for (edge, _, _) in &self.steps {
+            if let Some(owner) = edge.runtime_owner() {
+                context.bind_revision(&owner);
+            }
+        }
+        let source = self.source.checkpoint_evidence(context)?;
+        let steps = self
+            .steps
+            .iter()
+            .map(|(edge, _, _)| edge.checkpoint(context))
+            .collect::<Result<_, _>>()?;
+        Ok(crate::orchestration::ActionProjectionSnapshot { source, steps })
+    }
+
+    pub(crate) fn restore_checkpoint(
+        snapshot: &crate::orchestration::ActionProjectionSnapshot,
+        target: &CheckedExecutionProgram,
+        revisions: &crate::api::code::PreparedRevisionSet,
+    ) -> Result<Self, String> {
+        let source = CheckedActionInvocation::restore_evidence(&snapshot.source, revisions)?;
+        let steps = snapshot
+            .steps
+            .iter()
+            .map(|step| revisions.checked_projection(step))
+            .collect::<Result<_, _>>()?;
+        Self::new(source, steps, target)
+    }
+
     pub(crate) fn source_identity(&self) -> Result<usize, String> {
         self.source.evidence_identity()
     }

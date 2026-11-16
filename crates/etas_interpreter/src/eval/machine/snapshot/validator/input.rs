@@ -75,6 +75,30 @@ impl SnapshotValidator<'_> {
                     &crate::control::GenericBindings::new(),
                 )
             }
+            S::HandlerRequest {
+                inference,
+                args,
+                continuation,
+                residual,
+                ..
+            } => {
+                if !matches!(continuation, ContinuationSnapshot::TaskResume { .. }) {
+                    return Err("delegated Handler request has no caller segment".into());
+                }
+                if let Some(policy) = inference {
+                    policy.validate()?;
+                }
+                if let Some(attempt) = residual {
+                    self.residual_references
+                        .borrow_mut()
+                        .attempts
+                        .push(*attempt);
+                }
+                for value in args {
+                    self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
+                }
+                Ok(())
+            }
             S::Input(input) | S::Apply { input, .. } => self.input_value(input),
             S::Expr { expr, frame, .. } => {
                 self.expr(*expr, "checkpoint pending expression")?;
@@ -119,6 +143,15 @@ impl SnapshotValidator<'_> {
                     .tasks
                     .ok_or("pending task control has no scheduler snapshot")?;
                 match task {
+                    T::ResumeHandled {
+                        owner, task, value, ..
+                    } => {
+                        scheduler.validate_value(V::Task {
+                            owner: *owner,
+                            task: *task,
+                        })?;
+                        self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)
+                    }
                     T::Run { scope, .. } => {
                         scheduler.validate_value(V::Scheduler { owner: *scope })
                     }

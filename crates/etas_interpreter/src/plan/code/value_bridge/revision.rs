@@ -12,6 +12,51 @@ pub(crate) enum RevisionProjection {
 }
 
 impl RevisionProjection {
+    pub(crate) fn checkpoint(
+        &self,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
+    ) -> Result<crate::orchestration::CheckedProjectionSnapshot, String> {
+        use crate::orchestration::{
+            CallableProjectionOrigin, CheckedProjectionSnapshot, CheckpointCodeRevision,
+        };
+        let (origin, to_candidate) = if let Some(library) = self.standard_library_owner() {
+            let to_candidate = Arc::ptr_eq(self.target(), &library.program);
+            let owner = if to_candidate {
+                self.source()
+            } else {
+                self.target()
+            };
+            (
+                CallableProjectionOrigin::StandardLibrary {
+                    owner: Box::new(context.program_reference(owner)?),
+                },
+                to_candidate,
+            )
+        } else {
+            let owner = self
+                .runtime_owner()
+                .ok_or("action projection has no pinned revision owner")?;
+            let external = owner
+                .saved_external_type_bridge()
+                .is_some_and(|bridge| self.uses_bridge(bridge));
+            if !external && !self.uses_bridge(owner.type_bridge()) {
+                return Err("action projection has an unowned checked bridge".into());
+            }
+            context.bind_revision(&owner);
+            (
+                CallableProjectionOrigin::Revision {
+                    revision: Box::new(CheckpointCodeRevision::for_revision(&owner)),
+                    external,
+                },
+                Arc::ptr_eq(self.target(), owner.program()),
+            )
+        };
+        Ok(CheckedProjectionSnapshot {
+            origin,
+            to_candidate,
+        })
+    }
+
     pub(crate) fn uses_bridge(&self, expected: &Arc<RevisionTypeBridge>) -> bool {
         match self {
             Self::Candidate(bridge) | Self::Original(bridge) => Arc::ptr_eq(bridge, expected),

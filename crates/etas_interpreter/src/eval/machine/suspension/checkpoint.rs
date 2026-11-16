@@ -75,7 +75,7 @@ impl ProgramContinuation {
     }
 }
 
-fn context<'a>(
+pub(in crate::eval::machine) fn context<'a>(
     contexts: &'a mut std::collections::HashMap<
         usize,
         crate::eval::machine::snapshot::RestoreContext,
@@ -124,6 +124,7 @@ pub(in crate::eval::machine) fn restore_graph(
     table: &crate::eval::machine::snapshot::SuspensionRestoreTable,
     depth: &Rc<Cell<u32>>,
     current: &crate::api::HostExecutionContext,
+    owner_task: Option<crate::driver::scheduler::TaskIdentity>,
     options: RestoreOptions<'_>,
 ) -> Result<(), String> {
     let RestoreOptions {
@@ -133,7 +134,31 @@ pub(in crate::eval::machine) fn restore_graph(
     } = options;
     use crate::eval::machine::{frame::ProgramReturnFrame, scoped_call::ProgramCall};
     for index in snapshot.suspension_order()? {
-        let saved = &snapshot.suspended_programs[index];
+        use crate::orchestration::SuspendedExecutionSnapshot as Snapshot;
+        let saved = match &snapshot.suspended_programs[index] {
+            Snapshot::Program(saved) => saved,
+            Snapshot::Task(saved) => {
+                let restored = super::super::task_handler::checkpoint::restore(
+                    saved,
+                    owner_task.ok_or("task suspension has no owning coordinator task")?,
+                    revisions,
+                    contexts,
+                    table,
+                    depth,
+                    current,
+                    RestoreOptions {
+                        locked_model,
+                        ordering,
+                        residual,
+                    },
+                )?;
+                table.borrow_mut().insert(
+                    u32::try_from(index + 1).map_err(|_| "suspended graph identity overflow")?,
+                    SuspendedExecution::Task(restored),
+                );
+                continue;
+            }
+        };
         let parent = revisions.execution_snapshot(&saved.parent)?;
         let call = context(
             contexts,
@@ -237,7 +262,7 @@ pub(in crate::eval::machine) fn restore_graph(
             .borrow_mut()
             .insert(
                 u32::try_from(index + 1).map_err(|_| "suspended graph identity overflow")?,
-                restored,
+                SuspendedExecution::Program(restored),
             )
             .is_some()
         {

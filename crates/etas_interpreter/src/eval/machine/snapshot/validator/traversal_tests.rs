@@ -103,6 +103,7 @@ fn shared_dag_validation_keeps_duplicate_scopes_and_invalid_leaves_fail_closed()
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
@@ -211,6 +212,7 @@ fn boundary(scope_id: u32, inner: ContinuationSnapshot) -> ContinuationSnapshot 
         handlers: vec![],
         span: span(),
         frame: LocalsSnapshot {
+            handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
@@ -377,6 +379,7 @@ fn deep_validator_preserves_leaf_checks_and_handler_validation_order() {
         block: HirBlockId(u32::MAX),
         next_stmt_index: 0,
         frame: LocalsSnapshot {
+            handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,

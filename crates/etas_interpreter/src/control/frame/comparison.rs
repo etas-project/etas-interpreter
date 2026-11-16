@@ -31,7 +31,10 @@ impl FrameComparison {
         }
         let a = left.slots.try_borrow().ok()?;
         let b = right.slots.try_borrow().ok()?;
-        if a.values.len() != b.values.len() || a.additional != b.additional {
+        if a.values.len() != b.values.len()
+            || a.additional != b.additional
+            || a.handler_activations != b.handler_activations
+        {
             return None;
         }
         let restored_keys = match (&left.restored, &right.restored) {

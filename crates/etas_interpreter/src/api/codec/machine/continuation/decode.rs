@@ -46,6 +46,9 @@ fn continuation_leaf_from_snapshot(
             limit: required_usize(value, "limit")?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
+        "task_resume" => ContinuationSnapshot::TaskResume {
+            id: required_u32(value, "id")?,
+        },
         "program_resume" => ContinuationSnapshot::ProgramResume {
             id: required_u32(value, "id")?,
         },

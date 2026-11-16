@@ -39,6 +39,7 @@ pub(crate) enum TaskWait {
     Host(etas_host::execution::OperationId),
     Cpu(crate::driver::cpu::CpuJobId),
     Resource(super::resource::ResourceGuardId),
+    Handler(crate::orchestration::HandlerScopeId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -86,6 +87,10 @@ pub(crate) enum TaskWaiter {
 }
 
 pub(crate) enum TaskResume {
+    Handler {
+        continuation: Continuation,
+        handler: crate::orchestration::HandlerScopeId,
+    },
     Await(Continuation),
     Run(Continuation),
     Transfer {
@@ -96,7 +101,9 @@ pub(crate) enum TaskResume {
     },
 }
 
+#[derive(Debug)]
 pub(crate) enum RootTaskWait {
+    Ready(Box<crate::eval::machine::MachineInput>),
     Await {
         target: TaskHandle,
         continuation: Continuation,

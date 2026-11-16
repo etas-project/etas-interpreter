@@ -9,7 +9,7 @@ use crate::{
 };
 
 impl EvalContext<'_> {
-    pub(in crate::eval) fn execute_checked_default_action(
+    pub(crate) fn execute_checked_default_action(
         &mut self,
         mut perform: PendingPerform,
     ) -> ControlSignal {

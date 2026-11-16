@@ -39,7 +39,8 @@ pub(crate) enum PendingToolDispatch {
     Source,
 }
 
-pub(super) enum MachineInput {
+#[derive(Clone, Debug)]
+pub(crate) enum MachineInput {
     EnterProgram {
         call: super::scoped_call::ProgramCall,
         args: Vec<InterpValue>,
@@ -210,6 +211,7 @@ impl EvalMachine {
                 &table,
                 &machine.active_call_depth,
                 current,
+                resources.task.as_ref().map(|task| task.identity),
                 super::suspension::checkpoint::RestoreOptions {
                     locked_model: &resources.locked_model,
                     ordering: resources.ordering.as_ref(),

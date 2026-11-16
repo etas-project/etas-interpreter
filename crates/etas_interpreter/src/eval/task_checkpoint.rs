@@ -92,6 +92,13 @@ impl TaskCapture {
         resume: &TaskResume,
     ) -> Result<TaskResumeSnapshot, String> {
         Ok(match resume {
+            TaskResume::Handler {
+                continuation,
+                handler,
+            } => TaskResumeSnapshot::Handler {
+                continuation: self.continuation(program, continuation)?,
+                handler: *handler,
+            },
             TaskResume::Await(continuation) => {
                 TaskResumeSnapshot::Await(self.continuation(program, continuation)?)
             }
@@ -233,6 +240,9 @@ impl super::EvalContext<'_> {
             };
             let state = match task.state {
                 TaskState::Ready => ScheduledTaskStateSnapshot::Ready,
+                TaskState::Waiting(TaskWait::Handler(handler)) => {
+                    ScheduledTaskStateSnapshot::WaitingHandler(handler)
+                }
                 TaskState::Waiting(TaskWait::Task(id)) => {
                     ScheduledTaskStateSnapshot::WaitingTask(id)
                 }
@@ -323,6 +333,7 @@ impl super::EvalContext<'_> {
                         target: *target,
                         continuation: root_capture.continuation(&active, continuation)?,
                     },
+                    RootTaskWait::Ready(_) => RootTaskWaitSnapshot::Ready,
                     RootTaskWait::Run { scope } => RootTaskWaitSnapshot::Run { scope: *scope },
                     RootTaskWait::Transfer {
                         target,
@@ -360,11 +371,27 @@ impl super::EvalContext<'_> {
             .iter()
             .map(|arg| root_capture.context.value(arg))
             .collect::<Result<_, _>>()?;
+        let ready_input = match machine.root_wait.as_ref() {
+            Some(RootTaskWait::Ready(input)) => {
+                if machine.has_input() {
+                    return Err("ready root wait also has an active machine input".into());
+                }
+                Some(machine.capture_pending_input(
+                    input,
+                    &mut root_capture.context,
+                    Some(&active),
+                )?)
+            }
+            _ => None,
+        };
         let mut saved = machine.capture_machine_in_program(
             &mut root_capture.context,
             self.task.residual.counters(),
             Some(&root.program),
         )?;
+        if let Some(input) = ready_input {
+            saved.input = Some(Box::new(input));
+        }
         saved.auxiliary = root_capture.auxiliary;
         saved.residual.exits = self
             .task
@@ -438,6 +465,7 @@ impl super::EvalContext<'_> {
             local.model_policy =
                 super::machine::snapshot::restore_model_policy(task.local.model_policy.clone());
             local.handler_stack = task.local.handlers.handlers.clone();
+            local.inherited_handlers = task.inherited_dynamic.0;
             local.retry_stack = task.local.retries.attempts.clone();
             locals.insert(*id, local);
         }
@@ -600,6 +628,13 @@ impl super::EvalContext<'_> {
                         )
                     };
                     Ok::<_, String>(match resume {
+                        TaskResumeSnapshot::Handler {
+                            continuation: index,
+                            handler,
+                        } => TaskResume::Handler {
+                            continuation: continuation(*index)?,
+                            handler: *handler,
+                        },
                         TaskResumeSnapshot::Await(index) => {
                             TaskResume::Await(continuation(*index)?)
                         }
@@ -654,6 +689,9 @@ impl super::EvalContext<'_> {
                 })
                 .transpose()?;
             let state = match task.state {
+                ScheduledTaskStateSnapshot::WaitingHandler(handler) => {
+                    TaskState::Waiting(TaskWait::Handler(handler))
+                }
                 ScheduledTaskStateSnapshot::Ready => TaskState::Ready,
                 ScheduledTaskStateSnapshot::WaitingTask(id) => {
                     TaskState::Waiting(TaskWait::Task(id))
@@ -764,6 +802,12 @@ impl super::EvalContext<'_> {
                             revisions.as_deref(),
                         )?,
                     },
+                    RootTaskWaitSnapshot::Ready => RootTaskWait::Ready(Box::new(
+                        root_restored
+                            .machine
+                            .take_task_input()
+                            .ok_or("ready root wait has no queued input")?,
+                    )),
                     RootTaskWaitSnapshot::Run { scope } => RootTaskWait::Run { scope: *scope },
                     RootTaskWaitSnapshot::Transfer {
                         target,

@@ -51,6 +51,54 @@ impl ActionBridge {
         }
         let original_program = original.checked_program();
         let candidate_program = candidate.checked_program();
+        // A callback can carry its caller's action through a generic std body.
+        // Its payload ABI remains in the invocation's checked origin; this
+        // correspondence transports only the canonical row member identity.
+        let carried_targets = candidate_program
+            .effect_registry
+            .action_identities()
+            .map(|(action, name)| {
+                Ok((
+                    (
+                        candidate
+                            .native_effect_identity(action.tag)
+                            .map_err(Error::Projection)?
+                            .clone(),
+                        name.to_owned(),
+                    ),
+                    action,
+                ))
+            })
+            .collect::<Result<BTreeMap<_, _>, Error>>()?;
+        for (from, name) in original_program.effect_registry.action_identities() {
+            let owner = original
+                .native_effect_identity(from.tag)
+                .map_err(Error::Projection)?;
+            let Some(to) = carried_targets.get(&(owner.clone(), name.to_owned())) else {
+                continue;
+            };
+            if forward.contains_key(&from)
+                || !(original_program.effect_registry.is_carried_action(&from)
+                    || candidate_program.effect_registry.is_carried_action(to))
+            {
+                continue;
+            }
+            if original_program.effect_registry.action_selectors(&from)
+                != candidate_program.effect_registry.action_selectors(to)
+            {
+                return Err(invalid(
+                    "carried action selector shape changed across the checked environment",
+                ));
+            }
+            let pair = Arc::new(ActionPair {
+                original: from.clone(),
+                candidate: to.clone(),
+            });
+            forward.insert(from, pair.clone());
+            if backward.insert(to.clone(), pair).is_some() {
+                return Err(invalid("ambiguous carried action correspondence"));
+            }
+        }
         for symbol in original_program.std_registry.symbols() {
             let etas_std::StdDecl::EffectAction(declaration) = &symbol.decl else {
                 continue;

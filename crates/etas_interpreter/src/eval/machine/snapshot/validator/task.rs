@@ -34,6 +34,10 @@ impl SnapshotValidator<'_> {
             let index = match resume {
                 crate::orchestration::TaskResumeSnapshot::Await(index)
                 | crate::orchestration::TaskResumeSnapshot::Run(index)
+                | crate::orchestration::TaskResumeSnapshot::Handler {
+                    continuation: index,
+                    ..
+                }
                 | crate::orchestration::TaskResumeSnapshot::Transfer {
                     continuation: index,
                     ..

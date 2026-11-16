@@ -2,8 +2,10 @@ mod call_target_storage;
 mod callable;
 mod suspension;
 pub(crate) use suspension::{
-    ActionInvocationSnapshot, ActionOriginSnapshot, ExecutionProgramSnapshot,
-    ExecutionRootSnapshot, SuspendedProgramSnapshot,
+    ActionEvidenceSnapshot, ActionInvocationSnapshot, ActionOriginSnapshot,
+    ActionProjectionSnapshot, CheckedProjectionSnapshot, ExecutionProgramSnapshot,
+    ExecutionRootSnapshot, SuspendedExecutionSnapshot, SuspendedProgramSnapshot,
+    SuspendedTaskHandlerSnapshot, TaskHandlerWaitSnapshot,
 };
 mod checkpoint;
 mod task;
@@ -61,3 +63,5 @@ pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{CpuWorkerId, WorkflowEvent, WorkflowEventLayer, WorkflowStepId};
 mod model_request;
 pub(crate) use model_request::{ModelRequestSnapshot, bounded_model_options};
+
+pub(crate) use suspension::HandlerActivationSnapshot;

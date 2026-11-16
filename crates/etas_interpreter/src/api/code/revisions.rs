@@ -87,10 +87,9 @@ impl PreparedRevisionSet {
         identity: &CheckpointCodeRevision,
     ) -> Result<&Arc<PreparedCodeRevision>, String> {
         identity.validate()?;
-        let revision = self
-            .revisions
-            .get(&identity.revision_key)
-            .ok_or("checkpoint callable has no freshly prepared revision")?;
+        let revision = self.revisions.get(&identity.revision_key).ok_or(
+            "checkpoint callable requires freshly prepared revisions; its revision is missing",
+        )?;
         if CheckpointCodeRevision::for_revision(revision) != *identity {
             return Err(
                 "checkpoint callable identity differs from its freshly prepared revision".into(),
@@ -306,6 +305,36 @@ impl PreparedRevisionSet {
         Ok(prepared.execution(plan))
     }
 
+    pub(crate) fn checked_projection(
+        &self,
+        saved: &crate::orchestration::CheckedProjectionSnapshot,
+    ) -> Result<crate::plan::code::RevisionProjection, String> {
+        use crate::plan::code::RevisionProjection;
+        let bridge = match &saved.origin {
+            crate::orchestration::CallableProjectionOrigin::Revision { revision, external } => {
+                let revision = self.checked_revision(revision)?;
+                if *external {
+                    revision
+                        .saved_external_type_bridge()
+                        .ok_or("checkpoint requires missing external type bridge")?
+                } else {
+                    revision.type_bridge()
+                }
+            }
+            crate::orchestration::CallableProjectionOrigin::StandardLibrary { owner } => self
+                .prepared_program(owner)?
+                .program
+                .standard_library()
+                .ok_or("checkpoint projection has no current checked std owner")?
+                .bridge(),
+        };
+        Ok(if saved.to_candidate {
+            RevisionProjection::Candidate(bridge.clone())
+        } else {
+            RevisionProjection::Original(bridge.clone())
+        })
+    }
+
     pub(crate) fn callable_projections(
         &self,
         metadata: &crate::orchestration::ScopedCallableMetadata,
@@ -371,7 +400,7 @@ impl PreparedRevisionSet {
         let revision = self
             .revisions
             .get(&reference.revision.revision_key)
-            .ok_or("checkpoint agent reference has no freshly prepared revision")?;
+            .ok_or("checkpoint agent reference requires freshly prepared revisions; its revision is missing")?;
         if CheckpointCodeRevision::for_revision(revision) != reference.revision {
             return Err(
                 "checkpoint agent reference differs from its freshly prepared revision".into(),

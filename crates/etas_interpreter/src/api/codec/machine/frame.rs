@@ -78,6 +78,7 @@ fn decode_snapshot_frame(
             .map_err(|error| error.to_string())
     })?;
     Ok(LocalsSnapshot {
+        handler_activations: decoded.handler_activations,
         residual_invocation: decoded.residual_invocation,
         id: decoded.id,
         locals: std::rc::Rc::new(decoded.locals),
@@ -96,6 +97,9 @@ fn decode_runtime_frame(
         crate::api::codec::value::decode::decode_with_frames(limits, value, cache)
             .map_err(|error| error.to_string())
     })?;
+    if !decoded.handler_activations.is_empty() {
+        return Err("Handler frame requires a checked restore context".into());
+    }
     let mut frame = crate::control::Frame::from_snapshot_with_generic_bindings(
         decoded.locals,
         crate::control::GenericBindings {
@@ -112,6 +116,7 @@ fn decode_runtime_frame(
 }
 
 struct DecodedLocals<T> {
+    handler_activations: Vec<crate::orchestration::HandlerActivationSnapshot>,
     id: u64,
     residual_invocation: Option<std::num::NonZeroU64>,
     locals: Vec<(SymbolId, T)>,
@@ -168,7 +173,32 @@ fn decode_locals<T>(
             pair[0].0
         ));
     }
+    let activations = match value.get("handler_activations") {
+        Some(Value::Array(activations)) => activations.as_slice(),
+        None => &[],
+        Some(_) => return Err("frame Handler activations must be an array".into()),
+    };
+    let handler_activations = activations
+        .iter()
+        .map(|activation| {
+            Ok(crate::orchestration::HandlerActivationSnapshot {
+                arm: etas_hir::HirHandlerArmId(required_u32(activation, "arm")?),
+                types: serde_json::from_value(required(activation, "types")?.clone())
+                    .map_err(|error| error.to_string())?,
+                parameters: serde_json::from_value(required(activation, "parameters")?.clone())
+                    .map_err(|error| error.to_string())?,
+                rows: serde_json::from_value(required(activation, "rows")?.clone())
+                    .map_err(|error| error.to_string())?,
+                request: crate::api::codec::checkpoint::suspension::decode_evidence(
+                    limits,
+                    required(activation, "request")?,
+                )
+                .map_err(|error| error.to_string())?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     Ok(DecodedLocals {
+        handler_activations,
         id,
         residual_invocation,
         locals,

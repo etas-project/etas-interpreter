@@ -59,7 +59,7 @@ pub(in crate::api::codec) fn call_site_from_json(
     let origin = required(value, "origin")?;
     let kind = required_str(origin, "kind")?;
     let fields = match kind {
-        "expr" | "pipeline" => &["kind", "expr"][..],
+        "expr" | "pipeline" | "task_callback" => &["kind", "expr"][..],
         "pipeline_stage" => &["kind", "expr", "index"][..],
         _ => return Err("unknown checked invocation origin kind".into()),
     };
@@ -72,6 +72,7 @@ pub(in crate::api::codec) fn call_site_from_json(
     let expr = etas_hir::HirExprId(required_u32(origin, "expr")?);
     let kind = match kind {
         "expr" => crate::control::CallSiteKind::Expr { expr },
+        "task_callback" => crate::control::CallSiteKind::TaskCallback { expr },
         "pipeline" => crate::control::CallSiteKind::Pipeline { expr },
         "pipeline_stage" => crate::control::CallSiteKind::PipelineStage {
             expr,
@@ -81,6 +82,12 @@ pub(in crate::api::codec) fn call_site_from_json(
     };
     Ok(crate::orchestration::CallSiteSnapshot {
         kind,
+        task_callback: match required(value, "task_callback")? {
+            Value::Null => None,
+            call => Some(Box::new(super::call_target_snapshot_from_json(
+                limits, call,
+            )?)),
+        },
         frame: super::frame::locals_from_snapshot(limits, required(value, "frame")?)?,
         composition: match required(value, "composition")? {
             Value::Null => None,

@@ -82,16 +82,17 @@ impl<'a> EvalContext<'a> {
                     missing("checked standard callable reference has no native target".to_owned())
                 })?
         };
+        let request_bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr));
         // Keep the checked template ABI and its lexical substitutions together;
         // the callable may outlive the generic frame that created it.
-        let target = if frame.generic_bindings().is_empty() {
+        let target = if request_bindings.is_empty() {
             target
         } else {
             CallTarget::Specialized {
                 target: target.into(),
-                type_bindings: frame.sorted_type_bindings(),
-                type_parameter_bindings: frame.generic_bindings().sorted_parameters(),
-                effect_row_bindings: frame.generic_bindings().sorted_rows(),
+                type_bindings: request_bindings.sorted_types(),
+                type_parameter_bindings: request_bindings.sorted_parameters(),
+                effect_row_bindings: request_bindings.sorted_rows(),
             }
         };
         Ok(Some(InterpValue::Callable(target)))
@@ -174,12 +175,13 @@ impl<'a> EvalContext<'a> {
         frame: &Frame,
         span: Span,
     ) -> Result<CallTarget, crate::control::ExecutionFault> {
+        let request_bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(call));
         let target = match target {
             CallTarget::NominalConstructor(ty) => CallTarget::NominalConstructor(
-                self.materialized_type(ty, frame.generic_bindings(), span)?,
+                self.materialized_type(ty, &request_bindings, span)?,
             ),
             CallTarget::PureIntrinsic(call) => CallTarget::PureIntrinsic(
-                call.specialize(&self.checked.type_store, frame.generic_bindings())
+                call.specialize(&self.checked.type_store, &request_bindings)
                     .map_err(|message| {
                         crate::control::ExecutionFault::new(
                             AnalysisDiagnosticCode::MissingCheckedFact,
@@ -189,7 +191,7 @@ impl<'a> EvalContext<'a> {
                     })?,
             ),
             CallTarget::StdIntrinsic(call) => CallTarget::StdIntrinsic(
-                call.specialize_generic(&self.checked.type_store, frame.generic_bindings())
+                call.specialize_generic(&self.checked.type_store, &request_bindings)
                     .map_err(|message| {
                         crate::control::ExecutionFault::new(
                             AnalysisDiagnosticCode::MissingCheckedFact,
@@ -200,18 +202,15 @@ impl<'a> EvalContext<'a> {
             ),
             other => other,
         };
-        let bindings = crate::control::CheckedCallBindings::resolve(
-            self.checked,
-            call,
-            frame.generic_bindings(),
-        )
-        .map_err(|error| {
-            crate::control::ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                format!("checked call bindings cannot be materialized: {error}"),
-            )
-        })?;
+        let bindings =
+            crate::control::CheckedCallBindings::resolve(self.checked, call, &request_bindings)
+                .map_err(|error| {
+                    crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        format!("checked call bindings cannot be materialized: {error}"),
+                    )
+                })?;
         if bindings.types.is_empty() && bindings.parameters.is_empty() && bindings.rows.is_empty() {
             return Ok(target);
         }

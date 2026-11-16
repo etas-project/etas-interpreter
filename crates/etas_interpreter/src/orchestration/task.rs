@@ -21,6 +21,8 @@ pub(crate) struct TaskSchedulerSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum RootTaskWaitSnapshot {
+    /// The queued input is stored in the root machine's shared capture graph.
+    Ready,
     Await {
         target: crate::driver::scheduler::TaskHandle,
         continuation: u32,
@@ -105,6 +107,7 @@ pub(crate) struct TaskLocalSnapshot {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ScheduledTaskStateSnapshot {
     Ready,
+    WaitingHandler(super::HandlerScopeId),
     WaitingTask(TaskId),
     WaitingScope(TaskScopeId),
     WaitingResource(u64),
@@ -130,6 +133,10 @@ pub(crate) enum TaskOutcomeSnapshot {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskResumeSnapshot {
+    Handler {
+        continuation: u32,
+        handler: super::HandlerScopeId,
+    },
     Await(u32),
     Run(u32),
     Transfer {

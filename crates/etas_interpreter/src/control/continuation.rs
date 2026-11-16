@@ -28,6 +28,7 @@ pub enum Continuation {
     FileReadReduction(Box<super::FileReadReduction>),
     DirectoryListReduction(Box<super::DirectoryListReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
+    TaskResume(crate::eval::machine::TaskHandlerContinuation),
     /// An invocation's residual scope captured while an effect request is
     /// handled outside it. Restored as its explicit frame on resume.
     ResidualScope(super::residual::SharedResidualScope),

@@ -23,6 +23,14 @@ pub(crate) enum MachineInputSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ControlSignalSnapshot {
+    HandlerRequest {
+        action: etas_hir::ResolvedActionRef,
+        inference: Option<Box<super::ModelExecutionPolicySnapshot>>,
+        args: Vec<ValueSnapshot>,
+        span: Span,
+        continuation: ContinuationSnapshot,
+        residual: Option<u32>,
+    },
     Error {
         error_type: etas_types::TypeId,
         payload: ValueSnapshot,
@@ -83,6 +91,13 @@ pub(crate) struct ResidualActivationSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskControlSnapshot {
+    ResumeHandled {
+        owner: u64,
+        task: u64,
+        handler: super::HandlerScopeId,
+        value: ValueSnapshot,
+        span: Span,
+    },
     Run {
         scope: u64,
         span: Span,
@@ -106,6 +121,7 @@ impl MachineInputSnapshot {
             Self::Signal(
                 ControlSignalSnapshot::Apply { continuation, .. }
                 | ControlSignalSnapshot::Error { continuation, .. }
+                | ControlSignalSnapshot::HandlerRequest { continuation, .. }
                 | ControlSignalSnapshot::Checkpoint { continuation, .. }
                 | ControlSignalSnapshot::Expr { continuation, .. }
                 | ControlSignalSnapshot::Block { continuation, .. }

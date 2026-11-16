@@ -104,7 +104,13 @@ impl<'a> EvalContext<'a> {
         pending: &PendingPerform,
         frame: &Frame,
     ) -> Result<crate::control::CheckedActionInvocation, String> {
-        self.action_invocation_with_bindings(pending, frame.generic_bindings())
+        let owner = pending
+            .expr
+            .ok_or("perform has no checked expression origin")?;
+        self.action_invocation_with_bindings(
+            pending,
+            &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(owner)),
+        )
     }
 
     pub(in crate::eval) fn action_invocation_with_bindings(

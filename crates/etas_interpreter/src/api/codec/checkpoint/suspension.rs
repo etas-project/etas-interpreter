@@ -1,7 +1,44 @@
+pub(crate) mod task_handler;
+
 use super::*;
 use crate::orchestration::{
-    ActionInvocationSnapshot, ActionOriginSnapshot, SuspendedProgramSnapshot,
+    ActionInvocationSnapshot, ActionOriginSnapshot, SuspendedExecutionSnapshot,
+    SuspendedProgramSnapshot,
 };
+
+pub(super) fn encode_execution(
+    node: &SuspendedExecutionSnapshot,
+    budget: &mut snapshot::EncodingBudget,
+) -> Result<Value, InterpreterCodecError> {
+    let (kind, mut value) = match node {
+        SuspendedExecutionSnapshot::Program(node) => ("program", encode(node, budget)?),
+        SuspendedExecutionSnapshot::Task(node) => ("task", task_handler::encode(node, budget)?),
+    };
+    budget.metadata(1, kind.len())?;
+    value["kind"] = json!(kind);
+    Ok(value)
+}
+
+pub(super) fn decode_execution(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+    revisions: Option<&crate::api::code::PreparedRevisionSet>,
+) -> Result<SuspendedExecutionSnapshot, InterpreterCodecError> {
+    match required_str(value, "kind")? {
+        "program" => decode(limits, value, revisions).map(SuspendedExecutionSnapshot::Program),
+        "task" => task_handler::decode(
+            limits,
+            value,
+            revisions.ok_or_else(|| {
+                InterpreterCodecError::new("task suspension requires current prepared code")
+            })?,
+        )
+        .map(SuspendedExecutionSnapshot::Task),
+        kind => Err(InterpreterCodecError::new(format!(
+            "unknown suspended execution kind {kind}"
+        ))),
+    }
+}
 
 pub(super) fn encode(
     node: &SuspendedProgramSnapshot,
@@ -34,7 +71,15 @@ pub(super) fn encode(
             .push(frame);
     }
     value["continuation"] = snapshot::continuation_json_with_budget(&node.continuation, budget)?;
-    value["action"] = match &node.action {
+    value["action"] = encode_action(&node.action, budget)?;
+    Ok(value)
+}
+
+fn encode_action(
+    action: &ActionInvocationSnapshot,
+    budget: &mut snapshot::EncodingBudget,
+) -> Result<Value, InterpreterCodecError> {
+    Ok(match action {
         ActionInvocationSnapshot::FromSuspension { id } => json!({"kind":"forwarded", "id":id}),
         ActionInvocationSnapshot::Native { native, origin } => {
             budget.metadata(
@@ -75,8 +120,7 @@ pub(super) fn encode(
             };
             json!({"kind":"native", "native":native, "origin":origin})
         }
-    };
-    Ok(value)
+    })
 }
 
 pub(super) fn decode(
@@ -209,5 +253,46 @@ fn decode_action(
             |error| InterpreterCodecError::new(format!("invalid action native identity: {error}")),
         )?,
         origin,
+    })
+}
+
+pub(in crate::api::codec) fn encode_evidence(
+    evidence: &crate::orchestration::ActionEvidenceSnapshot,
+    budget: &mut snapshot::EncodingBudget,
+) -> Result<Value, InterpreterCodecError> {
+    let mut value = json!({"origin":null, "projections":evidence.projections});
+    budget.json_metadata(&value)?;
+    value["origin"] = encode_action(&evidence.origin, budget)?;
+    Ok(value)
+}
+
+pub(in crate::api::codec) fn decode_evidence(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<crate::orchestration::ActionEvidenceSnapshot, InterpreterCodecError> {
+    let origin = decode_action(limits, required_obj(value, "origin")?)?;
+    match &origin {
+        ActionInvocationSnapshot::Native {
+            origin: ActionOriginSnapshot::Source { .. },
+            ..
+        }
+        | ActionInvocationSnapshot::Native {
+            origin:
+                ActionOriginSnapshot::Standard {
+                    call: crate::orchestration::CallTargetSnapshot::StdIntrinsic { .. },
+                },
+            ..
+        } => (),
+        _ => {
+            return Err(InterpreterCodecError::new(
+                "Handler activation requires a native checked action origin",
+            ));
+        }
+    }
+    Ok(crate::orchestration::ActionEvidenceSnapshot {
+        origin,
+        projections: serde_json::from_value(required_obj(value, "projections")?.clone()).map_err(
+            |error| InterpreterCodecError::new(format!("invalid Handler projection: {error}")),
+        )?,
     })
 }

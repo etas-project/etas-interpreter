@@ -1106,3 +1106,167 @@ flow main() -> i32 {
     assert_eq!(host.console_call_count(), 2);
     assert_eq!(host.stdout_text(), "root\nchild\n");
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn caller_handler_resumes_a_run_task_and_continues_both_bodies() {
+    let result = run(r#"
+module app.main;
+import std.task.{Scheduler, run};
+effect Probe { action value() -> i32; }
+flow scheduled(scheduler: Scheduler) -> i32 ![Probe.value] {
+    let value = perform Probe.value();
+    return value + 2;
+}
+flow main() -> i32 {
+    let result = handle { run(scheduled) } with { Probe.value() => { resume 40; } };
+    return result + 1;
+}
+"#)
+    .await;
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(43)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn caller_handler_finish_cancels_the_run_task_and_returns_the_handle_answer() {
+    let result = run(r#"
+module app.main;
+import std.task.{Scheduler, run};
+effect Probe { action value() -> i32; }
+flow scheduled(scheduler: Scheduler) -> i32 ![Probe.value] { return perform Probe.value(); }
+flow main() -> string {
+    return handle { run(scheduled); "normal" } with { Probe.value() => { finish "finished"; } };
+}
+"#)
+    .await;
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.value(),
+        Some(&InterpValue::String("finished".into()))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn caller_handler_uses_the_nearest_scheduled_parent() {
+    let result = run(r#"
+module app.main;
+import std.task.{Scheduler, run, start, await};
+effect Probe { action value() -> i32; }
+flow main() -> i32 {
+    return handle { run((scheduler: Scheduler) => {
+        let result = handle {
+            let child = start(() => { let value = perform Probe.value(); return value + 2; });
+            await(child)
+        } with { Probe.value() => { resume 40; } };
+        return result + 1;
+    }) } with { Probe.value() => { resume 99; } };
+}
+"#)
+    .await;
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(43)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn caller_handler_finish_keeps_its_scheduled_owner_running() {
+    let result = run(r#"
+module app.main;
+import std.task.{Scheduler, run, start, await};
+effect Probe { action value() -> i32; }
+flow main() -> string {
+    return run((scheduler: Scheduler) => {
+        let answer = handle {
+            let child = start(() => { return perform Probe.value(); });
+            await(child); "normal"
+        } with { Probe.value() => { finish "finished"; } };
+        if answer == "finished" { return "continued"; } return "wrong";
+    });
+}
+"#)
+    .await;
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(
+        result.value(),
+        Some(&InterpValue::String("continued".into()))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn caller_task_handler_checkpoint_resumes_under_independently_checked_source() {
+    const SOURCE: &str = r#"
+module app.main;
+import std.task.{run, Scheduler};
+import std.runtime.checkpoint.checkpoint;
+effect Query { action<T> next(value: T) -> T; }
+flow identity<Value>(value: Value) -> Value { return value; }
+flow scheduled(scheduler: Scheduler) -> i32 ![Query.next] {
+    let value = perform Query.next(40);
+    return value + 2;
+}
+flow dispatch() -> i32 ![Query.next] { return run(scheduled); }
+flow parent(scheduler: Scheduler) -> i32 ![] {
+    let value = handle { dispatch() } with {
+        Query.next(value) => { checkpoint("nested-handler"); resume identity(value); }
+    };
+    return value + 1;
+}
+flow main() -> i32 ![] {
+    let value = handle { dispatch() } with {
+        Query.next(value) => { checkpoint("caller-handler"); resume identity(value); }
+    };
+    return value + run(parent) + 1;
+}
+"#;
+    let checked = checked_project(SOURCE);
+    let host = FakeHost::new(HostServiceAvailability {
+        checkpoint: true,
+        ..Default::default()
+    });
+    let first = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert_eq!(first.value(), Some(&InterpValue::i32(86)));
+    assert_eq!(first.checkpoints.len(), 2);
+    for (index, saved) in first.checkpoints.iter().enumerate() {
+        let artifact = api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap();
+        let bytes = api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
+        let artifact = api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+        let current = checked_project(SOURCE);
+        let revisions = std::sync::Arc::new(api::code::PreparedRevisionSet::new(current.clone()));
+        let checkpoint = api::codec::checkpoint_from_json_with_revisions(
+            &Default::default(),
+            &artifact,
+            &current,
+            Some(&revisions),
+        )
+        .unwrap();
+        let resumed = Interpreter
+            .resume_checkpoint(
+                &current,
+                &checkpoint,
+                &host,
+                RunOptions {
+                    checkpoint_revisions: Some(revisions),
+                    ..Default::default()
+                },
+            )
+            .await
+            .unwrap();
+        assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+        assert_eq!(resumed.value(), first.value());
+        assert_eq!(
+            resumed.checkpoints.len(),
+            first.checkpoints.len() - index - 1
+        );
+    }
+}

@@ -40,7 +40,7 @@ pub(crate) struct CaptureContext {
     pub(super) continuations: HashMap<NonNull<Continuation>, ContinuationSnapshotLink>,
     suspension_ids: HashMap<usize, u32>,
     action_providers: HashMap<u32, usize>,
-    pending_suspensions: Vec<super::super::suspension::ProgramContinuation>,
+    pending_suspensions: Vec<super::super::suspension::SuspendedExecution>,
     first_frame: Option<(FrameIdentity, LocalsSnapshot)>,
     frames: HashMap<FrameIdentity, LocalsSnapshot>,
     first_active: Option<*const ()>,
@@ -134,7 +134,25 @@ impl CaptureContext {
         &mut self,
         continuation: &super::super::suspension::ProgramContinuation,
     ) -> Result<u32, String> {
-        let identity = continuation.checkpoint_identity()?;
+        self.suspended_execution(super::super::suspension::SuspendedExecution::Program(
+            continuation.clone(),
+        ))
+    }
+
+    pub(super) fn task_suspension(
+        &mut self,
+        continuation: &super::super::TaskHandlerContinuation,
+    ) -> Result<u32, String> {
+        self.suspended_execution(super::super::suspension::SuspendedExecution::Task(
+            continuation.clone(),
+        ))
+    }
+
+    fn suspended_execution(
+        &mut self,
+        continuation: super::super::suspension::SuspendedExecution,
+    ) -> Result<u32, String> {
+        let identity = continuation.identity()?;
         if let Some(id) = self.suspension_ids.get(&identity) {
             return Ok(*id);
         }
@@ -145,7 +163,7 @@ impl CaptureContext {
         self.suspension_ids.insert(identity, id);
         self.action_providers
             .insert(id, continuation.projected_action()?.evidence_identity()?);
-        self.pending_suspensions.push(continuation.clone());
+        self.pending_suspensions.push(continuation);
         Ok(id)
     }
 
@@ -253,7 +271,7 @@ impl CaptureContext {
 
     pub(in crate::eval::machine) fn capture_suspensions(
         &mut self,
-    ) -> Result<Vec<crate::orchestration::SuspendedProgramSnapshot>, String> {
+    ) -> Result<Vec<crate::orchestration::SuspendedExecutionSnapshot>, String> {
         let mut result = Vec::new();
         while result.len() < self.pending_suspensions.len() {
             let pending = self.pending_suspensions[result.len()].clone();
@@ -337,9 +355,23 @@ impl CaptureContext {
         if !self.enter_frame(backing) {
             return Err("cyclic captured frame definitions cannot enter a checkpoint".into());
         }
+        let activations = frame
+            .handler_activations()
+            .into_iter()
+            .map(|activation| {
+                Ok(crate::orchestration::HandlerActivationSnapshot {
+                    arm: activation.arm,
+                    request: activation.request.checkpoint_evidence(self)?,
+                    types: activation.bindings.sorted_types(),
+                    parameters: activation.bindings.sorted_parameters(),
+                    rows: activation.bindings.sorted_rows(),
+                })
+            })
+            .collect::<Result<Vec<_>, String>>()?;
         let result = frame
             .try_map_locals(|value| self.value(value))
             .map(|locals| LocalsSnapshot {
+                handler_activations: activations,
                 residual_invocation: frame.residual_invocation(),
                 id: frame.snapshot_id(),
                 locals: Rc::new(locals),

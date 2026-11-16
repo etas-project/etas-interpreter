@@ -179,6 +179,7 @@ impl<'a> EvalContext<'a> {
                 kind: crate::control::CallSiteKind::Pipeline { expr },
                 frame: frame.clone(),
                 composition: None,
+                task_callback: None,
             }),
         )
     }

@@ -92,6 +92,10 @@ fn encode_with_budget(
                         ("origin", json!(site.kind).into()),
                         ("frame", Node::Frame(&site.frame).into()),
                         (
+                            "task_callback",
+                            site.task_callback.as_deref().map(Node::CallTarget).into(),
+                        ),
+                        (
                             "composition",
                             site.composition.as_ref().map(Node::Composition).into(),
                         ),
@@ -124,7 +128,7 @@ fn encode_with_budget(
             }
             Node::Model(part) => model(part, slot, &mut pending),
             Node::Message(message) => value::message(message, slot, &mut pending),
-            Node::Frame(frame) => call_target::frame(frame, slot, &mut pending),
+            Node::Frame(frame) => call_target::frame(frame, slot, &mut pending, budget)?,
             Node::CallTarget(target) => call_target::encode(target, slot, &mut pending),
             Node::Continuation(value) => {
                 super::machine::write_continuation(value, slot, &mut pending, budget)?;

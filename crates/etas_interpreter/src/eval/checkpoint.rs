@@ -42,7 +42,7 @@ impl<'a> EvalContext<'a> {
                     .machine
                     .suspended_programs
                     .iter()
-                    .flat_map(|node| &node.retries.attempts),
+                    .flat_map(|node| &node.retries().attempts),
             )
             .map(|attempt| attempt.id.0 + 1)
             .max()
@@ -56,7 +56,7 @@ impl<'a> EvalContext<'a> {
                     .machine
                     .suspended_programs
                     .iter()
-                    .flat_map(|node| &node.handlers.handlers),
+                    .flat_map(|node| &node.handlers().handlers),
             )
             .map(|handler| handler.id)
             .chain(checkpoint.machine.handler_scope_ids())
@@ -162,13 +162,11 @@ impl<'a> EvalContext<'a> {
                 })?;
             }
             Some(set)
-        } else if checked.standard_library.is_some() {
+        } else {
             Some(
                 crate::api::code::PreparedRevisionSet::new(checked.clone())
                     .with_source_definitions(root.program.definitions.clone()),
             )
-        } else {
-            None
         };
         let checkpoint = InterpreterCheckpoint {
             tasks: tasks.map(Box::new),

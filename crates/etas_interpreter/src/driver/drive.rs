@@ -237,6 +237,7 @@ async fn drive_scope<'host>(
             return ScopeOutcome::Finished(outcome);
         }
         *machine_has_input = true;
+        return ScopeOutcome::ProgramChanged;
     }
     loop {
         if !*machine_has_input {
@@ -500,7 +501,7 @@ async fn drive_scope<'host>(
                 {
                     Ok(()) => {
                         *machine_has_input = true;
-                        continue;
+                        return ScopeOutcome::ProgramChanged;
                     }
                     Err(outcome) => return ScopeOutcome::Finished(outcome),
                 }

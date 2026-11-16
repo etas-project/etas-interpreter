@@ -120,7 +120,7 @@ pub(crate) async fn resume_source_inner(
             }
             options.checkpoint_revisions = Some(Arc::new(revisions));
         }
-        if options.checkpoint_revisions.is_none() && project.standard_library.is_some() {
+        if options.checkpoint_revisions.is_none() {
             options.checkpoint_revisions = Some(Arc::new(
                 PreparedRevisionSet::new(project.clone())
                     .with_source_definitions(options.code_definitions.clone()),

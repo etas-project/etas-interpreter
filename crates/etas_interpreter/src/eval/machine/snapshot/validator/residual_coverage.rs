@@ -338,6 +338,7 @@ impl Coverage<'_, '_> {
 
 fn call_site_node(site: crate::control::CallSiteKind) -> HirNodeRef {
     let (crate::control::CallSiteKind::Expr { expr }
+    | crate::control::CallSiteKind::TaskCallback { expr }
     | crate::control::CallSiteKind::Pipeline { expr }
     | crate::control::CallSiteKind::PipelineStage { expr, .. }) = site;
     HirNodeRef::Expr(expr)
@@ -398,6 +399,7 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
             site: Some(site), ..
         } => (call_site_node(site.kind), &site.frame),
         ProgramResume { .. }
+        | TaskResume { .. }
         | SourceToolReturn(_)
         | ReenterHandler { .. }
         | FileReadReduction { .. }

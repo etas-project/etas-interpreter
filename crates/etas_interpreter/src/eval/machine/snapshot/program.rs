@@ -18,9 +18,22 @@ use crate::{
 pub(in crate::eval::machine) fn capture_scopes(
     machine: &EvalMachine,
 ) -> Result<BTreeMap<usize, ProgramScope>, String> {
-    let mut scope = machine.program_scope.clone();
+    capture_segment_scopes(
+        &machine.stack,
+        machine.program_scope.clone(),
+        machine.checkpoint_root.as_ref().map(|root| &root.program),
+        None,
+    )
+}
+
+pub(in crate::eval::machine) fn capture_segment_scopes(
+    frames: &[EvalFrame],
+    mut scope: Option<ProgramScope>,
+    root: Option<&CheckedExecutionProgram>,
+    base: Option<&ProgramScope>,
+) -> Result<BTreeMap<usize, ProgramScope>, String> {
     let mut scopes = BTreeMap::new();
-    for (index, frame) in machine.stack.iter().enumerate().rev() {
+    for (index, frame) in frames.iter().enumerate().rev() {
         if let EvalFrame::ProgramReturn(frame) = frame {
             let active = scope.take().ok_or("program boundary has no active scope")?;
             let destination = frame.call.destination()?;
@@ -33,7 +46,7 @@ pub(in crate::eval::machine) fn capture_scopes(
                 .parent
                 .as_ref()
                 .map(|scope| &scope.program)
-                .or_else(|| machine.checkpoint_root.as_ref().map(|root| &root.program))
+                .or(root)
                 .ok_or("program boundary has no pinned root owner")?;
             if !Arc::ptr_eq(&parent.checked, &frame.parent_program.checked)
                 || !Arc::ptr_eq(&parent.plan, &frame.parent_program.plan)
@@ -46,7 +59,16 @@ pub(in crate::eval::machine) fn capture_scopes(
             scope = frame.parent.clone();
         }
     }
-    if scope.is_some() {
+    let matches_base = match (&scope, base) {
+        (None, None) => true,
+        (Some(actual), Some(expected)) => {
+            actual.handler_floor == expected.handler_floor
+                && Arc::ptr_eq(&actual.program.checked, &expected.program.checked)
+                && Arc::ptr_eq(&actual.program.plan, &expected.program.plan)
+        }
+        _ => false,
+    };
+    if !matches_base {
         return Err("active program scope has no return boundary".into());
     }
     Ok(scopes)
@@ -239,7 +261,7 @@ fn validate_call_site(
             .expr_types
             .get(&receiver)
             .ok_or("program boundary callee has no checked type")?;
-        let bindings = site.frame.generic_bindings();
+        let bindings = site.bindings(parent);
         let ty = bindings
             .substitution(&parent.type_store)
             .substitute(*ty)
@@ -257,14 +279,14 @@ fn validate_specialization(
     span: etas_core::Span,
     target: &CallTargetSnapshot,
 ) -> Result<(), String> {
+    if matches!(site.kind, crate::control::CallSiteKind::TaskCallback { .. }) {
+        site.task_callback_type(parent)?;
+        return Ok(());
+    }
     let (_, expression) = site.receiver(parent, span)?;
     let expected = expression
         .map(|expr| {
-            crate::control::CheckedCallBindings::resolve(
-                parent,
-                expr,
-                &site.frame.generic_bindings(),
-            )
+            crate::control::CheckedCallBindings::resolve(parent, expr, &site.bindings(parent))
         })
         .transpose()?;
     let expected_types = expected
@@ -312,12 +334,16 @@ fn validate_callable_site(
     ty: etas_types::TypeId,
 ) -> Result<(), String> {
     let (receiver, expression) = site.receiver(parent, span)?;
-    let expected = *parent
-        .types
-        .expr_types
-        .get(&receiver)
-        .ok_or("scoped callable boundary has no checked receiver type")?;
-    let mut bindings = site.frame.generic_bindings();
+    let expected = if matches!(site.kind, crate::control::CallSiteKind::TaskCallback { .. }) {
+        site.task_callback_type(parent)?
+    } else {
+        *parent
+            .types
+            .expr_types
+            .get(&receiver)
+            .ok_or("scoped callable boundary has no checked receiver type")?
+    };
+    let mut bindings = site.bindings(parent);
     if let Some(expression) = expression {
         let checked = crate::control::CheckedCallBindings::resolve(parent, expression, &bindings)?;
         bindings.types.extend(checked.types);

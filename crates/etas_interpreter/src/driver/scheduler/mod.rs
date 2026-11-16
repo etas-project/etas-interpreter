@@ -614,6 +614,11 @@ impl TaskScheduler {
         scope: TaskScopeId,
     ) -> Result<Option<TaskOutcome>, SchedulerError> {
         let group = self.groups.get(&scope).ok_or(SchedulerError::WrongOwner)?;
+        // A running machine is leased out of the task table. It still owns
+        // its admission slot, so the scope cannot settle while that lease lives.
+        if group.active != 0 {
+            return Ok(None);
+        }
         if group
             .tasks
             .iter()
@@ -719,6 +724,167 @@ impl TaskScheduler {
             }
         };
         output.ok_or(SchedulerError::InvalidTransition).map(Some)
+    }
+
+    pub(crate) fn task_parent(&self, id: TaskId) -> Option<TaskIdentity> {
+        self.tasks.get(&id)?.local.parent
+    }
+
+    pub(crate) fn take_handler_caller(
+        &mut self,
+        id: TaskId,
+        inherited: &[crate::orchestration::ActiveHandlerRecord],
+    ) -> Option<(TaskHandle, ScheduledTask)> {
+        let task = self.tasks.get(&id)?;
+        if !task.local.owns_inherited_handler(inherited) {
+            return None;
+        }
+        if !matches!(
+            task.state,
+            TaskState::Waiting(TaskWait::Task(_) | TaskWait::Scope(_))
+        ) && !(task.state == TaskState::Ready && task.machine.has_input())
+        {
+            return None;
+        }
+        let handle = TaskHandle {
+            owner: task.scope,
+            task: id,
+        };
+        Some((handle, self.tasks.remove(&id).expect("handler caller")))
+    }
+
+    pub(crate) fn restore_handler_caller(
+        &mut self,
+        handle: TaskHandle,
+        mut task: ScheduledTask,
+        dispatch: bool,
+        active: TaskId,
+    ) {
+        let previous = task.state;
+        if dispatch {
+            match previous {
+                TaskState::Waiting(TaskWait::Task(target)) if target != active => self
+                    .tasks
+                    .get_mut(&target)
+                    .expect("awaited task")
+                    .waiters
+                    .retain(|waiter| !matches!(waiter, TaskWaiter::Task(id) if *id == handle.task)),
+                TaskState::Waiting(TaskWait::Scope(scope)) => self
+                    .groups
+                    .get_mut(&scope)
+                    .expect("awaited scope")
+                    .waiters
+                    .retain(|id| *id != handle.task),
+                _ => (),
+            }
+            task.state = TaskState::Ready;
+            if previous != TaskState::Ready {
+                self.ready.push_back(handle.task);
+            }
+        }
+        assert!(
+            self.tasks.insert(handle.task, task).is_none(),
+            "handler caller remains unique"
+        );
+    }
+
+    pub(crate) fn wake_task_wait(
+        &mut self,
+        handle: TaskHandle,
+        wakeup: TaskWakeup,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        self.wakeups.entry(id).or_default().push_back(wakeup);
+        self.requeue(handle)
+    }
+
+    pub(crate) fn wait_for_handler(
+        &mut self,
+        handle: TaskHandle,
+        handler: crate::orchestration::HandlerScopeId,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Running {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Waiting(TaskWait::Handler(handler));
+        let scope = task.scope;
+        if task.active_slot {
+            task.active_slot = false;
+            self.change_active(scope, false);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resume_handled_action(
+        &mut self,
+        handle: TaskHandle,
+        expected_handler: crate::orchestration::HandlerScopeId,
+        value: InterpValue,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        let TaskState::Waiting(TaskWait::Handler(handler)) = task.state else {
+            return Err(SchedulerError::InvalidTransition);
+        };
+        if handler != expected_handler {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        let Some(TaskResume::Handler {
+            continuation,
+            handler: expected,
+        }) = task.waiting_continuation.take()
+        else {
+            return Err(SchedulerError::InvalidTransition);
+        };
+        if expected != handler {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.machine
+            .resume(crate::control::ControlSignal::pending_continuation(
+                crate::control::PendingContinuation {
+                    continuation,
+                    input: crate::control::ContinuationInput::Value(value),
+                },
+            ));
+        task.state = TaskState::Ready;
+        self.ready.push_back(id);
+        Ok(())
+    }
+
+    pub(crate) fn close_handler(
+        &mut self,
+        handler: crate::orchestration::HandlerScopeId,
+    ) -> Result<(), SchedulerError> {
+        if !self
+            .tasks
+            .values()
+            .any(|task| task.state == TaskState::Waiting(TaskWait::Handler(handler)))
+        {
+            return Ok(());
+        }
+        // `finish` disposes requests delegated to this lexical boundary. Only
+        // descendants that inherited it are affected; the task running the arm
+        // can continue after the handled expression.
+        let tasks = self
+            .tasks
+            .iter()
+            .filter(|(_, task)| {
+                task.local
+                    .inherited_handler_records()
+                    .iter()
+                    .any(|scope| scope.id == handler)
+            })
+            .map(|(id, task)| TaskHandle {
+                owner: task.scope,
+                task: *id,
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            self.cancel(task, etas_host::execution::CancellationReason::OwnerDropped)?;
+        }
+        Ok(())
     }
 
     pub(crate) fn wait_for_host(

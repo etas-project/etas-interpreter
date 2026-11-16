@@ -91,12 +91,17 @@ impl EncodingBudget {
             _ => {}
         }
         let (children, inline_nodes) = match node {
-            Node::CallSite(Some(site)) => (1 + usize::from(site.composition.is_some()), 3),
+            Node::CallSite(Some(site)) => (
+                1 + usize::from(site.composition.is_some())
+                    + usize::from(site.task_callback.is_some()),
+                4,
+            ),
             Node::CallSite(None) => (0, 0),
             Node::Composition(composition) => (1, composition.path.len() + 2),
-            Node::Continuation(crate::orchestration::ContinuationSnapshot::ProgramResume {
-                id,
-            }) => {
+            Node::Continuation(
+                crate::orchestration::ContinuationSnapshot::ProgramResume { id }
+                | crate::orchestration::ContinuationSnapshot::TaskResume { id },
+            ) => {
                 if *id == 0
                     || self
                         .suspended_programs

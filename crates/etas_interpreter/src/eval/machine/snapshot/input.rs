@@ -10,41 +10,44 @@ impl EvalMachine {
     ) -> Result<Option<MachineInputSnapshot>, String> {
         self.input
             .as_ref()
-            .map(|input| {
-                Ok(match input {
-                    MachineInput::Signal(signal) => MachineInputSnapshot::Signal(
-                        ControlSignalSnapshot::capture(signal, context)?,
-                    ),
-                    MachineInput::EnterProgram { call, args, span } => {
-                        let parent = self
-                            .stack
-                            .iter()
-                            .rev()
-                            .find_map(|frame| match frame {
-                                crate::eval::machine::frame::EvalFrame::ProgramReturn(boundary) => {
-                                    Some(&boundary.parent_program)
-                                }
-                                _ => None,
-                            })
-                            .or(owner)
-                            .ok_or("pending program entry has no checked owner")?;
-                        MachineInputSnapshot::EnterProgram {
-                            owner: context.execution_identity(parent)?,
-                            call: context.call_target(&call.call_target())?,
-                            args: capture_values(args, context)?,
-                            span: *span,
-                        }
-                    }
-                    MachineInput::ModelResult(result) => {
-                        MachineInputSnapshot::ModelResult(result.clone())
-                    }
-                    MachineInput::ToolResult(result) => {
-                        MachineInputSnapshot::ToolResult(result.clone())
-                    }
-                    MachineInput::SourceToolApproved => MachineInputSnapshot::SourceToolApproved,
-                })
-            })
+            .map(|input| self.capture_pending_input(input, context, owner))
             .transpose()
+    }
+
+    pub(crate) fn capture_pending_input(
+        &self,
+        input: &MachineInput,
+        context: &mut CaptureContext,
+        owner: Option<&CheckedExecutionProgram>,
+    ) -> Result<MachineInputSnapshot, String> {
+        Ok(match input {
+            MachineInput::Signal(signal) => {
+                MachineInputSnapshot::Signal(ControlSignalSnapshot::capture(signal, context)?)
+            }
+            MachineInput::EnterProgram { call, args, span } => {
+                let parent = self
+                    .stack
+                    .iter()
+                    .rev()
+                    .find_map(|frame| match frame {
+                        crate::eval::machine::frame::EvalFrame::ProgramReturn(boundary) => {
+                            Some(&boundary.parent_program)
+                        }
+                        _ => None,
+                    })
+                    .or(owner)
+                    .ok_or("pending program entry has no checked owner")?;
+                MachineInputSnapshot::EnterProgram {
+                    owner: context.execution_identity(parent)?,
+                    call: context.call_target(&call.call_target())?,
+                    args: capture_values(args, context)?,
+                    span: *span,
+                }
+            }
+            MachineInput::ModelResult(result) => MachineInputSnapshot::ModelResult(result.clone()),
+            MachineInput::ToolResult(result) => MachineInputSnapshot::ToolResult(result.clone()),
+            MachineInput::SourceToolApproved => MachineInputSnapshot::SourceToolApproved,
+        })
     }
 
     pub(crate) fn restore_input(
@@ -164,6 +167,18 @@ impl ControlSignalSnapshot {
                 continuation: context.continuation(&pending.continuation)?,
             },
             ControlSignal::Task(pending) => Self::Task(match &**pending {
+                PendingTaskControl::ResumeHandled {
+                    task,
+                    handler,
+                    value,
+                    span,
+                } => TaskControlSnapshot::ResumeHandled {
+                    owner: task.owner.0,
+                    task: task.task.0,
+                    handler: *handler,
+                    value: context.value(value)?,
+                    span: *span,
+                },
                 PendingTaskControl::Run { scope, span } => TaskControlSnapshot::Run {
                     scope: scope.0,
                     span: *span,
@@ -197,6 +212,34 @@ impl ControlSignalSnapshot {
                     .map(|attempt| context.residual_attempt(attempt))
                     .transpose()?,
             },
+            ControlSignal::Perform(perform)
+                if matches!(perform.continuation, Continuation::TaskResume(_))
+                    && perform.expr.is_none()
+                    && perform.default_boundary.is_none()
+                    && perform.forwarded_call.is_none() =>
+            {
+                perform
+                    .checked_action
+                    .as_ref()
+                    .ok_or("delegated Handler request has no checked invocation")?
+                    .validate_origin()?;
+                Self::HandlerRequest {
+                    action: perform.action.clone(),
+                    inference: perform
+                        .inference
+                        .as_deref()
+                        .map(super::capture_model_policy)
+                        .map(Box::new),
+                    args: capture_values(&perform.args, context)?,
+                    span: perform.span,
+                    continuation: context.continuation(&perform.continuation)?,
+                    residual: perform
+                        .residual
+                        .as_ref()
+                        .map(|attempt| context.residual_attempt(attempt))
+                        .transpose()?,
+                }
+            }
             _ => {
                 return Err(
                     "pending native/Host work must reach a coordinator snapshot point".into(),
@@ -228,6 +271,40 @@ impl ControlSignalSnapshot {
                     .map(|attempt| context.residual_attempt(attempt))
                     .transpose()?;
                 ControlSignal::pending_perform(perform)
+            }
+            Self::HandlerRequest {
+                action,
+                inference,
+                args,
+                span,
+                continuation,
+                residual,
+            } => {
+                let continuation = continuation.restore_with(context)?;
+                let Continuation::TaskResume(saved) = &continuation else {
+                    return Err("delegated Handler request has no caller segment".into());
+                };
+                let proof = saved.projected_action()?;
+                let owner = program.ok_or("delegated Handler request has no checked owner")?;
+                if !std::sync::Arc::ptr_eq(&proof.program, &owner.checked) {
+                    return Err("delegated Handler request differs from its checked owner".into());
+                }
+                ControlSignal::pending_perform(PendingPerform {
+                    checked_action: Some(proof),
+                    default_boundary: None,
+                    forwarded_call: None,
+                    expr: None,
+                    action,
+                    error_type: None,
+                    inference: inference
+                        .map(|policy| Box::new(super::restore_model_policy(*policy))),
+                    args: restore_values(args, context)?,
+                    span,
+                    continuation,
+                    residual: residual
+                        .map(|attempt| context.residual_attempt(attempt))
+                        .transpose()?,
+                })
             }
             Self::Input(input) => match input.restore(context)? {
                 ContinuationInput::Value(value) => ControlSignal::Value(value),
@@ -324,6 +401,21 @@ impl ControlSignalSnapshot {
             Self::Task(pending) => {
                 use crate::driver::scheduler::{TaskHandle, TaskId, TaskScopeId};
                 ControlSignal::pending_task(match pending {
+                    TaskControlSnapshot::ResumeHandled {
+                        owner,
+                        task,
+                        handler,
+                        value,
+                        span,
+                    } => PendingTaskControl::ResumeHandled {
+                        task: TaskHandle {
+                            owner: TaskScopeId(owner),
+                            task: TaskId(task),
+                        },
+                        handler,
+                        value: value.restore_with(context)?,
+                        span,
+                    },
                     TaskControlSnapshot::Run { scope, span } => PendingTaskControl::Run {
                         scope: TaskScopeId(scope),
                         span,

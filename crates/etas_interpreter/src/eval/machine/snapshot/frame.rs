@@ -35,7 +35,7 @@ pub(in crate::eval::machine) struct RestoredResidualState {
 
 pub(in crate::eval::machine) type SuspensionRestoreTable = std::rc::Rc<
     std::cell::RefCell<
-        std::collections::HashMap<u32, crate::eval::machine::suspension::ProgramContinuation>,
+        std::collections::HashMap<u32, crate::eval::machine::suspension::SuspendedExecution>,
     >,
 >;
 
@@ -195,6 +195,24 @@ impl RestoreContext {
         &self,
         id: u32,
     ) -> Result<crate::eval::machine::suspension::ProgramContinuation, String> {
+        match self.execution_suspension(id)? {
+            crate::eval::machine::suspension::SuspendedExecution::Program(value) => Ok(value),
+            _ => Err("program continuation refers to a task suspension".into()),
+        }
+    }
+    pub(super) fn task_suspension(
+        &self,
+        id: u32,
+    ) -> Result<crate::eval::machine::TaskHandlerContinuation, String> {
+        match self.execution_suspension(id)? {
+            crate::eval::machine::suspension::SuspendedExecution::Task(value) => Ok(value),
+            _ => Err("task continuation refers to a program suspension".into()),
+        }
+    }
+    fn execution_suspension(
+        &self,
+        id: u32,
+    ) -> Result<crate::eval::machine::suspension::SuspendedExecution, String> {
         self.suspensions
             .as_ref()
             .ok_or("suspended continuation has no checked restore graph")?
@@ -326,6 +344,21 @@ impl RestoreContext {
                 rows: snapshot.effect_row_bindings.iter().cloned().collect(),
             },
         )?;
+        for saved in &snapshot.handler_activations {
+            let revisions = self
+                .revisions
+                .as_ref()
+                .ok_or("Handler frame requires freshly prepared code")?;
+            let checked = self
+                .revision_program
+                .as_ref()
+                .ok_or("Handler frame has no checked owner")?;
+            frame.bind_handler_activation(saved.restore(
+                checked,
+                revisions,
+                frame.generic_bindings(),
+            )?);
+        }
         if let Some(invocation) = snapshot.residual_invocation {
             frame.bind_residual_invocation(invocation)?;
         }

@@ -208,6 +208,12 @@ impl ControlSignal {
 
 #[derive(Clone, Debug)]
 pub enum PendingTaskControl {
+    ResumeHandled {
+        task: crate::driver::scheduler::TaskHandle,
+        handler: crate::orchestration::HandlerScopeId,
+        value: InterpValue,
+        span: Span,
+    },
     Run {
         scope: crate::driver::scheduler::TaskScopeId,
         span: Span,
@@ -227,7 +233,10 @@ pub enum PendingTaskControl {
 impl PendingTaskControl {
     pub(crate) fn span(&self) -> Span {
         match self {
-            Self::Run { span, .. } | Self::Requeue { span, .. } | Self::Park { span, .. } => *span,
+            Self::Run { span, .. }
+            | Self::Requeue { span, .. }
+            | Self::Park { span, .. }
+            | Self::ResumeHandled { span, .. } => *span,
         }
     }
 }

@@ -51,14 +51,17 @@ impl EvalContext<'_> {
             };
             let descriptor_type = match self.materialized_type(
                 fact.descriptor_type,
-                frame.generic_bindings(),
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
                 span,
             ) {
                 Ok(ty) => ty,
                 Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             };
-            let signature = match self.materialized_type(signature, frame.generic_bindings(), span)
-            {
+            let signature = match self.materialized_type(
+                signature,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                span,
+            ) {
                 Ok(ty) => ty,
                 Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             };
@@ -107,7 +110,7 @@ impl EvalContext<'_> {
         {
             let descriptor_type = match self.materialized_type(
                 fact.descriptor_type,
-                frame.generic_bindings(),
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
                 span,
             ) {
                 Ok(ty) => ty,

@@ -201,6 +201,186 @@ mod tests {
         .into_parts()
     }
 
+    #[tokio::test(flavor = "current_thread")]
+    async fn captures_a_delegated_handler_wait_without_consuming_the_live_resume() {
+        use crate::{
+            control::PendingTaskControl,
+            eval::machine::{MachineInput, MachinePoll, PendingBoundary},
+            orchestration::TaskHandlerWaitSnapshot,
+        };
+        const SOURCE: &str = r#"
+    module app.main;
+    import std.task.{run, Scheduler};
+    effect Query { action next() -> i32; }
+    flow scheduled(scheduler: Scheduler) -> i32 ![Query.next] {
+        return perform Query.next();
+    }
+    flow dispatch() -> i32 ![Query.next] { return run(scheduled); }
+    flow main() -> i32 ![] {
+        let value = handle { dispatch() } with {
+            Query.next() => { resume 40; }
+        };
+        return value + 2;
+    }
+    "#;
+        let checked = checked_project(SOURCE);
+        let plan = crate::Interpreter.plan(&checked, PlanOptions).plan.unwrap();
+        for restore in [false, true] {
+            let (program_input, mut state) = initialize(&checked, &plan, RunOptions::default());
+            let mut eval = EvalContext::new(program_input, &mut state);
+            let program = eval.checked_execution_program();
+            let mut root = EvalMachine::for_entry(program.clone(), Vec::new());
+            root.resume(ControlSignal::pending_call(PendingCall {
+                purity: CallPurity::Ordinary,
+                site: None,
+                target: CallTarget::FlowItem(checked.entry.unwrap()),
+                args: Vec::new(),
+                span: crate::diagnostics::item_span(&checked, checked.entry.unwrap()),
+                continuation: Continuation::Return,
+            }));
+            let scope = match root.run_until_yield(&mut eval) {
+                MachinePoll::Yield(PendingBoundary::Task(control)) => match *control {
+                    PendingTaskControl::Run { scope, .. } => scope,
+                    other => panic!("unexpected task control: {other:?}"),
+                },
+                _ => panic!("root did not wait for its scheduled callback"),
+            };
+            root.root_wait = Some(crate::driver::scheduler::RootTaskWait::Run { scope });
+            let handle = eval.scheduler.dispatch_ready().unwrap();
+            let mut child = eval.scheduler.take_running(handle).unwrap();
+            let inherited = child.local.inherited_handler_records().to_vec();
+            let mut child_ctx = eval.scheduled_task_context(&program, &mut child.local, handle.task, 0);
+            let perform = match child.machine.run_until_yield(&mut child_ctx) {
+                MachinePoll::Yield(PendingBoundary::Perform(perform)) => perform,
+                _ => panic!("child did not request its inherited Handler"),
+            };
+            drop(child_ctx);
+            let handler = root
+                .relay_task_handler(
+                    &mut eval,
+                    handle,
+                    &child.machine,
+                    &program,
+                    &perform,
+                    &inherited,
+                )
+                .unwrap()
+                .expect("lexical Handler owns the request");
+            let Some(MachineInput::Signal(ControlSignal::Perform(mut request))) =
+                root.take_task_input()
+            else {
+                panic!("owner did not receive its delegated action");
+            };
+            let Continuation::TaskResume(continuation) = &request.continuation else {
+                panic!("request lost its child task continuation");
+            };
+            let mut capture = crate::eval::machine::snapshot::CaptureContext::for_tasks(
+                &crate::eval::machine::snapshot::SharedFrameCapture::default(),
+            );
+            capture.bind_program(&program);
+            let snapshot = continuation.capture(&mut capture).unwrap();
+            assert!(
+                matches!(snapshot.wait, TaskHandlerWaitSnapshot::Run { scope: saved } if saved == scope)
+            );
+            assert_eq!(snapshot.child, handle);
+            let revisions = crate::api::code::PreparedRevisionSet::new(checked.clone());
+            let snapshot = crate::api::codec::checkpoint::suspension::task_handler::roundtrip(
+                &snapshot, &revisions,
+            )
+            .unwrap();
+            let projection = crate::plan::code::ActionProjection::restore_checkpoint(
+                &snapshot.projection,
+                &program,
+                &revisions,
+            )
+            .unwrap();
+            assert_eq!(
+                projection.resume(InterpValue::i32(40), &program).unwrap(),
+                InterpValue::i32(40)
+            );
+            if restore {
+                request.continuation = Continuation::TaskResume(
+                    crate::eval::machine::restore_task_handler_segment_for_test(
+                        &snapshot,
+                        &root,
+                        &program,
+                        eval.task.identity,
+                        &eval.host_context,
+                    )
+                    .unwrap(),
+                );
+            }
+            root.restore_task_input(MachineInput::Signal(ControlSignal::Perform(request)));
+            if restore {
+                child.waiting_continuation = Some(super::super::scheduler::TaskResume::Handler {
+                    continuation: perform.continuation.clone(),
+                    handler,
+                });
+                eval.scheduler.restore_running(handle, child).unwrap();
+                eval.scheduler.wait_for_handler(handle, handler).unwrap();
+                // The coordinator can retain the request as the next root input.
+                let input = root.take_task_input().unwrap();
+                root.root_wait = Some(crate::driver::scheduler::RootTaskWait::Ready(Box::new(
+                    input,
+                )));
+                let host = FakeHost::new(crate::host::HostServiceAvailability {
+                    checkpoint: true,
+                    ..Default::default()
+                });
+                let mut reactor = TaskHostReactor::new();
+                create(
+                    &mut eval,
+                    &mut reactor,
+                    &mut root,
+                    Some("queued-handler".into()),
+                    perform.span,
+                )
+                .await
+                .unwrap();
+                let saved = eval.checkpoints.last().unwrap();
+                let artifact = crate::api::codec::checkpoint_artifact_json(&[], "main", saved).unwrap();
+                let bytes =
+                    crate::api::codec::checkpoint_file_to_bytes(artifact, Default::default()).unwrap();
+                let artifact =
+                    crate::api::codec::checkpoint_file_from_bytes(&bytes, Default::default()).unwrap();
+                let current = checked_project(SOURCE);
+                let revisions =
+                    std::sync::Arc::new(crate::api::code::PreparedRevisionSet::new(current.clone()));
+                let checkpoint = crate::api::codec::checkpoint_from_json_with_revisions(
+                    &Default::default(),
+                    &artifact,
+                    &current,
+                    Some(&revisions),
+                )
+                .unwrap();
+                let resumed = crate::Interpreter
+                    .resume_checkpoint(
+                        &current,
+                        &checkpoint,
+                        &host,
+                        RunOptions {
+                            checkpoint_revisions: Some(revisions),
+                            ..Default::default()
+                        },
+                    )
+                    .await
+                    .unwrap();
+                assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+                assert_eq!(resumed.value(), Some(&InterpValue::i32(42)));
+            } else {
+                match root.run_until_yield(&mut eval) {
+                    MachinePoll::Yield(PendingBoundary::Task(control)) => assert!(matches!(*control,
+                            PendingTaskControl::ResumeHandled { task, value, .. } if task == handle && value == InterpValue::i32(40))),
+                    _ => panic!("capturing the wait changed the live Handler resume"),
+                }
+                eval.scheduler.restore_running(handle, child).unwrap();
+            }
+            eval.scheduler
+                .cancel_unsettled(etas_host::execution::CancellationReason::Requested)
+                .unwrap();
+        }
+    }
+
     #[tokio::test]
     async fn barrier_drains_admitted_cpu_work_once_without_dispatching_ready_tasks() {
         let checked = checked_project("module app.main; flow main() -> i32 { return 42; }");

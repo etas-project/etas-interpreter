@@ -185,6 +185,9 @@ impl EvalMachine {
                     };
                     match pending.input {
                         ContinuationInput::Value(value) => {
+                            if let Continuation::TaskResume(continuation) = first {
+                                return self.resume_task_handler(ctx, continuation, value);
+                            }
                             if let Continuation::ProgramResume(continuation) = first {
                                 return self.resume_program_continuation(ctx, continuation, value);
                             }
@@ -449,7 +452,9 @@ impl EvalMachine {
                                     Ok(false) => {}
                                     Err(fault) => return MachinePoll::Fault(fault),
                                 }
-                                if pending.default_boundary.is_some() {
+                                if pending.default_boundary.is_some()
+                                    && ctx.task.inherited_handlers == 0
+                                {
                                     signal = ctx.execute_checked_default_action(*pending);
                                     continue;
                                 }

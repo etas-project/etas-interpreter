@@ -20,6 +20,9 @@ impl ContinuationSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match continuation {
+            Continuation::TaskResume(pending) => Self::TaskResume {
+                id: context.task_suspension(pending)?,
+            },
             Continuation::PackExistential { expr, frame } => Self::PackExistential {
                 expr: *expr,
                 frame: context.frame(frame)?,
@@ -600,6 +603,7 @@ impl ContinuationSnapshot {
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
+            Self::TaskResume { id } => Continuation::TaskResume(context.task_suspension(id)?),
             Self::ResidualScope { scope } => {
                 Continuation::ResidualScope(context.residual_scope(scope)?)
             }

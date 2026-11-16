@@ -412,7 +412,7 @@ impl EvalContext<'_> {
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
-            site: None,
+            site: Some(crate::control::CallSite::task_callback(checked_call)),
             target,
             args: vec![scheduler],
             span,
@@ -495,7 +495,7 @@ impl EvalContext<'_> {
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
-            site: None,
+            site: Some(crate::control::CallSite::task_callback(checked_call)),
             target,
             args: Vec::new(),
             span,

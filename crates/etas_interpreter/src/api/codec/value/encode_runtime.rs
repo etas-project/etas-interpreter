@@ -46,6 +46,11 @@ fn write<'a>(
             return Ok(());
         }
         Node::Frame(frame) => {
+            if matches!(purpose, ValuePurpose::Lossless) && frame.has_handler_activations() {
+                return Err(InterpreterCodecError::new(
+                    "Handler request evidence requires checked checkpoint persistence",
+                ));
+            }
             let locals = frames.get(frame)?.sorted();
             let count = locals.len();
             *slot = json!({"id":frame.snapshot_id(),"locals":null,

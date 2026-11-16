@@ -31,7 +31,7 @@ pub(crate) struct ExecutionProgramSnapshot {
     pub root: ExecutionRootSnapshot,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ActionOriginSnapshot {
     Source {
         expr: HirExprId,
@@ -44,7 +44,7 @@ pub(crate) enum ActionOriginSnapshot {
     },
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, PartialEq)]
 pub(crate) enum ActionInvocationSnapshot {
     Native {
         native: ExecutionProgramSnapshot,
@@ -53,6 +53,68 @@ pub(crate) enum ActionInvocationSnapshot {
     FromSuspension {
         id: u32,
     },
+}
+
+/// Checked bridge identities are resolved against the current prepared code;
+/// the saved record carries no executable body or invocation authority.
+#[derive(
+    Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize, etas_core::RetainedSize,
+)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct CheckedProjectionSnapshot {
+    pub origin: super::CallableProjectionOrigin,
+    pub to_candidate: bool,
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct ActionEvidenceSnapshot {
+    pub origin: ActionInvocationSnapshot,
+    pub projections: Vec<CheckedProjectionSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ActionProjectionSnapshot {
+    pub source: ActionEvidenceSnapshot,
+    pub steps: Vec<CheckedProjectionSnapshot>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum TaskHandlerWaitSnapshot {
+    Ready(Box<super::MachineInputSnapshot>),
+    Await {
+        target: crate::driver::scheduler::TaskHandle,
+        continuation: ContinuationSnapshot,
+    },
+    Run {
+        scope: crate::driver::scheduler::TaskScopeId,
+    },
+    Transfer {
+        target: crate::driver::scheduler::TaskHandle,
+        token: crate::value::ContinuationTokenValue,
+        continuation: ContinuationSnapshot,
+        output: TypeId,
+        span: Span,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SuspendedTaskHandlerSnapshot {
+    pub child: crate::driver::scheduler::TaskHandle,
+    pub owner_task: crate::driver::scheduler::TaskIdentity,
+    pub handler: super::HandlerScopeId,
+    pub owner: ExecutionProgramSnapshot,
+    pub owner_scoped: bool,
+    pub owner_handler_floor: usize,
+    pub handler_base: usize,
+    pub retry_base: usize,
+    pub active_scoped: bool,
+    pub frames: Vec<MachineFrameSnapshot>,
+    pub wait: TaskHandlerWaitSnapshot,
+    pub handlers: HandlerSnapshot,
+    pub retries: RetrySnapshot,
+    pub model_policy: ModelExecutionPolicySnapshot,
+    pub projection: ActionProjectionSnapshot,
+    pub span: Span,
 }
 
 /// A flat graph node. ProgramResume edges carry table IDs, not nested machines.
@@ -71,6 +133,55 @@ pub(crate) struct SuspendedProgramSnapshot {
     pub span: Span,
 }
 
+#[derive(Clone, Debug)]
+pub(crate) enum SuspendedExecutionSnapshot {
+    Program(SuspendedProgramSnapshot),
+    Task(SuspendedTaskHandlerSnapshot),
+}
+
+impl SuspendedExecutionSnapshot {
+    pub(crate) fn parent(&self) -> &ExecutionProgramSnapshot {
+        match self {
+            Self::Program(node) => &node.parent,
+            Self::Task(node) => &node.owner,
+        }
+    }
+    pub(crate) fn frames(&self) -> &[MachineFrameSnapshot] {
+        match self {
+            Self::Program(node) => &node.frames,
+            Self::Task(node) => &node.frames,
+        }
+    }
+    pub(crate) fn handlers(&self) -> &HandlerSnapshot {
+        match self {
+            Self::Program(node) => &node.handlers,
+            Self::Task(node) => &node.handlers,
+        }
+    }
+    pub(crate) fn retries(&self) -> &RetrySnapshot {
+        match self {
+            Self::Program(node) => &node.retries,
+            Self::Task(node) => &node.retries,
+        }
+    }
+    fn roots(&self) -> Vec<&ContinuationSnapshot> {
+        let mut roots = Vec::new();
+        frame_roots(self.frames(), &mut roots);
+        match self {
+            Self::Program(node) => roots.push(&node.continuation),
+            Self::Task(node) => match &node.wait {
+                TaskHandlerWaitSnapshot::Ready(input) => roots.extend(input.continuation_root()),
+                TaskHandlerWaitSnapshot::Await { continuation, .. }
+                | TaskHandlerWaitSnapshot::Transfer { continuation, .. } => {
+                    roots.push(continuation)
+                }
+                TaskHandlerWaitSnapshot::Run { .. } => (),
+            },
+        }
+        roots
+    }
+}
+
 fn frame_roots<'a>(frames: &'a [MachineFrameSnapshot], roots: &mut Vec<&'a ContinuationSnapshot>) {
     for frame in frames {
         roots.extend(frame.continuation_roots().into_iter().flatten());
@@ -85,7 +196,8 @@ fn references(mut work: Vec<&ContinuationSnapshot>) -> Vec<u32> {
             continue;
         }
         match node {
-            ContinuationSnapshot::ProgramResume { id } => {
+            ContinuationSnapshot::ProgramResume { id }
+            | ContinuationSnapshot::TaskResume { id } => {
                 found.insert(*id);
             }
             ContinuationSnapshot::HandleBoundary { inner, .. }
@@ -121,8 +233,7 @@ impl super::MachineSnapshot {
                 .and_then(|input| input.continuation_root()),
         );
         for node in &self.suspended_programs {
-            work.push(&node.continuation);
-            frame_roots(&node.frames, &mut work);
+            work.extend(node.roots());
         }
         let mut visited = std::collections::HashSet::new();
         let mut found = std::collections::BTreeSet::new();
@@ -166,13 +277,12 @@ impl super::MachineSnapshot {
         let children = self
             .suspended_programs
             .iter()
-            .map(|node| {
-                let mut roots = vec![&node.continuation];
-                frame_roots(&node.frames, &mut roots);
-                references(roots)
-            })
+            .map(|node| references(node.roots()))
             .collect::<Vec<_>>();
         for (node, children) in self.suspended_programs.iter().zip(&children) {
+            let SuspendedExecutionSnapshot::Program(node) = node else {
+                continue;
+            };
             if let ActionInvocationSnapshot::FromSuspension { id } = node.action {
                 if !node.continuation.suspension_ids().contains(&id) || !children.contains(&id) {
                     return Err(
@@ -227,17 +337,67 @@ impl super::MachineSnapshot {
             .count();
         for node in &self.suspended_programs {
             count = count
-                .checked_add(1)
+                .checked_add(usize::from(matches!(
+                    node,
+                    SuspendedExecutionSnapshot::Program(_)
+                )))
                 .and_then(|count| {
                     count.checked_add(
-                        node.frames
+                        node.frames()
                             .iter()
-                            .filter(|frame| matches!(frame, MachineFrameSnapshot::Call { .. }))
+                            .filter(|frame| {
+                                matches!(
+                                    frame,
+                                    MachineFrameSnapshot::Call { .. }
+                                        | MachineFrameSnapshot::ProgramReturn(_)
+                                )
+                            })
                             .count(),
                     )
                 })
                 .ok_or("checkpoint call frame count overflow")?;
         }
         u32::try_from(count).map_err(|_| "checkpoint has too many call frames".into())
+    }
+}
+
+#[derive(Clone, Debug, PartialEq)]
+pub(crate) struct HandlerActivationSnapshot {
+    pub types: Vec<(String, TypeId)>,
+    pub parameters: Vec<(TypeId, TypeId)>,
+    pub rows: Vec<(String, etas_types::EffectRowRef)>,
+    pub arm: etas_hir::HirHandlerArmId,
+    pub request: ActionEvidenceSnapshot,
+}
+
+impl HandlerActivationSnapshot {
+    pub fn bindings(&self) -> crate::control::GenericBindings {
+        crate::control::GenericBindings {
+            types: self.types.iter().cloned().collect(),
+            parameters: self.parameters.iter().copied().collect(),
+            rows: self.rows.iter().cloned().collect(),
+        }
+    }
+    pub fn restore(
+        &self,
+        checked: &etas_frontend::CheckedProgram,
+        revisions: &crate::api::code::PreparedRevisionSet,
+        outer: &crate::control::GenericBindings,
+    ) -> Result<crate::control::handler_activation::HandlerActivation, String> {
+        let request =
+            crate::control::CheckedActionInvocation::restore_evidence(&self.request, revisions)?;
+        let activation = crate::control::handler_activation::HandlerActivation::checked(
+            checked, self.arm, request, outer,
+        )?;
+        if activation.bindings != self.bindings()
+            || self.types.len() != activation.bindings.types.len()
+            || self.parameters.len() != activation.bindings.parameters.len()
+            || self.rows.len() != activation.bindings.rows.len()
+        {
+            return Err(
+                "Handler activation bindings differ from its current checked request".into(),
+            );
+        }
+        Ok(activation)
     }
 }

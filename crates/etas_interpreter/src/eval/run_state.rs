@@ -75,11 +75,20 @@ pub(crate) struct TaskLocalState {
     pub(crate) model_policy: ModelExecutionPolicy,
     pub(super) retry_stack: Vec<RetryAttemptRecord>,
     pub(super) handler_stack: Vec<ActiveHandlerRecord>,
+    pub(crate) inherited_handlers: usize,
     /// Live residual monitor bookkeeping for this task's program scopes.
     pub(crate) residual: crate::eval::residual::ResidualRunState,
 }
 
 impl TaskLocalState {
+    pub(crate) fn inherited_handler_records(&self) -> &[ActiveHandlerRecord] {
+        &self.handler_stack[..self.inherited_handlers]
+    }
+    pub(crate) fn owns_inherited_handler(&self, handlers: &[ActiveHandlerRecord]) -> bool {
+        self.handler_stack[self.inherited_handlers..]
+            .iter()
+            .any(|own| handlers.iter().any(|handler| handler.id == own.id))
+    }
     pub(crate) fn dynamic_depths(&self) -> (usize, usize) {
         (self.handler_stack.len(), self.retry_stack.len())
     }
@@ -97,6 +106,7 @@ impl TaskLocalState {
             model_policy,
             retry_stack: Vec::new(),
             handler_stack: Vec::new(),
+            inherited_handlers: 0,
             residual: Default::default(),
         }
     }
@@ -120,6 +130,7 @@ impl TaskLocalState {
             model_policy: self.model_policy.clone(),
             retry_stack: self.retry_stack.clone(),
             handler_stack: self.handler_stack.clone(),
+            inherited_handlers: self.handler_stack.len(),
             residual: Default::default(),
         })
     }

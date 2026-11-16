@@ -431,9 +431,11 @@ impl<'a> EvalContext<'a> {
         value: InterpValue,
     ) -> ControlSignal {
         match continuation {
-            Continuation::PackExistential { expr, frame } => {
-                self.pack_existential(expr, value, frame.generic_bindings())
-            }
+            Continuation::PackExistential { expr, frame } => self.pack_existential(
+                expr,
+                value,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+            ),
             Continuation::PriorityQueueUpdate(state) => {
                 self.continue_priority_update(*state, value)
             }
@@ -814,6 +816,7 @@ impl<'a> EvalContext<'a> {
                             kind: crate::control::CallSiteKind::Pipeline { expr },
                             frame,
                             composition: None,
+                            task_callback: None,
                         }),
                     ),
                 other => {
@@ -1008,12 +1011,12 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::ProgramResume(_) | Continuation::SourceToolReturn(_) => {
-                ControlSignal::missing_checked_fact(
-                    "program continuation must be resumed by its owning evaluation machine",
-                    crate::diagnostics::item_span(self.checked, self.entry_item),
-                )
-            }
+            Continuation::ProgramResume(_)
+            | Continuation::TaskResume(_)
+            | Continuation::SourceToolReturn(_) => ControlSignal::missing_checked_fact(
+                "program continuation must be resumed by its owning evaluation machine",
+                crate::diagnostics::item_span(self.checked, self.entry_item),
+            ),
             Continuation::ResidualScope(scope) => {
                 let span = crate::diagnostics::item_span(self.checked, self.entry_item);
                 match self.exit_residual_scope(

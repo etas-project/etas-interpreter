@@ -38,7 +38,7 @@ impl SnapshotValidator<'_> {
                             .into(),
                     );
                 }
-                let bindings = site.frame.generic_bindings();
+                let bindings = site.bindings(self.checked);
                 for (target, stage) in remaining.iter().zip(suffix) {
                     self.call_target_in(target, context, call_target::ReferenceScope::CheckedSlot)?;
                     let ty = *self
@@ -85,7 +85,7 @@ impl SnapshotValidator<'_> {
             } => {
                 let (operand, _) = self.checked_index(*expr, *span)?;
                 self.frame(frame, context)?;
-                let bindings = frame.generic_bindings();
+                let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*expr));
                 self.typed_expression_value(base, operand, &bindings)
             }
             ContinuationSnapshot::SliceBase { eval, frame }
@@ -93,7 +93,7 @@ impl SnapshotValidator<'_> {
             | ContinuationSnapshot::SliceEnd { eval, frame, .. } => {
                 self.checked_slice(eval)?;
                 self.frame(frame, context)?;
-                let bindings = frame.generic_bindings();
+                let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(eval.base));
                 match state {
                     ContinuationSnapshot::SliceStart { base, .. } => {
                         self.typed_expression_value(base, eval.base, &bindings)
@@ -116,7 +116,7 @@ impl SnapshotValidator<'_> {
                 crate::eval::pipeline::checked_pipeline_stages(self.checked, *expr, *span)?;
                 self.frame(frame, context)?;
                 if let ContinuationSnapshot::PipelineTarget { input: value, .. } = state {
-                    let bindings = frame.generic_bindings();
+                    let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*expr));
                     self.typed_expression_value(value, *input, &bindings)?;
                 }
                 Ok(())
@@ -137,7 +137,7 @@ impl SnapshotValidator<'_> {
                     );
                 }
                 self.frame(frame, context)?;
-                let bindings = frame.generic_bindings();
+                let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*expr));
                 for (target, stage) in targets.iter().zip(stages) {
                     self.call_target_in(target, context, call_target::ReferenceScope::CheckedSlot)?;
                     let ty = *self

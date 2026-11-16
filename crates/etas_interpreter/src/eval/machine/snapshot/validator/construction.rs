@@ -31,7 +31,7 @@ impl SnapshotValidator<'_> {
                         "{context}: inconsistent evaluated aggregate elements"
                     ));
                 }
-                let bindings = frame.generic_bindings();
+                let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*expr));
                 for (value, expr) in values.iter().zip(elems) {
                     self.typed_expression_value(value, *expr, &bindings)?;
                 }
@@ -71,7 +71,7 @@ impl SnapshotValidator<'_> {
                     ));
                 }
                 let types = self.construction_fields(*expr, *variant_symbol)?;
-                let bindings = frame.generic_bindings();
+                let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*expr));
                 for (name, value) in values {
                     let ty = *types
                         .get(name)
@@ -101,7 +101,7 @@ impl SnapshotValidator<'_> {
                 if values.len() != *index {
                     return Err(format!("{context}: inconsistent evaluated map entries"));
                 }
-                let bindings = frame.generic_bindings();
+                let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*expr));
                 for ((key, value), entry) in values.iter().zip(entries) {
                     self.typed_expression_value(key, entry.key, &bindings)?;
                     self.typed_expression_value(value, entry.value, &bindings)?;

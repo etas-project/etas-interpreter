@@ -11,6 +11,15 @@ impl CallSiteSnapshot {
     ) -> Result<Self, String> {
         Ok(Self {
             kind: site.kind,
+            task_callback: site
+                .task_callback
+                .as_ref()
+                .map(|call| {
+                    context
+                        .call_target(&crate::control::CallTarget::StdIntrinsic((**call).clone()))
+                        .map(Box::new)
+                })
+                .transpose()?,
             frame: context.frame(&site.frame)?,
             composition: site
                 .composition
@@ -31,6 +40,13 @@ impl CallSiteSnapshot {
     ) -> Result<CallSite, String> {
         Ok(CallSite {
             kind: self.kind,
+            task_callback: self
+                .task_callback
+                .map(|call| match context.restore_call_target(*call)? {
+                    crate::control::CallTarget::StdIntrinsic(call) => Ok(Box::new(call)),
+                    _ => Err("task callback has no checked primitive origin".to_owned()),
+                })
+                .transpose()?,
             frame: context.frame(self.frame)?,
             composition: self
                 .composition
@@ -48,13 +64,33 @@ impl CallSiteSnapshot {
         })
     }
 
+    pub(in crate::eval::machine) fn bindings(
+        &self,
+        checked: &etas_frontend::CheckedProgram,
+    ) -> crate::control::GenericBindings {
+        let (CallSiteKind::Expr { expr }
+        | CallSiteKind::TaskCallback { expr }
+        | CallSiteKind::Pipeline { expr }
+        | CallSiteKind::PipelineStage { expr, .. }) = self.kind;
+        self.frame
+            .bindings_at(checked, etas_hir::HirOwner::Expr(expr))
+    }
+
     pub(in crate::eval::machine) fn receiver(
         &self,
         parent: &etas_frontend::CheckedProgram,
         span: etas_core::Span,
     ) -> Result<(etas_hir::HirExprId, Option<etas_hir::HirExprId>), String> {
         use etas_hir::HirExpr;
+        if let CallSiteKind::TaskCallback { expr } = self.kind {
+            self.task_callback_type(parent)?;
+            return Ok((expr, None));
+        }
+        if self.task_callback.is_some() {
+            return Err("ordinary call carries a task callback origin".into());
+        }
         match self.kind {
+            CallSiteKind::TaskCallback { .. } => unreachable!(),
             CallSiteKind::Pipeline { .. } => {
                 Err("program boundary has an unselected pipeline invocation".into())
             }
@@ -84,6 +120,44 @@ impl CallSiteSnapshot {
                 Ok((stage.expr, None))
             }
         }
+    }
+    pub(in crate::eval::machine) fn task_callback_type(
+        &self,
+        parent: &etas_frontend::CheckedProgram,
+    ) -> Result<etas_types::TypeId, String> {
+        let CallSiteKind::TaskCallback { expr } = self.kind else {
+            return Err("call site is not a task callback".into());
+        };
+        if self.composition.is_some() {
+            return Err("task callback cannot be a pipeline stage".into());
+        }
+        let Some(crate::orchestration::CallTargetSnapshot::StdIntrinsic {
+            origin,
+            substitutions,
+            intrinsic,
+            dispatch,
+            parameter_types,
+            result_type,
+        }) = self.task_callback.as_deref()
+        else {
+            return Err("task callback has no checked primitive origin".into());
+        };
+        if *origin != expr {
+            return Err("task callback differs from its primitive origin".into());
+        }
+        crate::plan::IntrinsicDispatchTable::recheck_task_callback(
+            parent,
+            &crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+                origin: *origin,
+                substitutions: substitutions.clone(),
+                identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                    intrinsic: *intrinsic,
+                    dispatch: *dispatch,
+                },
+                parameter_types: parameter_types.clone(),
+                result_type: *result_type,
+            },
+        )
     }
 }
 

@@ -187,3 +187,74 @@ flow inspect() -> unit { let definition = ^Worker; return; }
         assert!(Arc::ptr_eq(argument.source_program(), &checked));
     }
 }
+
+#[test]
+fn projected_action_evidence_restores_from_fresh_checked_code_without_its_child_machine() {
+    use crate::{
+        control::CheckedActionInvocation, plan::code::RevisionProjection,
+        value::CheckedExecutionProgram,
+    };
+    let prepare = || {
+        let base = frozen(
+            "module app; import std.io.println; agent Worker() -> i32 { println(\"original\")?; return 1; } flow inspect() -> unit { let definition = ^Worker; return; }",
+        );
+        let source = base.checked().clone();
+        let prepared = InterpreterCandidatePublisher
+            .publish(compile(base, "println(\"revised\")?; return 2;"))
+            .unwrap();
+        prepared.type_bridge().bind_runtime_owner(&prepared);
+        (source, prepared)
+    };
+    let (old_source, prepared) = prepare();
+    let execution = CheckedExecutionProgram {
+        checked: prepared.program().clone(),
+        plan: prepared.plan().clone(),
+        definitions: None,
+        revision: Some(prepared.clone()),
+        foreign: None,
+    };
+    let (origin, args) = execution
+        .checked
+        .hir
+        .exprs
+        .iter()
+        .find_map(|(id, expr)| match expr {
+            etas_hir::HirExpr::Call { args, .. } => Some((id, args)),
+            _ => None,
+        })
+        .unwrap();
+    let call = crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+        identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
+            intrinsic: etas_std::StdIntrinsicId(etas_std::intrinsic::runtime::IO_PRINTLN),
+            dispatch: etas_std::IntrinsicDispatch::Runtime,
+        },
+        origin,
+        substitutions: Vec::new(),
+        parameter_types: args
+            .iter()
+            .map(|arg| {
+                let (etas_hir::HirArg::Positional(value) | etas_hir::HirArg::Named { value, .. }) =
+                    arg;
+                execution.checked.types.expr_types[value]
+            })
+            .collect(),
+        result_type: execution.checked.types.expr_types[&origin],
+    };
+    let native = CheckedActionInvocation::standard(execution, &call).unwrap();
+    let projected = native
+        .project(&RevisionProjection::Original(
+            prepared.type_bridge().clone(),
+        ))
+        .unwrap();
+    let mut capture = crate::eval::machine::snapshot::CaptureContext::default();
+    capture.bind_revision(&prepared);
+    let snapshot = projected.checkpoint_evidence(&mut capture).unwrap();
+    assert_eq!(snapshot.projections.len(), 1);
+    let (current_source, current) = prepare();
+    let mut revisions = crate::api::code::PreparedRevisionSet::new(current_source.clone());
+    revisions.insert(current).unwrap();
+    let restored = CheckedActionInvocation::restore_evidence(&snapshot, &revisions).unwrap();
+    assert!(Arc::ptr_eq(&restored.program, &current_source));
+    assert!(!Arc::ptr_eq(&restored.program, &old_source));
+    restored.validate_origin().unwrap();
+}

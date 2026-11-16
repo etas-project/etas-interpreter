@@ -49,6 +49,10 @@ impl FrameLocals<'_> {
 
 #[derive(Debug)]
 struct SlotStorage {
+    handler_activations: std::collections::BTreeMap<
+        etas_hir::HirHandlerArmId,
+        super::handler_activation::HandlerActivation,
+    >,
     values: Vec<Option<InterpValue>>,
     additional: HashMap<SymbolId, usize>,
     scope_symbols: Option<Rc<HashSet<SymbolId>>>,
@@ -145,6 +149,7 @@ impl Frame {
                 values: vec![None; slot_count],
                 additional: HashMap::new(),
                 scope_symbols: None,
+                handler_activations: Default::default(),
             })),
             restored: None,
             type_bindings,
@@ -171,6 +176,47 @@ impl Frame {
         Self::with_shared_type_bindings(layout, bindings.shared())
     }
 
+    pub(crate) fn has_handler_activations(&self) -> bool {
+        !self.slots.borrow().handler_activations.is_empty()
+    }
+
+    pub(crate) fn handler_activations(&self) -> Vec<super::handler_activation::HandlerActivation> {
+        self.slots
+            .borrow()
+            .handler_activations
+            .values()
+            .cloned()
+            .collect()
+    }
+
+    pub(crate) fn bind_handler_activation(
+        &mut self,
+        activation: super::handler_activation::HandlerActivation,
+    ) {
+        self.slots
+            .borrow_mut()
+            .handler_activations
+            .insert(activation.arm, activation);
+    }
+
+    pub(crate) fn bindings_at<'a>(
+        &'a self,
+        checked: &etas_frontend::CheckedProgram,
+        owner: etas_hir::HirOwner,
+    ) -> std::borrow::Cow<'a, super::GenericBindings> {
+        let slots = self.slots.borrow();
+        if slots.handler_activations.is_empty()
+            || super::handler_activation::parametric_continuation_call(checked, owner)
+        {
+            return std::borrow::Cow::Borrowed(&self.type_bindings);
+        }
+        let arm = super::handler_activation::enclosing_handler(checked, owner);
+        super::handler_activation::activation_bindings(
+            &self.type_bindings,
+            arm.and_then(|arm| slots.handler_activations.get(&arm)),
+        )
+    }
+
     pub(crate) fn generic_bindings(&self) -> &super::GenericBindings {
         &self.type_bindings
     }
@@ -181,6 +227,8 @@ impl Frame {
         symbols: &[SymbolId],
     ) -> Result<Self, String> {
         let mut captured = Self::with_shared_type_bindings(layout, self.type_bindings.clone());
+        captured.slots.borrow_mut().handler_activations =
+            self.slots.borrow().handler_activations.clone();
         for symbol in symbols {
             if captured.layout.resolve(*symbol).is_none() {
                 return Err(format!(
@@ -213,6 +261,7 @@ impl Frame {
                 values: Vec::new(),
                 additional: HashMap::new(),
                 scope_symbols: None,
+                handler_activations: Default::default(),
             })),
             restored: Some(Rc::new(RefCell::new(RestoredStorage(restored)))),
             type_bindings: super::GenericBindings::new().shared(),

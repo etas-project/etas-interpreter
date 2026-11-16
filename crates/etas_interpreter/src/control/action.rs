@@ -20,6 +20,26 @@ pub struct CheckedActionInvocation {
 }
 
 impl CheckedActionInvocation {
+    pub(crate) fn checkpoint_evidence(
+        &self,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
+    ) -> Result<crate::orchestration::ActionEvidenceSnapshot, String> {
+        self.validate_origin()?;
+        self.evidence.checkpoint_full(context)
+    }
+
+    pub(crate) fn restore_evidence(
+        saved: &crate::orchestration::ActionEvidenceSnapshot,
+        revisions: &crate::api::code::PreparedRevisionSet,
+    ) -> Result<Self, String> {
+        let mut proof = Self::restore_origin(&saved.origin, revisions)?;
+        for edge in &saved.projections {
+            proof = proof.project(&revisions.checked_projection(edge)?)?;
+        }
+        proof.validate_origin()?;
+        Ok(proof)
+    }
+
     pub(crate) fn evidence_identity(&self) -> Result<usize, String> {
         self.evidence.identity()
     }

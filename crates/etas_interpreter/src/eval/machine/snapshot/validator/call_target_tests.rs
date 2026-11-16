@@ -289,6 +289,7 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
                     evaluated_args: vec![],
                     span,
                     frame: LocalsSnapshot {
+                        handler_activations: Default::default(),
                         residual_invocation: None,
                         effect_row_bindings: Vec::new(),
                         id: frame_id,

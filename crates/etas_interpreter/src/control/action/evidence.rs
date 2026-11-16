@@ -46,6 +46,42 @@ impl std::fmt::Debug for ActionEvidence {
 }
 
 impl ActionEvidence {
+    pub(super) fn checkpoint_full(
+        &self,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
+    ) -> Result<crate::orchestration::ActionEvidenceSnapshot, String> {
+        let mut current = self;
+        let mut edges = Vec::new();
+        let native = loop {
+            match current
+                .0
+                .as_deref()
+                .ok_or("action invocation has no checked origin")?
+            {
+                EvidenceNode::Projected { source, edge, .. } => {
+                    edges.push(edge);
+                    current = source;
+                }
+                EvidenceNode::Native(native) => break native,
+            }
+        };
+        for edge in &edges {
+            if let Some(owner) = edge.runtime_owner() {
+                context.bind_revision(&owner);
+            }
+        }
+        context.bind_program(&native.execution);
+        let projections = edges
+            .into_iter()
+            .rev()
+            .map(|edge| edge.checkpoint(context))
+            .collect::<Result<_, _>>()?;
+        Ok(crate::orchestration::ActionEvidenceSnapshot {
+            origin: current.checkpoint(context)?,
+            projections,
+        })
+    }
+
     pub(super) fn identity(&self) -> Result<usize, String> {
         self.0
             .as_ref()

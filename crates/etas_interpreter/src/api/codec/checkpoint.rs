@@ -5,7 +5,7 @@ use std::num::{NonZeroU32, NonZeroU64};
 pub(crate) mod input;
 pub(crate) mod scheduler;
 mod source;
-mod suspension;
+pub(crate) mod suspension;
 pub(crate) mod task;
 pub(crate) use source::ResumeHeader;
 pub use source::SourceCheckpoint;
@@ -48,7 +48,7 @@ pub fn checkpoint_from_json_with_revisions(
     revisions: Option<&std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
 ) -> Result<InterpreterCheckpoint, InterpreterCodecError> {
     let standard_revisions;
-    let revisions = if revisions.is_none() && checked.standard_library.is_some() {
+    let revisions = if revisions.is_none() {
         standard_revisions =
             std::sync::Arc::new(crate::api::code::PreparedRevisionSet::new(checked.clone()));
         Some(&standard_revisions)
@@ -945,7 +945,7 @@ fn machine_json_with_budget(
             .push(frame);
     }
     for suspended in &machine.suspended_programs {
-        let node = suspension::encode(suspended, budget)?;
+        let node = suspension::encode_execution(suspended, budget)?;
         object.value_mut()["suspended_programs"]
             .as_array_mut()
             .ok_or_else(|| InterpreterCodecError::new("suspended program array is missing"))?
@@ -1033,7 +1033,7 @@ fn machine_from_json_with_revisions(
     }
     machine.suspended_programs = nodes
         .iter()
-        .map(|node| suspension::decode(limits, node, revisions))
+        .map(|node| suspension::decode_execution(limits, node, revisions))
         .collect::<Result<_, _>>()?;
     machine.residual = residual_snapshot_from_json(limits, value)?;
     machine.input = match required_obj(value, "input")? {

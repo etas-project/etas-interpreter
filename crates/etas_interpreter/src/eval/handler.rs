@@ -394,6 +394,31 @@ impl<'a> EvalContext<'a> {
                 handler.span,
             ));
         };
+        let generic_request = self
+            .checked
+            .types
+            .handler_actions
+            .get(&handler.arm)
+            .and_then(|fact| {
+                self.checked
+                    .types
+                    .action_signatures
+                    .get(&fact.action_symbol)
+            })
+            .is_some_and(|signature| !signature.generic_params.is_empty());
+        if generic_request && let Some(request) = &perform.checked_action {
+            match crate::control::handler_activation::HandlerActivation::checked(
+                self.checked,
+                handler.arm,
+                request.clone(),
+                frame.generic_bindings(),
+            ) {
+                Ok(activation) => handler_frame.bind_handler_activation(activation),
+                Err(reason) => {
+                    return Some(ControlSignal::missing_checked_fact(reason, handler.span));
+                }
+            }
+        }
         handler_frame.install_scope_layout(layout);
         if let Err(fault) = self.bind_handler_patterns(
             &handler.patterns,
@@ -883,6 +908,13 @@ impl<'a> EvalContext<'a> {
             ));
         }
         self.task.handler_stack.pop();
+        self.scheduler.close_handler(scope_id).map_err(|error| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::UnhandledRuntimeError,
+                span,
+                error.to_string(),
+            )
+        })?;
         Ok(())
     }
 

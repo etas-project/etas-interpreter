@@ -45,6 +45,9 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "kind": json!("file_read_reduction"), "call": Node::CallTarget(call),
             "args": Node::Values(args), "limit": json!(limit), "span": json!(span_snapshot(*span)),
         },
+        Continuation::TaskResume { id } => object! { slot, pending;
+            "kind": json!("task_resume"), "id": json!(id)
+        },
         Continuation::ProgramResume { id } => object! { slot, pending;
             "kind": json!("program_resume"), "id": json!(id),
         },

@@ -3,12 +3,27 @@ use crate::api::codec::machine::{intrinsic_dispatch_name, runtime_limit_snapshot
 use crate::orchestration::{CallTargetSnapshot, LocalsSnapshot};
 use serde_json::{Value, json};
 
-pub(super) fn frame<'a>(frame: &'a LocalsSnapshot, slot: &'a mut Value, pending: &mut Pending<'a>) {
+pub(super) fn frame<'a>(
+    frame: &'a LocalsSnapshot,
+    slot: &'a mut Value,
+    pending: &mut Pending<'a>,
+    budget: &mut super::EncodingBudget,
+) -> Result<(), crate::api::codec::InterpreterCodecError> {
+    let activations = frame.handler_activations.iter().map(|activation| {
+        let metadata = json!({"arm":activation.arm.0, "types":activation.types, "parameters":activation.parameters, "rows":activation.rows});
+        budget.json_metadata(&metadata)?;
+        let mut value = metadata;
+        value["request"] = crate::api::codec::checkpoint::suspension::encode_evidence(&activation.request,budget)?;
+        Ok(value)
+    }).collect::<Result<Vec<_>, crate::api::codec::InterpreterCodecError>>()?;
     *slot = json!({"id":frame.id, "locals":null,
         "residual_invocation": frame.residual_invocation,
         "effect_row_bindings": frame.effect_row_bindings,
         "type_parameter_bindings": frame.type_parameter_bindings,
         "type_bindings":frame.type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
+    if !activations.is_empty() {
+        slot["handler_activations"] = Value::Array(activations);
+    }
     for ((symbol, value), entry) in frame
         .locals
         .iter()
@@ -17,6 +32,7 @@ pub(super) fn frame<'a>(frame: &'a LocalsSnapshot, slot: &'a mut Value, pending:
         *entry = json!({"symbol":symbol.0,"value":null});
         pending.push((Node::Value(value), &mut entry["value"]));
     }
+    Ok(())
 }
 
 pub(super) fn encode<'a>(

@@ -5,6 +5,7 @@ mod continuation;
 mod fault;
 mod frame;
 mod generics;
+pub(crate) mod handler_activation;
 pub(crate) mod residual;
 mod signal;
 

@@ -10,7 +10,8 @@ impl PartialEq for Target {
 impl PartialEq for LocalsSnapshot {
     fn eq(&self, other: &Self) -> bool {
         if std::rc::Rc::ptr_eq(&self.locals, &other.locals) {
-            return self.id == other.id
+            return self.handler_activations == other.handler_activations
+                && self.id == other.id
                 && self.residual_invocation == other.residual_invocation
                 && self.type_bindings == other.type_bindings
                 && self.type_parameter_bindings == other.type_parameter_bindings
@@ -27,7 +28,8 @@ pub(super) fn frame<'a>(
     seen: &mut Seen,
     compare_ids: bool,
 ) -> bool {
-    if (compare_ids && a.id != b.id)
+    if a.handler_activations != b.handler_activations
+        || (compare_ids && a.id != b.id)
         || a.residual_invocation != b.residual_invocation
         || a.type_bindings != b.type_bindings
         || a.type_parameter_bindings != b.type_parameter_bindings

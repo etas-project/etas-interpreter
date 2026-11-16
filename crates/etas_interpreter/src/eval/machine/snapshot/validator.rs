@@ -265,7 +265,7 @@ impl<'a> SnapshotValidator<'a> {
                 .machine
                 .suspended_programs
                 .iter()
-                .flat_map(|node| &node.retries.attempts),
+                .flat_map(|node| &node.retries().attempts),
         ) {
             if retry.id.0 == u32::MAX || !retry_ids.insert(retry.id.0) {
                 return Err("checkpoint retry scope identity is exhausted or duplicated".into());
@@ -625,7 +625,8 @@ impl<'a> SnapshotValidator<'a> {
                 frame.validate_continuation()?;
                 self.source_tool_return(frame, context, boundary_scopes)
             }
-            ContinuationSnapshot::ProgramResume { id } => {
+            ContinuationSnapshot::ProgramResume { id }
+            | ContinuationSnapshot::TaskResume { id } => {
                 self.suspension_references
                     .borrow_mut()
                     .push((*id, self.checked.clone()));
@@ -1628,6 +1629,7 @@ flow main() -> unit {
 
     fn empty_locals() -> LocalsSnapshot {
         LocalsSnapshot {
+            handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,

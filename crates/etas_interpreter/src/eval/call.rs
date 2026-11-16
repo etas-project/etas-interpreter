@@ -209,6 +209,7 @@ impl<'a> EvalContext<'a> {
             kind: crate::control::CallSiteKind::Expr { expr: call },
             frame: frame.clone(),
             composition: None,
+            task_callback: None,
         });
         self.execute_call_target_at(target, evaluated_args, span, site)
     }
