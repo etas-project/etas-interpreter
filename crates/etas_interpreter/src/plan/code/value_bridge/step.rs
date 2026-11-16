@@ -27,6 +27,20 @@ impl Walk<'_> {
             .get(from)
             .ok_or(Failure::MissingType)?;
         let target = self.target.type_store.get(to).ok_or(Failure::MissingType)?;
+        if matches!((source, target), (Type::Nominal(left), Type::Nominal(right))
+            if left.name == "std.io.IOError" && right.name == left.name)
+            && crate::eval::resolve_std_type(self.source, &["std", "io", "IOError"]) == Some(from)
+            && crate::eval::resolve_std_type(self.target, &["std", "io", "IOError"]) == Some(to)
+        {
+            // Console failures keep the host's opaque variant payload across
+            // checked programs, without acquiring a source nominal envelope.
+            crate::value::contract::console_error_payload(crate::value::contract::Value::Runtime(
+                &value,
+            ))
+            .map_err(Failure::InvalidField)?;
+            self.values.push(value);
+            return Ok(());
+        }
         if let InterpValue::StdConstant(value) = value {
             if value.ty() != from {
                 return Err(Failure::WrongNominalIdentity { actual: value.ty() });

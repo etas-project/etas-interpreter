@@ -250,15 +250,11 @@ pub(crate) fn validate<'a>(
             }
             // Console errors are a standard support type with runtime-owned
             // constructors, rather than a source enum with a nominal envelope.
-            (_, Node::Variant(name, len, mut fields))
+            (_, Node::Variant(..))
                 if crate::eval::resolve_std_type(checked, &["std", "io", "IOError"])
                     == Some(expected) =>
             {
-                match (name, len) {
-                    ("PermissionDenied", 0) => {}
-                    ("Host", 1) if matches!(fields.next().unwrap().node(), Node::String(_)) => {}
-                    _ => return Err("console error has a different runtime constructor".into()),
-                }
+                console_error_payload(value)?;
             }
             (_, Node::Native) => native::validate(context, value, expected, &mut pending)?,
             _ => {
@@ -270,6 +266,19 @@ pub(crate) fn validate<'a>(
         }
     }
     Ok(())
+}
+
+pub(crate) fn console_error_payload(value: Value<'_>) -> Result<(), String> {
+    if let Node::Variant(name, len, mut fields) = value.node() {
+        match (name, len) {
+            ("PermissionDenied", 0) => return Ok(()),
+            ("Host", 1) if matches!(fields.next().unwrap().node(), Node::String(_)) => {
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+    Err("console error has a different runtime constructor".into())
 }
 
 fn is_enum(store: &etas_types::TypeStore, ty: TypeId) -> bool {
