@@ -585,6 +585,35 @@ Dynamic handler inheritance and checked effect/resource/trace-order constraints
 remain in force. Cancellation of a losing branch neither rolls back its
 confirmed effects nor erases attempted actions from trace.
 
+### Memory resource admission and long-lived tasks
+
+Runtime Memory permits currently cover a task's whole lifetime. A Console or
+Command Host wait does not release them. Ordinary Source helper calls do not
+create a new resource scope. This preserves multi-call read/modify/write
+exclusion, but also means that a long-lived UI reading a collector's published
+Store can block that collector until the UI task completes.
+
+Admission freezes immutable selectors without executing Source calls or Host
+effects. Computed arguments that are not resource selectors need not be known.
+An unknown key in a known Store uses a Store-wide permit, including `insert`;
+an unknown Store or opaque Memory behavior still serializes the invocation.
+Resource analysis includes match arms, Source tools/agents and tasks created
+inside handler bodies. A Memory-free native action or inference does not by
+itself require a Memory fallback. Source handlers that can introduce Memory
+and inference with Memory-capable tools retain conservative protection.
+
+The supported current shape is concurrent tasks with provably disjoint
+selectors, or short-lived guarded tasks for shared Memory work. An append-only
+writer and a UI reader of the same Store are not proven disjoint merely by
+having different write responsibilities. The complete Nomo collector/UI
+candidate in interpreter issue #108 remains outside that supported shape:
+the analyzer fixes do not establish product acceptance or fresh-Host recovery.
+Supporting long-lived shared publication requires an explicit operation- or
+transaction-sized ownership contract, including multi-call updates, handler
+inheritance, inference tool dispatch, cancellation and checkpoint restoration.
+Do not implement that contract by dropping unknown-resource guards or by
+releasing every task permit at arbitrary Host waits.
+
 ## 5. Evaluation Context
 
 Evaluation state belongs to the interpreter.

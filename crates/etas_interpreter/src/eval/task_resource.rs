@@ -39,13 +39,14 @@ impl EvalContext<'_> {
         if let Some(item) = item {
             visiting.insert(item);
         }
-        self.resolve_task_resources(&plan, args, captured, &mut visiting)
+        let args = args.iter().cloned().map(Some).collect::<Vec<_>>();
+        self.resolve_task_resources(&plan, &args, captured, &mut visiting)
     }
 
     fn resolve_task_resources(
         &mut self,
         plan: &ResourceGuardCallablePlan,
-        args: &[InterpValue],
+        args: &[Option<InterpValue>],
         captured: Option<&Frame>,
         visiting: &mut HashSet<HirItemId>,
     ) -> Option<Vec<RuntimeResourceKey>> {
@@ -77,8 +78,10 @@ impl EvalContext<'_> {
             else {
                 return None;
             };
-            let key = if let Some(expr) = selector.key {
-                let value = self.resource_expr(expr, &locals, captured)?;
+            let key = if let Some(value) = selector
+                .key
+                .and_then(|expr| self.resource_expr(expr, &locals, captured))
+            {
                 let host = super::interp_to_host_value(&value).ok()?;
                 // Primitive selectors cannot be mutated through a shared data handle.
                 if !matches!(
@@ -120,8 +123,8 @@ impl EvalContext<'_> {
             let arguments = call
                 .arguments
                 .iter()
-                .map(|expr| self.resource_expr(*expr, &locals, captured))
-                .collect::<Option<Vec<_>>>()?;
+                .map(|expr| expr.and_then(|expr| self.resource_expr(expr, &locals, captured)))
+                .collect::<Vec<_>>();
             let child = self
                 .checked
                 .concurrency
@@ -137,7 +140,7 @@ impl EvalContext<'_> {
     fn resource_expr(
         &mut self,
         expr: HirExprId,
-        locals: &HashMap<SymbolId, InterpValue>,
+        locals: &HashMap<SymbolId, Option<InterpValue>>,
         captured: Option<&Frame>,
     ) -> Option<InterpValue> {
         match self.checked.hir.exprs[expr].clone() {
@@ -168,11 +171,11 @@ impl EvalContext<'_> {
     fn resource_symbol(
         &mut self,
         symbol: SymbolId,
-        locals: &HashMap<SymbolId, InterpValue>,
+        locals: &HashMap<SymbolId, Option<InterpValue>>,
         captured: Option<&Frame>,
     ) -> Option<InterpValue> {
         if let Some(value) = locals.get(&symbol) {
-            return Some(value.clone());
+            return value.clone();
         }
         if let Some(value) = captured.and_then(|frame| frame.get(symbol)) {
             return Some(value);
