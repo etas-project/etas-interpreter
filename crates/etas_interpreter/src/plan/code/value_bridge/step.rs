@@ -27,13 +27,22 @@ impl Walk<'_> {
             .get(from)
             .ok_or(Failure::MissingType)?;
         let target = self.target.type_store.get(to).ok_or(Failure::MissingType)?;
-        if matches!((source, target), (Type::Nominal(left), Type::Nominal(right))
-            if left.name == "std.io.IOError" && right.name == left.name)
+        if self
+            .source
+            .types
+            .known_std_types
+            .opaque_values
+            .contains(&from)
+            && self
+                .target
+                .types
+                .known_std_types
+                .opaque_values
+                .contains(&to)
             && crate::eval::resolve_std_type(self.source, &["std", "io", "IOError"]) == Some(from)
             && crate::eval::resolve_std_type(self.target, &["std", "io", "IOError"]) == Some(to)
         {
-            // Console failures keep the host's opaque variant payload across
-            // checked programs, without acquiring a source nominal envelope.
+            // Legacy Console errors carry an opaque host variant.
             crate::value::contract::console_error_payload(crate::value::contract::Value::Runtime(
                 &value,
             ))

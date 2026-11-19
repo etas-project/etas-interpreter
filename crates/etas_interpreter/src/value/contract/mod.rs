@@ -261,11 +261,11 @@ pub(crate) fn validate<'a>(
                     values.flat_map(move |(a, b)| [Seed::new(a, key), Seed::new(b, value)]),
                 )));
             }
-            // Console errors are a standard support type with runtime-owned
-            // constructors, rather than a source enum with a nominal envelope.
+            // Legacy Console errors carry an opaque host variant.
             (_, Node::Variant(..))
-                if crate::eval::resolve_std_type(checked, &["std", "io", "IOError"])
-                    == Some(expected) =>
+                if known.opaque_values.contains(&expected)
+                    && crate::eval::resolve_std_type(checked, &["std", "io", "IOError"])
+                        == Some(expected) =>
             {
                 console_error_payload(value)?;
             }
