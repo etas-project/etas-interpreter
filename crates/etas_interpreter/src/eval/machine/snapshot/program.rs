@@ -132,7 +132,6 @@ pub(crate) fn resolve_destination(
     snapshot: &ProgramReturnSnapshot,
     parent: &CheckedProgram,
     revisions: Option<&crate::api::code::PreparedRevisionSet>,
-    limits: &etas_host::StorageLimits,
 ) -> Result<CheckedExecutionProgram, String> {
     if let ProgramCallSnapshot::Expression(expression) = &snapshot.call {
         if expression.site.kind != snapshot.call_site.kind
@@ -182,15 +181,6 @@ pub(crate) fn resolve_destination(
         CallTargetSnapshot::Scoped { metadata, target } => {
             let projections = revisions.callable_projections(metadata, parent)?;
             let mut native = revisions.execution_callable(metadata, target)?;
-            super::SnapshotValidator::new(
-                &native.checked,
-                &native.plan.slots,
-                &native.plan.dispatch,
-                &native.plan.closures,
-                limits,
-            )
-            .with_revisions(Some(revisions))
-            .validate_callable_target(target)?;
             let root = crate::value::ScopedCallableValue::checked_snapshot_root(
                 &native,
                 metadata.native_type,
@@ -658,22 +648,15 @@ fn validate_callable_site(
     span: etas_core::Span,
     ty: etas_types::TypeId,
 ) -> Result<(), String> {
-    let (expected, expression) = if matches!(
+    let (expected_type, expression) = if matches!(
         site.kind,
         crate::control::CallSiteKind::TaskCallback { .. }
             | crate::control::CallSiteKind::SourceTaskCallback { .. }
     ) {
-        (site.task_callback_type(parent)?, None)
+        (Some(site.task_callback_type(parent)?), None)
     } else {
         let (receiver, expression) = site.receiver(parent, span)?;
-        (
-            *parent
-                .types
-                .expr_types
-                .get(&receiver)
-                .ok_or("scoped callable boundary has no checked receiver type")?,
-            expression,
-        )
+        (parent.types.expr_types.get(&receiver).copied(), expression)
     };
     let mut bindings = site.bindings(parent);
     if let Some(expression) = expression {
@@ -682,14 +665,30 @@ fn validate_callable_site(
         bindings.parameters.extend(checked.parameters);
         bindings.rows.extend(checked.rows);
     }
-    let (Some(etas_types::Type::Function(expected)), Some(etas_types::Type::Function(actual))) =
-        (parent.type_store.get(expected), parent.type_store.get(ty))
-    else {
-        return Err("scoped callable boundary has no checked function ABI".into());
+    let (inputs, output, effects) = if let Some(method) =
+        expression.and_then(|expr| parent.types.checked_method_calls.get(&expr))
+    {
+        let signature = &method.signature;
+        (&signature.params, signature.output, &signature.effects)
+    } else {
+        let Some(etas_types::Type::Function(expected)) =
+            expected_type.and_then(|ty| parent.type_store.get(ty))
+        else {
+            return Err(format!(
+                "scoped callable site {:?} has no checked function ABI for {expected_type:?}",
+                site.kind
+            ));
+        };
+        (&expected.input, expected.output, &expected.effects)
+    };
+    let Some(etas_types::Type::Function(actual)) = parent.type_store.get(ty) else {
+        return Err(format!(
+            "scoped callable site {:?} has a non-function target {ty:?}",
+            site.kind
+        ));
     };
     let mut substitution = bindings.substitution(&parent.type_store);
-    let parameters = expected
-        .input
+    let parameters = inputs
         .iter()
         .map(|ty| {
             substitution
@@ -698,7 +697,7 @@ fn validate_callable_site(
         })
         .collect::<Result<Vec<_>, _>>()?;
     let output = substitution
-        .substitute(expected.output)
+        .substitute(output)
         .map_err(|error| error.to_string())?;
     let actual_parameters = actual
         .input
@@ -721,7 +720,7 @@ fn validate_callable_site(
                 .map_err(|error| error.to_string())
         })
         .transpose()?;
-    let effects_match = match &expected.effects {
+    let effects_match = match effects {
         Some(row) => {
             Some(
                 substitution

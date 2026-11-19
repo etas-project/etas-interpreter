@@ -61,13 +61,9 @@ impl SnapshotValidator<'_> {
                 let parent = boundaries
                     .last()
                     .map_or(self.checked, |b| &b.program.checked);
-                let program = super::super::program::resolve_destination(
-                    frame,
-                    parent,
-                    self.revisions,
-                    self.limits,
-                )
-                .map_err(|error| format!("checkpoint program boundary {index}: {error}"))?;
+                let program =
+                    super::super::program::resolve_destination(frame, parent, self.revisions)
+                        .map_err(|error| format!("checkpoint program boundary {index}: {error}"))?;
                 if frame.handler_floor < floor {
                     return Err("checkpoint program handler floors are not nested".into());
                 }

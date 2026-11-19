@@ -77,7 +77,6 @@ impl SnapshotValidator<'_> {
                 &node.boundary,
                 &parent.checked,
                 self.revisions,
-                self.limits,
             )?;
             let mut parent_validator = SnapshotValidator::new(
                 &parent.checked,
@@ -198,7 +197,6 @@ impl SnapshotValidator<'_> {
                 &node.boundary,
                 &parent.checked,
                 self.revisions,
-                self.limits,
             )?;
             let mut proof = match &node.action {
                 ActionInvocationSnapshot::Native { .. } => {

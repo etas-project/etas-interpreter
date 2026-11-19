@@ -148,13 +148,14 @@ impl EvalContext<'_> {
         let missing = |message: &str| {
             ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
         };
+        let request_bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(call));
         let selection = self
             .plan
             .dispatch
             .resolve_method(
                 self.checked,
                 call,
-                frame.generic_bindings(),
+                &request_bindings,
                 receiver.and_then(|value| match value {
                     InterpValue::Existential(value) => {
                         Some(crate::value::ExistentialEvidence::Runtime(value))
@@ -179,13 +180,13 @@ impl EvalContext<'_> {
                             parameter_types: checked.parameter_types.clone(),
                             result_type: checked.result_type,
                         }
-                        .specialize(&self.checked.type_store, frame.generic_bindings())
+                        .specialize(&self.checked.type_store, &request_bindings)
                         .map_err(|reason| missing(&reason))?,
                     )
                 } else {
                     CallTarget::StdIntrinsic(
                         checked
-                            .specialize_generic(&self.checked.type_store, frame.generic_bindings())
+                            .specialize_generic(&self.checked.type_store, &request_bindings)
                             .map_err(|reason| missing(&reason))?,
                     )
                 }

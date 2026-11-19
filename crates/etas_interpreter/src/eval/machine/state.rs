@@ -265,7 +265,6 @@ impl EvalMachine {
                     &frame,
                     parent_checked,
                     resources.revisions.as_deref(),
-                    limits,
                 )?;
                 let parent_program = scope
                     .as_ref()

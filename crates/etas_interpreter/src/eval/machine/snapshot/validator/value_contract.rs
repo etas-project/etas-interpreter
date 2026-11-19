@@ -9,8 +9,14 @@ impl SnapshotValidator<'_> {
         context: &str,
     ) -> Result<(), String> {
         match &frame.call {
-            crate::orchestration::ProgramCallSnapshot::Callable(_) => {
-                self.invocation_site(&frame.call_site, frame.span, context)
+            crate::orchestration::ProgramCallSnapshot::Callable(target) => {
+                // Validate captures with the owning task's scheduler and shared frames.
+                self.invocation_site(&frame.call_site, frame.span, context)?;
+                self.call_target_in(
+                    target,
+                    context,
+                    super::call_target::ReferenceScope::CheckedSlot,
+                )
             }
             crate::orchestration::ProgramCallSnapshot::Expression(expression) => {
                 self.expression_unit(expression)?;

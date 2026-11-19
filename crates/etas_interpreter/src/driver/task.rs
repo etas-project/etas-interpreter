@@ -113,7 +113,7 @@ pub(super) async fn resume_root_wait<'host>(
         } => match outcome {
             TaskOutcome::Completed(value) => {
                 validate_continuation_value(eval, token, &value, output, span)?;
-                machine.transfer_from(token, continuation, value);
+                machine.transfer_from(eval.task, token, continuation, value);
                 eval.events.push(WorkflowEvent::ContinuationTransferred {
                     scope: token.owner.0,
                     continuation: token.continuation.0,
@@ -121,7 +121,11 @@ pub(super) async fn resume_root_wait<'host>(
                     kind: "park".to_owned(),
                 });
             }
-            outcome => machine.resume(signal_from_outcome(outcome, continuation)?),
+            outcome => machine.transfer_signal(
+                eval.task,
+                token,
+                signal_from_outcome(outcome, continuation)?,
+            ),
         },
         RootTaskWait::Host(_)
         | RootTaskWait::Settling(_)
@@ -176,7 +180,7 @@ pub(super) async fn control_from_root<'host>(
                 kind: "requeue".to_owned(),
             });
             validate_continuation_value(eval, token, &value, consumed.output, span)?;
-            machine.transfer_from(token, consumed.continuation, value);
+            machine.transfer_from(eval.task, token, consumed.continuation, value);
             eval.events.push(WorkflowEvent::ContinuationTransferred {
                 scope: token.owner.0,
                 continuation: token.continuation.0,
@@ -486,7 +490,8 @@ fn resume_task_wakeup(
                 } => match outcome {
                     TaskOutcome::Completed(value) => {
                         validate_continuation_value(eval, token, &value, output, span)?;
-                        task.machine.transfer_from(token, continuation, value);
+                        task.machine
+                            .transfer_from(&mut task.local, token, continuation, value);
                     }
                     TaskOutcome::Raised(perform) => {
                         let Ok(signal) =
@@ -494,7 +499,7 @@ fn resume_task_wakeup(
                         else {
                             unreachable!("typed error produces a control signal")
                         };
-                        task.machine.resume(signal);
+                        task.machine.transfer_signal(&mut task.local, token, signal);
                     }
                     TaskOutcome::Failed(failure) => {
                         return Err(EvaluationOutcome::Failed(failure));
@@ -1009,7 +1014,7 @@ async fn drive_one_with_root<'host>(
                         return Ok(true);
                     }
                     task.machine
-                        .transfer_from(token, consumed.continuation, value);
+                        .transfer_from(child.task, token, consumed.continuation, value);
                     drop(child);
                     eval.scheduler
                         .restore_running(handle, task)
@@ -1105,7 +1110,12 @@ async fn drive_one_with_root<'host>(
                                         finish_task(eval, handle, task, outcome)?;
                                         return Ok(true);
                                     }
-                                    task.machine.transfer_from(token, continuation, value);
+                                    task.machine.transfer_from(
+                                        &mut task.local,
+                                        token,
+                                        continuation,
+                                        value,
+                                    );
                                     eval.events.push(WorkflowEvent::ContinuationTransferred {
                                         scope: token.owner.0,
                                         continuation: token.continuation.0,
@@ -1121,7 +1131,7 @@ async fn drive_one_with_root<'host>(
                                     ) else {
                                         unreachable!("typed error produces a control signal")
                                     };
-                                    task.machine.resume(signal);
+                                    task.machine.transfer_signal(&mut task.local, token, signal);
                                     continue;
                                 }
                                 TaskOutcome::Failed(failure) => {

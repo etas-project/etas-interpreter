@@ -21,9 +21,26 @@ impl EvalMachine {
 
     pub(crate) fn transfer_from(
         &mut self,
+        local: &mut crate::eval::TaskLocalState,
         token: crate::value::ContinuationTokenValue,
         continuation: crate::control::Continuation,
         value: crate::value::InterpValue,
+    ) {
+        self.transfer_signal(
+            local,
+            token,
+            ControlSignal::pending_continuation(PendingContinuation {
+                continuation,
+                input: ContinuationInput::Value(value),
+            }),
+        );
+    }
+
+    pub(crate) fn transfer_signal(
+        &mut self,
+        local: &mut crate::eval::TaskLocalState,
+        token: crate::value::ContinuationTokenValue,
+        signal: ControlSignal,
     ) {
         let boundary = self.stack.iter().rposition(|frame| {
             matches!(
@@ -59,13 +76,19 @@ impl EvalMachine {
             super::frame::EvalFrame::Continuation(_) => boundary,
             _ => unreachable!("selected deferred transfer has a dispatch boundary"),
         };
+        // A source scheduler method can transfer from inside another checked
+        // program. The dispatch continuation belongs to the program outside
+        // the first discarded call boundary.
+        if let Some(call) = self.stack[retained..].iter().find_map(|frame| match frame {
+            EvalFrame::ProgramReturn(call) => Some(call),
+            _ => None,
+        }) {
+            self.program_scope = call.parent.clone();
+            local.model_policy = call.parent_model_policy.clone();
+            local.agent_context = call.parent_agent_context.clone();
+        }
         self.truncate_to(retained);
-        self.resume(ControlSignal::pending_continuation(
-            crate::control::PendingContinuation {
-                continuation,
-                input: crate::control::ContinuationInput::Value(value),
-            },
-        ));
+        self.resume(signal);
     }
 
     pub(crate) fn resume_model_result(

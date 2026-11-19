@@ -86,8 +86,22 @@ impl TaskCapture {
         Ok(index)
     }
 
+    fn transferred_continuation(
+        &mut self,
+        scheduler: &crate::driver::scheduler::TaskScheduler,
+        token: crate::value::ContinuationTokenValue,
+        continuation: &Continuation,
+    ) -> Result<u32, String> {
+        let owner = scheduler
+            .continuation_program(token)
+            .map_err(|error| error.to_string())?
+            .ok_or("transferred continuation has no checked execution program")?;
+        self.continuation(&owner, continuation)
+    }
+
     fn resume(
         &mut self,
+        scheduler: &crate::driver::scheduler::TaskScheduler,
         program: &CheckedExecutionProgram,
         resume: &TaskResume,
     ) -> Result<TaskResumeSnapshot, String> {
@@ -121,7 +135,7 @@ impl TaskCapture {
                 span,
             } => TaskResumeSnapshot::Transfer {
                 token: *token,
-                continuation: self.continuation(program, continuation)?,
+                continuation: self.transferred_continuation(scheduler, *token, continuation)?,
                 output: *output,
                 span: *span,
             },
@@ -224,7 +238,7 @@ impl super::EvalContext<'_> {
             let waiting_continuation = task
                 .waiting_continuation
                 .as_ref()
-                .map(|resume| capture.resume(&active, resume))
+                .map(|resume| capture.resume(&self.scheduler, &active, resume))
                 .transpose()?;
             let outcome = task
                 .outcome
@@ -368,7 +382,11 @@ impl super::EvalContext<'_> {
                     } => RootTaskWaitSnapshot::Transfer {
                         target: *target,
                         token: *token,
-                        continuation: root_capture.continuation(&active, continuation)?,
+                        continuation: root_capture.transferred_continuation(
+                            &self.scheduler,
+                            *token,
+                            continuation,
+                        )?,
                         output: *output,
                         span: *span,
                     },

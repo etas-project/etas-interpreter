@@ -152,7 +152,6 @@ pub(super) fn decode(
         &boundary,
         &execution.checked,
         Some(revisions),
-        limits,
     )
     .map_err(InterpreterCodecError::new)?;
     if required_array(value, "frames")?

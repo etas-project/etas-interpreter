@@ -1157,7 +1157,7 @@ fn machine_frames_from_json(
                     let frame = machine::program_return_from_json(limits, frame, checked)
                         .map_err(InterpreterCodecError::new)?;
                     let destination = crate::eval::machine::snapshot::program::resolve_destination(
-                        &frame, checked, revisions, limits,
+                        &frame, checked, revisions,
                     )
                     .map_err(InterpreterCodecError::new)?;
                     active = destination.checked;

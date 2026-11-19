@@ -354,13 +354,6 @@ impl<'a> SnapshotValidator<'a> {
         self.validate_machine_with_handler_scopes(snapshot, &mut boundary_scopes)
     }
 
-    pub(crate) fn validate_callable_target(
-        &self,
-        target: &CallTargetSnapshot,
-    ) -> Result<(), String> {
-        self.call_target(target, "checkpoint native callable")
-    }
-
     fn validate_machine_with_handler_scopes(
         &self,
         snapshot: &MachineSnapshot,

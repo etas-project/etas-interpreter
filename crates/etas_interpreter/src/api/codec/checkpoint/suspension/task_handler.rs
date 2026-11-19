@@ -101,7 +101,6 @@ pub(crate) fn decode(
                 boundary,
                 &active.checked,
                 Some(revisions),
-                limits,
             )
             .map_err(InterpreterCodecError::new)?;
         }
