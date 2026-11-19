@@ -51,6 +51,27 @@ impl<'a> EvalContext<'a> {
             }
             HirPat::Wildcard { .. } => Ok(true),
             HirPat::Literal(literal) => self.match_literal_pattern(literal, value, span),
+            HirPat::EmptyList { .. } => Ok(
+                matches!(pattern_projection_value(value), InterpValue::List(list) if list.is_empty()),
+            ),
+            HirPat::ListCons { head, tail, .. } => {
+                let InterpValue::List(list) = pattern_projection_value(value) else {
+                    return Ok(false);
+                };
+                let mut rest = list.clone();
+                let Some(first) = rest.pop_front() else {
+                    return Ok(false);
+                };
+                let rest = match value {
+                    InterpValue::Nominal { ty, .. } => InterpValue::Nominal {
+                        ty: *ty,
+                        value: crate::value::SharedValue::new(InterpValue::List(rest)),
+                    },
+                    _ => InterpValue::List(rest),
+                };
+                Ok(self.match_pattern(*head, &first, frame, span)?
+                    && self.match_pattern(*tail, &rest, frame, span)?)
+            }
             HirPat::Tuple { elems, .. } if elems.is_empty() => {
                 self.match_unit_pattern(pat, value, span)
             }

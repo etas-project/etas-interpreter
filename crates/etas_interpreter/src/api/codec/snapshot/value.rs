@@ -9,6 +9,18 @@ pub(super) fn encode<'a>(value: &'a ValueSnapshot, slot: &'a mut Value, pending:
     // Only scalar metadata goes through serde. Recursive children are filled in
     // their final JSON slots, never serialized/cloned through an ancestor.
     match value {
+        V::ScopedHandler { metadata, value } => {
+            *slot = json!({"kind":"scoped_handler", "metadata":metadata, "value":null});
+            pending.push((Node::Value(value), &mut slot["value"]));
+        }
+        V::Handler {
+            fact_expr,
+            handlers,
+            captured: Some(captured),
+        } => {
+            *slot = json!({"kind":"handler","fact_expr":fact_expr.0,"handlers":handlers.iter().map(codec::handler_arm_json).collect::<Vec<_>>(),"captured":null});
+            pending.push((Node::Frame(captured), &mut slot["captured"]));
+        }
         V::Existential { header, value } => {
             *slot = json!({"kind":"existential", "header":header, "value":null});
             pending.push((Node::Value(value), &mut slot["value"]));
@@ -255,6 +267,7 @@ fn leaf(value: &ValueSnapshot) -> Value {
         V::Handler {
             fact_expr,
             handlers,
+            ..
         } => {
             json!({"kind":"handler","fact_expr":fact_expr.0,"handlers":handlers.iter().map(codec::handler_arm_json).collect::<Vec<_>>()})
         }
@@ -298,7 +311,8 @@ fn leaf(value: &ValueSnapshot) -> Value {
         | V::Callable(_)
         | V::Json(_)
         | V::ModelResponse(_)
-        | V::MemorySelection { .. } => unreachable!("compound value must fill child slots"),
+        | V::MemorySelection { .. }
+        | V::ScopedHandler { .. } => unreachable!("compound value must fill child slots"),
     }
 }
 

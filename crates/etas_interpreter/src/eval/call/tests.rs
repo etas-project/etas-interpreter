@@ -152,7 +152,7 @@ fn argument_suspension_moves_descriptors_and_partial_results_without_copying() {
             eval.resume_call_args(
                 CallArgsState {
                     call,
-                    target: CallTarget::FlowItem(item),
+                    target: Some(CallTarget::FlowItem(item)),
                     args,
                     start_arg_index: count / 2,
                     evaluated_args: evaluated,

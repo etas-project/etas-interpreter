@@ -289,6 +289,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)

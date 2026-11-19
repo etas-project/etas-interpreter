@@ -20,7 +20,7 @@ pub(crate) struct TaskId(pub(crate) u64);
 )]
 pub(crate) struct ContinuationId(pub(crate) u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskIdentity {
     Root,
     Scheduled(TaskId),
@@ -36,6 +36,7 @@ pub(crate) struct TaskHandle {
 pub(crate) enum TaskWait {
     Task(TaskId),
     Scope(TaskScopeId),
+    Completion(TaskScopeId),
     Host(etas_host::execution::OperationId),
     HostDrain,
     Cpu(crate::driver::cpu::CpuJobId),
@@ -87,6 +88,12 @@ pub(crate) enum TaskWaiter {
     Task(TaskId),
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CheckedTaskStart {
+    pub(crate) target: crate::control::CallTarget,
+    pub(crate) result_type: etas_types::TypeId,
+}
+
 pub(crate) enum TaskResume {
     Handler {
         continuation: Continuation,
@@ -94,6 +101,11 @@ pub(crate) enum TaskResume {
     },
     Await(Continuation),
     Run(Continuation),
+    Completion {
+        continuation: Continuation,
+        result_type: etas_types::TypeId,
+        span: etas_core::Span,
+    },
     Transfer {
         token: crate::value::ContinuationTokenValue,
         continuation: Continuation,
@@ -104,6 +116,12 @@ pub(crate) enum TaskResume {
 
 #[derive(Debug)]
 pub(crate) enum RootTaskWait {
+    Completion {
+        scope: TaskScopeId,
+        continuation: Continuation,
+        result_type: etas_types::TypeId,
+        span: etas_core::Span,
+    },
     Ready(Box<crate::eval::machine::MachineInput>),
     Await {
         target: TaskHandle,
@@ -125,7 +143,7 @@ pub(crate) enum RootTaskWait {
 
 pub(crate) struct ScheduledTask {
     pub(crate) inherited_dynamic: (usize, usize),
-    pub(crate) start: Option<std::sync::Arc<crate::intrinsic::dispatch::CheckedStdIntrinsicCall>>,
+    pub(crate) start: Option<std::sync::Arc<CheckedTaskStart>>,
     pub(crate) scope: TaskScopeId,
     pub(crate) machine: EvalMachine,
     pub(crate) local: TaskLocalState,

@@ -103,7 +103,13 @@ fn execute_inner(
                 etas_host::execution::CancellationReason::Requested,
             ));
         }
-        match machine.run_until_yield(&mut eval) {
+        let poll = if let Some(scope) = machine.program_scope() {
+            let mut scoped = eval.scoped_context(&scope.program, scope.handler_floor);
+            machine.run_until_yield(&mut scoped)
+        } else {
+            machine.run_until_yield(&mut eval)
+        };
+        match poll {
             MachinePoll::Complete(value) => {
                 let freeze_start = std::time::Instant::now();
                 let frozen = FrozenValue::freeze(&value).ok_or({

@@ -582,8 +582,9 @@ fn ingress_contract_checks_conversation_payloads_against_the_canonical_json_type
     let checked = checked("module app.main; flow main(value: Conversation) -> unit { return; }");
     let conversation = |payload| {
         V::Conversation(crate::value::ConversationValue {
+            protocol: None,
             selected_context: None,
-            session: "session".into(),
+            session: Some("session".into()),
             history_fence: None,
             cursor: None,
             messages: vec![crate::value::MessageValue {

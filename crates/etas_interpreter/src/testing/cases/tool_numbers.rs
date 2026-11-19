@@ -1,7 +1,10 @@
 use super::super::*;
 
-fn options() -> RunOptions {
-    let mut options = RunOptions::default();
+fn options(checked: &etas_frontend::CheckedProgram) -> RunOptions {
+    let mut options = RunOptions {
+        code_definitions: Some(project::prepared_tool_definitions(checked)),
+        ..Default::default()
+    };
     options
         .host_context
         .authority
@@ -44,7 +47,7 @@ flow main() -> string ![Agentic] {{ return Reader.run(); }}
                     },
                     vec![],
                     &host,
-                    options(),
+                    options(&checked),
                 )
                 .await
                 .unwrap();
@@ -66,10 +69,10 @@ flow main() -> string ![Agentic] {{ return Reader.run(); }}
                 .collect();
             assert_eq!(tools.len(), 1);
             assert_eq!(tools[0].tool_call_id.as_deref(), Some("call-1"));
-            let [ModelContent::Value(HostValue::Float(actual))] = tools[0].content.as_slice()
-            else {
+            let [ModelContent::Text(encoded)] = tools[0].content.as_slice() else {
                 panic!("checked float tool result: {:?}", tools[0])
             };
+            let actual: f64 = serde_json::from_str(encoded).unwrap();
             assert_eq!(actual.to_bits(), value.to_bits());
             assert!(
                 host.tool_requests().is_empty(),
@@ -103,7 +106,7 @@ flow main() -> string ![Agentic, Error<IOError>] {{ return Reader.run(); }}
                 etas_host::HostJsonValue::Number(number),
             )])),
         );
-        host.seed_model_response_text("must not run");
+        host.seed_model_response_text("repaired");
         let result = Interpreter
             .run_checked(
                 &checked,
@@ -112,12 +115,27 @@ flow main() -> string ![Agentic, Error<IOError>] {{ return Reader.run(); }}
                 },
                 vec![],
                 &host,
-                options(),
+                options(&checked),
             )
             .await
             .unwrap();
-        assert!(!result.diagnostics.is_empty(), "{ty}/{number}");
-        assert_eq!(host.model_call_count(), 1);
+        assert!(
+            result.diagnostics.is_empty(),
+            "{ty}/{number}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.value(),
+            Some(&InterpValue::String("repaired".into()))
+        );
+        assert_eq!(host.model_call_count(), 2);
         assert!(host.stdout_text().is_empty());
+        assert!(host.model_requests()[1].messages.iter().any(|message| {
+            message.role == ModelRole::Tool
+                && message.tool_call_id.as_deref() == Some("call-1")
+                && message.content.iter().any(|content| {
+                    matches!(content, ModelContent::Text(text) if text.contains("invalid_arguments"))
+                })
+        }));
     }
 }

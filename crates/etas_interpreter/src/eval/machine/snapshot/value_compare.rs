@@ -172,6 +172,19 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
             pending.push((x, y));
             a.object_type == b.object_type && a.concrete_type == b.concrete_type
         }
+        (
+            V::ScopedHandler {
+                metadata: a,
+                value: x,
+            },
+            V::ScopedHandler {
+                metadata: b,
+                value: y,
+            },
+        ) => {
+            pending.push((x, y));
+            a == b
+        }
         (V::Nominal { ty: a, value: x }, V::Nominal { ty: b, value: y }) => {
             pending.push((x, y));
             a == b
@@ -351,12 +364,21 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
             V::Handler {
                 fact_expr: a,
                 handlers: c,
+                captured: e,
             },
             V::Handler {
                 fact_expr: b,
                 handlers: d,
+                captured: f,
             },
-        ) => a == b && c == d,
+        ) => {
+            match (e, f) {
+                (Some(e), Some(f)) => pending.0.push(Comparison::Frame(e, f)),
+                (None, None) => {}
+                _ => return false,
+            }
+            a == b && c == d
+        }
         (
             V::ResourceHandle {
                 name: a,

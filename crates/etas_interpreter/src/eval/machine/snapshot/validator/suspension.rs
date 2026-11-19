@@ -93,11 +93,8 @@ impl SnapshotValidator<'_> {
             parent_validator.task_identity = self.task_identity;
             parent_validator.frame_owners = self.frame_owners.clone();
             parent_validator.suspension_references = self.suspension_references.clone();
-            parent_validator.invocation_site(
-                &node.boundary.call_site,
-                node.boundary.span,
-                "suspended invocation origin",
-            )?;
+            parent_validator
+                .program_boundary_site(&node.boundary, "suspended invocation origin")?;
             let mut validator = SnapshotValidator::new(
                 &native.checked,
                 &native.plan.slots,
@@ -276,6 +273,16 @@ impl SnapshotValidator<'_> {
         }
         let active_validator = self.task_segment_validator(&active);
         let pending = match &node.wait {
+            Wait::Completion {
+                scope,
+                continuation,
+                result_type,
+                ..
+            } => {
+                scheduler.validate_value(TaskValueSnapshot::Scheduler { owner: scope.0 })?;
+                active_validator.completion_type(*result_type)?;
+                Some(continuation)
+            }
             Wait::Ready(input) => {
                 saved.input = Some(input.clone());
                 validator.validate_machine_input(&saved)?;

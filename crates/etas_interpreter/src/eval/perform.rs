@@ -1,6 +1,7 @@
 use super::*;
 use crate::control::ExecutionFault;
 
+mod defaults;
 mod forwarder;
 mod native;
 
@@ -34,6 +35,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
@@ -67,6 +69,46 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }
+        let (parameter_count, slots, defaults) =
+            match self.checked.types.declared_call_arguments.get(&expr) {
+                Some(binding) => (
+                    binding.argument_slots.len() + binding.defaults.len(),
+                    binding.argument_slots.clone(),
+                    binding.defaults.clone(),
+                ),
+                None => (
+                    evaluated_args.len(),
+                    (0..evaluated_args.len() as u32).collect(),
+                    Vec::new(),
+                ),
+            };
+        self.prepare_default_arguments(super::arguments::DefaultArguments {
+            expr,
+            parameter_count,
+            slots,
+            values: evaluated_args,
+            defaults,
+            next_default: 0,
+            destination: super::arguments::ArgumentDestination::Perform {
+                action,
+                type_args,
+                source_args: args,
+            },
+            span,
+            frame: frame.clone(),
+        })
+    }
+
+    pub(super) fn finish_perform_arguments(
+        &mut self,
+        expr: HirExprId,
+        action: etas_hir::ResolvedActionRef,
+        type_args: Vec<etas_hir::HirTypeId>,
+        args: std::sync::Arc<[HirArg]>,
+        evaluated_args: Vec<InterpValue>,
+        span: Span,
+        frame: &mut Frame,
+    ) -> ControlSignal {
         if !self.performed_action_fact_matches(expr, &action, &args) {
             return ControlSignal::missing_checked_fact(
                 "performed action requires a matching checked action fact",
@@ -136,36 +178,18 @@ impl<'a> EvalContext<'a> {
         &self,
         expr: HirExprId,
         action: &ResolvedActionRef,
-        type_args: &[etas_hir::HirTypeId],
+        _type_args: &[etas_hir::HirTypeId],
         frame: &Frame,
     ) -> Result<Option<etas_types::TypeId>, ExecutionFault> {
-        if action.action != "raise"
-            || action
-                .effect
-                .path
-                .segments
-                .last()
-                .is_none_or(|segment| segment.name != "Error")
-        {
+        let Some(fact) = self.checked.effects.performed_actions.get(&expr) else {
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                action.span,
+                "performed action has no checked invocation fact",
+            ));
+        };
+        let etas_effects::Effect::Error(error_type) = fact.invocation else {
             return Ok(None);
-        }
-        let error_type = if let [error_type] = type_args {
-            self.checked.types.type_refs.get(error_type).copied()
-        } else {
-            self.checked
-                .effects
-                .performed_actions
-                .get(&expr)
-                .and_then(|fact| {
-                    fact.summary
-                        .escaping_effects
-                        .effects
-                        .iter()
-                        .find_map(|effect| match effect {
-                            etas_effects::Effect::Error(error) => Some(*error),
-                            _ => None,
-                        })
-                })
         };
         let missing = |message| {
             ExecutionFault::new(
@@ -174,8 +198,7 @@ impl<'a> EvalContext<'a> {
                 message,
             )
         };
-        let ty = error_type
-            .ok_or_else(|| missing("Error.raise has no checked error type".to_owned()))?;
+        let ty = error_type;
         let ty = etas_types::substitute_named_params_in_store(
             &self.checked.type_store,
             ty,

@@ -258,6 +258,7 @@ enum Work {
 }
 
 enum Build {
+    Existential(Box<crate::value::ExistentialValue>),
     Nominal(TypeId),
     Trust(TrustWrapper),
     Array,

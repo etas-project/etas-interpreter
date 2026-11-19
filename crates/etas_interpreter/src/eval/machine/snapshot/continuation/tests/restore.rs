@@ -142,6 +142,8 @@ fn deep_continuation_restore_uses_explicit_traversal_without_stack_overflow() {
 
 fn frame(id: u64) -> LocalsSnapshot {
     LocalsSnapshot {
+        reference: false,
+        shared_bindings: Default::default(),
         parent: None,
         handler_activations: Default::default(),
         residual_invocation: None,

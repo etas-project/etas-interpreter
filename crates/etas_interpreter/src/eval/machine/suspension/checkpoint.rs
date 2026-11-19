@@ -138,7 +138,7 @@ pub(in crate::eval::machine) fn restore_graph(
         ordering,
         residual,
     } = options;
-    use crate::eval::machine::{frame::ProgramReturnFrame, scoped_call::ProgramCall};
+    use crate::eval::machine::frame::ProgramReturnFrame;
     for index in snapshot.suspension_order()? {
         use crate::orchestration::SuspendedExecutionSnapshot as Snapshot;
         let saved = match &snapshot.suspended_programs[index] {
@@ -166,17 +166,19 @@ pub(in crate::eval::machine) fn restore_graph(
             }
         };
         let parent = revisions.execution_snapshot(&saved.parent)?;
-        let call = context(
-            contexts,
+        let call = crate::eval::machine::snapshot::program::restore_call(
+            saved.boundary.call.clone(),
+            context(
+                contexts,
+                &parent,
+                revisions,
+                table,
+                locked_model,
+                ordering,
+                residual,
+            ),
             &parent,
-            revisions,
-            table,
-            locked_model,
-            ordering,
-            residual,
-        )
-        .restore_call_target(saved.boundary.call.clone())?;
-        let call = ProgramCall::restore_target(call, &parent.checked)?;
+        )?;
         let program = call.destination()?;
         let proof = match &saved.action {
             crate::orchestration::ActionInvocationSnapshot::Native { .. } => {

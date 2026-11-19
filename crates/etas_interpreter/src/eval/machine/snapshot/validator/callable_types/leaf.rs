@@ -41,9 +41,13 @@ impl SnapshotValidator<'_> {
                 return self.agent_interface(agent.source_agent()?, bindings, allowed);
             }
             Target::Lambda { expr, captured } => {
+                let captured = self.resolve_frame(captured)?;
                 let mut bindings = bindings.clone();
                 for (name, ty) in &captured.type_bindings {
                     bindings.entry(name.clone()).or_insert(*ty);
+                }
+                for (parameter, ty) in &captured.type_parameter_bindings {
+                    bindings.parameters.entry(*parameter).or_insert(*ty);
                 }
                 for (name, row) in &captured.effect_row_bindings {
                     bindings

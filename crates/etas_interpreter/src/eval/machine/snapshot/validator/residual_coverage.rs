@@ -334,17 +334,26 @@ impl Coverage<'_, '_> {
 }
 
 fn call_site_node(site: crate::control::CallSiteKind) -> HirNodeRef {
+    if let crate::control::CallSiteKind::SourceTaskCallback { item } = site {
+        return HirNodeRef::Item(item);
+    }
     let (crate::control::CallSiteKind::Expr { expr }
     | crate::control::CallSiteKind::TaskCallback { expr }
     | crate::control::CallSiteKind::Pipeline { expr }
-    | crate::control::CallSiteKind::PipelineStage { expr, .. }) = site;
+    | crate::control::CallSiteKind::PipelineStage { expr, .. }) = site
+    else {
+        unreachable!()
+    };
     HirNodeRef::Expr(expr)
 }
 
 fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)> {
     use ContinuationSnapshot::*;
     let (node, frame) = match node {
-        ContinueBlock { block, frame, .. }
+        LoopLimit { stmt, frame } => (HirNodeRef::Stmt(*stmt), frame),
+        DefaultArguments(state) => (HirNodeRef::Expr(state.expr), &state.frame),
+        ScopeExit { block, frame, .. }
+        | ContinueBlock { block, frame, .. }
         | Bind { block, frame, .. }
         | Assign { block, frame, .. }
         | AssignTargetIndex { block, frame, .. }
@@ -354,9 +363,9 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         IfExpr {
             then_block, frame, ..
         } => (HirNodeRef::Block(*then_block), frame),
-        ForLoop { body, frame, .. } | WhileLoop { body, frame, .. } => {
-            (HirNodeRef::Block(*body), frame)
-        }
+        ForLoop { body, frame, .. }
+        | SourceForLoop { body, frame, .. }
+        | WhileLoop { body, frame, .. } => (HirNodeRef::Block(*body), frame),
         PackExistential { expr, frame }
         | FieldReceiver { expr, frame, .. }
         | AggregateElement { expr, frame, .. }

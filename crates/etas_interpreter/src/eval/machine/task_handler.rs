@@ -13,7 +13,10 @@ use crate::{
     eval::EvalContext,
     orchestration::{ActiveHandlerRecord, HandlerScopeId, RetryAttemptRecord},
     plan::code::ActionProjection,
-    value::{CheckedExecutionProgram, InterpValue},
+    value::{
+        CheckedExecutionProgram, InterpValue,
+        graph::{self, Node},
+    },
 };
 
 pub(crate) mod checkpoint;
@@ -67,6 +70,7 @@ impl EvalMachine {
         &mut self,
         ctx: &mut EvalContext<'_>,
         child: TaskHandle,
+        child_logical_identity: crate::driver::scheduler::TaskIdentity,
         child_machine: &EvalMachine,
         child_program: &CheckedExecutionProgram,
         pending: &PendingPerform,
@@ -155,6 +159,18 @@ impl EvalMachine {
             };
             if !matched {
                 continue;
+            }
+            if child_logical_identity != ctx.task.logical_identity
+                && pending
+                    .args
+                    .iter()
+                    .any(|value| graph::has_scoped_bindings(Node::Value(value)))
+            {
+                return Err(ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    pending.span,
+                    "task action payload captures a local var; capture an immutable snapshot instead",
+                ));
             }
             action.args = projection
                 .arguments(pending.args.clone(), child_program)
@@ -270,6 +286,21 @@ impl EvalMachine {
             boundary.parent_program = owner;
         } else {
             saved.scope = owner_scope;
+        }
+        if graph::has_scoped_bindings(Node::Value(&value)) {
+            let child_logical_identity = match ctx.scheduler.task_logical_identity(
+                crate::driver::scheduler::TaskIdentity::Scheduled(saved.child.task),
+            ) {
+                Ok(identity) => identity,
+                Err(reason) => return fail(reason.to_string()),
+            };
+            if child_logical_identity != ctx.task.logical_identity {
+                return MachinePoll::Fault(ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    saved.span,
+                    "task action response captures a local var; capture an immutable snapshot instead",
+                ));
+            }
         }
         let value = match saved
             .projection

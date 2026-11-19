@@ -49,6 +49,19 @@ impl EvalContext<'_> {
                 frame,
             );
         }
+        if fact.receiver.is_updating() {
+            return self.resume_call_args(
+                CallArgsState {
+                    call: dispatch.expr,
+                    target: None,
+                    args: dispatch.args.into(),
+                    start_arg_index: 0,
+                    evaluated_args: Vec::new(),
+                    span: dispatch.span,
+                },
+                frame,
+            );
+        }
         match self.eval_expr(receiver, frame) {
             ControlSignal::Value(value) => self.eval_method_on_receiver(dispatch, value, frame),
             signal if is_pending_host_boundary_signal(&signal) => {
@@ -115,7 +128,7 @@ impl EvalContext<'_> {
         self.resume_call_args(
             CallArgsState {
                 call,
-                target,
+                target: Some(target),
                 args: args.into(),
                 start_arg_index: 0,
                 evaluated_args,
@@ -125,7 +138,7 @@ impl EvalContext<'_> {
         )
     }
 
-    fn prepared_method_target(
+    pub(in crate::eval) fn prepared_method_target(
         &self,
         call: HirExprId,
         receiver: Option<&InterpValue>,

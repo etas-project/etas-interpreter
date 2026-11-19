@@ -191,6 +191,14 @@ fn root_wait_json(
     budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
     Ok(match wait {
+        RootTaskWaitSnapshot::Completion {
+            scope,
+            continuation,
+            result_type,
+            span,
+        } => {
+            json!({"kind":"completion", "scope":scope, "continuation":continuation, "result_type":result_type, "span":span_json(*span)})
+        }
         RootTaskWaitSnapshot::Ready => json!({"kind":"ready"}),
         RootTaskWaitSnapshot::Await {
             target,
@@ -216,6 +224,12 @@ fn root_wait_from_json(
     value: &Value,
 ) -> Result<RootTaskWaitSnapshot, InterpreterCodecError> {
     Ok(match required_str(value, "kind")? {
+        "completion" => RootTaskWaitSnapshot::Completion {
+            scope: field(value, "scope")?,
+            continuation: required_u32(value, "continuation")?,
+            result_type: field(value, "result_type")?,
+            span: span_from_json(required_obj(value, "span")?)?,
+        },
         "ready" => RootTaskWaitSnapshot::Ready,
         "await" => RootTaskWaitSnapshot::Await {
             target: field(value, "target")?,

@@ -10,6 +10,7 @@ mod dispatch;
 mod entry;
 mod frames;
 mod globals;
+pub(crate) mod iteration;
 mod pipeline;
 pub(crate) mod readiness;
 mod records;

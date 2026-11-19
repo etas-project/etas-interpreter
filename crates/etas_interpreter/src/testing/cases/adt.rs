@@ -509,3 +509,42 @@ flow main() -> Plan { return Planner.run("plan"); }
     );
     assert!(host.model_requests().is_empty());
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn source_list_patterns_traverse_shared_tails_with_value_semantics() {
+    run(
+        r#"
+module app.main;
+impl List<i32> {
+    flow total(self) -> i32 ![] {
+        return match self {
+            [] => 0,
+            head :: tail => head + tail.total(),
+        };
+    }
+}
+impl List<T> {
+    flow head_copy(self) -> Option<T> ![] {
+        return match self { [] => None, value :: _ => Some(value) };
+    }
+}
+flow main() -> i32 {
+    let original: List<i32> = [1; 2; 3];
+    var remaining: List<i32> = match original {
+        _ :: tail => tail,
+        [] => [],
+    };
+    let second = match remaining.head_copy() { Some(value) => value, None => 0 };
+    remaining[0] = 9;
+    let first_two = match original {
+        a :: b :: [] => a + b,
+        a :: b :: _ => a + b,
+        _ => 0,
+    };
+    return original.total() * 100 + remaining.total() + second + first_two;
+}
+"#,
+        InterpValue::i32(617),
+    )
+    .await;
+}

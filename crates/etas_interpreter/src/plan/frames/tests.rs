@@ -7,10 +7,10 @@ fn callable_layouts_exclude_lambda_locals_and_unrelated_scopes() {
         r#"
 module app.main;
 flow sibling(other: i32) -> i32 { return other; }
-flow main(seed: i32) -> () -> i32 {
+flow main(seed: i32) -> i32 {
     var total = seed;
     if seed > 0 { let branch_local = seed; total = branch_local; }
-    return () => { let lambda_local = total; return lambda_local; };
+    return (() => { let lambda_local = total; return lambda_local; })();
 }
 "#,
     );

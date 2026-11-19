@@ -19,6 +19,21 @@ pub(in crate::value) fn value_equal(left: &InterpValue, right: &InterpValue) -> 
     compare(node::compare_node(left, right, &context))
 }
 
+pub(crate) fn checked_value_equal(
+    left: &InterpValue,
+    right: &InterpValue,
+    store: &etas_types::TypeStore,
+    known: &etas_types::KnownStdTypes,
+) -> Result<bool, ()> {
+    let context = Context::checked(store, known);
+    let equal = compare(node::compare_node(left, right, &context));
+    if context.forbidden() {
+        Err(())
+    } else {
+        Ok(equal)
+    }
+}
+
 pub(crate) fn targets_equal(left: &CallTarget, right: &CallTarget) -> bool {
     compare(target::target(left, right, &Context::default()))
 }
@@ -55,7 +70,7 @@ pub(in crate::value) fn sets_equal(left: &SetValue, right: &SetValue) -> bool {
 fn set_comparison<'c>(
     left: &SetValue,
     right: &SetValue,
-    context: &'c Context,
+    context: &'c Context<'_>,
 ) -> Comparison<Cursor<'c>> {
     let len = left.borrow().len();
     if len != right.borrow().len() {
@@ -78,7 +93,7 @@ fn set_comparison<'c>(
 }
 
 pub(super) struct Cursor<'c> {
-    context: &'c Context,
+    context: &'c Context<'c>,
     pair: Option<std::num::NonZeroUsize>,
     children: Children,
     index: usize,

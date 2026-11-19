@@ -11,6 +11,108 @@ pub(crate) enum Node<'a> {
     Target(&'a CallTarget),
 }
 
+pub(crate) fn has_scoped_bindings(root: Node<'_>) -> bool {
+    match root {
+        Node::Target(CallTarget::Lambda { captured, .. })
+        | Node::Value(Value::Callable(CallTarget::Lambda { captured, .. }))
+        | Node::Value(Value::Handler {
+            captured: Some(captured),
+            ..
+        }) => captured.may_retain_scoped_bindings(),
+        _ => retains_bindings(root, |_| true),
+    }
+}
+
+pub(crate) fn retains_bindings(root: Node<'_>, mut retained: impl FnMut(u64) -> bool) -> bool {
+    let mut discovery = FrameDiscovery::default();
+    let frames = discovery.frames(root, true, |_| false);
+    visit_scoped_frames(frames, &mut discovery, |frame| {
+        frame
+            .shared_bindings()
+            .iter()
+            .any(|binding| retained(binding.id))
+    })
+}
+
+pub(crate) fn has_expired_captures(frame: &Frame) -> bool {
+    if !frame.may_retain_scoped_bindings() {
+        return false;
+    }
+    if frame.has_expired_bindings() {
+        return true;
+    }
+    let mut discovery = FrameDiscovery::default();
+    let mut frames = Vec::new();
+    frame
+        .try_visit_scoped_locals(|value| {
+            frames.extend(discovery.frames(Node::Value(value), true, |_| false));
+            Ok::<_, std::convert::Infallible>(())
+        })
+        .unwrap_or_else(|never| match never {});
+    visit_scoped_frames(frames, &mut discovery, Frame::has_expired_bindings)
+}
+
+fn visit_scoped_frames(
+    mut frames: Vec<Frame>,
+    discovery: &mut FrameDiscovery,
+    mut visit: impl FnMut(&Frame) -> bool,
+) -> bool {
+    let mut seen = HashSet::new();
+    while let Some(frame) = frames.pop() {
+        if !frame.may_retain_scoped_bindings() || !seen.insert(frame.capture_identity()) {
+            continue;
+        }
+        if visit(&frame) {
+            return true;
+        }
+        frame
+            .try_visit_scoped_locals(|value| {
+                frames.extend(discovery.frames(Node::Value(value), true, |_| false));
+                Ok::<_, std::convert::Infallible>(())
+            })
+            .unwrap_or_else(|never| match never {});
+    }
+    false
+}
+
+// Restoration allocates cells before values. Propagate the derived cache over
+// the completed graph so immutable backedges see every retained mutable cell.
+pub(crate) fn refresh_scoped_captures(frames: Vec<Frame>) {
+    let mut pending = frames;
+    let mut seen = HashSet::new();
+    let mut parents = std::collections::HashMap::new();
+    let mut scoped = Vec::new();
+    while let Some(frame) = pending.pop() {
+        let key = frame.capture_identity();
+        if !seen.insert(key) {
+            continue;
+        }
+        if frame.may_retain_scoped_bindings() {
+            scoped.push(key);
+        }
+        let _: Result<Vec<_>, std::convert::Infallible> =
+            frame.try_map_locals(|symbol, _, value| {
+                let children =
+                    FrameDiscovery::default().frames(Node::Value(value), true, |_| false);
+                for child in children {
+                    parents
+                        .entry(child.capture_identity())
+                        .or_insert_with(Vec::new)
+                        .push((frame.clone(), symbol));
+                    pending.push(child);
+                }
+                Ok(())
+            });
+    }
+    while let Some(child) = scoped.pop() {
+        for (frame, symbol) in parents.remove(&child).unwrap_or_default() {
+            if frame.mark_scoped_value(symbol) {
+                scoped.push(frame.capture_identity());
+            }
+        }
+    }
+}
+
 enum Children<'a> {
     Nodes(std::array::IntoIter<Node<'a>, 2>),
     One(Option<Node<'a>>),
@@ -155,6 +257,17 @@ impl FrameDiscovery {
         loop {
             if let Some(node) = next.take() {
                 let mut children = match node {
+                    Node::Value(Value::ScopedHandler(handler)) => {
+                        Children::One(follow_scoped.then_some(Node::Value(&handler.value)))
+                    }
+                    Node::Value(Value::Handler {
+                        fact_expr,
+                        captured: Some(frame),
+                        ..
+                    }) => {
+                        output.push(capture(*fact_expr, frame));
+                        Children::One(None)
+                    }
                     Node::Target(CallTarget::Lambda { expr, captured }) => {
                         output.push(capture(*expr, captured));
                         Children::One(None)

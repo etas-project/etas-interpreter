@@ -340,6 +340,35 @@ pub(in crate::driver) fn finish(
                     ) if max_bytes == expected => {
                         Err(HostBoundaryFailure::FileReadLimit { max_bytes })
                     }
+                    (
+                        Ok(entry),
+                        HostBoundaryDecode::SourceFileRead {
+                            result_type,
+                            max_bytes,
+                        },
+                    ) => Ok(eval.decode_source_file_read(result_type, max_bytes, entry)),
+                    (
+                        Ok(entry),
+                        HostBoundaryDecode::SourceDirectoryList {
+                            result_type,
+                            limits,
+                        },
+                    ) => {
+                        let HostBoundaryRequest::Filesystem(request) = &boundary.request else {
+                            unreachable!("filesystem completion has a filesystem request");
+                        };
+                        let path = match &request.operation {
+                            FilesystemOperation::ReadDir { path }
+                            | FilesystemOperation::ReadDirLimited { path, .. } => path,
+                            _ => {
+                                unreachable!("source directory decode requires a directory request")
+                            }
+                        };
+                        Ok(eval.decode_source_directory_list(result_type, limits, path, entry))
+                    }
+                    (Ok(entry), HostBoundaryDecode::SourceFilesystemStat { result_type }) => {
+                        Ok(eval.decode_source_filesystem_stat(result_type, entry))
+                    }
                     (Ok(entry), decode) => {
                         Ok(host_boundary_value_from_filesystem_entry(decode, entry))
                     }

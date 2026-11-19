@@ -4,11 +4,7 @@ use etas_code::{
 };
 use etas_types::{TypeId, TypeStore, facts::symbols::KnownCodeTypes};
 
-use super::{
-    annotation, behavior,
-    project::{Projector, optional},
-    report, signature, spec,
-};
+use super::{annotation, behavior, project::Projector, report, signature, spec};
 use crate::value::{
     AgentDefinitionValue, CallableDefinitionValue, CodeMetadataPayload as M, InterpValue as V,
 };
@@ -16,6 +12,7 @@ use crate::value::{
 pub(in crate::eval) fn agent_field(
     store: &TypeStore,
     known: &KnownCodeTypes,
+    enums: &super::project::EnumLayouts,
     ty: TypeId,
     definition: &AgentDefinitionValue,
     field: &str,
@@ -24,7 +21,11 @@ pub(in crate::eval) fn agent_field(
         .backend()
         .resolve(definition.definition())
         .map_err(|error| error.to_string())?;
-    let p = Projector { store, known };
+    let p = Projector {
+        store,
+        known,
+        enums,
+    };
     match field {
         "annotations" => annotation::annotations(
             &p,
@@ -86,13 +87,14 @@ pub(in crate::eval) fn agent_field(
                     .into(),
             ))
         }
-        "revision" => report::revision_info(store, known, ty, view.revision()),
+        "revision" => report::revision_info(store, known, enums, ty, view.revision()),
         "signature" => {
             let output = p.option(ty)?;
-            view.signature()
+            let value = view
+                .signature()
                 .map(|value| signature::signature(&p, output, view.signature_descriptors(), value))
-                .transpose()
-                .map(optional)
+                .transpose()?;
+            p.optional_value(ty, value)
         }
         "identity" => p.metadata(ty, M::Agent(view.identity().clone())),
         "dependencies" => report::dependencies(
@@ -149,11 +151,16 @@ fn current_analysis(
 pub(in crate::eval) fn callable_field(
     store: &TypeStore,
     known: &KnownCodeTypes,
+    enums: &super::project::EnumLayouts,
     ty: TypeId,
     definition: &CallableDefinitionValue,
     field: &str,
 ) -> Result<V, String> {
-    let p = Projector { store, known };
+    let p = Projector {
+        store,
+        known,
+        enums,
+    };
     let graph = definition.descriptors();
     let header = definition.header();
     let Some(TypeInfo::Function(callable)) = graph.type_info(header.signature) else {
@@ -161,7 +168,7 @@ pub(in crate::eval) fn callable_field(
     };
     match field {
         "id" => p.metadata(ty, M::Callable(header.id.clone())),
-        "revision" => report::revision_info(store, known, ty, &definition.revision()?),
+        "revision" => report::revision_info(store, known, enums, ty, &definition.revision()?),
         "dependencies" => report::dependencies(&p, ty, &definition.dependencies()?),
         "signature" => signature::signature(&p, ty, graph, callable),
         "effects" => behavior::effects(

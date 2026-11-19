@@ -45,6 +45,7 @@ pub(crate) struct RecordPatternField {
 struct RecordConstruction {
     names: Vec<String>,
     layout: Arc<RecordLayout>,
+    range: bool,
 }
 
 #[derive(Clone, Copy)]
@@ -61,6 +62,7 @@ pub(crate) enum FieldAccessSite<'a> {
 struct PathField {
     field: Option<CheckedRecordField>,
     native: Option<etas_std::RuntimeField>,
+    value: Option<etas_types::value_representation::ValueProjection>,
     output: TypeId,
 }
 
@@ -68,14 +70,46 @@ type PathFields = HashMap<SymbolId, HashMap<Vec<String>, Vec<PathField>>>;
 
 #[derive(Clone, Debug, Default)]
 pub struct RecordLayoutTable {
+    source_iterators: HashMap<HirExprId, super::iteration::SourceIteratorProtocol>,
     constructions: HashMap<HirExprId, RecordConstruction>,
+    primitives: HashMap<HirExprId, TypeId>,
     fields: HashMap<HirExprId, CheckedRecordField>,
     native_fields: HashMap<HirExprId, etas_std::RuntimeField>,
+    value_fields: HashMap<HirExprId, etas_types::value_representation::ValueProjection>,
     patterns: HashMap<HirPatId, Vec<RecordPatternField>>,
     paths: PathFields,
 }
 
 impl RecordLayoutTable {
+    pub(crate) fn range_constructor(&self, expr: HirExprId) -> bool {
+        self.constructions
+            .get(&expr)
+            .is_some_and(|construction| construction.range)
+    }
+
+    pub(crate) fn source_iterator(
+        &self,
+        expr: HirExprId,
+    ) -> Option<&super::iteration::SourceIteratorProtocol> {
+        self.source_iterators.get(&expr)
+    }
+    pub(crate) fn primitive_constructor(&self, expr: HirExprId) -> Option<TypeId> {
+        self.primitives.get(&expr).copied()
+    }
+    pub(crate) fn value_projection(
+        &self,
+        site: FieldAccessSite<'_>,
+    ) -> Option<etas_types::value_representation::ValueProjection> {
+        match site {
+            FieldAccessSite::Expr(expr) => self.value_fields.get(&expr).copied(),
+            FieldAccessSite::Path {
+                prefix,
+                remaining,
+                index,
+            } => self.paths.get(&prefix)?.get(remaining)?.get(index)?.value,
+        }
+    }
+
     pub(crate) fn native_field(&self, site: FieldAccessSite<'_>) -> Option<etas_std::RuntimeField> {
         match site {
             FieldAccessSite::Expr(expr) => self.native_fields.get(&expr).copied(),
@@ -140,6 +174,30 @@ impl RecordLayoutTable {
         {
             return Err("record values do not follow checked source field order".into());
         }
+        if layout.range {
+            let mut fields = fields
+                .into_iter()
+                .collect::<std::collections::BTreeMap<_, _>>();
+            let start = Box::new(fields.remove("start").unwrap());
+            let end = Box::new(fields.remove("end").unwrap());
+            let (Some(InterpValue::Bool(include_start)), Some(InterpValue::Bool(include_end))) =
+                (fields.remove("include_start"), fields.remove("include_end"))
+            else {
+                return Err("range boundary fields differ from checked bool inputs".into());
+            };
+            use crate::value::RangeBounds;
+            let bounds = match (include_start, include_end) {
+                (true, true) => RangeBounds::ClosedClosed,
+                (true, false) => RangeBounds::ClosedOpen,
+                (false, true) => RangeBounds::OpenClosed,
+                (false, false) => RangeBounds::OpenOpen,
+            };
+            return Ok(InterpValue::Range(crate::value::RangeValue {
+                start,
+                end,
+                bounds,
+            }));
+        }
         Ok(InterpValue::Record(RecordValue::with_layout(
             fields,
             layout.layout.clone(),
@@ -148,14 +206,91 @@ impl RecordLayoutTable {
 
     fn build(project: &CheckedProject) -> Result<Self, String> {
         let mut table = Self::default();
+        let spec_facts = etas_types::SpecFacts::from(project.types.as_ref());
         let mut shapes = RecordShapes::new(&project.type_store);
+        for (_, statement) in project.hir.stmts.iter() {
+            if let etas_hir::HirStmt::For { iter, .. } = statement {
+                match super::iteration::SourceIteratorProtocol::checked(project, *iter)? {
+                    Some(protocol) => {
+                        table.source_iterators.insert(*iter, protocol);
+                    }
+                    None if project.hir.source_standard_types => {
+                        return Err("source for-loop is missing its checked cursor contract".into());
+                    }
+                    None => {}
+                }
+            }
+        }
         for (expr, data) in project.hir.exprs.iter() {
             match data {
                 HirExpr::Record(record) => {
                     let Some(ty) = project.types.expression_producer_type(expr) else {
                         continue;
                     };
-                    let Some(names) = shapes.get(ty)? else {
+                    if let Some(input) = etas_types::value_representation::checked_primitive_input(
+                        &project.type_store,
+                        &spec_facts,
+                        ty,
+                    ) {
+                        if record.path.is_none() {
+                            return Err(
+                                "primitive construction requires an explicit checked type path"
+                                    .into(),
+                            );
+                        }
+                        let [field] = record.fields.as_slice() else {
+                            return Err("primitive construction requires one field".into());
+                        };
+                        let (name, value) = match field {
+                            HirFieldInit::Named { name, value, .. } => {
+                                (name, project.types.expression_producer_type(*value))
+                            }
+                            HirFieldInit::Shorthand {
+                                name,
+                                resolution: ResolveResult::Resolved(symbol),
+                                ..
+                            } => (
+                                name,
+                                project.types.symbol_types.get(symbol).and_then(
+                                    |fact| match fact {
+                                        SymbolTypeFact::Param { ty }
+                                        | SymbolTypeFact::Local { ty, .. }
+                                        | SymbolTypeFact::Value { ty }
+                                        | SymbolTypeFact::Field { ty }
+                                        | SymbolTypeFact::TopLevelLet { ty, .. } => Some(*ty),
+                                        _ => None,
+                                    },
+                                ),
+                            ),
+                            _ => return Err("primitive constructor field is not resolved".into()),
+                        };
+                        if name != input.name()
+                            || !value.is_some_and(|ty| input.matches(&project.type_store, ty))
+                        {
+                            return Err(
+                                "primitive constructor input differs from checked ABI".into()
+                            );
+                        }
+                        table.primitives.insert(expr, ty);
+                        continue;
+                    }
+                    let range =
+                        etas_types::value_representation::range_fields(&project.type_store, ty);
+                    let names = if let Some(range) = &range {
+                        if record.path.is_none() {
+                            return Err("range construction requires its checked type path".into());
+                        }
+                        let mut names = range
+                            .fields
+                            .iter()
+                            .map(|field| field.name.clone())
+                            .collect::<Vec<_>>();
+                        names.sort();
+                        Some(Arc::from(names))
+                    } else {
+                        shapes.get(ty)?
+                    };
+                    let Some(names) = names else {
                         continue;
                     };
                     let source: Vec<_> = record
@@ -176,6 +311,7 @@ impl RecordLayoutTable {
                         RecordConstruction {
                             layout: Arc::new(RecordLayout::from_names(&source)),
                             names: source,
+                            range: range.is_some(),
                         },
                     );
                 }
@@ -186,6 +322,33 @@ impl RecordLayoutTable {
                     let Some(ty) = project.types.expr_types.get(base) else {
                         continue;
                     };
+                    if etas_types::value_representation::checked_value_projection(
+                        &project.type_store,
+                        &spec_facts,
+                        *ty,
+                        field,
+                    )
+                    .is_some()
+                    {
+                        let projections = project
+                            .types
+                            .field_projections
+                            .get(&expr)
+                            .ok_or("value field has no checked projection")?;
+                        let [fact] = projections.as_slice() else {
+                            return Err("value field requires one checked projection".into());
+                        };
+                        if fact.receiver != *ty
+                            || fact.field != *field
+                            || project.types.expression_producer_type(expr) != Some(fact.output)
+                        {
+                            return Err("value field differs from checked projection".into());
+                        }
+                        let projection = checked_value_projection(project, &spec_facts, fact)?
+                            .expect("checked value projection");
+                        table.value_fields.insert(expr, projection);
+                        continue;
+                    }
                     if Some(*ty)
                         == project
                             .types
@@ -285,6 +448,7 @@ impl RecordLayoutTable {
                         fields.push(PathField {
                             field,
                             native: native_field(project, projection.receiver, name, current)?,
+                            value: checked_value_projection(project, &spec_facts, projection)?,
                             output: current,
                         });
                     }
@@ -331,6 +495,25 @@ impl RecordLayoutTable {
         }
         Ok(table)
     }
+}
+
+fn checked_value_projection(
+    project: &CheckedProject,
+    spec_facts: &etas_types::SpecFacts,
+    fact: &etas_types::FieldProjectionFact,
+) -> Result<Option<etas_types::value_representation::ValueProjection>, String> {
+    let Some(projection) = etas_types::value_representation::checked_value_projection(
+        &project.type_store,
+        spec_facts,
+        fact.receiver,
+        &fact.field,
+    ) else {
+        return Ok(None);
+    };
+    if projection.output_type(&project.type_store, fact.receiver) != Some(fact.output) {
+        return Err("value representation projection has a different checked output type".into());
+    }
+    Ok(Some(projection))
 }
 
 fn native_field(
@@ -462,6 +645,7 @@ mod tests {
             table.constructions.insert(
                 expr,
                 RecordConstruction {
+                    range: false,
                     layout: Arc::new(RecordLayout::from_names(&source)),
                     names: source.clone(),
                 },

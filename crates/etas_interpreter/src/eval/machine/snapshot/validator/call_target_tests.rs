@@ -283,12 +283,14 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
             frames: vec![MachineFrameSnapshot::Continuation {
                 continuation: ContinuationSnapshot::CallArgs {
                     call,
-                    target: root.0.take().unwrap(),
+                    target: Some(root.0.take().unwrap()),
                     args: std::sync::Arc::clone(&args),
                     next_arg_index: 1,
                     evaluated_args: vec![],
                     span,
                     frame: LocalsSnapshot {
+                        reference: false,
+                        shared_bindings: Default::default(),
                         parent: None,
                         handler_activations: Default::default(),
                         residual_invocation: None,
@@ -317,7 +319,7 @@ fn machine_validation_checks_deep_call_target_before_argument_frame() {
         else {
             unreachable!()
         };
-        root.0 = Some(target);
+        root.0 = target;
         match (valid_target, frame_id) {
             (true, 1) => result.unwrap(),
             (true, _) => assert!(result.unwrap_err().contains("zero frame identity")),

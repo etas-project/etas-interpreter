@@ -39,7 +39,7 @@ impl EvalMachine {
                     .ok_or("pending program entry has no checked owner")?;
                 MachineInputSnapshot::EnterProgram {
                     owner: context.execution_identity(parent)?,
-                    call: context.call_target(&call.call_target())?,
+                    call: super::program::capture_call(call, context)?,
                     args: capture_values(args, context)?,
                     span: *span,
                 }
@@ -70,7 +70,27 @@ impl EvalMachine {
                     } => {
                         let program =
                             program.ok_or("pending program entry has no checked restore owner")?;
-                        let parent = if let Some(revisions) = &context.revisions {
+                        let boundary = self.stack.iter().rev().find_map(|frame| match frame {
+                            crate::eval::machine::frame::EvalFrame::ProgramReturn(boundary) => {
+                                Some((boundary.parent_program.clone(), boundary.call.clone()))
+                            }
+                            _ => None,
+                        });
+                        let parent = if let Some((parent, _)) = &boundary {
+                            let saved = CheckedExecutionProgram::restore_identity(
+                                &owner,
+                                parent,
+                                context.revisions.as_deref(),
+                            )?;
+                            if !std::sync::Arc::ptr_eq(&saved.checked, &parent.checked)
+                                || saved.plan.root != parent.plan.root
+                            {
+                                return Err(
+                                    "pending program entry has a different checked parent".into()
+                                );
+                            }
+                            parent.clone()
+                        } else if let Some(revisions) = &context.revisions {
                             revisions.execution_snapshot(&owner)?
                         } else if owner == program.checkpoint_identity(&mut Default::default()) {
                             program.clone()
@@ -82,10 +102,16 @@ impl EvalMachine {
                         let previous = context.execution_program.clone();
                         context.select_program(parent.checked.clone());
                         context.execution_program = Some(parent.clone());
-                        let call = super::super::scoped_call::ProgramCall::restore_target(
-                            context.restore_call_target(call)?,
-                            &parent.checked,
-                        )?;
+                        let call = if let Some((_, call)) = boundary {
+                            call
+                        } else {
+                            super::program::restore_call(call, context, &parent)?
+                        };
+                        // enter_program has already projected these values into
+                        // the destination before it exposes this machine input.
+                        let destination = call.destination()?;
+                        context.select_program(destination.checked.clone());
+                        context.execution_program = Some(destination);
                         let args = restore_values(args, context)?;
                         context.select_program(program.checked.clone());
                         context.execution_program = previous;
@@ -131,6 +157,12 @@ impl ControlSignalSnapshot {
                 frame: context.frame(&pending.frame)?,
                 continuation: context.continuation(&pending.continuation)?,
             },
+            ControlSignal::ProgramExpr(pending) => Self::ProgramExpr {
+                call: Box::new(super::program::capture_expression(&pending.call, context)?),
+                args: capture_values(&pending.args, context)?,
+                span: pending.span,
+                continuation: context.continuation(&pending.continuation)?,
+            },
             ControlSignal::Block(pending) => Self::Block {
                 agent_context: pending.agent_context.as_ref().map(|request| {
                     Box::new(super::capture_agent_context(
@@ -173,6 +205,15 @@ impl ControlSignalSnapshot {
                 continuation: context.continuation(&pending.continuation)?,
             },
             ControlSignal::Task(pending) => Self::Task(match &**pending {
+                PendingTaskControl::NextCompletion {
+                    scope,
+                    result_type,
+                    span,
+                } => TaskControlSnapshot::NextCompletion {
+                    scope: scope.0,
+                    result_type: *result_type,
+                    span: *span,
+                },
                 PendingTaskControl::ResumeHandled {
                     task,
                     handler,
@@ -353,6 +394,20 @@ impl ControlSignalSnapshot {
                 frame: context.frame(frame)?,
                 continuation: continuation.restore_with(context)?,
             }),
+            Self::ProgramExpr {
+                call,
+                args,
+                span,
+                continuation,
+            } => {
+                let parent = program.ok_or("pending expression program has no checked caller")?;
+                ControlSignal::ProgramExpr(Box::new(PendingProgramExpr {
+                    call: super::program::restore_expression(*call, context, parent)?,
+                    args: restore_values(args, context)?,
+                    span,
+                    continuation: continuation.restore_with(context)?,
+                }))
+            }
             Self::Block {
                 agent_context,
                 block,
@@ -416,6 +471,15 @@ impl ControlSignalSnapshot {
             Self::Task(pending) => {
                 use crate::driver::scheduler::{TaskHandle, TaskId, TaskScopeId};
                 ControlSignal::pending_task(match pending {
+                    TaskControlSnapshot::NextCompletion {
+                        scope,
+                        result_type,
+                        span,
+                    } => PendingTaskControl::NextCompletion {
+                        scope: TaskScopeId(scope),
+                        result_type,
+                        span,
+                    },
                     TaskControlSnapshot::ResumeHandled {
                         owner,
                         task,

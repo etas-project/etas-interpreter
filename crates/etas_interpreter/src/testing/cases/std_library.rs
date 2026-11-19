@@ -48,8 +48,9 @@ fn stored_std_library_executes_generic_and_spec_bodies_in_another_process() {
         let end = assembly.find("public flow repeat(").unwrap();
         let changed_join = assembly[start..end]
             .replace("return output;", &format!("return \"{marker}:\" + output;"));
-        let text = format!("{}{}{}", &assembly[..start], changed_join, &assembly[end..])
-            + r#"
+        let text = format!(
+            "module std.text;\nimport std.collections.Array;\nimport std.runtime.limits.Iterations;\n{changed_join}"
+        ) + r#"
 flow identity<T>(value: T) -> T { return value; }
 spec Reader { flow read(self) -> string ![]; }
 type Box = { value: string };
@@ -71,13 +72,77 @@ public flow runtime_probe() -> string {
         let maintained = etas_std::library::source_checkout_manifest()
             .parent()
             .unwrap()
-            .join("library/std/text");
-        for (id, file) in [(SourceId(2), "native.es"), (SourceId(3), "errors.es")] {
-            let path = root.join("library/std/text").join(file);
-            let text = std::fs::read_to_string(maintained.join(file)).unwrap();
+            .join("library/std");
+        let collections = std::fs::read_to_string(maintained.join("collections/mod.es")).unwrap();
+        let headers = &collections[..collections.find("// Insertion order").unwrap()];
+        let iterator = &collections[collections.find("public type Iter<T>").unwrap()..];
+        let algorithms =
+            std::fs::read_to_string(maintained.join("collections/algorithms.es")).unwrap();
+        let get = &algorithms[algorithms.find("    public flow get<").unwrap()
+            ..algorithms.find("    public flow at<").unwrap()];
+        let iteration =
+            std::fs::read_to_string(maintained.join("collections/iteration.es")).unwrap();
+        let iteration = &iteration[..iteration.find("impl List<T>").unwrap()];
+        let collections = format!(
+            "module std.collections;\n{}\n{iterator}\nimpl Array<T> {{\n{get}\n}}\n{}",
+            headers.strip_prefix("module std.collections;").unwrap(),
+            iteration.strip_prefix("module std.collections;").unwrap(),
+        );
+        let core = std::fs::read_to_string(maintained.join("core/mod.es")).unwrap();
+        let errors = std::fs::read_to_string(maintained.join("runtime/error/complete.es")).unwrap();
+        let index_error = errors
+            .lines()
+            .find(|line| line.starts_with("public type IndexError ="))
+            .unwrap();
+        let prelude = std::fs::read_to_string(maintained.join("prelude/mod.es")).unwrap();
+        let prelude = prelude
+            .lines()
+            .filter_map(|line| {
+                if line.starts_with("public import std.collections.") {
+                    Some("public import std.collections.{Array, List, Iter};")
+                } else if line.starts_with("public import std.io.") {
+                    None
+                } else {
+                    Some(line)
+                }
+            })
+            .collect::<Vec<_>>()
+            .join("\n");
+        let selected = [
+            ("collections/mod.es", collections),
+            (
+                "runtime/limits/mod.es",
+                std::fs::read_to_string(maintained.join("runtime/limits/mod.es")).unwrap(),
+            ),
+            (
+                "runtime/budget/mod.es",
+                std::fs::read_to_string(maintained.join("runtime/budget/mod.es")).unwrap(),
+            ),
+            (
+                "runtime/time/mod.es",
+                std::fs::read_to_string(maintained.join("runtime/time/mod.es")).unwrap(),
+            ),
+            (
+                "option/mod.es",
+                std::fs::read_to_string(maintained.join("option/mod.es")).unwrap(),
+            ),
+            (
+                "result/mod.es",
+                std::fs::read_to_string(maintained.join("result/mod.es")).unwrap(),
+            ),
+            ("core/mod.es", core),
+            ("prelude/mod.es", prelude),
+            (
+                "runtime/error/mod.es",
+                format!("module std.runtime.error;\n{index_error}"),
+            ),
+        ];
+        for (offset, (relative, text)) in selected.into_iter().enumerate() {
+            let path = root.join("library/std").join(relative);
+            std::fs::create_dir_all(path.parent().unwrap()).unwrap();
             std::fs::write(&path, &text).unwrap();
             input.sources.push(SourceInput {
-                id,
+                id: SourceId(offset as u32 + 2),
                 path: Some(path),
                 text,
                 kind: SourceKind::SourceProjectFile,
@@ -90,21 +155,24 @@ public flow runtime_probe() -> string {
             segments: vec!["std".into(), "text".into()],
         });
         input.environment.local_source_package = Some(owner);
-        input.environment.stable_source_keys = [
-            (SourceId(1), "probe.es"),
-            (SourceId(2), "native.es"),
-            (SourceId(3), "errors.es"),
-        ]
-        .into_iter()
-        .map(|(source, file)| ProjectStableSourceKeyInput {
-            source,
-            key: StableSourceKey::new(
-                StableSourceOrigin::Package(owner),
-                &["library".into(), "std".into(), "text".into(), file.into()],
-            )
-            .unwrap(),
-        })
-        .collect();
+        input.environment.stable_source_keys = input
+            .sources
+            .iter()
+            .map(|source| {
+                let relative = source.path.as_ref().unwrap().strip_prefix(&root).unwrap();
+                ProjectStableSourceKeyInput {
+                    source: source.id,
+                    key: StableSourceKey::new(
+                        StableSourceOrigin::Package(owner),
+                        &relative
+                            .components()
+                            .map(|part| part.as_os_str().to_str().unwrap().to_owned())
+                            .collect::<Vec<_>>(),
+                    )
+                    .unwrap(),
+                }
+            })
+            .collect();
         let output = Frontend.check_standard_library_source(input);
         assert!(output.diagnostics.is_empty(), "{:?}", output.diagnostics);
         let image = LibraryHirImage::from_checked(&output.checked.unwrap(), owner, &root).unwrap();

@@ -327,7 +327,7 @@ fn machine_capture_reaches_deep_call_targets_without_cloning_runtime_frames() {
         let mut machine = EvalMachine::new();
         machine.push_frame(EvalFrame::from_continuation(Continuation::CallArgs {
             call: etas_hir::HirExprId(0),
-            target: runtime.0.take().unwrap(),
+            target: runtime.0.take(),
             args: vec![].into(),
             next_arg_index: 0,
             evaluated_args: vec![],
@@ -341,7 +341,7 @@ fn machine_capture_reaches_deep_call_targets_without_cloning_runtime_frames() {
         else {
             panic!("call args frame")
         };
-        runtime.0 = Some(target);
+        runtime.0 = target;
         let saved = result.unwrap();
         let MachineFrameSnapshot::Continuation {
             continuation:
@@ -357,7 +357,7 @@ fn machine_capture_reaches_deep_call_targets_without_cloning_runtime_frames() {
         };
         assert!(args.is_empty());
         assert_eq!(*next_arg_index, 0);
-        let mut cursor = target;
+        let mut cursor = target.as_ref().unwrap();
         for _ in 0..depth {
             let CallTargetSnapshot::Composed(targets) = cursor else {
                 panic!("composed target")

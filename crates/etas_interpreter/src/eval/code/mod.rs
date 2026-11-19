@@ -2,14 +2,18 @@ mod annotation;
 mod behavior;
 mod compile_result;
 mod control;
+mod defaults;
 mod definition_fields;
+mod description;
 mod diagnostic;
 mod diff;
 mod execution;
+mod identity;
 pub(crate) use execution::CompilerInvocation;
 mod project;
 mod report;
 mod signature;
+mod source;
 mod spec;
 mod tool_reference;
 pub(super) use definition_fields::{agent_field, callable_field};
@@ -86,6 +90,7 @@ impl EvalContext<'_> {
                         match diagnostic::parse_error(
                             &self.checked.type_store,
                             &self.checked.types.known_std_types.code,
+                            &self.checked.types.enum_layouts,
                             *err,
                             error,
                         ) {

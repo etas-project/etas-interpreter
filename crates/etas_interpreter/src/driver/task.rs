@@ -18,9 +18,9 @@ use super::{
     dispatch,
     drive::{EvaluationOutcome, evaluation_failure},
     scheduler::{
-        AwaitDecision, CompletedTaskHost, HostOwner, ReadyTaskHost, RootTaskWait, ScheduledTask,
-        SchedulerError, ScopeDecision, TaskHandle, TaskHostReactor, TaskOutcome, TaskResume,
-        TaskWakeup,
+        AwaitDecision, CompletedTaskHost, CompletionDecision, HostOwner, ReadyTaskHost,
+        RootTaskWait, ScheduledTask, SchedulerError, ScopeDecision, TaskHandle, TaskHostReactor,
+        TaskOutcome, TaskResume, TaskState, TaskWakeup,
     },
 };
 
@@ -72,6 +72,12 @@ pub(super) async fn resume_root_wait<'host>(
     }
     let outcome = match machine.root_wait.as_ref().expect("root has a pending wait") {
         RootTaskWait::Ready(_) => unreachable!(),
+        RootTaskWait::Completion { .. } => {
+            return Err(task_fault(
+                eval,
+                "completion wait belongs to its scheduled scope owner",
+            ));
+        }
         RootTaskWait::Await { target, .. } | RootTaskWait::Transfer { target, .. } => {
             await_outcome(eval, host, reactor, *target, machine).await?
         }
@@ -117,7 +123,10 @@ pub(super) async fn resume_root_wait<'host>(
             }
             outcome => machine.resume(signal_from_outcome(outcome, continuation)?),
         },
-        RootTaskWait::Host(_) | RootTaskWait::Settling(_) | RootTaskWait::Ready(_) => {
+        RootTaskWait::Host(_)
+        | RootTaskWait::Settling(_)
+        | RootTaskWait::Ready(_)
+        | RootTaskWait::Completion { .. } => {
             unreachable!("root wait kind is unchanged")
         }
     }
@@ -132,6 +141,10 @@ pub(super) async fn control_from_root<'host>(
     control: PendingTaskControl,
 ) -> Result<(), EvaluationOutcome> {
     match control {
+        PendingTaskControl::NextCompletion { .. } => Err(task_fault(
+            eval,
+            "completion observation requires a scheduled scope owner",
+        )),
         PendingTaskControl::ResumeHandled {
             task,
             handler,
@@ -278,6 +291,7 @@ async fn settle_tasks<'host>(
     mut root: EvaluationOutcome,
     machine: &mut crate::eval::machine::EvalMachine,
 ) -> EvaluationOutcome {
+    record_cancellation_events(eval);
     if !matches!(root, EvaluationOutcome::Completed(_)) {
         if let Err(outcome) = cancel_and_drain(eval, host, reactor, machine).await {
             return outcome;
@@ -423,6 +437,30 @@ fn resume_task_wakeup(
     wakeup: Option<TaskWakeup>,
 ) -> Result<(), EvaluationOutcome> {
     match wakeup {
+        Some(TaskWakeup::Completion { scope, event }) => {
+            eval.events.push(WorkflowEvent::TaskReady {
+                scope: scope.0,
+                task: handle.task.0,
+            });
+            let Some(TaskResume::Completion {
+                continuation,
+                result_type,
+                ..
+            }) = task.waiting_continuation.take()
+            else {
+                return Err(task_fault(
+                    eval,
+                    "completion wakeup has no saved completion continuation",
+                ));
+            };
+            let value =
+                crate::value::task::source::completion_value(result_type, event, &eval.scheduler);
+            task.machine
+                .resume(ControlSignal::pending_continuation(PendingContinuation {
+                    continuation,
+                    input: ContinuationInput::Value(value),
+                }));
+        }
         Some(TaskWakeup::Task {
             completed: _,
             outcome,
@@ -465,7 +503,7 @@ fn resume_task_wakeup(
                         return Err(EvaluationOutcome::Cancelled(cause));
                     }
                 },
-                TaskResume::Run(_) | TaskResume::Handler { .. } => {
+                TaskResume::Run(_) | TaskResume::Handler { .. } | TaskResume::Completion { .. } => {
                     return Err(task_fault(eval, "task wakeup has a scope continuation"));
                 }
             }
@@ -491,12 +529,57 @@ fn resume_task_wakeup(
     Ok(())
 }
 
+fn dispatch_ready(eval: &mut EvalContext<'_>) -> Result<Option<TaskHandle>, EvaluationOutcome> {
+    if !eval.scheduler.has_source_policies() {
+        return Ok(eval.scheduler.dispatch_ready());
+    }
+    loop {
+        let Some(snapshot) = eval.scheduler.ready_snapshot() else {
+            return Ok(None);
+        };
+        let index = if let Some(owner) = snapshot.policy_owner {
+            let mut policy = eval.scheduler.take_source_policy(owner);
+            let result = policy.select(eval, &snapshot.entries);
+            eval.scheduler.restore_source_policy(owner, policy);
+            match result {
+                Ok(index) => index,
+                Err(ControlSignal::Fault(fault)) => {
+                    eval.diagnostics.push(fault.clone().into_diagnostic());
+                    return Err(EvaluationOutcome::Failed(
+                        crate::api::RunFailure::ExecutionFault(*fault),
+                    ));
+                }
+                Err(ControlSignal::Cancelled(cause)) => {
+                    return Err(EvaluationOutcome::Cancelled(cause));
+                }
+                Err(_) => {
+                    return Err(task_fault(
+                        eval,
+                        "source scheduling policy has invalid control",
+                    ));
+                }
+            }
+        } else {
+            0
+        };
+        let selected = snapshot.entries[index].handle;
+        if let Some(handle) = eval
+            .scheduler
+            .dispatch_selected(selected)
+            .map_err(|error| scheduler_failure(eval, error))?
+        {
+            return Ok(Some(handle));
+        }
+    }
+}
+
 async fn drive_one_with_root<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,
     reactor: &mut TaskHostReactor<'host>,
     mut root: Option<&mut crate::eval::machine::EvalMachine>,
 ) -> Result<bool, EvaluationOutcome> {
+    record_cancellation_events(eval);
     if drain_cpu_completions(eval)? {
         return Ok(true);
     }
@@ -507,7 +590,7 @@ async fn drive_one_with_root<'host>(
     if drain_task_wakeups(eval)? {
         return Ok(true);
     }
-    let ready = eval.scheduler.dispatch_ready();
+    let ready = dispatch_ready(eval)?;
     record_resource_events(eval);
     let Some(handle) = ready else {
         if !eval.cpu_jobs.is_empty() {
@@ -595,7 +678,7 @@ async fn drive_one_with_root<'host>(
         return Ok(true);
     }
 
-    loop {
+    'poll: loop {
         let scope = task.machine.program_scope();
         let (program, handler_floor) = match scope {
             Some(scope) => (scope.program, scope.handler_floor),
@@ -669,6 +752,57 @@ async fn drive_one_with_root<'host>(
         }
         if let PendingBoundary::Task(control) = boundary {
             match *control {
+                PendingTaskControl::NextCompletion {
+                    scope,
+                    result_type,
+                    span,
+                } => {
+                    task.waiting_continuation = Some(TaskResume::Completion {
+                        continuation: Continuation::BlockValue,
+                        result_type,
+                        span,
+                    });
+                    drop(child);
+                    eval.scheduler
+                        .restore_running(handle, task)
+                        .map_err(|error| scheduler_failure(eval, error))?;
+                    match eval
+                        .scheduler
+                        .await_completion(handle, scope)
+                        .map_err(|error| scheduler_failure(eval, error))?
+                    {
+                        CompletionDecision::Parked => return Ok(true),
+                        CompletionDecision::Ready(event) => {
+                            task = eval
+                                .scheduler
+                                .take_running(handle)
+                                .map_err(|error| scheduler_failure(eval, error))?;
+                            let Some(TaskResume::Completion {
+                                continuation,
+                                result_type,
+                                ..
+                            }) = task.waiting_continuation.take()
+                            else {
+                                return Err(task_fault(
+                                    eval,
+                                    "completion delivery lost its continuation",
+                                ));
+                            };
+                            let value = crate::value::task::source::completion_value(
+                                result_type,
+                                event,
+                                &eval.scheduler,
+                            );
+                            task.machine.resume(ControlSignal::pending_continuation(
+                                PendingContinuation {
+                                    continuation,
+                                    input: ContinuationInput::Value(value),
+                                },
+                            ));
+                            continue;
+                        }
+                    }
+                }
                 PendingTaskControl::ResumeHandled {
                     task: target,
                     handler,
@@ -685,6 +819,31 @@ async fn drive_one_with_root<'host>(
                         .take()
                         .expect("scheduled caller restores its wait")
                     {
+                        RootTaskWait::Completion {
+                            scope,
+                            continuation,
+                            result_type,
+                            span,
+                        } => {
+                            task.waiting_continuation = Some(TaskResume::Completion {
+                                continuation,
+                                result_type,
+                                span,
+                            });
+                            eval.scheduler
+                                .restore_running(handle, task)
+                                .map_err(|error| scheduler_failure(eval, error))?;
+                            if let CompletionDecision::Ready(event) = eval
+                                .scheduler
+                                .await_completion(handle, scope)
+                                .map_err(|error| scheduler_failure(eval, error))?
+                            {
+                                eval.scheduler
+                                    .wake_task_wait(handle, TaskWakeup::Completion { scope, event })
+                                    .map_err(|error| scheduler_failure(eval, error))?;
+                            }
+                            return Ok(true);
+                        }
                         RootTaskWait::Ready(input) => {
                             task.machine.restore_task_input(*input);
                             continue;
@@ -1003,6 +1162,7 @@ async fn drive_one_with_root<'host>(
         if let PendingBoundary::Perform(perform) = boundary {
             if perform.error_type.is_none() && child.task.inherited_handlers != 0 {
                 let inherited = child.task.inherited_handler_records().to_vec();
+                let child_logical_identity = child.task.logical_identity;
                 drop(child);
                 let mut owner = None;
                 let mut parent = task.local.parent;
@@ -1014,6 +1174,24 @@ async fn drive_one_with_root<'host>(
                         continue;
                     };
                     let wait = match caller.state {
+                        super::scheduler::TaskState::Waiting(
+                            super::scheduler::TaskWait::Completion(scope),
+                        ) => {
+                            let Some(TaskResume::Completion {
+                                continuation,
+                                result_type,
+                                span,
+                            }) = caller.waiting_continuation.take()
+                            else {
+                                unreachable!("completion caller continuation")
+                            };
+                            RootTaskWait::Completion {
+                                scope,
+                                continuation,
+                                result_type,
+                                span,
+                            }
+                        }
                         super::scheduler::TaskState::Waiting(super::scheduler::TaskWait::Host(
                             _,
                         )) => RootTaskWait::Host(
@@ -1087,19 +1265,22 @@ async fn drive_one_with_root<'host>(
                         caller_handle.task,
                         caller_floor,
                     );
-                    owner = caller
-                        .machine
-                        .relay_task_handler(
-                            &mut caller_ctx,
-                            handle,
-                            &task.machine,
-                            &program,
-                            &perform,
-                            &inherited,
-                        )
-                        .map_err(|fault| {
-                            EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
-                        })?;
+                    let relay = caller.machine.relay_task_handler(
+                        &mut caller_ctx,
+                        handle,
+                        child_logical_identity,
+                        &task.machine,
+                        &program,
+                        &perform,
+                        &inherited,
+                    );
+                    let relay_fault = match relay {
+                        Ok(handler) => {
+                            owner = handler;
+                            None
+                        }
+                        Err(fault) => Some(fault),
+                    };
                     drop(caller_ctx);
                     if owner.is_none() {
                         match caller
@@ -1108,6 +1289,18 @@ async fn drive_one_with_root<'host>(
                             .take()
                             .expect("unmatched caller retains its wait")
                         {
+                            RootTaskWait::Completion {
+                                continuation,
+                                result_type,
+                                span,
+                                ..
+                            } => {
+                                caller.waiting_continuation = Some(TaskResume::Completion {
+                                    continuation,
+                                    result_type,
+                                    span,
+                                });
+                            }
                             RootTaskWait::Ready(input) => caller.machine.restore_task_input(*input),
                             RootTaskWait::Host(wait) => caller.host_wait = Some(wait),
                             RootTaskWait::Await { continuation, .. } => {
@@ -1148,26 +1341,31 @@ async fn drive_one_with_root<'host>(
                         owner.is_some(),
                         handle.task,
                     );
+                    if let Some(fault) = relay_fault {
+                        task.machine.resume(ControlSignal::Fault(Box::new(fault)));
+                        continue 'poll;
+                    }
                     if owner.is_some() {
                         break;
                     }
                 }
                 if owner.is_none() {
                     owner = match root.as_deref_mut() {
-                        Some(root) => root
-                            .relay_task_handler(
-                                eval,
-                                handle,
-                                &task.machine,
-                                &program,
-                                &perform,
-                                &inherited,
-                            )
-                            .map_err(|fault| {
-                                EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(
-                                    fault,
-                                ))
-                            })?,
+                        Some(root) => match root.relay_task_handler(
+                            eval,
+                            handle,
+                            child_logical_identity,
+                            &task.machine,
+                            &program,
+                            &perform,
+                            &inherited,
+                        ) {
+                            Ok(handler) => handler,
+                            Err(fault) => {
+                                task.machine.resume(ControlSignal::Fault(Box::new(fault)));
+                                continue 'poll;
+                            }
+                        },
                         None => None,
                     };
                 }
@@ -1204,6 +1402,14 @@ async fn drive_one_with_root<'host>(
                     EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault)),
                 )?;
                 return Ok(true);
+            }
+            if let Some(signal) = child.source_console_action(&perform) {
+                task.machine.resume(signal);
+                continue;
+            }
+            if let Some(signal) = child.source_filesystem_action(&perform) {
+                task.machine.resume(signal);
+                continue;
             }
             if let Some(target) = awaited_task(&perform) {
                 match child.scheduler.outcome(target) {
@@ -1518,27 +1724,7 @@ pub(super) fn settle_host_reply(
                 .finish_host_drain(handle)
                 .map_err(|error| scheduler_failure(eval, error))?
             {
-                let outcome = eval
-                    .scheduler
-                    .outcome(handle)
-                    .expect("settled Host owner")
-                    .expect("body outcome");
-                let name = match outcome {
-                    TaskOutcome::Completed(_) => "completed",
-                    TaskOutcome::Raised(_) => "raised",
-                    TaskOutcome::Failed(_) => "failed",
-                    TaskOutcome::Cancelled(_) => "cancelled",
-                };
                 record_cancellation_events(eval);
-                eval.events.push(WorkflowEvent::TaskSettled {
-                    scope: handle.owner.0,
-                    task: handle.task.0,
-                    outcome: name.to_owned(),
-                });
-                eval.events.push(WorkflowEvent::TaskCleanupCompleted {
-                    scope: handle.owner.0,
-                    task: handle.task.0,
-                });
                 return Ok(());
             }
             if active {
@@ -1657,6 +1843,7 @@ pub(super) fn drain_cpu_completions(eval: &mut EvalContext<'_>) -> Result<bool, 
             .is_terminal()
         {
             eval.events.cpu_telemetry(&telemetry);
+            record_cancellation_events(eval);
             continue;
         }
         let task = eval
@@ -1771,11 +1958,6 @@ fn finish_task(
         }
         other => other,
     };
-    let outcome_name = match &outcome {
-        EvaluationOutcome::Completed(_) => "completed",
-        EvaluationOutcome::Failed(_) => "failed",
-        EvaluationOutcome::Cancelled(_) => "cancelled",
-    };
     eval.scheduler
         .restore_running(handle, task)
         .map_err(|error| scheduler_failure(eval, error))?;
@@ -1788,23 +1970,6 @@ fn finish_task(
         .and_then(|()| eval.scheduler.apply_group_policy(handle))
         .map_err(|error| scheduler_failure(eval, error))?;
     record_cancellation_events(eval);
-    if !eval
-        .scheduler
-        .state(handle)
-        .map_err(|error| scheduler_failure(eval, error))?
-        .is_terminal()
-    {
-        return Ok(());
-    }
-    eval.events.push(WorkflowEvent::TaskSettled {
-        scope: handle.owner.0,
-        task: handle.task.0,
-        outcome: outcome_name.to_owned(),
-    });
-    eval.events.push(WorkflowEvent::TaskCleanupCompleted {
-        scope: handle.owner.0,
-        task: handle.task.0,
-    });
     Ok(())
 }
 
@@ -1820,23 +1985,6 @@ fn finish_raised_task(
         .and_then(|()| eval.scheduler.apply_group_policy(handle))
         .map_err(|error| scheduler_failure(eval, error))?;
     record_cancellation_events(eval);
-    if !eval
-        .scheduler
-        .state(handle)
-        .map_err(|error| scheduler_failure(eval, error))?
-        .is_terminal()
-    {
-        return Ok(());
-    }
-    eval.events.push(WorkflowEvent::TaskSettled {
-        scope: handle.owner.0,
-        task: handle.task.0,
-        outcome: "raised".to_owned(),
-    });
-    eval.events.push(WorkflowEvent::TaskCleanupCompleted {
-        scope: handle.owner.0,
-        task: handle.task.0,
-    });
     Ok(())
 }
 
@@ -1891,6 +2039,24 @@ pub(super) fn record_cancellation_events(eval: &mut EvalContext<'_>) {
             scope: handle.owner.0,
             task: handle.task.0,
             reason: format!("{reason:?}"),
+        });
+    }
+    for (handle, state) in eval.take_terminal_task_events() {
+        let outcome = match state {
+            TaskState::Completed => "completed",
+            TaskState::Raised => "raised",
+            TaskState::Failed => "failed",
+            TaskState::Cancelled => "cancelled",
+            _ => unreachable!("terminal event has a terminal task state"),
+        };
+        eval.events.push(WorkflowEvent::TaskSettled {
+            scope: handle.owner.0,
+            task: handle.task.0,
+            outcome: outcome.to_owned(),
+        });
+        eval.events.push(WorkflowEvent::TaskCleanupCompleted {
+            scope: handle.owner.0,
+            task: handle.task.0,
         });
     }
 }

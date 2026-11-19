@@ -75,6 +75,17 @@ impl TaskHandlerContinuation {
             frames.push(snapshot);
         }
         let wait = match &saved.wait {
+            RootTaskWait::Completion {
+                scope,
+                continuation,
+                result_type,
+                span,
+            } => TaskHandlerWaitSnapshot::Completion {
+                scope: *scope,
+                continuation: context.continuation(continuation)?,
+                result_type: *result_type,
+                span: *span,
+            },
             RootTaskWait::Ready(input) => {
                 let parent = saved
                     .frames
@@ -171,7 +182,7 @@ pub(in crate::eval::machine) fn restore(
     options: super::super::suspension::checkpoint::RestoreOptions<'_>,
 ) -> Result<TaskHandlerContinuation, String> {
     use super::super::suspension::checkpoint::context;
-    use crate::eval::machine::{frame::ProgramReturnFrame, scoped_call::ProgramCall};
+    use crate::eval::machine::frame::ProgramReturnFrame;
     if saved.owner_task != owner_task {
         return Err("task Handler snapshot belongs to a different caller task".into());
     }
@@ -197,10 +208,8 @@ pub(in crate::eval::machine) fn restore(
             options.residual,
         );
         if let MachineFrameSnapshot::ProgramReturn(boundary) = frame {
-            let call = ProgramCall::restore_target(
-                ctx.restore_call_target(boundary.call)?,
-                &parent.checked,
-            )?;
+            let call =
+                crate::eval::machine::snapshot::program::restore_call(boundary.call, ctx, &parent)?;
             let destination = call.destination()?;
             frames.push(EvalFrame::ProgramReturn(Box::new(ProgramReturnFrame {
                 site: Some(boundary.call_site.restore(ctx)?),
@@ -248,6 +257,17 @@ pub(in crate::eval::machine) fn restore(
         options.residual,
     );
     let wait = match &saved.wait {
+        TaskHandlerWaitSnapshot::Completion {
+            scope,
+            continuation,
+            result_type,
+            span,
+        } => RootTaskWait::Completion {
+            scope: *scope,
+            continuation: continuation.clone().restore_with(ctx)?,
+            result_type: *result_type,
+            span: *span,
+        },
         TaskHandlerWaitSnapshot::Ready(input) => {
             let mut machine = EvalMachine::new();
             machine.restore_input(Some((**input).clone()), ctx, Some(active))?;

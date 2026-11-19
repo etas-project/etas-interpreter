@@ -84,6 +84,8 @@ fn mixed_continuation_edges_release_every_node_after_last_snapshot_owner() {
                     handlers: vec![],
                     span: etas_core::Span::empty(etas_core::SourceId(7), etas_core::TextSize::ZERO),
                     frame: LocalsSnapshot {
+                        reference: false,
+                        shared_bindings: Default::default(),
                         parent: None,
                         handler_activations: Default::default(),
                         residual_invocation: None,

@@ -169,9 +169,9 @@ impl SnapshotValidator<'_> {
         match target {
             CallTargetSnapshot::Scoped { metadata, target } => {
                 if scope != ReferenceScope::CheckedSlot {
-                    return Err(
-                        "checkpoint scoped callable requires checked value-type evidence".into(),
-                    );
+                    return Err(format!(
+                        "{context}: checkpoint scoped callable requires checked value-type evidence"
+                    ));
                 }
                 self.scoped_callable(metadata, target).map(|_| ())
             }
@@ -223,11 +223,12 @@ impl SnapshotValidator<'_> {
             }
             CallTargetSnapshot::Lambda { expr, captured } => {
                 self.expr(*expr, context)?;
+                let resolved = self.resolve_frame(captured)?;
                 let layout = self
                     .closures
                     .get(*expr)
                     .ok_or_else(|| format!("{context}: lambda has no checked capture layout"))?;
-                let symbols = captured
+                let symbols = resolved
                     .locals
                     .iter()
                     .map(|(symbol, _)| *symbol)
@@ -245,6 +246,16 @@ impl SnapshotValidator<'_> {
                 {
                     return Err(format!(
                         "{context}: lambda contains a binding outside its checked layout"
+                    ));
+                }
+                if !layout.mutable_captures.iter().all(|symbol| {
+                    resolved
+                        .shared_bindings
+                        .iter()
+                        .any(|binding| binding.symbol == *symbol)
+                }) {
+                    return Err(format!(
+                        "{context}: lambda is missing a captured mutable binding identity"
                     ));
                 }
                 self.frame(captured, context)

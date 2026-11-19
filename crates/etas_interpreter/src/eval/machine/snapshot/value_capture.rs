@@ -17,6 +17,7 @@ struct PendingFrame {
 }
 
 enum UnaryKind {
+    ScopedHandler(Box<ScopedHandlerMetadata>),
     Existential(ExistentialHeader),
     Nominal(etas_types::TypeId),
     Trust(etas_types::TrustWrapper),
@@ -155,6 +156,11 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
         return Ok(Started::Value(captured.clone()));
     }
     let frame = match value {
+        InterpValue::ScopedHandler(handler) => Frame::Unary {
+            kind: UnaryKind::ScopedHandler(Box::new(handler.checkpoint(cache)?)),
+            source: handler.value.clone(),
+            value: None,
+        },
         InterpValue::Message(message) => Frame::Unary {
             kind: UnaryKind::Message(Box::new(MessageHeader::capture(message))),
             source: message.payload.clone(),
@@ -168,7 +174,7 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
             protocol: None,
         },
         InterpValue::Existential(value) => Frame::Unary {
-            kind: UnaryKind::Existential(ExistentialHeader::capture(value)),
+            kind: UnaryKind::Existential(ExistentialHeader::checkpoint(value, cache)?),
             source: value.value.clone(),
             value: None,
         },
@@ -426,6 +432,9 @@ impl Frame {
                 let value =
                     SnapshotBox::new(value.ok_or("checkpoint unary builder has no payload")?);
                 match kind {
+                    UnaryKind::ScopedHandler(metadata) => {
+                        ValueSnapshot::ScopedHandler { metadata, value }
+                    }
                     UnaryKind::Nominal(ty) => ValueSnapshot::Nominal { ty, value },
                     UnaryKind::Existential(header) => ValueSnapshot::Existential { header, value },
                     UnaryKind::Trust(wrapper) => ValueSnapshot::Trust { wrapper, value },

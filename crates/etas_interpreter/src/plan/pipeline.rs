@@ -151,6 +151,25 @@ pub(crate) fn prepare_program_with_residual_binding(
 }
 
 impl PreparedProgram {
+    pub(crate) fn parameter_default(
+        &self,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Option<&etas_frontend::code::parameter_defaults::ParameterDefaultUnit> {
+        self.arguments.default_unit(reference)
+    }
+
+    pub(crate) fn select_parameter_default(
+        self: &Arc<Self>,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Result<InterpreterPlan, Vec<Diagnostic>> {
+        let unit = self.parameter_default(reference).ok_or_else(|| {
+            vec![diagnostics::missing_checked_fact(
+                diagnostics::primary_span(&self.program),
+                "parameter default has no matching authored expression revision",
+            )]
+        })?;
+        self.select_callable(CheckedCallableRoot::ParameterDefault(unit.parameter))
+    }
     pub(crate) fn standard_library(
         &self,
     ) -> Option<&Arc<super::standard_library::StandardLibraryProgram>> {

@@ -1,4 +1,5 @@
 use super::*;
+use crate::control::ExecutionFault;
 use crate::value::{RangeBounds, RangeValue};
 
 enum AggregateKind {
@@ -64,14 +65,10 @@ impl<'a> EvalContext<'a> {
         tail: InterpValue,
         span: Span,
     ) -> ControlSignal {
-        let InterpValue::List(mut values) = tail else {
-            return ControlSignal::missing_checked_fact(
-                "list cons tail must evaluate to a List[T]",
-                span,
-            );
-        };
-        values.push_front(head);
-        ControlSignal::Value(InterpValue::List(values))
+        match prepend_sequence_cell(head, tail, span) {
+            Ok(value) => ControlSignal::Value(value),
+            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+        }
     }
 
     pub(super) fn eval_range_expr(
@@ -136,6 +133,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         expr: HirExprId,
         span: Span,
+        frame: &Frame,
     ) -> ControlSignal {
         let Some(ty) = self.checked.types.expr_types.get(&expr) else {
             return ControlSignal::missing_checked_fact(
@@ -147,14 +145,59 @@ impl<'a> EvalContext<'a> {
             Some(etas_types::Type::Array(_)) => {
                 ControlSignal::Value(InterpValue::Array(ArrayValue::new(Vec::new())))
             }
-            Some(etas_types::Type::List(_)) => {
-                ControlSignal::Value(InterpValue::List(Vec::new().into()))
-            }
-            _ => ControlSignal::missing_checked_fact(
-                "empty sequence expression must be checked as Array[T] or List[T]",
-                span,
-            ),
+            _ => match self.checked_sequence_value(expr, Vec::new().into(), Some(frame), span) {
+                Ok(value) => ControlSignal::Value(value),
+                Err(fault) => ControlSignal::Fault(Box::new(fault)),
+            },
         }
+    }
+
+    pub(super) fn checked_sequence_value(
+        &self,
+        expr: HirExprId,
+        values: crate::value::ListValue,
+        frame: Option<&Frame>,
+        span: Span,
+    ) -> Result<InterpValue, ExecutionFault> {
+        let invalid = |message| {
+            ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+        };
+        let owner = *self
+            .checked
+            .types
+            .expr_types
+            .get(&expr)
+            .ok_or_else(|| invalid("sequence constructor has no checked owner".to_owned()))?;
+        if etas_types::value_representation::sequence_element_in_store(
+            &self.checked.type_store,
+            owner,
+        )
+        .map_err(|error| invalid(error.to_string()))?
+        .is_none()
+        {
+            return Err(invalid(
+                "sequence constructor has no empty/cell layout".to_owned(),
+            ));
+        }
+        let value = InterpValue::List(values);
+        if matches!(
+            self.checked.type_store.get(owner),
+            Some(etas_types::Type::List(_))
+        ) {
+            return Ok(value);
+        }
+        let ty = match frame {
+            Some(frame) => self.materialized_type(
+                owner,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                span,
+            )?,
+            None => owner,
+        };
+        Ok(InterpValue::Nominal {
+            ty,
+            value: crate::value::SharedValue::new(value),
+        })
     }
 
     pub(super) fn eval_lambda_expr(&mut self, expr: HirExprId, frame: &mut Frame) -> ControlSignal {
@@ -184,7 +227,11 @@ impl<'a> EvalContext<'a> {
             })?;
         let captured = match frame {
             Some(frame) => frame
-                .capture(layout.slots.clone(), &layout.captures)
+                .capture_environment(
+                    layout.slots.clone(),
+                    &layout.captures,
+                    &layout.mutable_captures,
+                )
                 .map_err(invalid)?,
             None if layout.captures.is_empty() => Frame::new(layout.slots.clone()),
             None => {
@@ -274,10 +321,32 @@ impl<'a> EvalContext<'a> {
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),
             };
         }
+        let primitive = match self.primitive_constructor_kind(
+            expr,
+            &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+            record.span,
+        ) {
+            Ok(primitive) => primitive,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        if let Some(kind) = primitive {
+            let (_, input) = values.pop().expect("checked primitive constructor field");
+            return match crate::value::representation::construct(kind, input) {
+                Ok(value) => ControlSignal::Value(value),
+                Err(message) => ControlSignal::Fault(Box::new(ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    record.span,
+                    message,
+                ))),
+            };
+        }
         let value = match self.plan.records.construct(expr, values) {
             Ok(value) => value,
             Err(message) => return ControlSignal::missing_checked_fact(message, record.span),
         };
+        if self.plan.records.range_constructor(expr) {
+            return ControlSignal::Value(value);
+        }
         ControlSignal::Value(match nominal_type {
             Some(ty) => {
                 let ty = match self.materialized_type(
@@ -491,10 +560,45 @@ impl<'a> EvalContext<'a> {
             AggregateKind::Tuple if values.is_empty() => InterpValue::Unit,
             AggregateKind::Tuple => InterpValue::Tuple(values.into()),
             AggregateKind::Array => InterpValue::Array(ArrayValue::new(values)),
-            AggregateKind::List => InterpValue::List(values.into()),
+            AggregateKind::List => match self.checked_sequence_value(
+                expr,
+                values.into(),
+                Some(frame),
+                self.checked.hir.exprs[expr].span(&self.checked.hir.blocks),
+            ) {
+                Ok(value) => value,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            },
             AggregateKind::Set => InterpValue::Set(values.into()),
         })
     }
+}
+
+pub(super) fn prepend_sequence_cell(
+    head: InterpValue,
+    tail: InterpValue,
+    span: Span,
+) -> Result<InterpValue, ExecutionFault> {
+    let (owner, payload) = match tail {
+        InterpValue::Nominal { ty, value } => (Some(ty), value.as_ref().clone()),
+        value => (None, value),
+    };
+    let InterpValue::List(mut values) = payload else {
+        return Err(ExecutionFault::new(
+            AnalysisDiagnosticCode::MissingCheckedFact,
+            span,
+            "cell tail is missing its checked empty/cell storage",
+        ));
+    };
+    values.push_front(head);
+    let value = InterpValue::List(values);
+    Ok(match owner {
+        Some(ty) => InterpValue::Nominal {
+            ty,
+            value: crate::value::SharedValue::new(value),
+        },
+        None => value,
+    })
 }
 
 #[cfg(test)]

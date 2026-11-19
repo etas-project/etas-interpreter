@@ -69,6 +69,11 @@ impl ProgramSpecialization {
                         call.native_generic_parameters()?,
                     )
                 }
+                ProgramCallTarget::Expression(_) => {
+                    return Err(
+                        "expression units do not have callable signature specializations".into(),
+                    );
+                }
             };
         validate_parameters(source_params, &bindings)?;
         if source_params.len() != destination_params.len()
@@ -142,19 +147,12 @@ impl ProgramSpecialization {
                 target = inner;
             }
             if let CallTarget::FlowItem(item) = target {
-                let mut types = destination_bindings
-                    .iter()
-                    .map(|(name, ty)| (name.clone(), *ty))
-                    .collect::<Vec<_>>();
-                types.sort_by(|left, right| left.0.cmp(&right.0));
-                destination
-                    .checked
-                    .checked_callable_application(
-                        *item,
-                        &types,
-                        &destination_bindings.sorted_rows(),
-                    )
-                    .map_err(|error| error.to_string())?;
+                crate::value::ScopedCallableValue::checked_item_application(
+                    &destination.checked,
+                    etas_frontend::CheckedCallableRoot::Item(*item),
+                    &destination_bindings,
+                )?
+                .ok_or("specialized method has no checked native application")?;
             }
         }
         Ok(Self {
@@ -281,6 +279,30 @@ impl ProgramSpecialization {
             (ty, value) = edge.value(ty, value, program)?;
         }
         Ok((ty, value))
+    }
+
+    pub fn receiver_result(
+        &self,
+        call: &ProgramCall,
+        program: &CheckedExecutionProgram,
+        index: usize,
+        value: InterpValue,
+    ) -> Result<InterpValue, String> {
+        let destination = *self
+            .destination_signature
+            .input
+            .get(index)
+            .ok_or("updated receiver input is missing")?;
+        let expected = *self
+            .source_signature
+            .input
+            .get(index)
+            .ok_or("presented receiver input is missing")?;
+        let (ty, value) = self.project_outgoing(call, program, destination, value)?;
+        if ty != expected {
+            return Err("updated generic receiver has the wrong presented type".into());
+        }
+        Ok(value)
     }
 }
 

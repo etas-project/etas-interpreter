@@ -212,7 +212,7 @@ impl Direction {
             effect_names: self.correspondence.effect_names(),
         })
         .substitute(ty)
-        .map_err(Error::RuntimeType)
+        .map_err(|error| relocation_error(source, target, ty, None, error))
     }
 
     pub fn get_in_scope(
@@ -246,7 +246,7 @@ impl Direction {
         })
         .with_relocated_effect_parameters(self.effect_parameters.get(scope).unwrap_or(&empty))
         .substitute(ty)
-        .map_err(Error::RuntimeType)
+        .map_err(|error| relocation_error(source, target, ty, Some(scope), error))
     }
 
     pub fn row(
@@ -296,4 +296,28 @@ impl Direction {
         .substitute(ty)
         .map_err(Error::RuntimeType)
     }
+}
+
+fn relocation_error(
+    source: &CheckedProgram,
+    target: &CheckedProgram,
+    ty: TypeId,
+    scope: Option<&etas_code::descriptor::GenericOwner>,
+    error: etas_types::TypeSubstitutionError,
+) -> Error {
+    let etas_types::TypeSubstitutionError::UnmaterializedType(missing) = &error else {
+        return Error::RuntimeType(error);
+    };
+    let constructor = match missing {
+        etas_types::Type::Applied { constructor, .. } => {
+            target.type_store.get(TypeId(constructor.0))
+        }
+        _ => None,
+    };
+    Error::InvalidRuntimeInterface(format!(
+        "type relocation {:?} -> {:?}, source {ty:?} {:?}, scope {scope:?}: {error}; target constructor {constructor:?}",
+        source.compile_options.standard_library_mode,
+        target.compile_options.standard_library_mode,
+        source.type_store.get(ty),
+    ))
 }

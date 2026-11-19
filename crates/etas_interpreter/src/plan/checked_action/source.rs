@@ -75,7 +75,17 @@ pub(crate) fn source_action(
         return Err("perform invocation disagrees with its checked action fact".into());
     }
     if let Some(args) = args {
-        if args.len() != parameters.len()
+        let (supplied, arity) = checked.types.declared_call_arguments.get(&expr).map_or(
+            (args.len(), args.len()),
+            |binding| {
+                (
+                    binding.argument_slots.len(),
+                    binding.argument_slots.len() + binding.defaults.len(),
+                )
+            },
+        );
+        if supplied != args.len()
+            || arity != parameters.len()
             || args.len() != fact.args.len()
             || args.iter().zip(&fact.args).any(|(arg, expected)| {
                 let (etas_hir::HirArg::Positional(value) | etas_hir::HirArg::Named { value, .. }) =

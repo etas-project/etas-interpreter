@@ -355,7 +355,7 @@ flow main() -> bool {
                 };
                 value[name].as_array_mut().unwrap().reverse();
                 edited = true;
-                break;
+                continue;
             }
             match value {
                 serde_json::Value::Object(fields) => pending.extend(fields.values_mut()),

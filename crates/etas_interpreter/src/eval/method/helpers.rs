@@ -160,6 +160,10 @@ pub(super) fn attach_continuation(
             pending.continuation = compose_continuation(pending.continuation, continuation);
             ControlSignal::Expr(pending)
         }
+        ControlSignal::ProgramExpr(mut pending) => {
+            pending.continuation = compose_continuation(pending.continuation, continuation);
+            ControlSignal::ProgramExpr(pending)
+        }
         ControlSignal::Call(mut pending) => {
             pending.continuation = compose_continuation(pending.continuation, continuation);
             ControlSignal::Call(pending)

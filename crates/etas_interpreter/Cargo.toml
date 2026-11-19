@@ -24,3 +24,4 @@ serde.workspace = true
 tokio.workspace = true
 
 [dev-dependencies]
+etas_package_metadata.workspace = true

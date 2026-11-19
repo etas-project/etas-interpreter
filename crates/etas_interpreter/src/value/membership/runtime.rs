@@ -61,6 +61,11 @@ impl StructuralPartition for InterpValue {
         let identity = Self::Identity::of(self);
         std::mem::discriminant(self).hash(state);
         let storage = match self {
+            Self::ScopedHandler(value) => {
+                value.native_type.hash(state);
+                (std::sync::Arc::as_ptr(&value.program.checked) as usize).hash(state);
+                Storage::Single(value.value.clone())
+            }
             Self::Bool(value) => {
                 value.hash(state);
                 return None;

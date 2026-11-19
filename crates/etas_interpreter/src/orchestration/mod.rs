@@ -9,7 +9,8 @@ pub(crate) use suspension::{
 };
 mod checkpoint;
 pub(crate) use checkpoint::{
-    AgentExecutionStateSnapshot, AgentRequestContextSnapshot, ToolInvocationSnapshot,
+    AgentExecutionStateSnapshot, AgentRequestContextSnapshot, ArgumentDestinationSnapshot,
+    DefaultArgumentsSnapshot, ToolInvocationSnapshot,
 };
 mod task;
 pub(crate) use task::{
@@ -55,10 +56,11 @@ pub use checkpoint::{
 };
 pub(crate) use checkpoint::{
     AgentControllerSnapshot, CallSiteSnapshot, CallTargetSnapshot, CheckpointAgentReference,
-    ComposedInvocationSnapshot, ContinuationSnapshot, ConversationSnapshot, FrameProgramOwners,
-    LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot,
-    MessageSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelRequestFrameSnapshot,
-    ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramReturnSnapshot,
+    ComposedInvocationSnapshot, ContinuationSnapshot, ConversationSnapshot, ExpressionCallSnapshot,
+    ExpressionUnitSnapshot, FrameProgramOwners, LocalPlaceComponentSnapshot,
+    LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot, MessageSnapshot,
+    ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelRequestFrameSnapshot,
+    ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramCallSnapshot, ProgramReturnSnapshot,
     SliceExprEvalSnapshot, TaskValueSnapshot, ToolInvocationOriginSnapshot, ValueSnapshot,
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;

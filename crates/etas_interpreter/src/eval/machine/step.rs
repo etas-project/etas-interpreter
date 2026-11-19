@@ -99,6 +99,30 @@ impl EvalMachine {
         None
     }
     pub(crate) fn run_until_yield(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
+        loop {
+            let poll = self.run_until_boundary(ctx);
+            match &poll {
+                MachinePoll::Fault(_) | MachinePoll::Cancelled(_) => {
+                    ctx.task.receiver_updates.abort_all()
+                }
+                MachinePoll::CooperativeYield if ctx.task.receiver_updates.is_held() => continue,
+                MachinePoll::Yield(boundary) if ctx.task.receiver_updates.is_held() => {
+                    ctx.task.receiver_updates.abort_all();
+                    if !matches!(boundary, PendingBoundary::Perform(pending) if pending.error_type.is_some())
+                    {
+                        return machine_fault(
+                            "updating method attempted to suspend",
+                            ctx.limit_span,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            return poll;
+        }
+    }
+
+    fn run_until_boundary(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
         let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
         if let Some(scope) = &self.program_scope
             && (!std::sync::Arc::ptr_eq(ctx.checked, scope.program())
@@ -159,6 +183,9 @@ impl EvalMachine {
                 }
             }
             if let Some(span) = signal.requested_operation_span(step_span)
+                // Typed errors may be caught by a local `?` or handler. The
+                // PureBoundary frame rejects them if they escape that scope.
+                && !matches!(&signal, ControlSignal::Perform(pending) if pending.error_type.is_some())
                 && self
                     .stack
                     .iter()
@@ -264,9 +291,50 @@ impl EvalMachine {
                             Err(fault) => return MachinePoll::Fault(fault),
                         }
                     }
-                    self.push_frame(EvalFrame::Block(BlockFrame {
-                        continuation: Continuation::BlockValue,
-                    }));
+                    // ContinueBlock reenters the same activation after a statement.
+                    // Its original scope boundary retains the entry bindings;
+                    // introducing another boundary would treat live locals as outer.
+                    let active_scope = self
+                        .stack
+                        .iter()
+                        .rev()
+                        .take_while(|entry| {
+                            // A different call activation cannot own this block's frame.
+                            !matches!(entry, EvalFrame::Call(_) | EvalFrame::ProgramReturn(_))
+                        })
+                        .any(|entry| {
+                            let continuation = match entry {
+                                EvalFrame::Block(frame) => &frame.continuation,
+                                EvalFrame::Continuation(frame) => &frame.continuation,
+                                _ => return false,
+                            };
+                            matches!(continuation,
+                            Continuation::ScopeExit { block, frame, guard, .. }
+                                if *block == pending.block
+                                    && frame.capture_identity() == pending.frame.capture_identity()
+                                    && guard.as_ref().is_none_or(|guard| !guard.is_closed()))
+                        });
+                    if !active_scope {
+                        let keep = pending.frame.scope_symbols();
+                        let guard =
+                            ctx.plan
+                                .closures
+                                .owns_mutable_captures(pending.block)
+                                .then(|| {
+                                    crate::control::ScopeExitGuard::new(
+                                        pending.frame.clone(),
+                                        keep.clone(),
+                                    )
+                                });
+                        self.push_frame(EvalFrame::Block(BlockFrame {
+                            continuation: Continuation::ScopeExit {
+                                block: pending.block,
+                                keep,
+                                guard,
+                                frame: pending.frame.clone(),
+                            },
+                        }));
+                    }
                     ctx.execute_block_frame(
                         pending.block,
                         pending.next_stmt_index,
@@ -292,6 +360,24 @@ impl EvalMachine {
                         },
                     }));
                     ctx.eval_expr_frame(pending.expr, &mut pending.frame)
+                }
+                ControlSignal::ProgramExpr(pending) => {
+                    let pending = *pending;
+                    let site = pending.call.site.clone();
+                    self.push_continuation_frames(pending.continuation);
+                    if pending.call.is_default() {
+                        self.push_frame(EvalFrame::PureBoundary(pending.span));
+                    }
+                    return self
+                        .enter_program(
+                            ctx,
+                            super::scoped_call::ProgramCall::expression(pending.call),
+                            pending.args,
+                            pending.span,
+                            Continuation::BlockValue,
+                            Some(site),
+                        )
+                        .unwrap_or_else(MachinePoll::Fault);
                 }
                 ControlSignal::Call(pending) => {
                     if let Err(fault) = check_call_budget(ctx, self, pending.span) {
@@ -404,6 +490,13 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                return self.unwind_program_control(
+                                    ctx,
+                                    *frame,
+                                    ContinuationInput::Return(value),
+                                );
+                            }
                             return self.return_program(ctx, *frame, value);
                         }
                         EvalFrame::Block(frame) => ctx.continue_chain_signal(
@@ -551,6 +644,13 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                return self.unwind_program_control(
+                                    ctx,
+                                    *frame,
+                                    ContinuationInput::Resume(value),
+                                );
+                            }
                             return machine_fault(
                                 "resume escaped a revision call boundary",
                                 frame.span,
@@ -596,6 +696,13 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                return self.unwind_program_control(
+                                    ctx,
+                                    *frame,
+                                    ContinuationInput::Finish(value),
+                                );
+                            }
                             return machine_fault(
                                 "finish escaped a revision call boundary",
                                 frame.span,
@@ -644,6 +751,14 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                let input = match signal {
+                                    ControlSignal::Break => ContinuationInput::Break,
+                                    ControlSignal::Continue => ContinuationInput::Continue,
+                                    _ => unreachable!(),
+                                };
+                                return self.unwind_program_control(ctx, *frame, input);
+                            }
                             return machine_fault(
                                 "loop control escaped a revision call boundary",
                                 frame.span,

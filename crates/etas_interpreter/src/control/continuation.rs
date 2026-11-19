@@ -14,6 +14,18 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    DefaultArguments(Box<crate::eval::arguments::DefaultArguments>),
+    FinishReceiver {
+        outcome: super::ReceiverOutcome,
+        frame: Frame,
+        symbol: SymbolId,
+        span: Span,
+    },
+    CommitReceiver {
+        lease: super::ReceiverLease,
+        outcome: super::ReceiverOutcome,
+        span: Span,
+    },
     ToolInvocationStart(Box<crate::eval::tool::ToolInvocation>),
     ToolInvocationResult(Box<crate::eval::tool::ToolInvocation>),
     /// Restore the caller's scoped agent identity and model policy on exit.
@@ -44,6 +56,13 @@ pub enum Continuation {
     /// Correlates a governed action's completed outcome with the scopes that
     /// observed it, then continues with the outcome value.
     ResidualOutcome(super::residual::ResidualAttemptTag),
+    /// Leave a lexical block after its final expression or suspended work completes.
+    ScopeExit {
+        block: HirBlockId,
+        guard: Option<std::rc::Rc<super::ScopeExitGuard>>,
+        keep: std::rc::Rc<std::collections::HashSet<SymbolId>>,
+        frame: Frame,
+    },
     ContinueBlock {
         block: HirBlockId,
         next_stmt_index: usize,
@@ -197,7 +216,7 @@ pub enum Continuation {
     },
     CallArgs {
         call: HirExprId,
-        target: CallTarget,
+        target: Option<CallTarget>,
         args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<InterpValue>,
@@ -281,9 +300,25 @@ pub enum Continuation {
         span: Span,
         outer: ContinuationLink,
     },
+    LoopLimit {
+        stmt: etas_hir::HirStmtId,
+        frame: Frame,
+    },
     ForLoop {
         pat: HirPatId,
         source: Option<Box<crate::value::iteration::IterationSource>>,
+        next_index: usize,
+        body: HirBlockId,
+        iterations: usize,
+        loop_scope: std::collections::HashSet<SymbolId>,
+        span: Span,
+        frame: Frame,
+    },
+    SourceForLoop {
+        iter: HirExprId,
+        pat: HirPatId,
+        source: Option<Box<InterpValue>>,
+        awaiting_step: bool,
         next_index: usize,
         body: HirBlockId,
         iterations: usize,
@@ -311,6 +346,7 @@ pub enum Continuation {
     },
     TryExpr {
         expr: HirExprId,
+        result_type: etas_types::TypeId,
         span: Span,
     },
     MemoryClearDeleteAll {

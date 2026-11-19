@@ -19,6 +19,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Checkpoint(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
@@ -187,6 +188,18 @@ impl<'a> EvalContext<'a> {
         field: &str,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
+        if let Some(projection) = self.plan.records.value_projection(site) {
+            if projection.name() != field {
+                return Err(ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    "value field differs from its checked representation projection",
+                ));
+            }
+            return crate::value::representation::project(projection, base).map_err(|message| {
+                ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+            });
+        }
         match base {
             InterpValue::CommandResult {
                 exit_code,
@@ -224,6 +237,7 @@ impl<'a> EvalContext<'a> {
                 code::agent_field(
                     &self.checked.type_store,
                     &self.checked.types.known_std_types.code,
+                    &self.checked.types.enum_layouts,
                     output,
                     &definition,
                     field,
@@ -260,6 +274,7 @@ impl<'a> EvalContext<'a> {
                 code::callable_field(
                     &self.checked.type_store,
                     &self.checked.types.known_std_types.code,
+                    &self.checked.types.enum_layouts,
                     output,
                     &definition,
                     field,

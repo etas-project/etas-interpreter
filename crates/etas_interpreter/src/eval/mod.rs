@@ -1,6 +1,7 @@
 mod action_reducer;
 pub(crate) mod agent;
 mod aggregate_expr;
+pub(crate) mod arguments;
 mod assign;
 mod assign_nested;
 mod assign_place;
@@ -28,6 +29,7 @@ pub(crate) use code::CompilerInvocation;
 mod const_expr;
 mod continuation;
 pub(crate) mod cpu;
+mod data_capture;
 mod existential;
 mod expr;
 mod field_access;
@@ -38,6 +40,7 @@ pub(crate) mod host_completion;
 mod host_enum;
 mod host_type_environment;
 mod host_value;
+mod runtime_observation;
 pub(crate) mod workspace_discovery;
 pub(crate) use host_value::{
     decode_checked_host_value, host_to_checked_interp_value, host_to_typed_interp_value,
@@ -46,6 +49,7 @@ pub(crate) mod collection_ordering;
 mod index_access;
 pub(crate) mod limit;
 mod loop_control;
+pub(crate) mod source_iteration;
 pub(crate) use loop_control::ForLoopResume;
 pub(crate) mod machine;
 mod memory_commit;
@@ -53,10 +57,12 @@ mod memory_intent;
 mod memory_page;
 mod memory_selection;
 mod memory_store;
+mod message_context;
 mod method;
 mod operator_expr;
 pub(crate) mod ordered_collection;
 mod pattern;
+mod payload_convert;
 mod perform;
 mod pipeline;
 pub(crate) mod priority_queue;
@@ -85,7 +91,9 @@ mod storage;
 mod stream;
 mod support_call;
 mod task;
+mod task_events;
 mod task_resource;
+pub(crate) mod task_start;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
@@ -593,6 +601,7 @@ fn is_pending_host_boundary_signal(signal: &ControlSignal) -> bool {
             | ControlSignal::Checkpoint(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
@@ -619,6 +628,10 @@ fn compose_signal_continuation(signal: ControlSignal, continuation: Continuation
         ControlSignal::Expr(mut pending) => {
             pending.continuation = compose_continuation(pending.continuation, continuation);
             ControlSignal::Expr(pending)
+        }
+        ControlSignal::ProgramExpr(mut pending) => {
+            pending.continuation = compose_continuation(pending.continuation, continuation);
+            ControlSignal::ProgramExpr(pending)
         }
         ControlSignal::Call(mut pending) => {
             pending.continuation = compose_continuation(pending.continuation, continuation);
@@ -667,3 +680,5 @@ pub(crate) fn path_name(action: &ResolvedActionRef) -> String {
         .collect::<Vec<_>>()
         .join(".")
 }
+
+mod scheduling_policy;

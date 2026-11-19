@@ -293,12 +293,19 @@ impl PreparedRevisionSet {
         snapshot: &crate::orchestration::ExecutionProgramSnapshot,
     ) -> Result<crate::value::CheckedExecutionProgram, String> {
         use crate::orchestration::ExecutionRootSnapshot as R;
-        let root = match snapshot.root {
-            R::Item(item) => etas_frontend::CheckedCallableRoot::Item(item),
-            R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(expr),
-            R::StdReference(expr) => etas_frontend::CheckedCallableRoot::StdReference(expr),
-        };
         let prepared = self.prepared_program(&snapshot.program)?;
+        let root = match &snapshot.root {
+            R::Item(item) => etas_frontend::CheckedCallableRoot::Item(*item),
+            R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(*expr),
+            R::StdReference(expr) => etas_frontend::CheckedCallableRoot::StdReference(*expr),
+            R::ParameterDefault(reference) => etas_frontend::CheckedCallableRoot::ParameterDefault(
+                prepared
+                    .program
+                    .parameter_default(reference)
+                    .ok_or("checkpoint default root has no matching expression revision")?
+                    .parameter,
+            ),
+        };
         let plan = Arc::new(prepared.program.select_callable(root).map_err(|errors| {
             format!("checkpoint execution root has no current checked plan: {errors:?}")
         })?);

@@ -360,10 +360,12 @@ flow main() -> bool {
 
 fn edit_queue(root: &mut serde_json::Value, edit: &mut impl FnMut(&mut serde_json::Value)) -> bool {
     let mut pending = vec![root];
+    let mut edited = false;
     while let Some(value) = pending.pop() {
         if value.get("kind").and_then(serde_json::Value::as_str) == Some("priority_queue") {
             edit(value);
-            return true;
+            edited = true;
+            continue;
         }
         match value {
             serde_json::Value::Object(fields) => pending.extend(fields.values_mut()),
@@ -371,7 +373,7 @@ fn edit_queue(root: &mut serde_json::Value, edit: &mut impl FnMut(&mut serde_jso
             _ => {}
         }
     }
-    false
+    edited
 }
 
 #[tokio::test(flavor = "current_thread")]

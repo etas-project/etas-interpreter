@@ -216,7 +216,7 @@ impl<'a> EvalContext<'a> {
         })
     }
 
-    fn execute_checkpoint_callable(
+    pub(super) fn execute_checkpoint_callable(
         &mut self,
         call_args: Vec<InterpValue>,
         span: Span,
@@ -1767,7 +1767,7 @@ impl<'a> EvalContext<'a> {
         Ok((*err, region))
     }
 
-    fn workspace_path_region(
+    pub(super) fn workspace_path_region(
         &self,
         ty: etas_types::TypeId,
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
@@ -1781,14 +1781,15 @@ impl<'a> EvalContext<'a> {
                 "std.fs.path checked success type is not WorkspacePath<R>",
             ));
         };
-        if self
-            .checked
-            .types
-            .known_std_types
-            .runtime_type(etas_std::RuntimeTypeRole::WorkspacePath)
-            != Some(etas_types::TypeId(constructor.0))
-            || args.len() != 1
-        {
+        let expected = if self.checked.hir.source_standard_types {
+            self.source_workspace_path_constructor()
+        } else {
+            self.checked
+                .types
+                .known_std_types
+                .runtime_type(etas_std::RuntimeTypeRole::WorkspacePath)
+        };
+        if expected != Some(etas_types::TypeId(constructor.0)) || args.len() != 1 {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
@@ -1798,7 +1799,95 @@ impl<'a> EvalContext<'a> {
         self.canonical_region_identity(args[0], type_bindings, span)
     }
 
-    fn canonical_region_identity(
+    fn source_workspace_path_constructor(&self) -> Option<etas_types::TypeId> {
+        let region =
+            self.source_item_id_for_import_path(&["std", "fs", "Region"].map(str::to_owned))?;
+        let HirItem::Spec(region) = self.checked.hir.items.get(region)? else {
+            return None;
+        };
+        self.checked.hir.items.iter().find_map(|(_, item)| {
+            let HirItem::Type(declaration) = item else {
+                return None;
+            };
+            let symbol = self.checked.symbols.get(declaration.symbol)?;
+            let module = self.checked.hir.modules_arena.get(symbol.defining_module)?;
+            if symbol.name.rsplit('.').next()? != "WorkspacePath"
+                || !module
+                    .name
+                    .as_ref()?
+                    .segments
+                    .iter()
+                    .map(|segment| segment.name.as_str())
+                    .eq(["std", "fs"])
+            {
+                return None;
+            }
+            let [parameter] = declaration.type_params.as_slice() else {
+                return None;
+            };
+            let [bound] = self
+                .checked
+                .types
+                .type_param_bounds
+                .get(parameter)?
+                .as_slice()
+            else {
+                return None;
+            };
+            if !bound.args.is_empty()
+                || self
+                    .checked
+                    .hir
+                    .canonical_source_symbol(bound.spec_symbol)?
+                    != region.symbol
+            {
+                return None;
+            }
+            let etas_hir::HirTypeDeclBody::Representation(representation) = declaration.body else {
+                return None;
+            };
+            let etas_hir::HirType::Record { fields, .. } =
+                self.checked.hir.types.get(representation)?
+            else {
+                return None;
+            };
+            let [field] = fields.as_slice() else {
+                return None;
+            };
+            let field_symbol = self.checked.symbols.get(field.symbol)?;
+            if field_symbol.visibility != etas_hir::Visibility::Private
+                || field_symbol.name != "relative"
+            {
+                return None;
+            }
+            let etas_types::SymbolTypeFact::NominalType {
+                constructor,
+                representation: Some(representation),
+                ..
+            } = self.checked.types.symbol_types.get(&declaration.symbol)?
+            else {
+                return None;
+            };
+            let Some(etas_types::Type::Record(record)) =
+                self.checked.type_store.get(*representation)
+            else {
+                return None;
+            };
+            let [field] = record.fields.as_slice() else {
+                return None;
+            };
+            (field.name == "relative"
+                && matches!(
+                    self.checked.type_store.get(field.ty),
+                    Some(etas_types::Type::Primitive(
+                        etas_types::PrimitiveType::String
+                    ))
+                ))
+            .then_some(etas_types::TypeId(constructor.0))
+        })
+    }
+
+    pub(super) fn canonical_region_identity(
         &self,
         mut ty: etas_types::TypeId,
         type_bindings: &std::collections::HashMap<String, etas_types::TypeId>,
@@ -2114,7 +2203,7 @@ fn int_field(fields: &[(String, InterpValue)], names: &[&str]) -> Option<i64> {
     })
 }
 
-fn nominal_representation_ref(mut value: &InterpValue) -> &InterpValue {
+pub(super) fn nominal_representation_ref(mut value: &InterpValue) -> &InterpValue {
     while let InterpValue::Nominal { value: inner, .. } = value {
         value = inner;
     }

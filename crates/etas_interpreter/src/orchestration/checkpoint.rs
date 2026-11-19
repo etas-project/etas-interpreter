@@ -323,6 +323,8 @@ pub(crate) enum CallTargetSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
+    pub(crate) reference: bool,
+    pub(crate) shared_bindings: Vec<crate::control::BindingIdentity>,
     pub(crate) parent: Option<std::rc::Rc<LocalsSnapshot>>,
     pub(crate) handler_activations: Vec<super::HandlerActivationSnapshot>,
     pub(crate) id: u64,
@@ -337,6 +339,39 @@ pub(crate) struct LocalsSnapshot {
 }
 
 impl LocalsSnapshot {
+    pub(crate) fn reference(id: u64) -> Self {
+        Self {
+            reference: true,
+            id,
+            shared_bindings: Vec::new(),
+            parent: None,
+            handler_activations: Vec::new(),
+            residual_invocation: None,
+            locals: std::rc::Rc::new(Vec::new()),
+            type_bindings: Vec::new(),
+            type_parameter_bindings: Vec::new(),
+            effect_row_bindings: Vec::new(),
+        }
+    }
+
+    pub(crate) fn validate_reference(&self) -> Result<(), String> {
+        if self.id == 0
+            || !self.locals.is_empty()
+            || !self.shared_bindings.is_empty()
+            || self.parent.is_some()
+            || !self.handler_activations.is_empty()
+            || self.residual_invocation.is_some()
+            || !self.type_bindings.is_empty()
+            || !self.type_parameter_bindings.is_empty()
+            || !self.effect_row_bindings.is_empty()
+        {
+            return Err(
+                "captured frame reference contains an invalid identity or definition".into(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn into_unique_values(mut self) -> Option<Vec<(SymbolId, ValueSnapshot)>> {
         std::rc::Rc::get_mut(&mut self.locals).map(std::mem::take)
     }
@@ -384,6 +419,10 @@ impl Drop for LocalsSnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
+    ScopedHandler {
+        metadata: Box<crate::value::ScopedHandlerMetadata>,
+        value: SnapshotBox,
+    },
     TaskRuntime(TaskValueSnapshot),
     Existential {
         header: crate::value::ExistentialHeader,
@@ -469,6 +508,7 @@ pub(crate) enum ValueSnapshot {
     Handler {
         fact_expr: etas_hir::HirExprId,
         handlers: Vec<ActiveHandlerArmRecord>,
+        captured: Option<LocalsSnapshot>,
     },
     ResourceHandle {
         name: String,
@@ -586,7 +626,33 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum ArgumentDestinationSnapshot {
+    Call {
+        target: Option<CallTargetSnapshot>,
+    },
+    Perform {
+        action: ResolvedActionRef,
+        type_args: Vec<HirTypeId>,
+        source_args: std::sync::Arc<[HirArg]>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DefaultArgumentsSnapshot {
+    pub expr: HirExprId,
+    pub parameter_count: usize,
+    pub slots: Vec<u32>,
+    pub values: Vec<ValueSnapshot>,
+    pub defaults: Vec<etas_types::DefaultArgument>,
+    pub next_default: usize,
+    pub destination: ArgumentDestinationSnapshot,
+    pub span: Span,
+    pub frame: LocalsSnapshot,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
+    DefaultArguments(Box<DefaultArgumentsSnapshot>),
     ToolInvocationStart(Box<ToolInvocationSnapshot>),
     ToolInvocationResult(Box<ToolInvocationSnapshot>),
     AgentControllerStep(Box<AgentControllerSnapshot>),
@@ -634,6 +700,12 @@ pub(crate) enum ContinuationSnapshot {
         deadline_unix_ms: Option<u64>,
         body: ValueSnapshot,
         span: Span,
+    },
+    /// Leave a lexical block after its final expression or suspended work completes.
+    ScopeExit {
+        block: HirBlockId,
+        keep: Vec<SymbolId>,
+        frame: LocalsSnapshot,
     },
     ContinueBlock {
         block: HirBlockId,
@@ -788,7 +860,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     CallArgs {
         call: HirExprId,
-        target: CallTargetSnapshot,
+        target: Option<CallTargetSnapshot>,
         args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<ValueSnapshot>,
@@ -871,10 +943,26 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
         outer: ContinuationSnapshotLink,
     },
+    LoopLimit {
+        stmt: etas_hir::HirStmtId,
+        frame: LocalsSnapshot,
+    },
     ForLoop {
         pat: HirPatId,
         source: Option<ValueSnapshot>,
         text_cursor: Option<etas_builtin::text::iteration::TextCursorState>,
+        next_index: usize,
+        body: HirBlockId,
+        iterations: usize,
+        loop_scope: Vec<SymbolId>,
+        span: Span,
+        frame: LocalsSnapshot,
+    },
+    SourceForLoop {
+        iter: HirExprId,
+        pat: HirPatId,
+        source: Option<ValueSnapshot>,
+        awaiting_step: bool,
         next_index: usize,
         body: HirBlockId,
         iterations: usize,
@@ -902,6 +990,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     TryExpr {
         expr: HirExprId,
+        result_type: TypeId,
         span: Span,
     },
     MemoryClearDeleteAll {
@@ -1065,8 +1154,78 @@ impl MachineFrameSnapshot {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ExpressionCallSnapshot {
+    pub source: super::ExecutionProgramSnapshot,
+    pub unit: ExpressionUnitSnapshot,
+    pub site: CallSiteSnapshot,
+    pub slots: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ExpressionUnitSnapshot {
+    Default(etas_code::descriptor::ParameterDefaultInfo),
+    Handler {
+        caller: super::ExecutionProgramSnapshot,
+        site: CallSiteSnapshot,
+        handler: SnapshotBox,
+        body: bool,
+    },
+}
+
+impl ExpressionUnitSnapshot {
+    pub(crate) fn same_entry(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Default(a), Self::Default(b)) => a == b,
+            (
+                Self::Handler {
+                    caller: a,
+                    site: asite,
+                    handler: ah,
+                    body: ab,
+                },
+                Self::Handler {
+                    caller: b,
+                    site: bsite,
+                    handler: bh,
+                    body: bb,
+                },
+            ) => {
+                a == b
+                    && asite.kind == bsite.kind
+                    && asite.frame.id == bsite.frame.id
+                    && ab == bb
+                    && ah == bh
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ProgramCallSnapshot {
+    Callable(CallTargetSnapshot),
+    Expression(Box<ExpressionCallSnapshot>),
+}
+
+impl ProgramCallSnapshot {
+    pub(crate) fn same_entry(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Callable(left), Self::Callable(right)) => left == right,
+            (Self::Expression(left), Self::Expression(right)) => {
+                left.source == right.source
+                    && left.unit.same_entry(&right.unit)
+                    && left.slots == right.slots
+                    && left.site.kind == right.site.kind
+                    && left.site.frame.id == right.site.frame.id
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct ProgramReturnSnapshot {
-    pub call: CallTargetSnapshot,
+    pub call: ProgramCallSnapshot,
     pub call_site: CallSiteSnapshot,
     pub handler_floor: usize,
     pub outer: ContinuationSnapshot,

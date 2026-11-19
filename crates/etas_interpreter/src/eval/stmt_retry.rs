@@ -146,6 +146,7 @@ impl<'a> EvalContext<'a> {
             signal @ (ControlSignal::Apply(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Memory(_)

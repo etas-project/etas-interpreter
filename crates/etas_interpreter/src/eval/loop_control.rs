@@ -26,26 +26,103 @@ pub(super) struct WhileLoopResume {
 }
 
 impl<'a> EvalContext<'a> {
+    pub(super) fn execute_limited_loop(
+        &mut self,
+        stmt: etas_hir::HirStmtId,
+        frame: &mut Frame,
+    ) -> ControlSignal {
+        let (limits, span) = match &self.checked.hir.stmts[stmt] {
+            etas_hir::HirStmt::For { limits, span, .. }
+            | etas_hir::HirStmt::While { limits, span, .. } => (limits, *span),
+            _ => unreachable!("loop budget entry requires a checked loop statement"),
+        };
+        let argument = match self.loop_limit_argument(limits, span) {
+            Ok(argument) => argument,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        match self.eval_expr(argument, frame) {
+            ControlSignal::Value(value) => self.resume_loop_limit(stmt, value, frame),
+            signal => compose_signal_continuation(
+                signal,
+                Continuation::LoopLimit {
+                    stmt,
+                    frame: frame.clone(),
+                },
+            ),
+        }
+    }
+
+    pub(super) fn resume_loop_limit(
+        &mut self,
+        stmt: etas_hir::HirStmtId,
+        value: InterpValue,
+        frame: &mut Frame,
+    ) -> ControlSignal {
+        let span = match &self.checked.hir.stmts[stmt] {
+            etas_hir::HirStmt::For { span, .. } | etas_hir::HirStmt::While { span, .. } => *span,
+            _ => unreachable!("resumed loop budget requires a checked loop statement"),
+        };
+        let Some(iterations) = value
+            .as_number()
+            .and_then(crate::value::NumericValue::as_u64)
+        else {
+            return ControlSignal::invalid_arguments(
+                "Iterations expects a non-negative u64 value",
+                span,
+            );
+        };
+        match &self.checked.hir.stmts[stmt] {
+            etas_hir::HirStmt::For {
+                pat, iter, body, ..
+            } => self.execute_for_loop(*pat, *iter, iterations, *body, span, frame),
+            etas_hir::HirStmt::While { cond, body, .. } => {
+                self.continue_while_loop(*cond, *body, 0, iterations, span, frame)
+            }
+            _ => unreachable!("checked loop statement"),
+        }
+    }
+
     pub(super) fn execute_for_loop(
         &mut self,
         pat: etas_hir::HirPatId,
         iter: HirExprId,
-        limits: &[HirExprId],
+        iterations: u64,
         body: HirBlockId,
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let iterations = match self.loop_iterations(limits, span) {
-            Ok(iterations) => iterations.min(usize::MAX as u64) as usize,
-            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-        };
+        let iterations = iterations.min(usize::MAX as u64) as usize;
         let loop_scope = frame.snapshot_symbols();
+        if self.plan.records.source_iterator(iter).is_some() {
+            let state = super::source_iteration::SourceForLoopResume {
+                iter,
+                pat,
+                source: None,
+                awaiting_step: false,
+                next_index: 0,
+                body,
+                iterations,
+                loop_scope,
+                span,
+            };
+            return match self.eval_expr(iter, frame) {
+                ControlSignal::Value(value) => self.resume_source_for_loop(state, value, frame),
+                signal => compose_signal_continuation(signal, state.continuation(frame.clone())),
+            };
+        }
+        if self.checked.hir.source_standard_types {
+            return ControlSignal::missing_checked_fact(
+                "source for-loop has no prepared source iterator",
+                span,
+            );
+        }
         let iterable = match self.eval_expr(iter, frame) {
             ControlSignal::Value(value) => value,
             signal @ (ControlSignal::Apply(_)
             | ControlSignal::Checkpoint(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
@@ -178,6 +255,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
@@ -253,6 +331,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Checkpoint(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
@@ -284,21 +363,6 @@ impl<'a> EvalContext<'a> {
         compose_signal_continuation(signal, continuation)
     }
 
-    pub(super) fn execute_while_loop(
-        &mut self,
-        cond: HirExprId,
-        limits: &[HirExprId],
-        body: HirBlockId,
-        span: Span,
-        frame: &mut Frame,
-    ) -> ControlSignal {
-        let iterations = match self.loop_iterations(limits, span) {
-            Ok(iterations) => iterations,
-            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-        };
-        self.continue_while_loop(cond, body, 0, iterations, span, frame)
-    }
-
     fn continue_while_loop(
         &mut self,
         cond: HirExprId,
@@ -315,6 +379,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
@@ -368,6 +433,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
@@ -437,6 +503,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Checkpoint(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
@@ -471,7 +538,7 @@ impl<'a> EvalContext<'a> {
                 crate::eval::limit::RuntimeLimitValue::Count(attempts),
             ) = (limit.kind, limit.value)
             {
-                return u32::try_from(attempts.max(1)).map_err(|_| {
+                return u32::try_from(attempts).map_err(|_| {
                     ExecutionFault::new(
                         AnalysisDiagnosticCode::InvalidArguments,
                         limit.span,
@@ -484,24 +551,6 @@ impl<'a> EvalContext<'a> {
             AnalysisDiagnosticCode::InvalidArguments,
             span,
             "retry execution requires an Attempts(...) limit",
-        ))
-    }
-
-    fn loop_iterations(&self, limits: &[HirExprId], span: Span) -> Result<u64, ExecutionFault> {
-        for limit in limits {
-            let limit = self.resolve_limit_expr(*limit)?;
-            if let (
-                StdLimitKind::Iterations,
-                crate::eval::limit::RuntimeLimitValue::Count(iterations),
-            ) = (limit.kind, limit.value)
-            {
-                return Ok(iterations.max(1));
-            }
-        }
-        Err(ExecutionFault::new(
-            AnalysisDiagnosticCode::InvalidArguments,
-            span,
-            "loop execution requires an Iterations(...) limit",
         ))
     }
 }

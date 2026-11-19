@@ -1128,6 +1128,87 @@ flow main() -> i32 {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn synchronous_run_owner_keeps_outer_binding_identity_through_checkpoint() {
+    let source = r#"
+module app.main;
+import std.task.{Scheduler, run};
+import std.runtime.checkpoint;
+effect Probe { action keep(callback: () -> i32 ![]) -> i32; }
+flow main() -> i32 {
+    var n = 0;
+    let result = handle { run((scheduler: Scheduler) => {
+        n = n + 1;
+        var inner = n;
+        return perform Probe.keep(() => inner);
+    }) } with { Probe.keep(callback) => {
+        checkpoint("run owner binding");
+        resume 1;
+    } };
+    return result + n;
+}
+"#;
+    let checked = checked_project(source);
+    let host = FakeHost::new(HostServiceAvailability {
+        checkpoint: true,
+        ..HostServiceAvailability::default()
+    });
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(2)));
+    let artifact =
+        api::codec::checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0])
+            .unwrap();
+    let saved = api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &saved, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn caller_handler_rejects_a_payload_retaining_the_childs_local_var() {
+    let result = run(r#"
+module app.main;
+import std.task.{Scheduler, run, start, await};
+effect Probe { action use(callback: () -> i32 ![]) -> i32; }
+flow independent() -> i32 ![Probe.use] {
+    var n = 0;
+    let answer = perform Probe.use(() => { n = n + 1; return n; });
+    return n + answer;
+}
+flow main() -> i32 {
+    return handle { run((scheduler: Scheduler) => { return await(start(independent)); }) } with {
+        Probe.use(callback) => { resume 0; }
+    };
+}
+"#)
+    .await;
+    assert!(result.value().is_none());
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| {
+            diagnostic
+                .message
+                .contains("task action payload captures a local var")
+        }),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn caller_handler_finish_cancels_the_run_task_and_returns_the_handle_answer() {
     let result = run(r#"
 module app.main;

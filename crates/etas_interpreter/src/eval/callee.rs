@@ -287,6 +287,34 @@ impl<'a> EvalContext<'a> {
         frame: &Frame,
         span: Span,
     ) -> Result<Option<CallTarget>, crate::control::ExecutionFault> {
+        if let Some(symbol) = self.checked.types.source_flow_calls.get(&call) {
+            let SymbolDef::Item { item } = &self
+                .checked
+                .symbols
+                .get(*symbol)
+                .expect("prepared source overload symbol")
+                .def
+            else {
+                unreachable!("prepared source overload is a flow item")
+            };
+            return self.source_flow_call_target(*item, span).map(Some);
+        }
+        if let Some(selected) = self.checked.types.library_flow_calls.get(&call) {
+            return self
+                .plan
+                .standard_library
+                .as_ref()
+                .expect("prepared source library overload owner")
+                .project(&selected.callable)
+                .map(Some)
+                .map_err(|reason| {
+                    crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        reason,
+                    )
+                });
+        }
         if let Some(checked) = self.plan.dispatch.std_type_member(call) {
             return Ok(Some(CallTarget::StdIntrinsic(checked.clone())));
         }

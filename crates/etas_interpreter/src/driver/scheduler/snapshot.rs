@@ -1,4 +1,5 @@
 use super::*;
+use std::collections::BTreeSet;
 
 /// The scheduling half of a checkpoint. Machine/local payloads are captured and
 /// restored by the evaluator, which owns checked programs and frame graphs.
@@ -9,6 +10,9 @@ pub(crate) struct TaskSchedulerMetadataSnapshot {
     pub(crate) next_task: u64,
     pub(crate) groups: BTreeMap<TaskScopeId, TaskScopeSnapshot>,
     pub(crate) ready: VecDeque<TaskId>,
+    pub(crate) enqueue_orders: BTreeMap<TaskId, u64>,
+    pub(crate) next_enqueue_order: BTreeMap<TaskScopeId, u64>,
+    pub(crate) policies: BTreeMap<TaskScopeId, SourcePolicySnapshot>,
     pub(crate) wakeups: BTreeMap<TaskId, VecDeque<TaskWakeupSnapshot>>,
     pub(crate) continuations: ContinuationArenaSnapshot,
     pub(crate) resources: ResourceGuardsSnapshot,
@@ -24,8 +28,16 @@ pub(crate) struct TaskTypeSnapshot {
 // reference so wakeups share the restored outcome and its captured values.
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskWakeupSnapshot {
-    Task { completed: TaskHandle },
-    Scope { scope: TaskScopeId },
+    Task {
+        completed: TaskHandle,
+    },
+    Scope {
+        scope: TaskScopeId,
+    },
+    Completion {
+        scope: TaskScopeId,
+        event: TaskCompletion,
+    },
 }
 
 impl TaskScheduler {
@@ -47,6 +59,7 @@ impl TaskScheduler {
     pub(crate) fn capture_metadata(
         &self,
         continuations: ContinuationArenaSnapshot,
+        policies: BTreeMap<TaskScopeId, SourcePolicySnapshot>,
         context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<TaskSchedulerMetadataSnapshot, String> {
         assert!(
@@ -56,6 +69,10 @@ impl TaskScheduler {
         assert!(
             self.cancellation_events.is_empty(),
             "cancellation events must be committed before capture"
+        );
+        assert!(
+            self.terminal_events.is_empty(),
+            "terminal events must be committed before capture"
         );
         let snapshot = TaskSchedulerMetadataSnapshot {
             task_types: self
@@ -87,6 +104,9 @@ impl TaskScheduler {
                 .map(|(id, group)| (*id, TaskScopeSnapshot(group.clone())))
                 .collect(),
             ready: self.ready.clone(),
+            enqueue_orders: self.enqueue_orders.clone(),
+            next_enqueue_order: self.next_enqueue_order.clone(),
+            policies,
             wakeups: self
                 .wakeups
                 .iter()
@@ -101,6 +121,12 @@ impl TaskScheduler {
                                 },
                                 TaskWakeup::Scope { scope, .. } => {
                                     TaskWakeupSnapshot::Scope { scope: *scope }
+                                }
+                                TaskWakeup::Completion { scope, event } => {
+                                    TaskWakeupSnapshot::Completion {
+                                        scope: *scope,
+                                        event: *event,
+                                    }
                                 }
                             })
                             .collect(),
@@ -140,8 +166,12 @@ impl TaskScheduler {
                 .collect(),
             tasks,
             ready: snapshot.ready,
+            enqueue_orders: snapshot.enqueue_orders,
+            next_enqueue_order: snapshot.next_enqueue_order,
+            policies: BTreeMap::new(),
             wakeups: BTreeMap::new(),
             cancellation_events: Vec::new(),
+            terminal_events: Vec::new(),
             continuations: continuation::ContinuationArena::restore(
                 snapshot.continuations,
                 restore,
@@ -169,6 +199,9 @@ impl TaskScheduler {
                                 .map_err(|error| error.to_string())?
                                 .ok_or("checkpoint wakeup refers to an unfinished scope")?,
                         },
+                        TaskWakeupSnapshot::Completion { scope, event } => {
+                            TaskWakeup::Completion { scope, event }
+                        }
                     })
                 })
                 .collect::<Result<_, String>>()?;
@@ -179,6 +212,10 @@ impl TaskScheduler {
 }
 
 impl TaskSchedulerMetadataSnapshot {
+    pub(crate) fn scope_owner(&self, scope: TaskScopeId) -> Option<TaskId> {
+        self.groups.get(&scope).and_then(|scope| scope.0.owner)
+    }
+
     pub(crate) fn validate_value(
         &self,
         value: crate::orchestration::TaskValueSnapshot,
@@ -223,6 +260,52 @@ impl TaskSchedulerMetadataSnapshot {
 
     fn validate(&self, tasks: &BTreeMap<TaskId, ScheduledTask>) -> Result<(), String> {
         self.continuations.validate()?;
+        if self
+            .policies
+            .keys()
+            .any(|scope| !self.groups.contains_key(scope))
+            || self
+                .next_enqueue_order
+                .keys()
+                .any(|scope| !self.groups.contains_key(scope))
+            || self
+                .enqueue_orders
+                .keys()
+                .any(|task| !tasks.contains_key(task))
+            || self.ready.iter().any(|task| {
+                tasks
+                    .get(task)
+                    .is_some_and(|task| task.state == TaskState::Ready)
+                    && !self.enqueue_orders.contains_key(task)
+            })
+        {
+            return Err(
+                "checkpoint ready sequence or source policy has no owning scope/task".into(),
+            );
+        }
+        for (id, order) in &self.enqueue_orders {
+            let mut scope = tasks[id].scope;
+            let mut owner = None;
+            loop {
+                if self.policies.contains_key(&scope) {
+                    owner = Some(scope);
+                    break;
+                }
+                let Some(parent) = self.groups[&scope].0.parent else {
+                    break;
+                };
+                scope = parent;
+            }
+            let owner = owner.unwrap_or(tasks[id].scope);
+            if self
+                .next_enqueue_order
+                .get(&owner)
+                .is_none_or(|next| order >= next)
+            {
+                return Err("checkpoint enqueue order exceeds its scope sequence".into());
+            }
+        }
+
         if self.task_types.keys().any(|id| !tasks.contains_key(id)) {
             return Err("Task type snapshot has no scheduler owner".into());
         }
@@ -248,6 +331,25 @@ impl TaskSchedulerMetadataSnapshot {
             {
                 return Err("checkpoint scope refers to a task with a different owner".into());
             }
+            if let Some(waiter) = group.completion_waiter {
+                if group.owner != Some(waiter)
+                    || !group.completions.is_empty()
+                    || tasks[&waiter].state != TaskState::Waiting(TaskWait::Completion(*id))
+                {
+                    return Err("checkpoint completion waiter differs from its scope owner".into());
+                }
+            }
+            let mut previous = None;
+            let mut completed = BTreeSet::new();
+            for event in &group.completions {
+                self.validate_completion(*id, *event, tasks)?;
+                if previous.is_some_and(|order| order >= event.order)
+                    || !completed.insert(event.task)
+                {
+                    return Err("checkpoint completion queue repeats or reorders a receipt".into());
+                }
+                previous = Some(event.order);
+            }
         }
         for (id, task) in tasks {
             if task.start.is_some() != self.task_types.contains_key(id) {
@@ -260,9 +362,17 @@ impl TaskSchedulerMetadataSnapshot {
             if id.0 >= self.next_task || !group.0.tasks.contains(id) {
                 return Err("checkpoint task identity/counter is inconsistent".into());
             }
+            if let TaskState::Waiting(TaskWait::Completion(scope)) = task.state {
+                if scope != task.scope || group.0.completion_waiter != Some(*id) {
+                    return Err("checkpoint completion wait has no registered consumer".into());
+                }
+            }
             if matches!(
                 task.state,
-                TaskState::Running | TaskState::Waiting(TaskWait::Cpu(_) | TaskWait::Host(_) | TaskWait::HostDrain)
+                TaskState::Running
+                    | TaskState::Waiting(
+                        TaskWait::Cpu(_) | TaskWait::Host(_) | TaskWait::HostDrain
+                    )
             ) {
                 return Err(
                     "checkpoint task is still running outside the coordinator barrier".into(),
@@ -311,6 +421,48 @@ impl TaskSchedulerMetadataSnapshot {
                 return Err("checkpoint continuation has no owning task/scope".into());
             }
         }
+        for (id, wakeups) in &self.wakeups {
+            for wakeup in wakeups {
+                if let TaskWakeupSnapshot::Completion { scope, event } = wakeup {
+                    self.validate_completion(*scope, *event, tasks)?;
+                    let task = &tasks[id];
+                    if self.groups[scope].0.owner != Some(*id)
+                        || task.state != TaskState::Ready
+                        || !matches!(
+                            task.waiting_continuation,
+                            Some(TaskResume::Completion { .. })
+                        )
+                    {
+                        return Err(
+                            "checkpoint completion wakeup has no waiting scope owner".into()
+                        );
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn validate_completion(
+        &self,
+        scope: TaskScopeId,
+        event: TaskCompletion,
+        tasks: &BTreeMap<TaskId, ScheduledTask>,
+    ) -> Result<(), String> {
+        let group = self
+            .groups
+            .get(&scope)
+            .ok_or("completion receipt has no scope")?;
+        let task = tasks
+            .get(&event.task)
+            .ok_or("completion receipt has no task")?;
+        if task.scope != scope
+            || task.start.is_none()
+            || !task.state.is_terminal()
+            || event.order >= group.0.next_completion_order
+        {
+            return Err("completion receipt differs from its settled task".into());
+        }
         Ok(())
     }
 }
@@ -326,7 +478,13 @@ mod tests {
         let root = root_local(root_scope);
         let mut scheduler = TaskScheduler::new(root_scope, NonZeroUsize::new(2).unwrap());
         let parent = spawn(&mut scheduler, &root, 0);
-        scheduler.set_scope_owner(root_scope, parent).unwrap();
+        scheduler
+            .set_scope_owner(
+                root_scope,
+                parent,
+                crate::driver::scheduler::TaskIdentity::Root,
+            )
+            .unwrap();
         let scope = scheduler.create_scope_with_policy(
             root_scope,
             NonZeroUsize::new(2).unwrap(),
@@ -368,7 +526,11 @@ mod tests {
         scheduler.take_resource_events();
         scheduler.begin_checkpoint_barrier();
         let metadata = scheduler
-            .capture_metadata(Default::default(), &mut Default::default())
+            .capture_metadata(
+                Default::default(),
+                Default::default(),
+                &mut Default::default(),
+            )
             .unwrap();
         let metadata =
             crate::api::codec::checkpoint::scheduler::roundtrip_scheduler_metadata(&metadata);
@@ -397,9 +559,14 @@ mod tests {
             acquired, 1,
             "only the blocked task takes a new permit after restore"
         );
+        restored.take_terminal_events(|_| true);
         restored.begin_checkpoint_barrier();
         let metadata = restored
-            .capture_metadata(Default::default(), &mut Default::default())
+            .capture_metadata(
+                Default::default(),
+                Default::default(),
+                &mut Default::default(),
+            )
             .unwrap();
         let metadata =
             crate::api::codec::checkpoint::scheduler::roundtrip_scheduler_metadata(&metadata);

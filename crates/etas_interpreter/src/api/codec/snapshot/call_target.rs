@@ -9,6 +9,10 @@ pub(super) fn frame<'a>(
     pending: &mut Pending<'a>,
     budget: &mut super::EncodingBudget,
 ) -> Result<(), crate::api::codec::InterpreterCodecError> {
+    if frame.reference {
+        *slot = json!({"reference": frame.id});
+        return Ok(());
+    }
     let activations = frame.handler_activations.iter().map(|activation| {
         let metadata = json!({"arm":activation.arm.0, "types":activation.types, "parameters":activation.parameters, "rows":activation.rows});
         budget.json_metadata(&metadata)?;
@@ -23,6 +27,12 @@ pub(super) fn frame<'a>(
         "type_bindings":frame.type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
     if !activations.is_empty() {
         slot["handler_activations"] = Value::Array(activations);
+    }
+    if !frame.shared_bindings.is_empty() {
+        let bindings =
+            serde_json::to_value(&frame.shared_bindings).expect("captured binding metadata");
+        budget.json_metadata(&bindings)?;
+        slot["shared_bindings"] = bindings;
     }
     if let Some(parent) = &frame.parent {
         slot["parent"] = Value::Null;

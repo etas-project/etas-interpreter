@@ -19,7 +19,7 @@ impl SnapshotValidator<'_> {
                     _ => None,
                 })
                 .ok_or("pending program entry has no owning call boundary")?;
-            if boundary.call != *call {
+            if !boundary.call.same_entry(call) {
                 return Err("pending program entry differs from its checked call boundary".into());
             }
             return Ok(());
@@ -104,6 +104,22 @@ impl SnapshotValidator<'_> {
                 self.expr(*expr, "checkpoint pending expression")?;
                 self.frame(frame, "checkpoint pending expression")
             }
+            S::ProgramExpr {
+                call, args, span, ..
+            } => {
+                self.expression_site(&call.site, *span, "checkpoint pending program expression")?;
+                self.expression_unit(call)?;
+                super::super::program::expression_destination(call, self.checked, self.revisions)?;
+                if args.len() != call.slots.len() {
+                    return Err(
+                        "pending program expression has inconsistent argument positions".into(),
+                    );
+                }
+                for value in args {
+                    self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
+                }
+                Ok(())
+            }
             S::Block {
                 agent_context,
                 block,
@@ -127,17 +143,18 @@ impl SnapshotValidator<'_> {
                 self.frame(frame, "checkpoint pending block")
             }
             S::Call {
-                site, target, args, ..
+                site,
+                target,
+                args,
+                span,
+                ..
             } => {
-                self.call_target(target, "checkpoint pending call")?;
+                self.pending_execution_call(site.as_ref(), target, args.first(), *span)?;
                 for value in args {
                     self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
                 }
                 if let Some(site) = site {
                     self.frame(&site.frame, "checkpoint pending call site")?;
-                    if let Some(composition) = &site.composition {
-                        self.call_target(&composition.root, "checkpoint pending composition")?;
-                    }
                 }
                 Ok(())
             }
@@ -147,6 +164,12 @@ impl SnapshotValidator<'_> {
                     .tasks
                     .ok_or("pending task control has no scheduler snapshot")?;
                 match task {
+                    T::NextCompletion {
+                        scope, result_type, ..
+                    } => {
+                        scheduler.validate_value(V::Scheduler { owner: *scope })?;
+                        self.completion_type(*result_type)
+                    }
                     T::ResumeHandled {
                         owner, task, value, ..
                     } => {
@@ -154,7 +177,13 @@ impl SnapshotValidator<'_> {
                             owner: *owner,
                             task: *task,
                         })?;
-                        self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)
+                        self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
+                        self.transfer_value(
+                            value,
+                            crate::driver::scheduler::TaskIdentity::Scheduled(
+                                crate::driver::scheduler::TaskId(*task),
+                            ),
+                        )
                     }
                     T::Run { scope, .. } => {
                         scheduler.validate_value(V::Scheduler { owner: *scope })

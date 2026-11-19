@@ -17,13 +17,28 @@ impl EvalContext<'_> {
     }
 
     fn project_tool_reference(&self, expression: HirExprId) -> Result<InterpValue, String> {
-        let fact = self
-            .checked
-            .types
-            .std_intrinsic_calls
-            .get(&expression)
-            .filter(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
-            .ok_or("tool reference has no checked intrinsic selection")?;
+        let output = if etas_types::source_execution::call_target(
+            &self.checked.hir,
+            &self.checked.types,
+            expression,
+        ) == Some(etas_std::StdExecutionRole::ToolReference)
+        {
+            *self
+                .checked
+                .types
+                .expr_types
+                .get(&expression)
+                .ok_or("source tool reference has no checked call result type")?
+        } else {
+            self.checked
+                .types
+                .std_intrinsic_calls
+                .get(&expression)
+                .filter(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
+                .ok_or("tool reference has no checked intrinsic selection")?
+                .signature
+                .output
+        };
         let Some(HirExpr::Call { args, .. } | HirExpr::MethodCall { args, .. }) =
             self.checked.hir.exprs.get(expression)
         else {
@@ -42,9 +57,10 @@ impl EvalContext<'_> {
         let projector = super::project::Projector {
             store: &self.checked.type_store,
             known: &self.checked.types.known_std_types.code,
+            enums: &self.checked.types.enum_layouts,
         };
         projector.record(
-            fact.signature.output,
+            output,
             vec![
                 ("id", InterpValue::String(identity.into())),
                 ("revision", InterpValue::String(revision.into())),

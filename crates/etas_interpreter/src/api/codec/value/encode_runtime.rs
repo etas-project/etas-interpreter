@@ -46,6 +46,11 @@ fn write<'a>(
             return Ok(());
         }
         Node::Frame(frame) => {
+            if matches!(purpose, ValuePurpose::Lossless) && frame.has_shared_bindings() {
+                return Err(InterpreterCodecError::new(
+                    "scoped mutable captures require checked checkpoint persistence",
+                ));
+            }
             if matches!(purpose, ValuePurpose::Lossless) && frame.has_handler_activations() {
                 return Err(InterpreterCodecError::new(
                     "Handler request evidence requires checked checkpoint persistence",
@@ -85,6 +90,14 @@ fn write<'a>(
         return Ok(());
     }
     match value {
+        InterpValue::ScopedHandler(_) => {
+            if matches!(purpose, ValuePurpose::Lossless) {
+                return Err(InterpreterCodecError::new(
+                    "scoped Handler requires checked checkpoint persistence",
+                ));
+            }
+            *slot = json!({"kind":"handler", "persistence":"source-required"});
+        }
         InterpValue::Existential(value) => {
             if matches!(purpose, ValuePurpose::Lossless) {
                 return Err(InterpreterCodecError::new(
@@ -296,6 +309,7 @@ fn write<'a>(
         InterpValue::Handler {
             fact_expr,
             handlers,
+            captured,
         } => {
             *slot = json!({"kind":"handler","fact_expr":fact_expr.0,"handlers":null});
             for (handler, slot) in handlers
@@ -303,6 +317,10 @@ fn write<'a>(
                 .zip(array(&mut slot["handlers"], handlers.len()))
             {
                 *slot = handler_arm_json(handler);
+            }
+            if let Some(captured) = captured {
+                slot["captured"] = Value::Null;
+                child(Node::Frame(captured), &mut slot["captured"]);
             }
         }
         InterpValue::HostHandle(handle) => {

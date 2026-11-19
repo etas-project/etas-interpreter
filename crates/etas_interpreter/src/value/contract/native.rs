@@ -20,7 +20,7 @@ pub(super) fn validate<'a>(
             if expected != object.object_type {
                 return Err("existential value has a different checked interface".into());
             }
-            crate::value::ExistentialHeader::capture(object).validate(checked)?;
+            object.validate(checked)?;
             pending.push(Task::Visit(
                 Seed::new(Value::Runtime(&object.value), object.concrete_type),
                 false,
@@ -31,7 +31,7 @@ pub(super) fn validate<'a>(
             if expected != header.object_type {
                 return Err("existential snapshot has a different checked interface".into());
             }
-            header.validate(checked)?;
+            context.existential_header(header)?;
             pending.push(Task::Visit(
                 Seed::new(Value::Snapshot(value), header.concrete_type),
                 false,
@@ -60,7 +60,8 @@ pub(super) fn validate<'a>(
             Ok(())
         }
         Value::Runtime(R::Json(value)) | Value::Snapshot(S::Json(value))
-            if role == Some(Role::JsonValue) =>
+            if checked.types.known_std_types.json_value == Some(expected)
+                || role == Some(Role::JsonValue) =>
         {
             crate::value::json::validate(value)
         }
@@ -263,15 +264,22 @@ pub(super) fn validate<'a>(
         }
         Value::Runtime(
             R::HostHandle(_)
+            | R::Task(_)
+            | R::Scheduler(_)
+            | R::Continuation(_)
             | R::Handler { .. }
+            | R::ScopedHandler(_)
             | R::CodeMetadata(_)
             | R::SyntaxBlock(_)
             | R::AgentDefinition(_)
             | R::CallableDefinition(_),
         )
-        | Value::Snapshot(S::CodeIdentity { .. } | S::Handler { .. } | S::TaskRuntime(_)) => {
-            context.native(value, expected)
-        }
+        | Value::Snapshot(
+            S::CodeIdentity { .. }
+            | S::Handler { .. }
+            | S::ScopedHandler { .. }
+            | S::TaskRuntime(_),
+        ) => context.native(value, expected),
         _ => Err("native input does not match its checked type identity".into()),
     }
 }

@@ -97,18 +97,35 @@ impl CheckedExecutionProgram {
         revisions: Option<&crate::api::code::PreparedRevisionSet>,
     ) -> Result<Self, String> {
         use crate::orchestration::{CheckpointProgramReference, ExecutionRootSnapshot as R};
-        let owns_program = match (&saved.program, &source.revision) {
-            (CheckpointProgramReference::Source, None) => true,
-            (CheckpointProgramReference::Revision { revision: saved }, Some(current)) => {
-                **saved == crate::orchestration::CheckpointCodeRevision::for_revision(current)
+        let owns_program = if let Some(revisions) = revisions {
+            // An installed std body and its source caller can both have no
+            // dynamic code revision. Resolve their actual checked owner before
+            // interpreting the saved root's local HIR identifiers.
+            Arc::ptr_eq(&revisions.checked_program(&saved.program)?, &source.checked)
+        } else {
+            match (&saved.program, &source.revision) {
+                (CheckpointProgramReference::Source, None) => true,
+                (CheckpointProgramReference::Revision { revision: saved }, Some(current)) => {
+                    **saved == crate::orchestration::CheckpointCodeRevision::for_revision(current)
+                }
+                _ => false,
             }
-            _ => false,
         };
         if owns_program {
-            let root = match saved.root {
-                R::Item(item) => etas_frontend::CheckedCallableRoot::Item(item),
-                R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(expr),
-                R::StdReference(expr) => etas_frontend::CheckedCallableRoot::StdReference(expr),
+            let root = match &saved.root {
+                R::Item(item) => etas_frontend::CheckedCallableRoot::Item(*item),
+                R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(*expr),
+                R::StdReference(expr) => etas_frontend::CheckedCallableRoot::StdReference(*expr),
+                R::ParameterDefault(reference) => {
+                    etas_frontend::CheckedCallableRoot::ParameterDefault(
+                        source
+                            .plan
+                            .arguments
+                            .default_unit(reference)
+                            .ok_or("checkpoint default root has no matching expression revision")?
+                            .parameter,
+                    )
+                }
             };
             let plan = source
                 .plan
@@ -154,6 +171,15 @@ impl CheckedExecutionProgram {
             etas_frontend::CheckedCallableRoot::Lambda(expr) => ExecutionRootSnapshot::Lambda(expr),
             etas_frontend::CheckedCallableRoot::StdReference(expr) => {
                 ExecutionRootSnapshot::StdReference(expr)
+            }
+            etas_frontend::CheckedCallableRoot::ParameterDefault(parameter) => {
+                ExecutionRootSnapshot::ParameterDefault(
+                    self.plan
+                        .arguments
+                        .source_default_reference(parameter)
+                        .expect("prepared default root retains its canonical expression reference")
+                        .clone(),
+                )
             }
         };
         ExecutionProgramSnapshot { program, root }

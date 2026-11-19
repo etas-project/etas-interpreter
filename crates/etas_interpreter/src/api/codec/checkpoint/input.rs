@@ -17,7 +17,7 @@ pub(in crate::api::codec) fn encode(
             args,
             span,
         } => json!({"kind":"enter_program", "owner":owner,
-            "call":snapshot::call_target_json_with_budget(call, budget)?,
+            "call":machine::program::program_call_json(call, budget)?,
             "args":values_json(args, budget)?, "span":span_json(*span)}),
         I::SourceToolApproved => json!({"kind":"source_tool_approved"}),
         I::ModelResult(result) => {
@@ -88,6 +88,16 @@ fn signal_json(
         } => json!({"kind":"expr", "expr":expr.0,
             "frame":snapshot::frame_json_with_budget(frame, budget)?,
             "continuation":snapshot::continuation_json_with_budget(continuation, budget)?}),
+        S::ProgramExpr {
+            call,
+            args,
+            span,
+            continuation,
+        } => json!({
+            "kind":"program_expr", "invocation":machine::program::expression_call_json(call, budget)?,
+            "args":values_json(args, budget)?, "span":span_json(*span),
+            "continuation":snapshot::continuation_json_with_budget(continuation, budget)?,
+        }),
         S::Block {
             agent_context,
             block,
@@ -114,6 +124,13 @@ fn signal_json(
             "args":values_json(args, budget)?, "span":span_json(*span),
             "continuation":snapshot::continuation_json_with_budget(continuation, budget)?}),
         S::Task(task) => match task {
+            T::NextCompletion {
+                scope,
+                result_type,
+                span,
+            } => {
+                json!({"kind":"next_completion", "scope":scope, "result_type":result_type, "span":span_json(*span)})
+            }
             T::ResumeHandled {
                 owner,
                 task,
@@ -189,7 +206,7 @@ pub(in crate::api::codec) fn decode(
         )?)),
         "enter_program" => I::EnterProgram {
             owner: field(value, "owner")?,
-            call: machine::call_target_snapshot_from_json(limits, required_obj(value, "call")?)
+            call: machine::program::program_call_from_json(limits, required_obj(value, "call")?)
                 .map_err(InterpreterCodecError::new)?,
             args: values_from_json(limits, value, "args")?,
             span: span_from_json(required_obj(value, "span")?)?,
@@ -270,6 +287,18 @@ fn signal_from_json(
             frame: frame()?,
             continuation: continuation()?,
         },
+        "program_expr" => S::ProgramExpr {
+            call: Box::new(
+                machine::program::expression_call_from_json(
+                    limits,
+                    required_obj(value, "invocation")?,
+                )
+                .map_err(InterpreterCodecError::new)?,
+            ),
+            args: values_from_json(limits, value, "args")?,
+            span: span()?,
+            continuation: continuation()?,
+        },
         "block" => S::Block {
             agent_context: machine::agent_context::request_from_json(required_obj(
                 value,
@@ -303,6 +332,11 @@ fn signal_from_json(
             handler: field(value, "handler")?,
             span: span()?,
             value: value::snapshot_from_json_with_limits(limits, required_obj(value, "value")?)?,
+        }),
+        "next_completion" => S::Task(T::NextCompletion {
+            scope: required_u64(value, "scope")?,
+            result_type: field(value, "result_type")?,
+            span: span()?,
         }),
         "run" => S::Task(T::Run {
             scope: required_u64(value, "scope")?,

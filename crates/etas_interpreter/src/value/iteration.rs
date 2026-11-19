@@ -106,8 +106,20 @@ pub(crate) struct IterationSource {
 
 impl IterationSource {
     pub(crate) fn new(value: InterpValue) -> Result<Self, String> {
+        // Iteration retains a storage cursor, not a newly constructed public
+        // value. Elements keep their identities; the container envelope is not
+        // yielded. Native empty/cell sums use this same language cursor.
+        let value = match value {
+            InterpValue::Nominal { value, .. }
+                if matches!(value.as_ref(), InterpValue::List(_)) =>
+            {
+                value.as_ref().clone()
+            }
+            value => value,
+        };
         match &value {
-            InterpValue::Array(_)
+            InterpValue::Bytes(_)
+            | InterpValue::Array(_)
             | InterpValue::List(_)
             | InterpValue::Slice(_)
             | InterpValue::Set(_)
@@ -192,6 +204,10 @@ impl IterationSource {
             }
         }
         Ok(match &self.value {
+            InterpValue::Bytes(values) => values
+                .get(index)
+                .copied()
+                .map(|value| InterpValue::Number(super::NumericValue::U8(value))),
             InterpValue::Array(values) | InterpValue::Stack(values) => {
                 values.borrow().get(index).cloned()
             }

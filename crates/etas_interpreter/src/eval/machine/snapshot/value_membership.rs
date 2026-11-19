@@ -85,6 +85,10 @@ impl StructuralPartition for ValueSnapshot {
                 }
                 return None;
             }
+            Self::ScopedHandler { metadata, value } => {
+                metadata.native_type.hash(state);
+                Storage::Single(value)
+            }
             Self::Existential { header, value } => {
                 header.object_type.hash(state);
                 header.concrete_type.hash(state);

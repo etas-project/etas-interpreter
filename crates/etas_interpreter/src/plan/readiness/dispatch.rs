@@ -10,7 +10,7 @@ pub(super) fn service_check(
     root: CheckedCallableRoot,
 ) -> Result<HostServiceCheck, String> {
     let reachable = project
-        .checked_callable_reachability(root)
+        .checked_execution_reachability(root)
         .map_err(|error| error.to_string())?;
     let view = project.hir.view();
     let mut visitor = Dispatches {
@@ -18,10 +18,17 @@ pub(super) fn service_check(
         late_bound: false,
         error: None,
     };
-    if let CheckedCallableRoot::Lambda(expr) | CheckedCallableRoot::StdReference(expr) = root {
+    let mut expressions = reachable.default_expressions;
+    if let Some(expr) = project
+        .checked_callable_expression(root)
+        .map_err(|error| error.to_string())?
+    {
+        expressions.insert(expr);
+    }
+    for expr in expressions {
         walk_expr_tree(&view, expr, &mut visitor);
     }
-    for item in reachable {
+    for item in reachable.items {
         walk_item(&view, item, &mut visitor);
     }
     if let Some(error) = visitor.error {

@@ -20,6 +20,7 @@ pub(crate) enum ExecutionRootSnapshot {
     Item(HirItemId),
     Lambda(HirExprId),
     StdReference(HirExprId),
+    ParameterDefault(etas_code::descriptor::ParameterDefaultInfo),
 }
 
 #[derive(
@@ -83,6 +84,12 @@ pub(crate) struct ActionProjectionSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskHandlerWaitSnapshot {
+    Completion {
+        scope: crate::driver::scheduler::TaskScopeId,
+        continuation: ContinuationSnapshot,
+        result_type: TypeId,
+        span: Span,
+    },
     Ready(Box<super::MachineInputSnapshot>),
     Await {
         target: crate::driver::scheduler::TaskHandle,
@@ -176,6 +183,7 @@ impl SuspendedExecutionSnapshot {
             Self::Task(node) => match &node.wait {
                 TaskHandlerWaitSnapshot::Ready(input) => roots.extend(input.continuation_root()),
                 TaskHandlerWaitSnapshot::Await { continuation, .. }
+                | TaskHandlerWaitSnapshot::Completion { continuation, .. }
                 | TaskHandlerWaitSnapshot::Transfer { continuation, .. } => {
                     roots.push(continuation)
                 }

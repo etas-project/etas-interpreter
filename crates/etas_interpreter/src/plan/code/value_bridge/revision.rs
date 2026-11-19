@@ -92,6 +92,18 @@ impl RevisionProjection {
         .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn type_in_scope(
+        &self,
+        scope: &etas_code::descriptor::GenericOwner,
+        ty: TypeId,
+    ) -> Result<TypeId, String> {
+        match self {
+            Self::Candidate(bridge) => bridge.runtime_to_candidate_scoped(self.source(), scope, ty),
+            Self::Original(bridge) => bridge.runtime_to_original_scoped(self.source(), scope, ty),
+        }
+        .map_err(|error| error.to_string())
+    }
+
     pub(crate) fn callable_type(&self, ty: TypeId) -> Result<TypeId, String> {
         match self {
             Self::Candidate(bridge) => bridge.callable_projection_type(self.source(), ty, true),
@@ -107,6 +119,7 @@ impl RevisionProjection {
         value: crate::value::InterpValue,
         execution: &crate::value::CheckedExecutionProgram,
     ) -> Result<crate::value::InterpValue, String> {
+        let kind = value.kind_name();
         match self {
             Self::Candidate(bridge) => {
                 bridge.value_to_candidate_scoped(self.source(), scope, ty, value, execution)
@@ -115,7 +128,7 @@ impl RevisionProjection {
                 bridge.value_to_original_scoped(self.source(), scope, ty, value, execution)
             }
         }
-        .map_err(|error| error.to_string())
+        .map_err(|error| self.value_error(error, kind, execution))
     }
     pub(crate) fn action(
         &self,
@@ -156,6 +169,7 @@ impl RevisionProjection {
         execution: &crate::value::CheckedExecutionProgram,
     ) -> Result<(TypeId, crate::value::InterpValue), String> {
         let target = self.runtime_type(ty)?;
+        let kind = value.kind_name();
         let value = super::convert_scoped(
             self.source(),
             self.target(),
@@ -165,8 +179,28 @@ impl RevisionProjection {
             Some(execution),
             Some(self.clone()),
         )
-        .map_err(|error| error.to_string())?;
+        .map_err(|error| self.value_error(error, kind, execution))?;
         Ok((target, value))
+    }
+
+    fn value_error(
+        &self,
+        error: super::RevisionValueBridgeError,
+        kind: &str,
+        execution: &crate::value::CheckedExecutionProgram,
+    ) -> String {
+        if let super::RevisionValueBridgeError::Value { source, target, .. } = &error {
+            return format!(
+                "{error}; source type {:?}, target type {:?}, root value kind {kind}, \
+                 execution root {:?}, source standard types {}, target standard types {}",
+                self.source().type_store.get(*source),
+                self.target().type_store.get(*target),
+                execution.plan.root,
+                self.source().hir.source_standard_types,
+                self.target().hir.source_standard_types,
+            );
+        }
+        error.to_string()
     }
 
     pub(super) fn agent(

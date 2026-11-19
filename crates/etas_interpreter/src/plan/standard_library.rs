@@ -26,11 +26,19 @@ pub(crate) struct StandardLibraryProgram {
     bridge: Arc<RevisionTypeBridge>,
     aliases: BTreeMap<StdSymbolId, etas_code::CallableId>,
     callables: BTreeMap<etas_code::CallableId, LibraryCallable>,
+    values: BTreeMap<etas_code::DefinitionKey, LibraryValue>,
 }
 
 #[derive(Debug)]
 struct LibraryCallable {
     item: HirItemId,
+    ty: TypeId,
+}
+
+#[derive(Debug)]
+struct LibraryValue {
+    item: HirItemId,
+    symbol: etas_hir::SymbolId,
     ty: TypeId,
 }
 
@@ -40,6 +48,31 @@ impl StandardLibraryProgram {
     }
     pub(crate) fn bridge(&self) -> &Arc<RevisionTypeBridge> {
         &self.bridge
+    }
+    pub(crate) fn parameter_default(
+        &self,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Option<&etas_frontend::code::parameter_defaults::ParameterDefaultUnit> {
+        self.prepared.arguments.default_unit(reference)
+    }
+
+    pub(crate) fn default_program(
+        &self,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Result<CheckedExecutionProgram, String> {
+        let plan = self
+            .prepared
+            .select_parameter_default(reference)
+            .map_err(|errors| {
+                format!("std default expression has no checked execution plan: {errors:?}")
+            })?;
+        Ok(CheckedExecutionProgram {
+            checked: self.prepared.program.clone(),
+            plan: Arc::new(plan),
+            definitions: None,
+            revision: None,
+            foreign: None,
+        })
     }
     pub(super) fn prepare(program: &CheckedProgram) -> Result<Option<Arc<Self>>, String> {
         let Some(standard) = &program.standard_library else {
@@ -75,6 +108,13 @@ impl StandardLibraryProgram {
                 }
             }
         }
+        identities.extend(
+            program
+                .types
+                .library_flow_calls
+                .values()
+                .map(|call| call.callable.clone()),
+        );
         for identity in identities {
             let id = &identity;
             let item = bodies.item_owner(id).ok_or_else(|| {
@@ -94,6 +134,23 @@ impl StandardLibraryProgram {
             let actual = bodies
                 .callable(id)
                 .ok_or("std body has no canonical callable interface")?;
+            let graph = bodies
+                .callable_descriptors(id)
+                .ok_or("std body has no callable descriptors")?;
+            let Some(etas_code::descriptor::TypeInfo::Function(signature_info)) =
+                graph.type_info(actual.signature)
+            else {
+                return Err("std body descriptor has no function signature".into());
+            };
+            for parameter in &signature_info.parameters {
+                if let Some(reference) = &parameter.default
+                    && prepared.arguments.default_unit(reference).is_none()
+                {
+                    return Err(format!(
+                        "std artifact {id:?} is missing its authored default expression revision"
+                    ));
+                }
+            }
             if caller
                 .callable_descriptors(id)
                 .ok_or("std query has no callable descriptors")?
@@ -140,12 +197,81 @@ impl StandardLibraryProgram {
                 .ok_or_else(|| format!("std artifact {id:?} has no checked function type"))?;
             callables.insert(identity, LibraryCallable { item, ty });
         }
+        let value_keys = standard
+            .origins
+            .declarations
+            .iter()
+            .filter(|binding| binding.definition.kind() == etas_code::DefinitionKind::Value)
+            .map(|binding| {
+                (
+                    binding
+                        .definition
+                        .module()
+                        .iter()
+                        .chain(binding.definition.declaration())
+                        .cloned()
+                        .collect::<Vec<_>>(),
+                    binding.definition.clone(),
+                )
+            })
+            .collect::<BTreeMap<_, _>>();
+        let mut values = BTreeMap::new();
+        for (item, declaration) in library.items.iter() {
+            let etas_hir::HirItem::TopLevelLet(declaration) = declaration else {
+                continue;
+            };
+            let Some(path) = library.hir.declaration_path(declaration.symbol) else {
+                continue;
+            };
+            let Some(identity) = value_keys.get(&path) else {
+                continue;
+            };
+            let Some(ItemSignature::TopLevelLet(signature)) =
+                library.types.item_signatures.get(&item)
+            else {
+                return Err("std value has no checked initializer signature".into());
+            };
+            values.insert(
+                identity.clone(),
+                LibraryValue {
+                    item,
+                    symbol: declaration.symbol,
+                    ty: signature.ty,
+                },
+            );
+        }
         Ok(Some(Arc::new(Self {
             prepared,
             bridge,
             aliases,
             callables,
+            values,
         })))
+    }
+
+    pub(crate) fn value_program(
+        &self,
+        identity: &etas_code::DefinitionKey,
+    ) -> Result<(etas_hir::SymbolId, TypeId, CheckedExecutionProgram), String> {
+        let value = self
+            .values
+            .get(identity)
+            .ok_or("std value has no checked initializer")?;
+        let plan = self
+            .prepared
+            .select_callable(etas_frontend::CheckedCallableRoot::Item(value.item))
+            .map_err(|errors| format!("std value has no checked execution plan: {errors:?}"))?;
+        Ok((
+            value.symbol,
+            value.ty,
+            CheckedExecutionProgram {
+                checked: self.prepared.checked().clone(),
+                plan: Arc::new(plan),
+                definitions: None,
+                revision: None,
+                foreign: None,
+            },
+        ))
     }
 
     pub(crate) fn callable(&self, symbol: StdSymbolId) -> Result<CallTarget, String> {
@@ -160,7 +286,7 @@ impl StandardLibraryProgram {
         self.project(&etas_code::CallableId::method(method.clone()))
     }
 
-    fn project(&self, identity: &etas_code::CallableId) -> Result<CallTarget, String> {
+    pub(crate) fn project(&self, identity: &etas_code::CallableId) -> Result<CallTarget, String> {
         let binding = self
             .callables
             .get(identity)

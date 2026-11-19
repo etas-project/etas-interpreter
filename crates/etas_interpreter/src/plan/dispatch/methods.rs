@@ -358,12 +358,26 @@ impl MethodDispatchPlan {
             }
             validate_signature(project, entry, fact)?;
             let mut slots = HashSet::new();
-            if let MethodReceiver::Value { slot } = fact.receiver {
+            if let Some(slot) = fact.receiver.value_slot() {
                 slots.insert(slot);
+            }
+            if fact.receiver.is_updating() {
+                etas_types::method::updating_receiver_symbol(&project.hir, &project.types, *expr)?;
             }
             if argument_count != fact.argument_slots.len()
                 || fact.argument_slots.iter().any(|slot| {
                     *slot as usize >= fact.signature.params.len() || !slots.insert(*slot)
+                })
+                || fact.defaults.iter().any(|default| {
+                    default.slot as usize >= fact.signature.params.len()
+                        || !slots.insert(default.slot)
+                        || fact
+                            .signature
+                            .parameter_interface
+                            .as_ref()
+                            .and_then(|parameters| parameters.get(default.slot as usize))
+                            .and_then(|parameter| parameter.default.as_ref())
+                            != Some(&default.source)
                 })
                 || slots.len() != fact.signature.params.len()
             {
@@ -381,9 +395,18 @@ impl MethodDispatchPlan {
                     return Err("checked method target has no analyzed source body".into());
                 }
                 if !matches!(project.hir.items.get(callable), Some(etas_hir::HirItem::Flow(flow)) if flow.symbol == symbol)
-                    || view
-                        .body(body)
-                        .is_none_or(|body| body.item().id() != callable)
+                    || match body {
+                        Some(body) => view
+                            .body(body)
+                            .is_none_or(|body| body.item().id() != callable),
+                        None => !matches!(
+                            project.hir.items.get(callable),
+                            Some(etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                                body: etas_hir::HirFlowBody::Runtime { .. },
+                                ..
+                            }))
+                        ),
+                    }
                 {
                     return Err("checked method target differs from its real source body".into());
                 }
@@ -501,6 +524,23 @@ impl MethodDispatchPlan {
         Ok(ResolvedMethodCall { target, bindings })
     }
 
+    pub(super) fn policy_witness(
+        &self,
+        project: &CheckedProject,
+        object: crate::value::ExistentialEvidence<'_>,
+        member: &SpecMethodIdentity,
+    ) -> Result<(MethodTarget, crate::control::GenericBindings), String> {
+        let selected = self.object_witness(project, object, &[], member)?;
+        Ok((
+            selected.target.clone(),
+            crate::control::GenericBindings {
+                types: Default::default(),
+                parameters: selected.owner_bindings.iter().copied().collect(),
+                rows: Default::default(),
+            },
+        ))
+    }
+
     fn object_witness(
         &self,
         project: &CheckedProject,
@@ -509,11 +549,42 @@ impl MethodDispatchPlan {
         member: &SpecMethodIdentity,
     ) -> Result<WitnessSelection<'_>, String> {
         loop {
-            let candidates = self
-                .packs
-                .get(&object.pack())
-                .and_then(|members| members.get(&member.into()))
-                .ok_or("existential value has no prepared member evidence")?;
+            if object.is_scoped() {
+                object.bindings(project)?;
+                if let Some(inner) = object.inner() {
+                    if inner.object_type() != object.source_type() {
+                        return Err(
+                            "repacked existential has a different checked producer interface"
+                                .into(),
+                        );
+                    }
+                    object = inner;
+                    continue;
+                }
+                let prepared = self
+                    .witness(object.source_type(), args, member)
+                    .ok_or("scoped existential has no checked receiving implementation witness")?;
+                return Ok(WitnessSelection {
+                    target: &prepared.target,
+                    parameters: &prepared.parameters,
+                    parameter_types: &prepared.parameter_types,
+                    owner_bindings: &prepared.owner_bindings,
+                });
+            }
+            let members = self.packs.get(&object.pack()).ok_or_else(|| {
+                format!(
+                    "existential value has no prepared packing site {:?}",
+                    object.pack()
+                )
+            })?;
+            let candidates = members.get(&member.into()).ok_or_else(|| {
+                let mut available = members.keys().map(|key| format!("{key:?}")).collect::<Vec<_>>();
+                available.sort();
+                format!(
+                    "existential packing site {:?} has no prepared member {member:?}; available members: {available:?}",
+                    object.pack()
+                )
+            })?;
             let bindings = object.bindings(project)?;
             let mut substitute = bindings.substitution(&project.type_store);
             let mut selected = None;

@@ -20,6 +20,11 @@ impl<'a> EvalContext<'a> {
             .std_intrinsic_calls
             .get(&expr)
             .is_some_and(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
+            || etas_types::source_execution::call_target(
+                &self.checked.hir,
+                &self.checked.types,
+                expr,
+            ) == Some(etas_std::StdExecutionRole::ToolReference)
         {
             return self.eval_tool_reference(expr, span);
         }
@@ -41,7 +46,7 @@ impl<'a> EvalContext<'a> {
                         .unwrap_or_else(|| self.eval_global_symbol(*symbol, path.span))
                     {
                         Ok(value) => value,
-                        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                        Err(error) => return error.into_signal(),
                     };
                     let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
                         unreachable!()
@@ -121,7 +126,7 @@ impl<'a> EvalContext<'a> {
             HirExpr::ListCons { head, tail, span } => {
                 self.eval_list_cons_expr(*head, *tail, *span, frame)
             }
-            HirExpr::EmptySequence { span } => self.eval_empty_sequence_expr(expr, *span),
+            HirExpr::EmptySequence { span } => self.eval_empty_sequence_expr(expr, *span, frame),
             HirExpr::Map { .. } => self.eval_map_expr(expr, frame),
             HirExpr::Set { .. } => self.eval_sequence_expr(expr, frame),
             HirExpr::Range {
@@ -161,7 +166,7 @@ impl<'a> EvalContext<'a> {
             }
             HirExpr::Infer { span, .. } => self.eval_agent_inference(expr, frame, *span),
             HirExpr::Handler { handlers, span } => {
-                self.eval_handler_value_expr(expr, handlers, *span)
+                self.eval_handler_value_expr(expr, handlers, *span, Some(frame))
             }
             HirExpr::Call {
                 callee,

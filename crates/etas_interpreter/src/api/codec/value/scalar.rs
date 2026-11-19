@@ -232,6 +232,7 @@ impl From<ScalarValue> for InterpValue {
             } => Self::Handler {
                 fact_expr,
                 handlers,
+                captured: None,
             },
             ScalarValue::ResourceHandle {
                 name,
@@ -299,6 +300,7 @@ impl From<ScalarValue> for crate::orchestration::ValueSnapshot {
             } => Self::Handler {
                 fact_expr,
                 handlers,
+                captured: None,
             },
             ScalarValue::ResourceHandle {
                 name,

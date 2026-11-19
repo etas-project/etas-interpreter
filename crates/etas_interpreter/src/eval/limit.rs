@@ -1,7 +1,7 @@
 use etas_core::{AnalysisDiagnosticCode, Span};
-use etas_hir::{HirArg, HirExpr, HirExprId, HirLiteral, ResolveResult, SymbolDef};
+use etas_hir::{HirArg, HirExpr, HirExprId, HirLiteral, ResolveResult};
 use etas_host::{Budget, CostBudget, TimeBudget, TokenBudget};
-use etas_std::{RequirementSemantics, StdDecl, StdLimitKind};
+use etas_std::StdLimitKind;
 
 use super::EvalContext;
 use crate::control::ExecutionFault;
@@ -25,6 +25,15 @@ impl<'a> EvalContext<'a> {
         &self,
         expr: HirExprId,
     ) -> Result<RuntimeLimit, ExecutionFault> {
+        let (kind, value_expr, span) = self.limit_call(expr)?;
+        let value = self.resolve_limit_value(kind, value_expr)?;
+        Ok(RuntimeLimit { kind, value, span })
+    }
+
+    fn limit_call(
+        &self,
+        expr: HirExprId,
+    ) -> Result<(StdLimitKind, HirExprId, Span), ExecutionFault> {
         let span = self.checked.hir.exprs[expr].span(&self.checked.hir.blocks);
         let HirExpr::Call {
             callee, args, span, ..
@@ -38,19 +47,32 @@ impl<'a> EvalContext<'a> {
         if args.len() != 1 {
             return Err(invalid_limit(
                 span,
-                "limit constructors must be called with exactly one static literal argument",
+                "limit constructors must be called with exactly one argument",
             ));
         }
         let kind = self.resolve_limit_kind(*callee, *span)?;
         let value_expr = match args.first().expect("len checked") {
             HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
         };
-        let value = self.resolve_limit_value(kind, value_expr)?;
-        Ok(RuntimeLimit {
-            kind,
-            value,
-            span: *span,
-        })
+        Ok((kind, value_expr, *span))
+    }
+
+    pub(super) fn loop_limit_argument(
+        &self,
+        limits: &[HirExprId],
+        span: Span,
+    ) -> Result<HirExprId, ExecutionFault> {
+        for limit in limits {
+            let (kind, argument, _) = self.limit_call(*limit)?;
+            if kind == StdLimitKind::Iterations {
+                return Ok(argument);
+            }
+            self.resolve_limit_expr(*limit)?;
+        }
+        Err(invalid_limit(
+            &span,
+            "loop execution requires an Iterations(...) limit",
+        ))
     }
 
     fn resolve_limit_kind(
@@ -70,37 +92,12 @@ impl<'a> EvalContext<'a> {
                 "limit callee must be resolved before interpretation",
             ));
         };
-        let Some(symbol) = self.checked.symbols.get(symbol) else {
-            return Err(invalid_limit(
-                &span,
-                "limit callee is missing from checked symbol facts",
-            ));
-        };
-        let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
-            return Err(invalid_limit(
-                &span,
-                "limit callee must resolve to a std requirement constructor",
-            ));
-        };
-        let Some(std_symbol) = self.checked.std_registry.lookup_qualified(path) else {
-            return Err(invalid_limit(
-                &span,
-                "limit callee is not present in the std registry",
-            ));
-        };
-        let StdDecl::Requirement(requirement) = &std_symbol.decl else {
-            return Err(invalid_limit(
-                &span,
-                "limit callee is not a std requirement constructor",
-            ));
-        };
-        let RequirementSemantics::Limit(kind) = requirement.semantics else {
-            return Err(invalid_limit(
-                &span,
-                "std requirement constructor is not a runtime limit",
-            ));
-        };
-        Ok(kind)
+        etas_types::facts::enums::standard_limit_constructor(
+            &self.checked.hir,
+            &self.checked.std_registry,
+            symbol,
+        )
+        .ok_or_else(|| invalid_limit(&span, "limit callee has no checked runtime budget contract"))
     }
 
     fn resolve_limit_value(

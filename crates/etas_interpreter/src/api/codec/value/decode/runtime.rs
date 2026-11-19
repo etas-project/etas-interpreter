@@ -2,6 +2,22 @@ use super::*;
 
 impl DecodedValue for InterpValue {
     type Frame = crate::control::Frame;
+    fn handler(
+        value: &Value,
+        cache: &machine::FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, InterpreterCodecError> {
+        Ok(Self::Handler {
+            fact_expr: etas_hir::HirExprId(required_u32(value, "fact_expr")?),
+            handlers: required_array(value, "handlers")?
+                .iter()
+                .map(handler_arm_from_json)
+                .collect::<Result<_, _>>()?,
+            captured: value
+                .get("captured")
+                .map(|value| cache.get(value).map_err(InterpreterCodecError::new))
+                .transpose()?,
+        })
+    }
     fn frame_cache(
         limits: &etas_host::StorageLimits,
         root: machine::DecodeRoot<'_>,
@@ -26,7 +42,7 @@ impl DecodedValue for InterpValue {
     fn unary(kind: Unary, value: Self) -> Self {
         let value = value.into();
         match kind {
-            Unary::Existential(_) => {
+            Unary::Existential(_) | Unary::ScopedHandler(_) => {
                 unreachable!("unchecked runtime decoder cannot admit existential evidence")
             }
             Unary::Nominal(ty) => Self::Nominal { ty, value },

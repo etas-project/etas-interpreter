@@ -6,10 +6,11 @@ use crate::{
 
 fn view() -> ConversationValue {
     ConversationValue {
+        protocol: None,
         selected_context: None,
         history_fence: None,
         cursor: None,
-        session: "session".into(),
+        session: Some("session".into()),
         messages: vec![MessageValue {
             id: "id".into(),
             from: None,

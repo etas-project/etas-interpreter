@@ -237,6 +237,7 @@ mod tests {
                 .relay_task_handler(
                     &mut eval,
                     handle,
+                    child.local.logical_identity,
                     &child.machine,
                     &program,
                     &perform,
@@ -399,7 +400,11 @@ mod tests {
             tasks.push(handle);
         }
         eval.scheduler
-            .set_scope_owner(tasks[0].owner, tasks[0])
+            .set_scope_owner(
+                tasks[0].owner,
+                tasks[0],
+                crate::driver::scheduler::TaskIdentity::Root,
+            )
             .unwrap();
         let host = FakeHost::new(Default::default());
         let mut reactor = TaskHostReactor::new();
@@ -526,7 +531,11 @@ mod tests {
             .spawn(eval.task, EvalMachine::new(), Some(program.clone()), 0, 0)
             .unwrap();
         eval.scheduler
-            .set_scope_owner(handle.owner, handle)
+            .set_scope_owner(
+                handle.owner,
+                handle,
+                crate::driver::scheduler::TaskIdentity::Root,
+            )
             .unwrap();
         assert_eq!(eval.scheduler.dispatch_ready(), Some(handle));
         let mut scheduled = eval.scheduler.take_running(handle).unwrap();
@@ -691,7 +700,11 @@ flow main() -> i32 {
         eval.scheduler.begin_checkpoint_barrier();
         let scheduler = eval
             .scheduler
-            .capture_metadata(Default::default(), &mut Default::default())
+            .capture_metadata(
+                Default::default(),
+                Default::default(),
+                &mut Default::default(),
+            )
             .unwrap();
         eval.scheduler.end_checkpoint_barrier();
         let frames = SharedFrameRestore::default();
@@ -803,7 +816,7 @@ flow main() -> i32 {
         );
         let plan = crate::Interpreter.plan(&checked, PlanOptions).plan.unwrap();
         let (input, mut state) = initialize(&checked, &plan, RunOptions::default());
-        let eval = EvalContext::new(input, &mut state);
+        let mut eval = EvalContext::new(input, &mut state);
         let program = eval.checked_execution_program();
         let span = crate::diagnostics::item_span(&checked, checked.entry.unwrap());
         let work_symbol = checked
@@ -849,7 +862,11 @@ flow main() -> i32 {
             .spawn(eval.task, EvalMachine::new(), Some(program.clone()), 0, 2)
             .unwrap();
         eval.scheduler
-            .set_scope_owner(waiter.owner, waiter)
+            .set_scope_owner(
+                waiter.owner,
+                waiter,
+                crate::driver::scheduler::TaskIdentity::Root,
+            )
             .unwrap();
         assert_eq!(eval.scheduler.dispatch_ready(), Some(child));
         eval.scheduler.requeue(child).unwrap();
@@ -879,6 +896,7 @@ flow main() -> i32 {
         );
         let mut root = EvalMachine::for_entry(program.clone(), Vec::new());
         root.resume(ControlSignal::Value(InterpValue::Unit));
+        task::record_cancellation_events(&mut eval);
         eval.scheduler.begin_checkpoint_barrier();
         let captured = eval.capture_task_checkpoint(&root).unwrap();
         eval.scheduler.end_checkpoint_barrier();

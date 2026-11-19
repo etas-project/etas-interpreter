@@ -4,6 +4,7 @@ use super::{
 };
 use etas_core::Span;
 use etas_hir::{HirBlockId, HirExprId, HirItemId};
+use etas_types::TypeId;
 
 /// The saved input is separate from the stack: a ready task has an input while
 /// an await/park waiter retains its continuation in the scheduler.
@@ -11,7 +12,7 @@ use etas_hir::{HirBlockId, HirExprId, HirItemId};
 pub(crate) enum MachineInputSnapshot {
     EnterProgram {
         owner: ExecutionProgramSnapshot,
-        call: CallTargetSnapshot,
+        call: super::ProgramCallSnapshot,
         args: Vec<ValueSnapshot>,
         span: Span,
     },
@@ -50,6 +51,12 @@ pub(crate) enum ControlSignalSnapshot {
     Expr {
         expr: HirExprId,
         frame: LocalsSnapshot,
+        continuation: ContinuationSnapshot,
+    },
+    ProgramExpr {
+        call: Box<super::ExpressionCallSnapshot>,
+        args: Vec<ValueSnapshot>,
+        span: Span,
         continuation: ContinuationSnapshot,
     },
     Block {
@@ -92,6 +99,11 @@ pub(crate) struct ResidualActivationSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskControlSnapshot {
+    NextCompletion {
+        scope: u64,
+        result_type: TypeId,
+        span: Span,
+    },
     ResumeHandled {
         owner: u64,
         task: u64,
@@ -131,6 +143,7 @@ impl MachineInputSnapshot {
             | ControlSignalSnapshot::HandlerRequest { continuation, .. }
             | ControlSignalSnapshot::Checkpoint { continuation, .. }
             | ControlSignalSnapshot::Expr { continuation, .. }
+            | ControlSignalSnapshot::ProgramExpr { continuation, .. }
             | ControlSignalSnapshot::Block { continuation, .. }
             | ControlSignalSnapshot::Call { continuation, .. } => Some(continuation),
             _ => None,

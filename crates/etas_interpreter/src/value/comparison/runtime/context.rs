@@ -1,4 +1,4 @@
-use std::cell::RefCell;
+use std::cell::{Cell, RefCell};
 
 use super::memo::{States, Table};
 use super::{Children, Comparison, Cursor};
@@ -57,13 +57,60 @@ impl Pairs {
 }
 
 #[derive(Default)]
-pub(super) struct Context {
+pub(super) struct Context<'a> {
     pairs: RefCell<Pairs>,
+    checked: Option<(&'a etas_types::TypeStore, &'a etas_types::KnownStdTypes)>,
+    forbidden: Cell<bool>,
     #[cfg(test)]
     pub(super) visits: std::cell::Cell<usize>,
 }
 
-impl Context {
+impl<'a> Context<'a> {
+    pub(super) fn checked(
+        store: &'a etas_types::TypeStore,
+        known: &'a etas_types::KnownStdTypes,
+    ) -> Self {
+        Self {
+            checked: Some((store, known)),
+            ..Self::default()
+        }
+    }
+
+    pub(super) fn forbidden(&self) -> bool {
+        self.forbidden.get()
+    }
+
+    pub(super) fn comparable(
+        &self,
+        left: &crate::value::InterpValue,
+        right: &crate::value::InterpValue,
+    ) -> bool {
+        let Some((store, known)) = self.checked else {
+            return true;
+        };
+        let capability = |value: &crate::value::InterpValue| {
+            use crate::value::InterpValue as V;
+            match value {
+                V::Task(_) | V::Scheduler(_) | V::Continuation(_) => true,
+                V::Nominal { ty, .. } => {
+                    etas_types::source_execution::is_scoped_handle(store, known, *ty)
+                }
+                V::Existential(value) => etas_types::source_execution::is_scoped_handle(
+                    store,
+                    known,
+                    value.concrete_type,
+                ),
+                _ => false,
+            }
+        };
+        if capability(left) || capability(right) {
+            self.forbidden.set(true);
+            false
+        } else {
+            true
+        }
+    }
+
     pub(super) fn known(&self, pair: &Pair) -> bool {
         let pairs = self.pairs.borrow();
         pairs.get(pair).is_some_and(|slot| {

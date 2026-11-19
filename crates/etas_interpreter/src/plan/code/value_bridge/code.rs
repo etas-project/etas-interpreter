@@ -12,6 +12,12 @@ impl Walk<'_> {
         let source = &self.source.types.known_std_types.code;
         let target = &self.target.types.known_std_types.code;
         let paired = |left, right| left == Some(from) && right == Some(to);
+        let retained = self.source.hir.source_standard_types
+            && self.target.hir.source_standard_types
+            && paired(
+                crate::value::source_code::retained_type(self.source),
+                crate::value::source_code::retained_type(self.target),
+            );
         let callable_definition = |program: &etas_frontend::CheckedProgram, ty, known| {
             let constructor = match program.type_store.get(ty) {
                 Some(Type::Applied { constructor, args }) if args.len() == 1 => {
@@ -25,8 +31,9 @@ impl Walk<'_> {
             InterpValue::AgentDefinition(value) => {
                 let applied = |program: &etas_frontend::CheckedProgram, ty, known| matches!(program.type_store.get(ty), Some(Type::Applied { constructor, args }) if Some(TypeId(constructor.0)) == known && args.len() == 1);
                 if value.ty() != from
-                    || !applied(self.source, from, source.agent_definition)
-                    || !applied(self.target, to, target.agent_definition)
+                    || !(retained
+                        || (applied(self.source, from, source.agent_definition)
+                            && applied(self.target, to, target.agent_definition)))
                 {
                     return Err(Failure::UnsupportedType);
                 }
@@ -44,8 +51,16 @@ impl Walk<'_> {
             }
             InterpValue::CallableDefinition(value)
                 if value.ty() == from
-                    && callable_definition(self.source, from, source.callable_definition)
-                    && callable_definition(self.target, to, target.callable_definition) =>
+                    && (retained
+                        || (callable_definition(
+                            self.source,
+                            from,
+                            source.callable_definition,
+                        ) && callable_definition(
+                            self.target,
+                            to,
+                            target.callable_definition,
+                        ))) =>
             {
                 if !std::sync::Arc::ptr_eq(value.program(), self.source) {
                     return Err(Failure::WrongProgram);
@@ -55,7 +70,14 @@ impl Walk<'_> {
                 ))
             }
             InterpValue::SyntaxBlock(value)
-                if value.ty() == from && paired(source.syntax_block, target.syntax_block) =>
+                if value.ty() == from
+                    && (paired(source.syntax_block, target.syntax_block)
+                        || (self.source.hir.source_standard_types
+                            && self.target.hir.source_standard_types
+                            && paired(
+                                crate::value::source_code::retained_syntax_type(self.source),
+                                crate::value::source_code::retained_syntax_type(self.target),
+                            ))) =>
             {
                 Ok(InterpValue::SyntaxBlock(value.in_revision(to)))
             }

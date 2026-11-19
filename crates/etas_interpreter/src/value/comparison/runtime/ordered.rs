@@ -32,7 +32,7 @@ impl OrderedComparison {
     pub(super) fn next<'c>(
         &mut self,
         position: usize,
-        context: &'c Context,
+        context: &'c Context<'_>,
     ) -> Option<Comparison<Cursor<'c>>> {
         if position == 0 {
             let (a, b) = match &self.source {

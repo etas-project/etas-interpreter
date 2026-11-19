@@ -12,6 +12,10 @@ pub(super) fn build(
         values.pop().ok_or(RevisionValueFailure::InconsistentLayout)
     };
     Ok(match kind {
+        Build::Existential(mut object) => {
+            object.value = single(&mut values)?.into();
+            InterpValue::Existential(object)
+        }
         Build::Nominal(ty) => InterpValue::Nominal {
             ty,
             value: single(&mut values)?.into(),

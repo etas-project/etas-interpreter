@@ -73,11 +73,21 @@ fn decode_snapshot_frame(
     value: &Value,
     cache: &FrameDecodeCache<LocalsSnapshot>,
 ) -> Result<LocalsSnapshot, String> {
+    if value.get("reference").is_some() {
+        if value.as_object().is_none_or(|object| object.len() != 1) {
+            return Err("captured frame reference also contains a definition".into());
+        }
+        let frame = LocalsSnapshot::reference(required_u64(value, "reference")?);
+        frame.validate_reference()?;
+        return Ok(frame);
+    }
     let decoded = decode_locals(limits, value, |limits, value| {
         crate::api::codec::value::decode::decode_with_frames(limits, value, cache)
             .map_err(|error| error.to_string())
     })?;
     Ok(LocalsSnapshot {
+        reference: false,
+        shared_bindings: decoded.shared_bindings,
         parent: value
             .get("parent")
             .filter(|value| !value.is_null())
@@ -98,12 +108,18 @@ fn decode_runtime_frame(
     value: &Value,
     cache: &FrameDecodeCache<crate::control::Frame>,
 ) -> Result<crate::control::Frame, String> {
+    if value.get("reference").is_some() {
+        return Err("captured frame references require a checked restore context".into());
+    }
     let decoded = decode_locals(limits, value, |limits, value| {
         crate::api::codec::value::decode::decode_with_frames(limits, value, cache)
             .map_err(|error| error.to_string())
     })?;
-    if !decoded.handler_activations.is_empty() {
-        return Err("Handler frame requires a checked restore context".into());
+    if !decoded.handler_activations.is_empty() || !decoded.shared_bindings.is_empty() {
+        return Err(
+            "scoped captured bindings and Handler evidence require a checked restore context"
+                .into(),
+        );
     }
     let mut frame = crate::control::Frame::from_snapshot_with_generic_bindings(
         decoded.locals,
@@ -124,6 +140,7 @@ fn decode_runtime_frame(
 }
 
 struct DecodedLocals<T> {
+    shared_bindings: Vec<crate::control::BindingIdentity>,
     handler_activations: Vec<crate::orchestration::HandlerActivationSnapshot>,
     id: u64,
     residual_invocation: Option<std::num::NonZeroU64>,
@@ -206,6 +223,13 @@ fn decode_locals<T>(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(DecodedLocals {
+        shared_bindings: value
+            .get("shared_bindings")
+            .map(|bindings| {
+                serde_json::from_value(bindings.clone()).map_err(|error| error.to_string())
+            })
+            .transpose()?
+            .unwrap_or_default(),
         handler_activations,
         id,
         residual_invocation,

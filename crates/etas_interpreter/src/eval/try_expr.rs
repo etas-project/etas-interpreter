@@ -9,18 +9,31 @@ impl<'a> EvalContext<'a> {
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        if !self.checked.effects.try_captures.contains_key(&try_expr) {
+        let Some(capture) = self.checked.effects.try_captures.get(&try_expr) else {
             return missing_try_capture_fault(span);
-        }
+        };
+        let result_type = match self.materialized_type(
+            capture.result_type,
+            &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(try_expr)),
+            span,
+        ) {
+            Ok(ty) => ty,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
 
         let continuation = Continuation::TryExpr {
             expr: try_expr,
+            result_type,
             span,
         };
         match self.eval_expr(operand, frame) {
-            ControlSignal::Value(value) => ControlSignal::Value(result_ok(value)),
-            ControlSignal::Perform(perform) if self.can_capture_error_raise(try_expr, &perform) => {
-                self.capture_error_raise(try_expr, &perform, span)
+            ControlSignal::Value(value) => {
+                self.checked_result_value(result_type, "Ok", value, span)
+            }
+            ControlSignal::Perform(perform)
+                if self.can_capture_error_raise(try_expr, result_type, &perform) =>
+            {
+                self.capture_error_raise(try_expr, result_type, &perform, span)
             }
             signal if is_pending_host_boundary_signal(&signal) => {
                 compose_signal_continuation(signal, continuation)
@@ -32,11 +45,12 @@ impl<'a> EvalContext<'a> {
     pub(super) fn resume_try_expr(
         &mut self,
         try_expr: HirExprId,
+        result_type: etas_types::TypeId,
         value: InterpValue,
         span: Span,
     ) -> ControlSignal {
         if self.checked.effects.try_captures.contains_key(&try_expr) {
-            ControlSignal::Value(result_ok(value))
+            self.checked_result_value(result_type, "Ok", value, span)
         } else {
             missing_try_capture_fault(span)
         }
@@ -45,11 +59,22 @@ impl<'a> EvalContext<'a> {
     pub(super) fn capture_error_raise(
         &mut self,
         try_expr: HirExprId,
+        result_type: etas_types::TypeId,
         perform: &PendingPerform,
         span: Span,
     ) -> ControlSignal {
         let Some(capture) = self.checked.effects.try_captures.get(&try_expr) else {
             return missing_try_capture_fault(span);
+        };
+        let Some((_, captured_error)) = etas_types::value_representation::result_parameters(
+            &self.checked.type_store,
+            &self.checked.types.known_std_types,
+            result_type,
+        ) else {
+            return ControlSignal::missing_checked_fact(
+                "`?` requires its materialized checked Result type",
+                span,
+            );
         };
         let Some(source_error) = perform.error_type else {
             return ControlSignal::missing_checked_fact(
@@ -66,12 +91,12 @@ impl<'a> EvalContext<'a> {
                 );
             }
         };
-        let error = if self.type_ids_match(source_error, capture.captured_error) {
+        let error = if self.type_ids_match(source_error, captured_error) {
             error
         } else {
             let Some(conversion) = capture.conversions.iter().find(|conversion| {
                 self.type_ids_match(conversion.source_error, source_error)
-                    && self.type_ids_match(conversion.target_error, capture.captured_error)
+                    && self.type_ids_match(conversion.target_error, captured_error)
             }) else {
                 return ControlSignal::missing_checked_fact(
                     "`?` captured an Error.raise without a checked conversion to the target error type",
@@ -83,21 +108,29 @@ impl<'a> EvalContext<'a> {
                 Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             }
         };
-        ControlSignal::Value(result_err(error))
+        self.checked_result_value(result_type, "Err", error, span)
     }
 
     pub(super) fn can_capture_error_raise(
         &self,
         try_expr: HirExprId,
+        result_type: etas_types::TypeId,
         perform: &PendingPerform,
     ) -> bool {
         let Some(capture) = self.checked.effects.try_captures.get(&try_expr) else {
             return false;
         };
+        let Some((_, captured_error)) = etas_types::value_representation::result_parameters(
+            &self.checked.type_store,
+            &self.checked.types.known_std_types,
+            result_type,
+        ) else {
+            return false;
+        };
         perform.action.action == "raise"
             && perform
                 .error_type
-                .is_some_and(|error| self.can_capture_error_type(error, capture))
+                .is_some_and(|error| self.can_capture_error_type(error, captured_error, capture))
             && perform
                 .action
                 .effect
@@ -110,13 +143,36 @@ impl<'a> EvalContext<'a> {
     fn can_capture_error_type(
         &self,
         error: etas_types::TypeId,
+        captured_error: etas_types::TypeId,
         capture: &etas_effects::TryCaptureFact,
     ) -> bool {
-        self.type_ids_match(error, capture.captured_error)
+        self.type_ids_match(error, captured_error)
             || capture.conversions.iter().any(|conversion| {
                 self.type_ids_match(conversion.source_error, error)
-                    && self.type_ids_match(conversion.target_error, capture.captured_error)
+                    && self.type_ids_match(conversion.target_error, captured_error)
             })
+    }
+
+    pub(super) fn checked_result_value(
+        &self,
+        result_type: etas_types::TypeId,
+        name: &str,
+        value: InterpValue,
+        span: Span,
+    ) -> ControlSignal {
+        if matches!(
+            self.checked.type_store.get(result_type),
+            Some(etas_types::Type::Result { .. })
+        ) {
+            return ControlSignal::Value(InterpValue::Variant {
+                name: name.into(),
+                fields: vec![value].into(),
+            });
+        }
+        match crate::value::enum_value::construct(result_type, name, vec![value], self.checked) {
+            Ok(value) => ControlSignal::Value(value),
+            Err(message) => ControlSignal::missing_checked_fact(message, span),
+        }
     }
 
     fn apply_checked_error_conversion(
@@ -151,18 +207,4 @@ impl<'a> EvalContext<'a> {
 
 fn missing_try_capture_fault(span: Span) -> ControlSignal {
     ControlSignal::missing_checked_fact("postfix `?` requires a checked TryCaptureFact", span)
-}
-
-fn result_ok(value: InterpValue) -> InterpValue {
-    InterpValue::Variant {
-        name: "Ok".to_owned().into(),
-        fields: vec![value].into(),
-    }
-}
-
-fn result_err(error: InterpValue) -> InterpValue {
-    InterpValue::Variant {
-        name: "Err".to_owned().into(),
-        fields: vec![error].into(),
-    }
 }

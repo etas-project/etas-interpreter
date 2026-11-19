@@ -126,7 +126,7 @@ effect Gate { action check() -> unit; action send() -> unit; }
 spec Safe: trace = Gate.check >> Gate.send;
 flow main() -> i32 ![] ~ Safe {
     var sent = 0;
-    let guarded = {
+    let guarded: Result<unit, i32> = {
         handle {
             perform Gate.check();
         } with {

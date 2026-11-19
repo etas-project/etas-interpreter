@@ -10,6 +10,15 @@ pub(super) fn snapshot_frames(
     let mut tables = HashSet::new();
     let mut frames = HashSet::new();
     for value in value.walk_unique() {
+        if let ValueSnapshot::Handler {
+            captured: Some(captured),
+            ..
+        } = value
+        {
+            if frames.insert((captured.id, std::rc::Rc::as_ptr(&captured.locals))) {
+                output.push((captured.clone(), false));
+            }
+        }
         let ValueSnapshot::Callable(root) = value else {
             continue;
         };

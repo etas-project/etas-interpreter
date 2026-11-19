@@ -1,7 +1,9 @@
+mod completion;
 mod continuation;
 mod group;
 mod host;
 mod host_wait;
+mod policy;
 mod resource;
 mod snapshot;
 mod task;
@@ -15,6 +17,7 @@ use std::{
     num::NonZeroUsize,
 };
 
+pub(crate) use completion::{CompletionDecision, TaskCompletion};
 pub(crate) use continuation::{ConsumedContinuation, ContinuationTransfer};
 pub(crate) use continuation::{
     ContinuationArenaSnapshot, ContinuationEntrySnapshot, ContinuationState,
@@ -23,14 +26,15 @@ pub(crate) use group::{TaskGroupPolicy, TaskScopeSnapshot};
 pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, ReadyTaskHost, TaskHostReactor};
 pub(crate) use host_wait::HostWait;
 pub(in crate::driver) use host_wait::{HostOperation, HostOperationScope};
+pub(crate) use policy::{ReadyTaskSnapshot, SourcePolicySnapshot, SourceSchedulingPolicy};
 pub(crate) use resource::ResourceGuardsSnapshot;
 pub(crate) use snapshot::TaskSchedulerMetadataSnapshot;
 pub(crate) use task::{
-    ContinuationId, RootTaskWait, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome,
-    TaskResume, TaskScopeId, TaskState, TaskWait, TaskWaiter,
+    CheckedTaskStart, ContinuationId, RootTaskWait, ScheduledTask, TaskHandle, TaskId,
+    TaskIdentity, TaskOutcome, TaskResume, TaskScopeId, TaskState, TaskWait, TaskWaiter,
 };
 
-pub(crate) const MAX_CONCURRENCY: usize = 65_536;
+pub(crate) const MAX_CONCURRENCY: usize = etas_std::intrinsic::task::MAX_CONCURRENCY as usize;
 
 use crate::{api::RunFailure, eval::machine::EvalMachine, value::InterpValue};
 
@@ -69,6 +73,10 @@ impl std::error::Error for SchedulerError {}
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskWakeup {
+    Completion {
+        scope: TaskScopeId,
+        event: TaskCompletion,
+    },
     Task {
         completed: TaskHandle,
         outcome: TaskOutcome,
@@ -99,8 +107,12 @@ pub(crate) struct TaskScheduler {
     groups: BTreeMap<TaskScopeId, group::TaskGroup>,
     tasks: BTreeMap<TaskId, ScheduledTask>,
     ready: VecDeque<TaskId>,
+    enqueue_orders: BTreeMap<TaskId, u64>,
+    next_enqueue_order: BTreeMap<TaskScopeId, u64>,
+    policies: BTreeMap<TaskScopeId, SourceSchedulingPolicy>,
     wakeups: BTreeMap<TaskId, VecDeque<TaskWakeup>>,
     cancellation_events: Vec<(TaskHandle, etas_host::execution::CancellationReason)>,
+    terminal_events: Vec<(TaskHandle, TaskState)>,
     continuations: continuation::ContinuationArena,
     resources: resource::ResourceGuards,
     checkpoint_barrier: bool,
@@ -119,8 +131,12 @@ impl TaskScheduler {
             groups,
             tasks: BTreeMap::new(),
             ready: VecDeque::new(),
+            enqueue_orders: BTreeMap::new(),
+            next_enqueue_order: BTreeMap::new(),
+            policies: BTreeMap::new(),
             wakeups: BTreeMap::new(),
             cancellation_events: Vec::new(),
+            terminal_events: Vec::new(),
             continuations: continuation::ContinuationArena::new(),
             resources: Default::default(),
             checkpoint_barrier: false,
@@ -258,7 +274,7 @@ impl TaskScheduler {
             .expect("validated task scope")
             .tasks
             .insert(id);
-        self.ready.push_back(id);
+        self.enqueue(id);
         Ok(TaskHandle {
             owner: scope,
             task: id,
@@ -269,6 +285,7 @@ impl TaskScheduler {
         &mut self,
         scope: TaskScopeId,
         owner: TaskHandle,
+        logical_identity: TaskIdentity,
     ) -> Result<(), SchedulerError> {
         self.resolve_id(owner)?;
         if owner.owner != scope {
@@ -281,6 +298,11 @@ impl TaskScheduler {
         if group.owner.replace(owner.task).is_some() {
             return Err(SchedulerError::InvalidTransition);
         }
+        self.tasks
+            .get_mut(&owner.task)
+            .expect("scope owner task")
+            .local
+            .logical_identity = logical_identity;
         Ok(())
     }
 
@@ -301,7 +323,7 @@ impl TaskScheduler {
     pub(crate) fn attach_start(
         &mut self,
         handle: TaskHandle,
-        call: crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call: CheckedTaskStart,
     ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
         let task = self.tasks.get_mut(&id).expect("resolved task");
@@ -429,6 +451,22 @@ impl TaskScheduler {
         std::mem::take(&mut self.cancellation_events)
     }
 
+    pub(crate) fn take_terminal_events(
+        &mut self,
+        mut ready: impl FnMut(TaskHandle) -> bool,
+    ) -> Vec<(TaskHandle, TaskState)> {
+        let mut events = Vec::new();
+        self.terminal_events.retain(|(handle, state)| {
+            if ready(*handle) {
+                events.push((*handle, *state));
+                false
+            } else {
+                true
+            }
+        });
+        events
+    }
+
     /// FIFO admission. Stale queue entries from cancellation are skipped.
     pub(crate) fn dispatch_ready(&mut self) -> Option<TaskHandle> {
         if self.checkpoint_barrier {
@@ -459,6 +497,7 @@ impl TaskScheduler {
             }
             let task = self.tasks.get_mut(&id).expect("ready task must exist");
             task.state = TaskState::Running;
+            self.enqueue_orders.remove(&id);
             if !active_slot {
                 task.active_slot = true;
                 self.change_active(scope, true);
@@ -568,7 +607,7 @@ impl TaskScheduler {
             task.active_slot = false;
             self.change_active(scope, false);
         }
-        self.ready.push_back(id);
+        self.enqueue(id);
         Ok(())
     }
 
@@ -756,6 +795,20 @@ impl TaskScheduler {
         output.ok_or(SchedulerError::InvalidTransition).map(Some)
     }
 
+    pub(crate) fn task_logical_identity(
+        &self,
+        identity: TaskIdentity,
+    ) -> Result<TaskIdentity, SchedulerError> {
+        match identity {
+            TaskIdentity::Root => Ok(TaskIdentity::Root),
+            TaskIdentity::Scheduled(id) => self
+                .tasks
+                .get(&id)
+                .map(|task| task.local.logical_identity)
+                .ok_or(SchedulerError::UnknownTask),
+        }
+    }
+
     pub(crate) fn task_parent(&self, id: TaskId) -> Option<TaskIdentity> {
         self.tasks.get(&id)?.local.parent
     }
@@ -771,7 +824,12 @@ impl TaskScheduler {
         }
         if !matches!(
             task.state,
-            TaskState::Waiting(TaskWait::Task(_) | TaskWait::Scope(_) | TaskWait::Host(_))
+            TaskState::Waiting(
+                TaskWait::Task(_)
+                    | TaskWait::Scope(_)
+                    | TaskWait::Completion(_)
+                    | TaskWait::Host(_)
+            )
         ) && !(task.state == TaskState::Ready && task.machine.has_input())
         {
             return None;
@@ -793,6 +851,12 @@ impl TaskScheduler {
         let previous = task.state;
         if dispatch {
             match previous {
+                TaskState::Waiting(TaskWait::Completion(scope)) => {
+                    self.groups
+                        .get_mut(&scope)
+                        .expect("completion scope")
+                        .completion_waiter = None;
+                }
                 TaskState::Waiting(TaskWait::Task(target)) if target != active => self
                     .tasks
                     .get_mut(&target)
@@ -808,14 +872,14 @@ impl TaskScheduler {
                 _ => (),
             }
             task.state = TaskState::Ready;
-            if previous != TaskState::Ready {
-                self.ready.push_back(handle.task);
-            }
         }
         assert!(
             self.tasks.insert(handle.task, task).is_none(),
             "handler caller remains unique"
         );
+        if dispatch && previous != TaskState::Ready {
+            self.enqueue(handle.task);
+        }
     }
 
     pub(crate) fn wake_task_wait(
@@ -879,7 +943,7 @@ impl TaskScheduler {
                 },
             ));
         task.state = TaskState::Ready;
-        self.ready.push_back(id);
+        self.enqueue(id);
         Ok(())
     }
 
@@ -976,7 +1040,7 @@ impl TaskScheduler {
             return Err(SchedulerError::InvalidTransition);
         }
         task.state = TaskState::Ready;
-        self.ready.push_back(id);
+        self.enqueue(id);
         Ok(())
     }
 
@@ -1207,6 +1271,11 @@ impl TaskScheduler {
 
     fn terminal(&mut self, handle: TaskHandle, outcome: TaskOutcome) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        let group = self.groups.get_mut(&handle.owner).expect("task scope");
+        if group.completion_waiter == Some(id) {
+            group.completion_waiter = None;
+        }
+        self.wakeups.remove(&id);
         self.continuations
             .dispose_origin(TaskIdentity::Scheduled(id));
         let (waiters, was_running) = {
@@ -1235,6 +1304,9 @@ impl TaskScheduler {
             ))?;
             task.state = outcome.state();
             task.outcome = Some(outcome.clone());
+            task.waiting_continuation = None;
+            task.host_wait = None;
+            task.machine = EvalMachine::new();
             (std::mem::take(&mut task.waiters), was_running)
         };
         if was_running {
@@ -1251,7 +1323,7 @@ impl TaskScheduler {
             }
             if self.resources.acquire(waiting, &task.resource_keys) {
                 task.state = TaskState::Ready;
-                self.ready.push_back(waiting);
+                self.enqueue(waiting);
             } else {
                 self.resources.waiting.push_back(waiting);
             }
@@ -1262,7 +1334,7 @@ impl TaskScheduler {
                     let task = self.tasks.get_mut(&waiter).expect("registered waiter");
                     if task.state == TaskState::Waiting(TaskWait::Task(id)) {
                         task.state = TaskState::Ready;
-                        self.ready.push_back(waiter);
+                        self.enqueue(waiter);
                         self.wakeups
                             .entry(waiter)
                             .or_default()
@@ -1274,7 +1346,9 @@ impl TaskScheduler {
                 }
             }
         }
+        self.record_completion(id);
         self.wake_scope_if_settled(self.tasks[&id].scope)?;
+        self.terminal_events.push((handle, outcome.state()));
         Ok(())
     }
 
@@ -1404,7 +1478,7 @@ impl TaskScheduler {
                 .expect("registered scope waiter");
             if task.state == TaskState::Waiting(TaskWait::Scope(scope)) {
                 task.state = TaskState::Ready;
-                self.ready.push_back(waiter);
+                self.enqueue(waiter);
                 self.wakeups
                     .entry(waiter)
                     .or_default()

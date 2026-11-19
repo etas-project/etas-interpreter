@@ -67,7 +67,9 @@ pub(crate) struct CpuJobRecord {
 
 /// Execution stacks owned by one cooperatively scheduled task.
 pub(crate) struct TaskLocalState {
+    pub(crate) receiver_updates: crate::control::ReceiverAccessSet,
     pub(crate) identity: crate::driver::scheduler::TaskIdentity,
+    pub(crate) logical_identity: crate::driver::scheduler::TaskIdentity,
     pub(crate) parent: Option<crate::driver::scheduler::TaskIdentity>,
     pub(crate) task_scope: crate::driver::scheduler::TaskScopeId,
     pub(crate) execution: etas_host::execution::ExecutionScope,
@@ -101,12 +103,14 @@ impl TaskLocalState {
     ) -> Self {
         Self {
             identity: crate::driver::scheduler::TaskIdentity::Root,
+            logical_identity: crate::driver::scheduler::TaskIdentity::Root,
             parent: None,
             task_scope,
             cancellation: execution.signal(),
             execution,
             model_policy,
             host_operations: None,
+            receiver_updates: Default::default(),
             agent_context: None,
             retry_stack: Vec::new(),
             handler_stack: Vec::new(),
@@ -127,12 +131,14 @@ impl TaskLocalState {
         execution.claim_body()?;
         Ok(Self {
             identity: crate::driver::scheduler::TaskIdentity::Scheduled(identity),
+            logical_identity: crate::driver::scheduler::TaskIdentity::Scheduled(identity),
             parent: Some(self.identity),
             task_scope,
             cancellation: execution.signal(),
             execution,
             model_policy: self.model_policy.clone(),
             host_operations: None,
+            receiver_updates: Default::default(),
             agent_context: self.agent_context.clone(),
             retry_stack: self.retry_stack.clone(),
             handler_stack: self.handler_stack.clone(),

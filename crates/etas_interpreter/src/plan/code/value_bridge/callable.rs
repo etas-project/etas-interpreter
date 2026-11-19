@@ -43,7 +43,10 @@ impl CallableValueProjection {
             }
             let method =
                 crate::plan::code::checked_foreign_method(&self.target, &self.source, identity)?;
-            return Ok(!method.source.signature.generic_params.is_empty());
+            return Ok(!method.source.signature.generic_params.is_empty()
+                || matches!(self.source.items.get(item), Some(etas_hir::HirItem::Flow(flow))
+                    if self.source.types.type_impl_methods.get(&flow.symbol)
+                        .is_some_and(|method| !method.owner_params.is_empty())));
         }
         Ok(false)
     }
@@ -167,6 +170,35 @@ impl CallableValueProjection {
             &self.target,
             self.source_signature.output,
             self.target_signature.output,
+            value,
+            Some(execution),
+            self.revision.clone(),
+        )
+    }
+
+    pub(crate) fn argument_to_target(
+        &self,
+        index: usize,
+        value: InterpValue,
+        execution: &CheckedExecutionProgram,
+    ) -> Result<InterpValue, RevisionValueBridgeError> {
+        let Some((&source, &target)) = self
+            .source_signature
+            .input
+            .get(index)
+            .zip(self.target_signature.input.get(index))
+        else {
+            return Err(super::error(
+                self.from,
+                self.to,
+                super::RevisionValueFailure::InconsistentLayout,
+            ));
+        };
+        convert_scoped(
+            &self.source,
+            &self.target,
+            source,
+            target,
             value,
             Some(execution),
             self.revision.clone(),

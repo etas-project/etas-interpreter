@@ -18,6 +18,12 @@ pub(crate) trait Context {
     fn callable(&self, value: Target<'_>, expected: TypeId) -> Result<(), String>;
     fn comparator(&self, value: Target<'_>, key: TypeId) -> Result<(), String>;
     fn native(&self, value: Value<'_>, expected: TypeId) -> Result<(), String>;
+    fn existential_header(
+        &self,
+        header: &crate::value::ExistentialHeader,
+    ) -> Result<crate::control::GenericBindings, String> {
+        header.validate(self.checked())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -225,6 +231,13 @@ pub(crate) fn validate<'a>(
                 pending.push(Task::Children(Box::new(
                     fields.zip(types).map(|(value, ty)| Seed::new(value, ty)),
                 )));
+            }
+            (_, Node::Variant("IndexError", 1, mut fields))
+                if !checked.hir.source_standard_types && known.index_error == Some(expected) =>
+            {
+                if !matches!(fields.next().unwrap().node(), Node::String(_)) {
+                    return Err("IndexError requires its runtime message payload".into());
+                }
             }
             (Type::Applied { args, .. }, Node::Sequence(SequenceKind::Native(role), _, values))
                 if checked.types.known_std_types.runtime_role(store, expected) == Some(role)

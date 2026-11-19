@@ -84,10 +84,12 @@ fn edit(
     change: &mut impl FnMut(&mut serde_json::Value),
 ) -> bool {
     let mut work = vec![root];
+    let mut edited = false;
     while let Some(value) = work.pop() {
         if value.get("kind").and_then(serde_json::Value::as_str) == Some(kind) {
             change(value);
-            return true;
+            edited = true;
+            continue;
         }
         match value {
             serde_json::Value::Object(fields) => work.extend(fields.values_mut()),
@@ -95,7 +97,7 @@ fn edit(
             _ => (),
         }
     }
-    false
+    edited
 }
 
 #[tokio::test(flavor = "current_thread")]

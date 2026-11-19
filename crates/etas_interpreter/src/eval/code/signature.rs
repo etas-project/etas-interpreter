@@ -11,34 +11,55 @@ pub(super) fn signature(
     signature: &SignatureInfo,
 ) -> Result<V, String> {
     let parameter_ty = p.array_element(p.field(ty, "parameters")?)?;
+    if matches!(
+        p.store.get(p.field(parameter_ty, "ty")?),
+        Some(etas_types::Type::Enum(_))
+    ) {
+        return super::description::Description::new(p, graph).signature(ty, signature);
+    }
+    // The legacy provider exposes the earlier ParameterInfo record shape.
+    let default_ty = p
+        .optional_field(parameter_ty, "default")?
+        .map(|ty| p.option(ty))
+        .transpose()?;
     let parameters = signature
         .parameters
         .iter()
         .map(|parameter| {
-            p.record(
-                parameter_ty,
-                vec![
-                    (
-                        "name",
-                        optional(
-                            parameter
-                                .name
-                                .as_ref()
-                                .map(|name| V::String(name.clone().into())),
-                        ),
+            let mut fields = vec![
+                (
+                    "name",
+                    optional(
+                        parameter
+                            .name
+                            .as_ref()
+                            .map(|name| V::String(name.clone().into())),
                     ),
-                    (
-                        "ty",
-                        p.metadata(
-                            p.field(parameter_ty, "ty")?,
-                            M::Type {
-                                graph: graph.clone(),
-                                root: parameter.ty,
-                            },
-                        )?,
+                ),
+                (
+                    "ty",
+                    p.metadata(
+                        p.field(parameter_ty, "ty")?,
+                        M::Type {
+                            graph: graph.clone(),
+                            root: parameter.ty,
+                        },
+                    )?,
+                ),
+            ];
+            if let Some(default_ty) = default_ty {
+                fields.push((
+                    "default",
+                    optional(
+                        parameter
+                            .default
+                            .as_ref()
+                            .map(|default| super::defaults::project(p, default_ty, default))
+                            .transpose()?,
                     ),
-                ],
-            )
+                ));
+            }
+            p.record(parameter_ty, fields)
         })
         .collect::<Result<Vec<_>, String>>()?;
     let generic_ty = p.array_element(p.field(ty, "generics")?)?;

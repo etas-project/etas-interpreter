@@ -40,6 +40,14 @@ pub(in crate::api::codec) fn encode(
     value["projection"]["source"]["origin"] =
         encode_action(&node.projection.source.origin, budget)?;
     let mut wait = match &node.wait {
+        Wait::Completion {
+            scope,
+            result_type,
+            span,
+            ..
+        } => {
+            json!({"kind":"completion", "scope":scope, "result_type":result_type, "span":span_json(*span), "continuation":null})
+        }
         Wait::Ready(_) => json!({"kind":"ready", "input":null}),
         Wait::Await { target, .. } => json!({"kind":"await", "target":target, "continuation":null}),
         Wait::Run { scope } => json!({"kind":"run", "scope":scope}),
@@ -57,7 +65,9 @@ pub(in crate::api::codec) fn encode(
     budget.json_metadata(&wait)?;
     match &node.wait {
         Wait::Ready(input) => wait["input"] = input::encode(input, budget)?,
-        Wait::Await { continuation, .. } | Wait::Transfer { continuation, .. } => {
+        Wait::Await { continuation, .. }
+        | Wait::Transfer { continuation, .. }
+        | Wait::Completion { continuation, .. } => {
             wait["continuation"] = snapshot::continuation_json_with_budget(continuation, budget)?;
         }
         Wait::Run { .. } => (),
@@ -106,6 +116,12 @@ pub(crate) fn decode(
         .map_err(InterpreterCodecError::new)
     };
     let wait = match required_str(wait, "kind")? {
+        "completion" => Wait::Completion {
+            scope: field(wait, "scope")?,
+            continuation: continuation()?,
+            result_type: field(wait, "result_type")?,
+            span: span_from_json(required_obj(wait, "span")?)?,
+        },
         "ready" => Wait::Ready(Box::new(input::decode(
             limits,
             required_obj(wait, "input")?,

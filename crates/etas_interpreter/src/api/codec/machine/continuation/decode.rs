@@ -10,6 +10,40 @@ fn continuation_leaf_from_snapshot(
     kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match kind {
+        "default_arguments" => {
+            let destination = match required(value, "operation")?.as_str() {
+                Some("call") => crate::orchestration::ArgumentDestinationSnapshot::Call {
+                    target: match required(value, "target")? {
+                        value if value.is_null() => None,
+                        value => Some(call_target_snapshot_from_json(limits, value)?),
+                    },
+                },
+                Some("perform") => crate::orchestration::ArgumentDestinationSnapshot::Perform {
+                    action: serde_json::from_value(required(value, "action")?.clone())
+                        .map_err(|error| error.to_string())?,
+                    type_args: required_u32_array(value, "type_args")?
+                        .into_iter()
+                        .map(HirTypeId)
+                        .collect(),
+                    source_args: args_from_snapshot(required(value, "args")?)?.into(),
+                },
+                _ => return Err("default arguments have no invocation destination".into()),
+            };
+            ContinuationSnapshot::DefaultArguments(Box::new(
+                crate::orchestration::DefaultArgumentsSnapshot {
+                    expr: HirExprId(required_u32(value, "expr")?),
+                    parameter_count: required_usize(value, "parameter_count")?,
+                    slots: required_u32_array(value, "slots")?,
+                    values: required_values(limits, value, "values")?,
+                    defaults: serde_json::from_value(required(value, "defaults")?.clone())
+                        .map_err(|error| error.to_string())?,
+                    next_default: required_usize(value, "next_default")?,
+                    destination,
+                    span: span_from_snapshot(required(value, "span")?)?,
+                    frame: locals_from_snapshot(limits, required(value, "frame")?)?,
+                },
+            ))
+        }
         "agent_controller_step" | "agent_controller_tool" => {
             let decode = |key| {
                 crate::api::codec::value::snapshot_from_json_with_limits(
@@ -116,6 +150,14 @@ fn continuation_leaf_from_snapshot(
             )
             .map_err(|error| error.to_string())?,
             span: span_from_snapshot(required(value, "span")?)?,
+        },
+        "scope_exit" => ContinuationSnapshot::ScopeExit {
+            block: HirBlockId(required_u32(value, "block")?),
+            keep: required_u32_array(value, "keep")?
+                .into_iter()
+                .map(SymbolId)
+                .collect(),
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "continue_block" => ContinuationSnapshot::ContinueBlock {
             block: HirBlockId(required_u32(value, "block")?),
@@ -309,7 +351,10 @@ fn continuation_leaf_from_snapshot(
         },
         "call_args" => ContinuationSnapshot::CallArgs {
             call: HirExprId(required_u32(value, "call")?),
-            target: call_target_snapshot_from_json(limits, required(value, "target")?)?,
+            target: match required(value, "target")? {
+                v if v.is_null() => None,
+                v => Some(call_target_snapshot_from_json(limits, v)?),
+            },
             args: args_from_snapshot(required(value, "args")?)?.into(),
             next_arg_index: required_usize(value, "next_arg_index")?,
             evaluated_args: required_values(limits, value, "evaluated_args")?,
@@ -411,6 +456,7 @@ fn continuation_leaf_from_snapshot(
         },
         "try_expr" => ContinuationSnapshot::TryExpr {
             expr: HirExprId(required_u32(value, "expr")?),
+            result_type: etas_types::TypeId(required_u32(value, "result_type")?),
             span: span_from_snapshot(required(value, "span")?)?,
         },
         "memory_clear_delete_all" => ContinuationSnapshot::MemoryClearDeleteAll {
@@ -425,6 +471,10 @@ fn continuation_leaf_from_snapshot(
             next_index: required_usize(value, "next_index")?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
+        "loop_limit" => ContinuationSnapshot::LoopLimit {
+            stmt: etas_hir::HirStmtId(required_u32(value, "stmt")?),
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
+        },
         "for_loop" => ContinuationSnapshot::ForLoop {
             pat: HirPatId(required_u32(value, "pat")?),
             source: optional_value(limits, value, "source")?,
@@ -435,6 +485,21 @@ fn continuation_leaf_from_snapshot(
                         .map_err(|error| error.to_string())?,
                 ),
             },
+            next_index: required_usize(value, "next_index")?,
+            body: HirBlockId(required_u32(value, "body")?),
+            iterations: required_usize(value, "iterations")?,
+            loop_scope: required_u32_array(value, "loop_scope")?
+                .into_iter()
+                .map(SymbolId)
+                .collect(),
+            span: span_from_snapshot(required(value, "span")?)?,
+            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
+        },
+        "source_for_loop" => ContinuationSnapshot::SourceForLoop {
+            iter: HirExprId(required_u32(value, "iter")?),
+            pat: HirPatId(required_u32(value, "pat")?),
+            source: optional_value(limits, value, "source")?,
+            awaiting_step: required_bool(value, "awaiting_step")?,
             next_index: required_usize(value, "next_index")?,
             body: HirBlockId(required_u32(value, "body")?),
             iterations: required_usize(value, "iterations")?,

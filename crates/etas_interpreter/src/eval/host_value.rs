@@ -13,6 +13,16 @@ pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, Str
         .map_err(|error| error.message)
 }
 
+pub(super) fn interp_to_bounded_host_value(
+    value: &InterpValue,
+    budget: &mut etas_host::ValueBudget<'_>,
+) -> Result<HostValue, etas_host::HostError> {
+    etas_host::value::projection::project_to_host_value_bounded(
+        &projection::BorrowedValue(value),
+        budget,
+    )
+}
+
 pub(super) fn interp_to_host_json_string(
     value: &InterpValue,
 ) -> Result<String, etas_host::HostError> {

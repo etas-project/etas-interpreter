@@ -1,16 +1,61 @@
-use crate::control::{CallTargetChildren, CallTargetLink, ContinuationLink, Frame};
+use crate::control::{CallTargetChildren, CallTargetLink, ContinuationLink, Frame, ScopeExitGuard};
 use crate::orchestration::{
     CallTargetSnapshot, CallTargetSnapshotChildren, CallTargetSnapshotLink, ContinuationSnapshot,
     ContinuationSnapshotLink, LocalsSnapshot,
 };
 
+type RestoredScopeGuards =
+    std::collections::HashMap<(u64, etas_hir::HirBlockId), std::rc::Weak<ScopeExitGuard>>;
+
+#[derive(Default)]
+struct SharedFrameRestoreState {
+    frames: std::cell::RefCell<std::collections::HashMap<u64, (LocalsSnapshot, Frame)>>,
+    scopes: std::cell::RefCell<RestoredScopeGuards>,
+    bindings: std::rc::Rc<std::cell::RefCell<SharedBindingRestore>>,
+    validation: super::validator::SharedFrameValidation,
+}
+
 #[derive(Clone, Default)]
-pub(crate) struct SharedFrameRestore(
-    std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, (LocalsSnapshot, Frame)>>>,
-);
+pub(crate) struct SharedFrameRestore(std::rc::Rc<SharedFrameRestoreState>);
+
+impl SharedFrameRestore {
+    pub(crate) fn for_tasks(
+        logical_tasks: std::collections::BTreeMap<
+            crate::driver::scheduler::TaskId,
+            crate::driver::scheduler::TaskIdentity,
+        >,
+    ) -> Self {
+        Self(std::rc::Rc::new(SharedFrameRestoreState {
+            validation: super::validator::SharedFrameValidation::for_tasks(logical_tasks),
+            ..Default::default()
+        }))
+    }
+    pub(crate) fn validation(&self) -> super::validator::SharedFrameValidation {
+        self.0.validation.clone()
+    }
+    pub(crate) fn validate_bindings(&self) -> Result<(), String> {
+        self.0.validation.validate()
+    }
+}
+
+#[derive(Default)]
+struct SharedBindingRestore {
+    scopes: RestoredScopeGuards,
+    frames: std::collections::HashMap<u64, u64>,
+    bindings: std::collections::HashMap<
+        u64,
+        (
+            u64,
+            crate::orchestration::ValueSnapshot,
+            crate::control::SharedBinding,
+        ),
+    >,
+}
 
 #[derive(Default)]
 pub(crate) struct RestoreContext {
+    // Allocate this graph only when mutable bindings or related programs need it.
+    shared_bindings: Option<std::rc::Rc<std::cell::RefCell<SharedBindingRestore>>>,
     pub(crate) task_handles: bool,
     pub(crate) shared_frames: Option<SharedFrameRestore>,
     pub(in crate::eval::machine) current_host: Option<crate::api::HostExecutionContext>,
@@ -21,7 +66,6 @@ pub(crate) struct RestoreContext {
     pub(in crate::eval::machine) ordering: Option<super::ordering::OrderedRestoreChecks>,
     pub(super) revisions: Option<std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
     frames: std::collections::HashMap<u64, (LocalsSnapshot, Frame)>,
-    active: std::collections::HashSet<u64>,
     pub(super) caches: ProgramRestoreCaches,
     parked_caches: std::collections::HashMap<usize, ProgramRestoreCaches>,
     pub(in crate::eval::machine) residual: Option<std::rc::Rc<RestoredResidualState>>,
@@ -73,14 +117,28 @@ impl RestoreContext {
             revisions,
             ordering,
             task_handles: true,
+            shared_bindings: Some(frames.0.bindings.clone()),
             shared_frames: Some(frames),
             ..Self::for_program(program.checked.clone(), None)
         }
         .with_execution_program(program)
     }
 
-    pub(super) fn related_program(&self, program: crate::value::CheckedExecutionProgram) -> Self {
+    pub(in crate::eval::machine) fn share_frames(&mut self, frames: SharedFrameRestore) {
+        self.shared_bindings = Some(frames.0.bindings.clone());
+        self.shared_frames = Some(frames);
+    }
+
+    pub(super) fn related_program(
+        &mut self,
+        program: crate::value::CheckedExecutionProgram,
+    ) -> Self {
+        let shared_bindings = self
+            .shared_bindings
+            .get_or_insert_with(Default::default)
+            .clone();
         Self {
+            shared_bindings: Some(shared_bindings),
             task_handles: self.task_handles,
             shared_frames: self.shared_frames.clone(),
             current_host: self.current_host.clone(),
@@ -273,80 +331,239 @@ impl RestoreContext {
             .restore(reference, program)
     }
 
+    pub(super) fn scope_exit_guard(
+        &mut self,
+        block: etas_hir::HirBlockId,
+        frame: &Frame,
+        keep: std::rc::Rc<std::collections::HashSet<etas_hir::SymbolId>>,
+    ) -> Result<std::rc::Rc<ScopeExitGuard>, String> {
+        fn restore(
+            scopes: &mut RestoredScopeGuards,
+            block: etas_hir::HirBlockId,
+            frame: &Frame,
+            keep: std::rc::Rc<std::collections::HashSet<etas_hir::SymbolId>>,
+        ) -> Result<std::rc::Rc<ScopeExitGuard>, String> {
+            let key = (frame.snapshot_id(), block);
+            if let Some(guard) = scopes.get(&key).and_then(std::rc::Weak::upgrade) {
+                if !guard.matches(frame, &keep) {
+                    return Err("conflicting definitions for lexical scope identity".into());
+                }
+                return Ok(guard);
+            }
+            let guard = ScopeExitGuard::new(frame.clone(), keep);
+            scopes.insert(key, std::rc::Rc::downgrade(&guard));
+            Ok(guard)
+        }
+        if let Some(shared) = &self.shared_frames {
+            restore(&mut shared.0.scopes.borrow_mut(), block, frame, keep)
+        } else {
+            let shared = self.shared_bindings.get_or_insert_with(Default::default);
+            restore(&mut shared.borrow_mut().scopes, block, frame, keep)
+        }
+    }
+
     pub(super) fn frame(&mut self, snapshot: LocalsSnapshot) -> Result<Frame, String> {
         if let Some(restored) = self.cached_frame(&snapshot)? {
             return Ok(restored);
         }
+        // An empty root has no dependency graph or shared cells to order.
+        if snapshot.parent.is_none()
+            && snapshot.locals.is_empty()
+            && snapshot.shared_bindings.is_empty()
+        {
+            let frame = self.allocate_frame(&snapshot)?;
+            self.frames.insert(snapshot.id, (snapshot.clone(), frame));
+            self.restore_frame_metadata(&snapshot)?;
+            return self
+                .cached_frame(&snapshot)
+                .map(|frame| frame.expect("restored empty root frame"));
+        }
         let root = snapshot.id;
         let mut pending = vec![(snapshot, false)];
-        let mut entered = Vec::new();
-        let result = (|| {
+        let mut ready = Vec::new();
+        while let Some((snapshot, complete)) = pending.pop() {
+            if complete {
+                ready.push(snapshot);
+            } else if self.cached_frame(&snapshot)?.is_none() {
+                let frame = self.allocate_frame(&snapshot)?;
+                self.frames
+                    .insert(snapshot.id, (snapshot.clone(), frame.clone()));
+                if let Some(shared) = &self.shared_frames {
+                    shared
+                        .0
+                        .frames
+                        .borrow_mut()
+                        .insert(snapshot.id, (snapshot.clone(), frame));
+                }
+                let mut children = Vec::new();
+                if let Some(parent) = &snapshot.parent {
+                    children.push(((**parent).clone(), false));
+                }
+                for (_, value) in snapshot.locals.iter() {
+                    super::frame_dependencies::snapshot_frames(value, &mut children);
+                }
+                pending.push((snapshot, true));
+                pending.extend(children.into_iter().rev());
+            }
+        }
+        let new_frames = ready
+            .iter()
+            .map(|snapshot| snapshot.id)
+            .collect::<std::collections::HashSet<_>>();
+        let mut metadata_done = std::collections::HashSet::new();
+        for snapshot in &ready {
+            let mut pending = vec![(snapshot.clone(), false)];
+            let mut active = std::collections::HashSet::new();
             while let Some((snapshot, complete)) = pending.pop() {
+                if metadata_done.contains(&snapshot.id) {
+                    continue;
+                }
                 if complete {
-                    self.restore_ready_frame(snapshot)?;
-                } else if self.cached_frame(&snapshot)?.is_none() {
-                    if !self.active.insert(snapshot.id) {
-                        return Err("cyclic local-frame snapshot definitions".into());
+                    self.restore_frame_metadata(&snapshot)?;
+                    metadata_done.insert(snapshot.id);
+                    active.remove(&snapshot.id);
+                } else {
+                    if !active.insert(snapshot.id) {
+                        return Err("cyclic lexical frame parents".into());
                     }
-                    entered.push(snapshot.id);
-                    let mut children = Vec::new();
-                    if let Some(parent) = &snapshot.parent {
-                        children.push(((**parent).clone(), false));
-                    }
-                    for (_, value) in snapshot.locals.iter() {
-                        super::frame_dependencies::snapshot_frames(value, &mut children);
-                    }
+                    let parent = snapshot.parent.as_ref().map(|parent| (**parent).clone());
                     pending.push((snapshot, true));
-                    pending.extend(children.into_iter().rev());
+                    if let Some(parent) = parent {
+                        if new_frames.contains(&parent.id) {
+                            let definition = self.frames[&parent.id].0.clone();
+                            pending.push((definition, false));
+                        } else if self.cached_frame(&parent)?.is_none() {
+                            return Err("lexical parent has no restored frame definition".into());
+                        }
+                    }
                 }
             }
-            self.frames
-                .get(&root)
-                .map(|(_, frame)| frame.clone())
-                .ok_or_else(|| "restored frame dependency graph did not produce its root".into())
-        })();
-        for id in entered {
-            self.active.remove(&id);
         }
-        result
+        for snapshot in &ready {
+            self.restore_ready_frame(snapshot.clone())?;
+        }
+        if ready
+            .iter()
+            .any(|snapshot| self.frames[&snapshot.id].1.may_retain_scoped_bindings())
+        {
+            crate::value::graph::refresh_scoped_captures(
+                ready
+                    .iter()
+                    .map(|snapshot| self.frames[&snapshot.id].1.clone())
+                    .collect(),
+            );
+        }
+        self.frames
+            .get(&root)
+            .map(|(_, frame)| frame.clone())
+            .ok_or_else(|| "restored frame dependency graph did not produce its root".into())
     }
 
     fn cached_frame(&self, snapshot: &LocalsSnapshot) -> Result<Option<Frame>, String> {
         if snapshot.id == 0 {
             return Err("snapshot frame identity must be nonzero".into());
         }
-        if let Some((definition, frame)) = self.frames.get(&snapshot.id) {
-            if definition != snapshot {
+        if snapshot.reference {
+            snapshot.validate_reference()?;
+        }
+        let checked = |definition: &LocalsSnapshot, frame: &Frame| {
+            if !snapshot.reference && definition != snapshot {
                 return Err("conflicting definitions for snapshot frame identity".into());
             }
-            return Ok(Some(frame.clone()));
+            Ok(Some(frame.clone()))
+        };
+        if let Some((definition, frame)) = self.frames.get(&snapshot.id) {
+            return checked(definition, frame);
         }
         if let Some(shared) = &self.shared_frames
-            && let Some((definition, frame)) = shared.0.borrow().get(&snapshot.id)
+            && let Some((definition, frame)) = shared.0.frames.borrow().get(&snapshot.id)
         {
-            if definition != snapshot {
-                return Err("conflicting definitions for snapshot frame identity".into());
-            }
-            return Ok(Some(frame.clone()));
+            return checked(definition, frame);
+        }
+        if snapshot.reference {
+            return Err("captured frame reference has no declaring definition".into());
         }
         Ok(None)
     }
 
-    fn restore_ready_frame(&mut self, snapshot: LocalsSnapshot) -> Result<(), String> {
-        let locals = snapshot
-            .locals
-            .iter()
-            .cloned()
-            .map(|(symbol, value)| Ok((symbol, value.restore_with(self)?)))
-            .collect::<Result<Vec<_>, String>>()?;
+    fn allocate_frame(&mut self, snapshot: &LocalsSnapshot) -> Result<Frame, String> {
         let mut frame = Frame::from_snapshot_with_generic_bindings(
-            locals,
+            snapshot
+                .locals
+                .iter()
+                .map(|(symbol, _)| (*symbol, crate::value::InterpValue::Unit))
+                .collect(),
             crate::control::GenericBindings {
                 types: snapshot.type_bindings.iter().cloned().collect(),
                 parameters: snapshot.type_parameter_bindings.iter().copied().collect(),
                 rows: snapshot.effect_row_bindings.iter().cloned().collect(),
             },
         )?;
+        if !snapshot.shared_bindings.is_empty() {
+            let mut shared = self
+                .shared_bindings
+                .get_or_insert_with(Default::default)
+                .borrow_mut();
+            let id = *shared
+                .frames
+                .entry(snapshot.id)
+                .or_insert(frame.snapshot_id());
+            frame.set_snapshot_id(id)?;
+        }
+        for binding in &snapshot.shared_bindings {
+            let value = snapshot
+                .locals
+                .iter()
+                .find(|(symbol, _)| *symbol == binding.symbol)
+                .map(|(_, value)| value)
+                .ok_or("captured binding metadata has no local value")?;
+            let mut shared = self
+                .shared_bindings
+                .as_ref()
+                .expect("mutable binding restore graph")
+                .borrow_mut();
+            let owner = *shared
+                .frames
+                .entry(binding.owner)
+                .or_insert_with(Frame::fresh_snapshot_id);
+            let restored = match shared.bindings.entry(binding.id) {
+                std::collections::hash_map::Entry::Occupied(entry) => {
+                    let (owner, definition, cell) = entry.get();
+                    if *owner != binding.owner || definition != value {
+                        return Err("conflicting definitions for captured binding identity".into());
+                    }
+                    cell.clone()
+                }
+                std::collections::hash_map::Entry::Vacant(entry) => {
+                    let cell =
+                        crate::control::SharedBinding::new(owner, crate::value::InterpValue::Unit);
+                    entry.insert((binding.owner, value.clone(), cell.clone()));
+                    cell
+                }
+            };
+            frame.install_shared_binding(binding.symbol, restored);
+        }
+        Ok(frame)
+    }
+
+    fn restore_ready_frame(&mut self, snapshot: LocalsSnapshot) -> Result<(), String> {
+        let mut frame = self
+            .cached_frame(&snapshot)?
+            .expect("allocated restore frame");
+        for (symbol, value) in snapshot.locals.iter() {
+            let value = value.clone().restore_with(self)?;
+            if crate::value::graph::has_scoped_bindings(crate::value::graph::Node::Value(&value)) {
+                frame.mark_scoped_value(*symbol);
+            }
+            frame.insert(*symbol, value);
+        }
+        Ok(())
+    }
+
+    fn restore_frame_metadata(&mut self, snapshot: &LocalsSnapshot) -> Result<(), String> {
+        let mut frame = self
+            .cached_frame(snapshot)?
+            .expect("allocated restore frame");
         if let Some(parent) = &snapshot.parent {
             frame.restore_lexical_parent(
                 self.cached_frame(parent)?
@@ -371,14 +588,14 @@ impl RestoreContext {
         if let Some(invocation) = snapshot.residual_invocation {
             frame.bind_residual_invocation(invocation)?;
         }
-        self.active.remove(&snapshot.id);
         if let Some(shared) = &self.shared_frames {
             shared
                 .0
+                .frames
                 .borrow_mut()
                 .insert(snapshot.id, (snapshot.clone(), frame.clone()));
         }
-        self.frames.insert(snapshot.id, (snapshot, frame));
+        self.frames.insert(snapshot.id, (snapshot.clone(), frame));
         Ok(())
     }
 }

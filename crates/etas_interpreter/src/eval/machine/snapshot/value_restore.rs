@@ -101,6 +101,21 @@ pub(super) fn restore(
 
 fn start(value: ValueSnapshot, context: &mut RestoreContext) -> Result<Started, String> {
     let frame = match value {
+        ValueSnapshot::ScopedHandler { metadata, value } => {
+            let revisions = context
+                .revisions
+                .clone()
+                .ok_or("scoped Handler restore requires checked revisions")?;
+            let current = context
+                .revision_program
+                .clone()
+                .ok_or("scoped Handler restore has no current program")?;
+            let (native, _) = metadata.resolve(&revisions)?;
+            let value = restore(value.into_value(), &mut context.related_program(native))?;
+            return Ok(Started::Value(InterpValue::ScopedHandler(Box::new(
+                metadata.restore(value, &current, &revisions)?,
+            ))));
+        }
         ValueSnapshot::Message(message) => {
             let (header, payload) = MessageHeader::split(message);
             unary(UnaryKind::Message(Box::new(header)), payload)
@@ -314,7 +329,11 @@ impl Frame {
                 match kind {
                     UnaryKind::Nominal(ty) => InterpValue::Nominal { ty, value },
                     UnaryKind::Existential(header) => {
-                        InterpValue::Existential(Box::new(header.runtime(value)))
+                        InterpValue::Existential(Box::new(header.runtime(
+                            value,
+                            context.revision_program.as_ref(),
+                            context.revisions.as_deref(),
+                        )?))
                     }
                     UnaryKind::Trust(wrapper) => InterpValue::Trust { wrapper, value },
                     UnaryKind::Some => InterpValue::OptionSome(value),

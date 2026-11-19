@@ -41,6 +41,10 @@ impl SnapshotValidator<'_> {
                     continuation: index,
                     ..
                 }
+                | crate::orchestration::TaskResumeSnapshot::Completion {
+                    continuation: index,
+                    ..
+                }
                 | crate::orchestration::TaskResumeSnapshot::Transfer {
                     continuation: index,
                     ..
@@ -50,6 +54,17 @@ impl SnapshotValidator<'_> {
                 .auxiliary
                 .get(index as usize)
                 .ok_or("task wait has no captured continuation")?;
+            if let crate::orchestration::TaskResumeSnapshot::Completion { result_type, .. } = resume
+            {
+                if let Some(revisions) = self.revisions {
+                    let program = revisions.execution_snapshot(&pending.program)?;
+                    Self::completion_type_for(&program.checked, *result_type)?;
+                } else if pending.program.program == P::Source {
+                    self.completion_type(*result_type)?;
+                } else {
+                    return Err("completion wait has no checked program environment".into());
+                }
+            }
             Self::continuation_unwind_order(&pending.continuation, &mut found, &mut attempts);
         }
         if let Some(pending) = machine
@@ -75,6 +90,34 @@ impl SnapshotValidator<'_> {
         Ok(())
     }
 
+    pub(super) fn completion_type(&self, ty: TypeId) -> Result<(), String> {
+        Self::completion_type_for(self.checked, ty)
+    }
+
+    fn completion_type_for(
+        checked: &etas_frontend::CheckedProject,
+        ty: TypeId,
+    ) -> Result<(), String> {
+        let found = checked.hir.items.iter().any(|(item, declaration)| {
+            matches!(
+                declaration,
+                etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                    body: etas_hir::HirFlowBody::Runtime {
+                        role: etas_std::StdExecutionRole::TaskNextCompletion,
+                        ..
+                    },
+                    ..
+                })
+            ) && matches!(checked.types.item_signatures.get(&item),
+                Some(etas_types::ItemSignature::Flow(signature)) if signature.output == ty)
+        });
+        if found {
+            Ok(())
+        } else {
+            Err("completion receipt type differs from its checked source declaration".into())
+        }
+    }
+
     pub(super) fn task_output_type(&self, id: TaskId) -> Result<TypeId, String> {
         let saved = self
             .tasks
@@ -87,7 +130,11 @@ impl SnapshotValidator<'_> {
                 .ok_or("Task signature has no checked program environment")?
                 .checked_program(reference)?,
         };
-        let Some(etas_types::Type::Task(task)) = program.type_store.get(saved.ty) else {
+        let Some(task) = etas_types::source_execution::task(
+            &program.type_store,
+            &program.types.known_std_types,
+            saved.ty,
+        ) else {
             return Err("checkpoint Task signature does not return a Task".into());
         };
         let output = task.output;

@@ -11,7 +11,7 @@ pub(in crate::api::codec) use frame::{
 };
 mod intrinsic;
 mod model;
-mod program;
+pub(in crate::api::codec) mod program;
 pub(in crate::api::codec) use model::{model_policy_from_snapshot, model_policy_snapshot};
 mod value;
 pub(super) use continuation::runtime_limit_snapshot;

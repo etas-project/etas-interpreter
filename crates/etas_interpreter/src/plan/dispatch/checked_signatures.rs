@@ -191,7 +191,7 @@ pub(super) fn lower(
                     .collect::<Vec<_>>();
                 let expressions = if let Some(method) = method_fact {
                     let mut ordered = vec![None; method.signature.params.len()];
-                    if let etas_types::method::MethodReceiver::Value { slot } = method.receiver {
+                    if let Some(slot) = method.receiver.value_slot() {
                         ordered[slot as usize] = receiver;
                     }
                     for (expr, slot) in source_args.iter().zip(&method.argument_slots) {

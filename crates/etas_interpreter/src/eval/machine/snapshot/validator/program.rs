@@ -66,7 +66,8 @@ impl SnapshotValidator<'_> {
                     parent,
                     self.revisions,
                     self.limits,
-                )?;
+                )
+                .map_err(|error| format!("checkpoint program boundary {index}: {error}"))?;
                 if frame.handler_floor < floor {
                     return Err("checkpoint program handler floors are not nested".into());
                 }

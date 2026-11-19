@@ -22,6 +22,7 @@ pub enum ControlSignal {
     Checkpoint(Box<PendingCheckpoint>),
     Block(Box<PendingBlock>),
     Expr(Box<PendingExpr>),
+    ProgramExpr(Box<PendingProgramExpr>),
     Call(Box<PendingCall>),
     Native(Box<crate::intrinsic::pure::PendingNativeWork>),
     Perform(Box<PendingPerform>),
@@ -175,6 +176,14 @@ pub struct PendingExpr {
 }
 
 #[derive(Clone, Debug)]
+pub struct PendingProgramExpr {
+    pub(crate) call: crate::eval::machine::expression_call::ExpressionCall,
+    pub(crate) args: Vec<InterpValue>,
+    pub(crate) span: Span,
+    pub(crate) continuation: Continuation,
+}
+
+#[derive(Clone, Debug)]
 pub struct PendingCall {
     pub purity: CallPurity,
     pub site: Option<super::CallSite>,
@@ -209,6 +218,11 @@ impl ControlSignal {
 
 #[derive(Clone, Debug)]
 pub enum PendingTaskControl {
+    NextCompletion {
+        scope: crate::driver::scheduler::TaskScopeId,
+        result_type: etas_types::TypeId,
+        span: Span,
+    },
     ResumeHandled {
         task: crate::driver::scheduler::TaskHandle,
         handler: crate::orchestration::HandlerScopeId,
@@ -234,6 +248,7 @@ pub enum PendingTaskControl {
 impl PendingTaskControl {
     pub(crate) fn span(&self) -> Span {
         match self {
+            Self::NextCompletion { span, .. } => *span,
             Self::Run { span, .. }
             | Self::Requeue { span, .. }
             | Self::Park { span, .. }
@@ -430,6 +445,17 @@ pub enum HostBoundaryDecode {
     PathList,
     FilesystemStat {
         nominal: Option<etas_types::TypeId>,
+    },
+    SourceFileRead {
+        result_type: etas_types::TypeId,
+        max_bytes: Option<usize>,
+    },
+    SourceDirectoryList {
+        result_type: etas_types::TypeId,
+        limits: Option<(usize, usize)>,
+    },
+    SourceFilesystemStat {
+        result_type: etas_types::TypeId,
     },
     FileReadLimited {
         max_bytes: usize,

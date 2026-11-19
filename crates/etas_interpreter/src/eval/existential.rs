@@ -29,6 +29,7 @@ impl EvalContext<'_> {
                 concrete_type: source_type,
                 bindings: bindings.clone().shared(),
                 value: value.into(),
+                origin: None,
             },
         )))
     }

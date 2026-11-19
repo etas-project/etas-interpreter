@@ -43,36 +43,8 @@ impl<'a> EvalContext<'a> {
                 span,
             } => self.execute_assign_stmt(block, stmt_index, *target, *value, *span, frame),
             HirStmt::Return { value, .. } => self.execute_return_stmt(*value, frame),
-            HirStmt::While {
-                cond,
-                limits,
-                body,
-                span,
-            } => {
-                let signal = self.execute_while_loop(*cond, limits, *body, *span, frame);
-                match signal {
-                    ControlSignal::Value(_) => None,
-                    signal if is_pending_host_boundary_signal(&signal) => {
-                        Some(compose_signal_continuation(
-                            signal,
-                            Continuation::ContinueBlock {
-                                block,
-                                next_stmt_index: stmt_index + 1,
-                                frame: frame.clone(),
-                            },
-                        ))
-                    }
-                    other => Some(other),
-                }
-            }
-            HirStmt::For {
-                pat,
-                iter,
-                limits,
-                body,
-                span,
-            } => {
-                let signal = self.execute_for_loop(*pat, *iter, limits, *body, *span, frame);
+            HirStmt::While { .. } | HirStmt::For { .. } => {
+                let signal = self.execute_limited_loop(stmt, frame);
                 match signal {
                     ControlSignal::Value(_) => None,
                     signal if is_pending_host_boundary_signal(&signal) => {

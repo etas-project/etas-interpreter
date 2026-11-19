@@ -69,31 +69,18 @@ impl EvalContext<'_> {
                 .and_then(|expr| self.checked.types.expr_types.get(&expr))
                 .ok_or_else(|| missing("compiler action has no checked call result ABI"))?
         };
-        let (program, definitions, definition) = match perform.args.as_slice() {
-            [InterpValue::AgentDefinition(definition)] => (
-                definition.program(),
-                definition.backend().clone(),
-                definition.definition().clone(),
-            ),
-            [InterpValue::CallableDefinition(definition)] => (
-                definition.program(),
-                definition.backend().clone(),
-                definition
-                    .definition()
-                    .map_err(|reason| missing(&reason))?
-                    .clone(),
-            ),
-            _ => {
-                return Err(missing(
-                    "compiler action requires its checked AgentDef<A> or CallableDef<F> payload",
-                ));
-            }
-        };
-        if !std::sync::Arc::ptr_eq(program, self.checked) {
+        let [value] = perform.args.as_slice() else {
             return Err(missing(
-                "compiler definition is not bound to this checked program's frozen environment",
+                "compiler action requires one checked definition payload",
             ));
-        }
+        };
+        let retained = crate::value::source_code::Definition::input(value, self.checked)
+            .map_err(|reason| missing(&reason))?;
+        let definitions = retained.backend().clone();
+        let definition = retained
+            .reference()
+            .map_err(|reason| missing(&reason))?
+            .clone();
         Ok(Some(CompilerInvocation {
             definitions,
             request: CompilerRequest {
@@ -120,6 +107,7 @@ impl EvalContext<'_> {
             Ok(CompilerResult::Checked(report)) => match super::report::check_report(
                 &self.checked.type_store,
                 &self.checked.types.known_std_types.code,
+                &self.checked.types.enum_layouts,
                 invocation.result_type,
                 &report,
             ) {
@@ -176,6 +164,7 @@ impl EvalContext<'_> {
                 let project = Projector {
                     store: &self.checked.type_store,
                     known: &self.checked.types.known_std_types.code,
+                    enums: &self.checked.types.enum_layouts,
                 };
                 let value = (|| {
                     let item = project

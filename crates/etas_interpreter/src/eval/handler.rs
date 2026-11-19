@@ -8,6 +8,7 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         handlers: &[etas_hir::HirHandlerArmId],
         span: Span,
+        frame: Option<&Frame>,
     ) -> ControlSignal {
         let Some(fact) = self.checked.effects.handler_values.get(&expr) else {
             return ControlSignal::missing_checked_fact(
@@ -20,9 +21,30 @@ impl<'a> EvalContext<'a> {
             Ok(handlers) => handlers,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
+        let Some(layout) = self.plan.closures.get(expr) else {
+            return ControlSignal::missing_checked_fact("handler has no capture layout", span);
+        };
+        let captured = match frame {
+            Some(frame) => match frame.capture_environment(
+                layout.slots.clone(),
+                &layout.captures,
+                &layout.mutable_captures,
+            ) {
+                Ok(frame) => Some(frame),
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+            },
+            None if layout.captures.is_empty() => None,
+            None => {
+                return ControlSignal::missing_checked_fact(
+                    "handler captures have no lexical frame",
+                    span,
+                );
+            }
+        };
         ControlSignal::Value(InterpValue::Handler {
             fact_expr: expr,
             handlers,
+            captured,
         })
     }
 
@@ -79,10 +101,42 @@ impl<'a> EvalContext<'a> {
             );
         };
         match value {
+            InterpValue::ScopedHandler(handler_value) => {
+                let call = match crate::eval::machine::expression_call::HandlerApplication::new(
+                    self.checked_execution_program(),
+                    crate::control::CallSite {
+                        kind: crate::control::CallSiteKind::Expr { expr: handle_expr },
+                        frame: frame.clone(),
+                        receiver_update: None,
+                        composition: None,
+                        task_callback: None,
+                    },
+                    *handler_value,
+                ) {
+                    Ok(call) => call,
+                    Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+                };
+                ControlSignal::ProgramExpr(Box::new(crate::control::PendingProgramExpr {
+                    call,
+                    args: Vec::new(),
+                    span,
+                    continuation: Continuation::BlockValue,
+                }))
+            }
             InterpValue::Handler {
                 fact_expr,
                 handlers: handler_records,
+                captured,
             } => {
+                if captured
+                    .as_ref()
+                    .is_some_and(crate::value::graph::has_expired_captures)
+                {
+                    return ControlSignal::invalid_arguments(
+                        "Handler retaining a local var cannot run after its owning scope ends",
+                        span,
+                    );
+                }
                 if !matches!(
                     application.handler,
                     etas_effects::HandlerValueRef::Expr { expr: handler_expr }
@@ -94,7 +148,7 @@ impl<'a> EvalContext<'a> {
                         span,
                     );
                 }
-                self.eval_handle_with_records(body, handler_records, span, frame)
+                self.eval_handle_with_records(body, handler_records, span, frame, captured)
             }
             other => ControlSignal::invalid_arguments(
                 format!("handle expects a handler value, got {other:?}"),
@@ -202,7 +256,29 @@ impl<'a> EvalContext<'a> {
         handler_records: Vec<ActiveHandlerArmRecord>,
         span: Span,
         frame: &mut Frame,
+        captured: Option<Frame>,
     ) -> ControlSignal {
+        let scope_id = self.open_handler_scope(&handler_records, span);
+        let signal = self.eval_expr(body, frame);
+        self.drive_handler_signal(signal, scope_id, handler_records, span, frame, captured)
+    }
+
+    pub(in crate::eval) fn eval_handle_with_signal(
+        &mut self,
+        signal: ControlSignal,
+        handler_records: Vec<ActiveHandlerArmRecord>,
+        span: Span,
+        frame: &mut Frame,
+    ) -> ControlSignal {
+        let scope_id = self.open_handler_scope(&handler_records, span);
+        self.drive_handler_signal(signal, scope_id, handler_records, span, frame, None)
+    }
+
+    fn open_handler_scope(
+        &mut self,
+        handler_records: &[ActiveHandlerArmRecord],
+        span: Span,
+    ) -> HandlerScopeId {
         let scope_id = HandlerScopeId(self.next_handler_scope);
         self.next_handler_scope += 1;
         self.task.handler_stack.push(ActiveHandlerRecord {
@@ -211,10 +287,23 @@ impl<'a> EvalContext<'a> {
                 .iter()
                 .map(|handler| format!("{}.{}", handler.effect_segments.join("."), handler.action))
                 .collect(),
-            handlers: handler_records.clone(),
+            handlers: handler_records.to_vec(),
             span,
         });
-        let mut signal = self.eval_expr(body, frame);
+        scope_id
+    }
+
+    fn drive_handler_signal(
+        &mut self,
+        mut signal: ControlSignal,
+        scope_id: HandlerScopeId,
+        handler_records: Vec<ActiveHandlerArmRecord>,
+        span: Span,
+        frame: &mut Frame,
+        captured: Option<Frame>,
+    ) -> ControlSignal {
+        let mut captured = captured;
+        let frame = captured.as_mut().unwrap_or(frame);
         loop {
             match signal {
                 ControlSignal::Apply(pending) => {
@@ -256,6 +345,15 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Expr(expr) => {
                     return self.wrap_handler_boundary_signal(
                         ControlSignal::Expr(expr),
+                        scope_id,
+                        handler_records,
+                        span,
+                        frame,
+                    );
+                }
+                ControlSignal::ProgramExpr(expr) => {
+                    return self.wrap_handler_boundary_signal(
+                        ControlSignal::ProgramExpr(expr),
                         scope_id,
                         handler_records,
                         span,
@@ -445,6 +543,27 @@ impl<'a> EvalContext<'a> {
                         handler.span,
                     ));
                 };
+                let Some(etas_types::SymbolTypeFact::Local { ty, .. }) =
+                    self.checked.types.symbol_types.get(&symbol)
+                else {
+                    return Some(ControlSignal::missing_checked_fact(
+                        "continuation binder has no checked value type",
+                        handler.span,
+                    ));
+                };
+                let continuation_type = if self.checked.hir.source_standard_types {
+                    match self.materialized_type(
+                        *ty,
+                        &handler_frame
+                            .bindings_at(self.checked, etas_hir::HirOwner::HandlerArm(handler.arm)),
+                        handler.span,
+                    ) {
+                        Ok(ty) => ty,
+                        Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
+                    }
+                } else {
+                    *ty
+                };
                 let program = self.checked_execution_program();
                 let token = self.scheduler.allocate_continuation(
                     self.task.task_scope,
@@ -457,7 +576,17 @@ impl<'a> EvalContext<'a> {
                     Some(program),
                     Some(symbol),
                 );
-                handler_frame.insert(symbol, InterpValue::Continuation(token));
+                let value = match crate::value::task::source::continuation_value(
+                    self.checked,
+                    continuation_type,
+                    token,
+                ) {
+                    Ok(value) => value,
+                    Err(reason) => {
+                        return Some(ControlSignal::missing_checked_fact(reason, handler.span));
+                    }
+                };
+                handler_frame.insert(symbol, value);
                 (Continuation::BlockValue, Some(token))
             }
         };
@@ -519,6 +648,16 @@ impl<'a> EvalContext<'a> {
                     },
                 );
                 ControlSignal::Expr(nested)
+            }
+            ControlSignal::ProgramExpr(mut nested) => {
+                nested.continuation = compose_continuation(
+                    nested.continuation,
+                    Continuation::HandlerDispatch {
+                        outer: outer_continuation.into(),
+                        deferred,
+                    },
+                );
+                ControlSignal::ProgramExpr(nested)
             }
             ControlSignal::Call(mut nested) => {
                 nested.continuation = compose_continuation(
@@ -692,6 +831,15 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
+                ControlSignal::ProgramExpr(expr) => {
+                    return self.wrap_handler_boundary_signal(
+                        ControlSignal::ProgramExpr(expr),
+                        scope_id,
+                        handlers,
+                        span,
+                        frame,
+                    );
+                }
                 ControlSignal::Call(call) => {
                     return self.wrap_handler_boundary_signal(
                         ControlSignal::Call(call),
@@ -845,6 +993,7 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Apply(pending) => &mut pending.continuation,
             ControlSignal::Block(pending) => &mut pending.continuation,
             ControlSignal::Expr(pending) => &mut pending.continuation,
+            ControlSignal::ProgramExpr(pending) => &mut pending.continuation,
             ControlSignal::Call(pending) => &mut pending.continuation,
             ControlSignal::Memory(pending) => &mut pending.continuation,
             ControlSignal::Session(pending) => &mut pending.continuation,

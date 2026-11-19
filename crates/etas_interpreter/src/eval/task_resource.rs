@@ -161,6 +161,28 @@ impl EvalContext<'_> {
                 )
                 .ok()
             }
+            HirExpr::Unary { op, expr, span } => {
+                let value = self.resource_expr(expr, locals, captured)?;
+                self.eval_unary_value(op, value, span).ok()
+            }
+            HirExpr::Binary { op, lhs, rhs, span } => {
+                let left = self.resource_expr(lhs, locals, captured)?;
+                match op {
+                    etas_hir::HirBinaryOp::AndAnd => {
+                        if !self.expect_bool(left.clone(), span).ok()? {
+                            return Some(InterpValue::Bool(false));
+                        }
+                    }
+                    etas_hir::HirBinaryOp::OrOr => {
+                        if self.expect_bool(left.clone(), span).ok()? {
+                            return Some(InterpValue::Bool(true));
+                        }
+                    }
+                    _ => {}
+                }
+                let right = self.resource_expr(rhs, locals, captured)?;
+                self.eval_binary_values(op, left, right, span).ok()
+            }
             _ => None,
         }
     }
@@ -185,7 +207,32 @@ impl EvalContext<'_> {
         {
             return self.resource_expr(expr, locals, captured);
         }
-        self.eval_global_symbol(symbol, data.definition_span).ok()
+        // Resource-key projection must not execute source constructors. If a
+        // selector needs computation, the caller uses the serialized schedule.
+        match data.def {
+            SymbolDef::TopLevelLet {
+                initializer,
+                classification: etas_hir::TopLevelLetClassification::Const,
+                ..
+            } => self.resource_expr(initializer, locals, captured),
+            SymbolDef::TopLevelLet {
+                initializer,
+                classification: etas_hir::TopLevelLetClassification::ResourceHandle(_),
+                ..
+            } => self
+                .resource_handle_value(symbol, data.name, initializer, data.definition_span)
+                .ok(),
+            SymbolDef::ImportAlias { path, .. } => {
+                let item = self.source_item_id_for_import_path(&path)?;
+                let etas_hir::HirItem::TopLevelLet(declaration) =
+                    self.checked.hir.items.get(item)?
+                else {
+                    return None;
+                };
+                self.resource_symbol(declaration.symbol, locals, captured)
+            }
+            _ => None,
+        }
     }
 
     fn resource_fields(

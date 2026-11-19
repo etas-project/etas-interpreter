@@ -1,8 +1,4 @@
-use std::{
-    collections::{HashMap, HashSet},
-    ptr::NonNull,
-    rc::Rc,
-};
+use std::{collections::HashMap, ptr::NonNull, rc::Rc};
 
 use super::capture_identity::CaptureIdentity;
 use crate::{
@@ -21,9 +17,10 @@ mod tests;
 type FrameIdentity = (*const (), u64);
 
 #[derive(Clone, Default)]
-pub(crate) struct SharedFrameCapture(
-    Rc<std::cell::RefCell<HashMap<FrameIdentity, LocalsSnapshot>>>,
-);
+pub(crate) struct SharedFrameCapture {
+    frames: Rc<std::cell::RefCell<HashMap<FrameIdentity, LocalsSnapshot>>>,
+    cycles: Rc<std::cell::Cell<bool>>,
+}
 
 /// One synchronous, read-only capture operation. All keyed runtime nodes remain
 /// owned by the borrowed root, including its captured frames. No cache escapes.
@@ -43,8 +40,10 @@ pub(crate) struct CaptureContext {
     pending_suspensions: Vec<super::super::suspension::SuspendedExecution>,
     first_frame: Option<(FrameIdentity, LocalsSnapshot)>,
     frames: HashMap<FrameIdentity, LocalsSnapshot>,
-    first_active: Option<*const ()>,
-    active_frames: HashSet<*const ()>,
+    first_active: Option<(FrameIdentity, usize)>,
+    active_frames: HashMap<FrameIdentity, usize>,
+    capture_depth: usize,
+    has_frame_cycles: bool,
     residual_scope_ids: HashMap<*const (), u32>,
     residual_scopes: Vec<crate::control::residual::SharedResidualScope>,
     residual_attempt_ids: HashMap<*const (), u32>,
@@ -299,64 +298,116 @@ impl CaptureContext {
 
     pub(super) fn frame(&mut self, frame: &Frame) -> Result<LocalsSnapshot, String> {
         let identity = frame.capture_identity();
+        self.has_frame_cycles |= self
+            .shared_frames
+            .as_ref()
+            .is_some_and(|shared| shared.cycles.get());
+        if let Some(depth) = self.active_depth(identity) {
+            return if self.capture_depth > depth {
+                self.mark_frame_cycle();
+                Ok(LocalsSnapshot::reference(frame.snapshot_id()))
+            } else {
+                Err("cyclic captured frame definitions cannot enter a checkpoint".into())
+            };
+        }
         if let Some(saved) = self.saved_frame(identity) {
             return Ok(saved);
         }
-        if self.first_active.is_some() {
-            return Err("cyclic captured frame definitions cannot enter a checkpoint".into());
-        }
-        let dependencies = self.frame_dependencies(frame)?;
+        let depth = self.capture_depth;
+        let dependencies = self.frame_dependencies(frame, depth)?;
         if dependencies.is_empty() {
-            return self.capture_ready_frame(frame);
+            self.enter_frame(identity, depth);
+            let result = self.capture_ready_frame(frame, depth);
+            self.leave_frame(identity);
+            return result;
         }
-        let mut active = HashSet::new();
-        active.insert(identity.0);
-        let mut pending = vec![(frame.clone(), true)];
-        pending.extend(dependencies.into_iter().rev());
-        while let Some((frame, complete)) = pending.pop() {
-            let key = frame.capture_identity();
-            if complete {
-                self.capture_ready_frame(&frame)?;
-                active.remove(&key.0);
-            } else if self.saved_frame(key).is_none() {
-                if !active.insert(key.0) {
-                    return Err(
-                        "cyclic captured frame definitions cannot enter a checkpoint".into(),
-                    );
+        let mut pending = vec![(frame.clone(), false, self.capture_depth)];
+        let mut entered = Vec::new();
+        let result = (|| {
+            while let Some((frame, complete, depth)) = pending.pop() {
+                let key = frame.capture_identity();
+                if complete {
+                    self.capture_ready_frame(&frame, depth)?;
+                    self.leave_frame(key);
+                } else if self.saved_frame(key).is_none() {
+                    if let Some(previous) = self.active_depth(key) {
+                        if depth <= previous {
+                            return Err(
+                                "cyclic captured frame definitions cannot enter a checkpoint"
+                                    .into(),
+                            );
+                        }
+                        self.mark_frame_cycle();
+                        continue;
+                    }
+                    self.enter_frame(key, depth);
+                    entered.push(key);
+                    let dependencies = self.frame_dependencies(&frame, depth)?;
+                    pending.push((frame, true, depth));
+                    pending.extend(dependencies.into_iter().rev());
                 }
-                let dependencies = self.frame_dependencies(&frame)?;
-                pending.push((frame, true));
-                pending.extend(dependencies.into_iter().rev());
             }
+            self.saved_frame(identity)
+                .ok_or_else(|| "captured frame dependency graph did not produce its root".into())
+        })();
+        for key in entered {
+            self.leave_frame(key);
         }
-        self.saved_frame(identity)
-            .ok_or_else(|| "captured frame dependency graph did not produce its root".into())
+        if self.has_frame_cycles {
+            self.clear_frame_value_caches();
+        }
+        result
     }
 
-    fn frame_dependencies(&self, frame: &Frame) -> Result<Vec<(Frame, bool)>, String> {
+    fn frame_dependencies(
+        &self,
+        frame: &Frame,
+        depth: usize,
+    ) -> Result<Vec<(Frame, bool, usize)>, String> {
         let mut discovery = super::frame_dependencies::Discovery::default();
         let mut result = Vec::new();
         if let Some(parent) = frame.lexical_parent() {
-            result.push((parent.clone(), false));
+            result.push((parent.clone(), false, depth));
         }
-        frame.try_visit_locals(|value| {
+        let bindings = frame.shared_bindings();
+        if bindings.is_empty() {
+            frame.try_visit_locals(|value| {
+                result.extend(
+                    discovery
+                        .frames(crate::value::graph::Node::Value(value), true, |key| {
+                            !self.has_frame_cycles && self.values.contains_key(key)
+                        })
+                        .into_iter()
+                        .map(|frame| (frame, false, depth)),
+                );
+                Ok::<_, String>(())
+            })?;
+            return Ok(result);
+        }
+        let locals = frame.borrow_locals()?;
+        for (symbol, value) in locals.sorted() {
+            let depth =
+                depth + usize::from(bindings.iter().any(|binding| binding.symbol == symbol));
             result.extend(
                 discovery
                     .frames(crate::value::graph::Node::Value(value), true, |key| {
-                        self.values.contains_key(key)
+                        !self.has_frame_cycles && self.values.contains_key(key)
                     })
                     .into_iter()
-                    .map(|frame| (frame, false)),
+                    .map(|frame| (frame, false, depth)),
             );
-            Ok::<_, String>(())
-        })?;
+        }
         Ok(result)
     }
 
-    fn capture_ready_frame(&mut self, frame: &Frame) -> Result<LocalsSnapshot, String> {
-        let key @ (backing, _) = frame.capture_identity();
-        if !self.enter_frame(backing) {
-            return Err("cyclic captured frame definitions cannot enter a checkpoint".into());
+    fn capture_ready_frame(
+        &mut self,
+        frame: &Frame,
+        depth: usize,
+    ) -> Result<LocalsSnapshot, String> {
+        let key = frame.capture_identity();
+        if self.has_frame_cycles {
+            self.clear_frame_value_caches();
         }
         let activations = frame
             .handler_activations()
@@ -371,65 +422,131 @@ impl CaptureContext {
                 })
             })
             .collect::<Result<Vec<_>, String>>()?;
-        let result = frame
-            .try_map_locals(|value| self.value(value))
-            .map(|locals| LocalsSnapshot {
-                parent: frame
-                    .lexical_parent()
-                    .map(|parent| {
-                        self.saved_frame(parent.capture_identity())
-                            .expect("lexical parent captured before child")
-                    })
-                    .map(Rc::new),
-                handler_activations: activations,
-                residual_invocation: frame.residual_invocation(),
-                id: frame.snapshot_id(),
-                locals: Rc::new(locals),
-                type_bindings: frame.sorted_type_bindings(),
-                type_parameter_bindings: frame.generic_bindings().sorted_parameters(),
-                effect_row_bindings: frame.generic_bindings().sorted_rows(),
-            });
-        if self.first_active == Some(backing) {
-            self.first_active = None;
+        let previous_depth = self.capture_depth;
+        let locals = frame.try_map_locals(|_, shared, value| {
+            self.capture_depth = depth + usize::from(shared);
+            self.value(value)
+        });
+        self.capture_depth = previous_depth;
+        let saved = LocalsSnapshot {
+            reference: false,
+            shared_bindings: frame.shared_bindings(),
+            parent: frame
+                .lexical_parent()
+                .map(|parent| {
+                    self.saved_frame(parent.capture_identity())
+                        .expect("lexical parent captured before child")
+                })
+                .map(Rc::new),
+            handler_activations: activations,
+            residual_invocation: frame.residual_invocation(),
+            id: frame.snapshot_id(),
+            locals: Rc::new(locals?),
+            type_bindings: frame.sorted_type_bindings(),
+            type_parameter_bindings: frame.generic_bindings().sorted_parameters(),
+            effect_row_bindings: frame.generic_bindings().sorted_rows(),
+        };
+        if let Some(shared) = &self.shared_frames {
+            shared.frames.borrow_mut().insert(key, saved.clone());
+        }
+        if self
+            .first_frame
+            .as_ref()
+            .is_none_or(|(first, _)| *first == key)
+        {
+            self.first_frame = Some((key, saved.clone()));
         } else {
-            self.active_frames.remove(&backing);
+            self.frames.insert(key, saved.clone());
         }
-        if let Ok(saved) = &result {
-            if let Some(shared) = &self.shared_frames {
-                shared.0.borrow_mut().insert(key, saved.clone());
-            }
-            if self.first_frame.is_none() {
-                self.first_frame = Some((key, saved.clone()));
-            } else {
-                self.frames.insert(key, saved.clone());
-            }
-        }
-        result
+        Ok(saved)
     }
 
     // A single captured frame needs neither a lookup table nor an active-set
     // allocation. Nested/shared graphs still use constant-time indexed lookup.
     fn saved_frame(&self, key: FrameIdentity) -> Option<LocalsSnapshot> {
-        if let Some((first_key, saved)) = &self.first_frame {
-            if *first_key == key {
-                return Some(saved.clone());
-            }
+        let saved = self
+            .first_frame
+            .as_ref()
+            .filter(|(first, _)| *first == key)
+            .map(|(_, frame)| frame.clone())
+            .or_else(|| self.frames.get(&key).cloned())
+            .or_else(|| {
+                self.shared_frames
+                    .as_ref()
+                    .and_then(|shared| shared.frames.borrow().get(&key).cloned())
+            })?;
+        if self.has_frame_cycles && !self.reusable_frame(&saved) {
+            return None;
         }
-        self.frames.get(&key).cloned().or_else(|| {
-            self.shared_frames
-                .as_ref()
-                .and_then(|shared| shared.0.borrow().get(&key).cloned())
-        })
+        Some(saved)
     }
 
-    fn enter_frame(&mut self, backing: *const ()) -> bool {
-        match self.first_active {
-            Some(first) if first == backing => false,
-            Some(_) => self.active_frames.insert(backing),
-            None => {
-                self.first_active = Some(backing);
-                true
+    // An inner definition can refer back to its former capture root. Re-root
+    // that graph before reusing it outside the ancestor's active traversal.
+    fn reusable_frame(&self, root: &LocalsSnapshot) -> bool {
+        let active = |id| {
+            self.first_active.is_some_and(|((_, frame), _)| frame == id)
+                || self.active_frames.keys().any(|(_, frame)| *frame == id)
+        };
+        let mut definitions = std::collections::HashSet::new();
+        let mut references = Vec::new();
+        let mut pending = vec![(root.clone(), false)];
+        while let Some((frame, _)) = pending.pop() {
+            if frame.reference {
+                references.push(frame.id);
+                continue;
             }
+            if active(frame.id) {
+                return false;
+            }
+            if !definitions.insert(frame.id) {
+                continue;
+            }
+            if let Some(parent) = &frame.parent {
+                pending.push(((**parent).clone(), false));
+            }
+            for (_, value) in frame.locals.iter() {
+                super::frame_dependencies::snapshot_frames(value, &mut pending);
+            }
+        }
+        references
+            .into_iter()
+            .all(|id| definitions.contains(&id) || active(id))
+    }
+
+    fn mark_frame_cycle(&mut self) {
+        self.has_frame_cycles = true;
+        if let Some(shared) = &self.shared_frames {
+            shared.cycles.set(true);
+        }
+    }
+
+    fn clear_frame_value_caches(&mut self) {
+        self.values.clear();
+        self.call_nodes.clear();
+        self.call_tables.clear();
+    }
+
+    fn active_depth(&self, key: FrameIdentity) -> Option<usize> {
+        self.first_active
+            .filter(|(first, _)| *first == key)
+            .map(|(_, depth)| depth)
+            .or_else(|| self.active_frames.get(&key).copied())
+    }
+
+    fn enter_frame(&mut self, key: FrameIdentity, depth: usize) {
+        if self.first_active.is_none() {
+            self.first_active = Some((key, depth));
+        } else {
+            self.active_frames.insert(key, depth);
+        }
+    }
+
+    fn leave_frame(&mut self, key: FrameIdentity) {
+        if self.first_active.is_some_and(|(first, _)| first == key) {
+            self.first_active = None;
+        } else {
+            self.active_frames.remove(&key);
         }
     }
 }

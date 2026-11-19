@@ -50,8 +50,38 @@ pub(in crate::driver) fn begin<'host>(
     let (key, request) = match eval.approval_request_for(&perform) {
         Ok(Some(request)) => request,
         Ok(None) => {
-            eval.diagnostics
-                .push(crate::diagnostics::unhandled_effect_action(&perform));
+            let declared_default = perform.checked_action.as_ref().is_some_and(|proof| {
+                let action = match &proof.effect {
+                    etas_effects::Effect::Action(action) => action,
+                    etas_effects::Effect::AppliedAction(instance) => &instance.action,
+                    _ => return false,
+                };
+                eval.checked
+                    .effect_registry
+                    .action_signature(action)
+                    .is_some_and(|signature| signature.has_default_handler)
+            });
+            let diagnostic = if declared_default {
+                crate::diagnostics::missing_host_handler(
+                    perform.span,
+                    format!(
+                        "no runtime default handler is registered for checked action {}.{}",
+                        perform
+                            .action
+                            .effect
+                            .path
+                            .segments
+                            .iter()
+                            .map(|segment| segment.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("."),
+                        perform.action.action,
+                    ),
+                )
+            } else {
+                crate::diagnostics::unhandled_effect_action(&perform)
+            };
+            eval.diagnostics.push(diagnostic);
             return ApprovalDispatchStart::Complete(None);
         }
         Err(fault) => {

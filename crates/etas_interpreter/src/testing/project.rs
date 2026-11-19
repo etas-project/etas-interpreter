@@ -9,6 +9,40 @@ pub(crate) fn checked_project(text: &str) -> CheckedProject {
     checked_project_sources(vec![(SourceId(0), "src/app/main.es", text)])
 }
 
+pub(super) fn prepared_tool_definitions(
+    checked: &CheckedProject,
+) -> std::sync::Arc<crate::api::code::PreparedCodeDefinitions> {
+    use etas_frontend::code::{
+        definition::{DefinitionCatalog, NativeDefinitionStore},
+        identity::DefinitionOrigins,
+        service::NativeCodeSyntaxOperations,
+    };
+    use std::sync::Arc;
+    let package = etas_code::PackageKey::from_canonical_fingerprint(
+        etas_code::CodeFingerprint::of_bytes("etas.test.source-tools", b"app"),
+    );
+    let origins = DefinitionOrigins {
+        source_modules: DefinitionOrigins::declared_source_modules(checked, package)
+            .expect("fixture source origins"),
+        standard_package: etas_frontend::code::identity::standard_package_key(
+            &checked.std_registry,
+        )
+        .expect("checked standard package origin"),
+        external_definitions: DefinitionOrigins::checked_external_definitions(checked)
+            .expect("checked dependency origins"),
+    };
+    let catalog = Arc::new(
+        DefinitionCatalog::build(checked.clone(), &origins, Default::default())
+            .expect("fixture checked tool catalog"),
+    );
+    let store = Arc::new(NativeDefinitionStore::new(
+        catalog,
+        Arc::new(NativeCodeSyntaxOperations::default()),
+        Default::default(),
+    ));
+    Arc::new(crate::api::code::PreparedCodeDefinitions::new(store))
+}
+
 pub(crate) fn checked_project_with_options(
     text: &str,
     options: ProjectCompileOptions,

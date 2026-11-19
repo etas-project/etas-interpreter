@@ -10,6 +10,7 @@ use specialization::ProgramSpecialization;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProgramCall {
+    receiver_update: Option<crate::control::ReceiverOutcome>,
     target: ProgramCallTarget,
     specialization: Option<Arc<ProgramSpecialization>>,
 }
@@ -18,9 +19,40 @@ pub(crate) struct ProgramCall {
 pub(crate) enum ProgramCallTarget {
     Agent(AgentRevisionValue),
     Callable(ScopedCallableValue),
+    Expression(super::expression_call::ExpressionCall),
 }
 
 impl ProgramCall {
+    pub(super) fn is_handler_expression(&self) -> bool {
+        matches!(&self.target, ProgramCallTarget::Expression(call) if !call.is_default())
+    }
+
+    pub(super) fn is_handled_body_expression(&self) -> bool {
+        matches!(
+            &self.target,
+            ProgramCallTarget::Expression(call)
+                if matches!(&call.unit, super::expression_call::ExpressionUnit::Handler(handler) if handler.body)
+        )
+    }
+
+    pub(super) fn control(
+        &self,
+        program: &CheckedExecutionProgram,
+        input: crate::control::ContinuationInput,
+    ) -> Result<crate::control::ContinuationInput, String> {
+        match &self.target {
+            ProgramCallTarget::Expression(call) => call.control(program, input),
+            _ => Err("lexical control escaped a callable execution boundary".into()),
+        }
+    }
+
+    pub(crate) fn expression(call: super::expression_call::ExpressionCall) -> Self {
+        Self {
+            receiver_update: None,
+            target: ProgramCallTarget::Expression(call),
+            specialization: None,
+        }
+    }
     pub(super) fn select(
         target: CallTarget,
         program: &etas_frontend::CheckedProgram,
@@ -47,6 +79,7 @@ impl ProgramCall {
             _ => return Ok(Err(target)),
         };
         let mut call = Self {
+            receiver_update: None,
             target,
             specialization: None,
         };
@@ -70,12 +103,50 @@ impl ProgramCall {
         &self.target
     }
 
-    pub(super) fn call_target(&self) -> CallTarget {
+    pub(super) fn with_receiver_update(
+        mut self,
+        outcome: Option<crate::control::ReceiverOutcome>,
+    ) -> Self {
+        self.receiver_update = outcome;
+        self
+    }
+
+    pub(super) fn receiver_update(&self) -> Option<crate::control::ReceiverOutcome> {
+        self.receiver_update.clone()
+    }
+
+    pub(super) fn project_receiver(&self, program: &CheckedExecutionProgram) -> Result<(), String> {
+        let Some(outcome) = &self.receiver_update else {
+            return Ok(());
+        };
+        let value = outcome.take()?;
+        let value = match &self.specialization {
+            Some(specialization) => {
+                specialization.receiver_result(self, program, outcome.slot as usize, value)?
+            }
+            None => match &self.target {
+                ProgramCallTarget::Callable(call) => {
+                    call.receiver_to_presented(program, outcome.slot as usize, value)?
+                }
+                ProgramCallTarget::Agent(_) => {
+                    return Err("agent calls cannot update a type receiver".into());
+                }
+                ProgramCallTarget::Expression(_) => {
+                    return Err("default expressions cannot update a caller receiver".into());
+                }
+            },
+        };
+        outcome.store(value);
+        Ok(())
+    }
+
+    pub(super) fn call_target(&self) -> Option<CallTarget> {
         let target = match &self.target {
             ProgramCallTarget::Agent(call) => CallTarget::AgentRevision(call.clone()),
             ProgramCallTarget::Callable(call) => CallTarget::Scoped(call.clone()),
+            ProgramCallTarget::Expression(_) => return None,
         };
-        match &self.specialization {
+        Some(match &self.specialization {
             Some(specialization) => CallTarget::Specialized {
                 target: target.into(),
                 type_bindings: specialization.presented_types.clone(),
@@ -83,7 +154,7 @@ impl ProgramCall {
                 effect_row_bindings: specialization.presented_rows.clone(),
             },
             None => target,
-        }
+        })
     }
 
     pub(super) fn action_projections(
@@ -92,11 +163,13 @@ impl ProgramCall {
         match &self.target {
             ProgramCallTarget::Agent(call) => Ok(call.action_projections()),
             ProgramCallTarget::Callable(call) => call.action_projections(),
+            ProgramCallTarget::Expression(call) => Ok(call.action_projections()),
         }
     }
     pub(super) fn destination(&self) -> Result<CheckedExecutionProgram, String> {
         match &self.target {
             ProgramCallTarget::Callable(call) => Ok(call.program().clone()),
+            ProgramCallTarget::Expression(call) => Ok(call.destination.clone()),
             ProgramCallTarget::Agent(call) => Ok(CheckedExecutionProgram {
                 checked: call.destination_program().clone(),
                 plan: call.execution_plan()?.clone(),
@@ -123,6 +196,7 @@ impl ProgramCall {
         }
         match &self.target {
             ProgramCallTarget::Callable(call) => call.arguments_to_native(program, args),
+            ProgramCallTarget::Expression(call) => call.arguments(program, args),
             ProgramCallTarget::Agent(call) => {
                 if !Arc::ptr_eq(&program.checked, call.source_program()) {
                     return Err("revision call is not in its checked source program".into());
@@ -153,6 +227,9 @@ impl ProgramCall {
     fn native_body(&self) -> Result<CallTarget, String> {
         let call = match &self.target {
             ProgramCallTarget::Callable(call) => return Ok(call.target()),
+            ProgramCallTarget::Expression(_) => {
+                return Err("an expression unit has no callable body target".into());
+            }
             ProgramCallTarget::Agent(call) => call,
         };
         let target = call.target()?;
@@ -185,6 +262,7 @@ impl ProgramCall {
                 call.result_to_source(&program.checked, value, Some(program))
             }
             ProgramCallTarget::Callable(call) => call.result_to_presented(program, value),
+            ProgramCallTarget::Expression(call) => call.result(program, value),
         }
     }
 
@@ -200,6 +278,7 @@ impl ProgramCall {
         match &self.target {
             ProgramCallTarget::Agent(call) => call.error_to_source(program, ty, value),
             ProgramCallTarget::Callable(call) => call.error_to_presented(program, ty, value),
+            ProgramCallTarget::Expression(call) => call.error(program, ty, value),
         }
     }
 }

@@ -32,6 +32,7 @@ fn scheduling_a_leaf_continuation_reuses_the_machine_stack() {
 fn marker(index: u32) -> Continuation {
     Continuation::TryExpr {
         expr: etas_hir::HirExprId(index),
+        result_type: etas_types::TypeId(index),
         span: etas_core::Span::empty(etas_core::SourceId(0), etas_core::TextSize::ZERO),
     }
 }

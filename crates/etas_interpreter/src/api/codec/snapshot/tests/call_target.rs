@@ -17,6 +17,8 @@ fn effect_row_bindings_roundtrip_in_callable_wrappers_and_captured_frames() {
         target: CallTargetSnapshot::Lambda {
             expr: HirExprId(3),
             captured: LocalsSnapshot {
+                reference: false,
+                shared_bindings: Default::default(),
                 parent: None,
                 handler_activations: Default::default(),
                 residual_invocation: None,
@@ -113,6 +115,8 @@ fn shared_call_target_edges_keep_the_existing_wire_contract_and_decode_checks() 
 #[test]
 fn shared_call_target_snapshot_encoding_does_not_change_after_copy_on_write() {
     let frame = LocalsSnapshot {
+        reference: false,
+        shared_bindings: Default::default(),
         parent: None,
         handler_activations: Default::default(),
         residual_invocation: None,
@@ -167,6 +171,8 @@ fn iterative_call_target_decode_roundtrips_deep_bindings_limits_and_frames_on_wi
     let mut target = CallTargetSnapshot::Lambda {
         expr: HirExprId(7),
         captured: LocalsSnapshot {
+            reference: false,
+            shared_bindings: Default::default(),
             parent: None,
             handler_activations: Default::default(),
             residual_invocation: None,

@@ -10,6 +10,11 @@ pub enum CallSiteKind {
     TaskCallback {
         expr: HirExprId,
     },
+    /// A callback entered by a source-owned VM primitive, whose body has no
+    /// synthetic expression or legacy registry call.
+    SourceTaskCallback {
+        item: etas_hir::HirItemId,
+    },
     Pipeline {
         expr: HirExprId,
     },
@@ -21,10 +26,11 @@ pub enum CallSiteKind {
 
 #[derive(Clone, Debug)]
 pub struct CallSite {
+    pub(crate) receiver_update: Option<super::ReceiverOutcome>,
     pub kind: CallSiteKind,
     pub frame: super::Frame,
     pub(crate) composition: Option<ComposedInvocation>,
-    pub(crate) task_callback: Option<Box<crate::intrinsic::dispatch::CheckedStdIntrinsicCall>>,
+    pub(crate) task_callback: Option<Box<super::CallTarget>>,
 }
 
 /// Retained caller location; it carries no locals or executable authority.
@@ -139,9 +145,23 @@ impl CallSite {
     ) -> Self {
         Self {
             kind: CallSiteKind::TaskCallback { expr: call.origin },
+            receiver_update: None,
             frame: super::Frame::new(std::sync::Arc::new(Default::default())),
             composition: None,
-            task_callback: Some(Box::new(call.clone())),
+            task_callback: Some(Box::new(super::CallTarget::StdIntrinsic(call.clone()))),
+        }
+    }
+
+    pub(crate) fn source_task_callback(
+        item: etas_hir::HirItemId,
+        target: super::CallTarget,
+    ) -> Self {
+        Self {
+            kind: CallSiteKind::SourceTaskCallback { item },
+            receiver_update: None,
+            frame: super::Frame::new(std::sync::Arc::default()),
+            composition: None,
+            task_callback: Some(Box::new(target)),
         }
     }
 }

@@ -6,6 +6,7 @@ pub(crate) struct FrameComparison {
     slot: usize,
     parent_done: bool,
     restored_keys: std::vec::IntoIter<SymbolId>,
+    shared_keys: std::vec::IntoIter<SymbolId>,
 }
 
 pub(crate) enum FrameComparisonStep<T> {
@@ -39,6 +40,12 @@ impl FrameComparison {
         if a.values.len() != b.values.len()
             || a.additional != b.additional
             || a.handler_activations != b.handler_activations
+            || a.shared.len() != b.shared.len()
+            || a.shared.iter().any(|(symbol, left)| {
+                b.shared
+                    .get(symbol)
+                    .is_none_or(|right| left.id != right.id || left.owner != right.owner)
+            })
         {
             return None;
         }
@@ -61,6 +68,7 @@ impl FrameComparison {
             slot: 0,
             parent_done: false,
             restored_keys: restored_keys.into_iter(),
+            shared_keys: a.shared.keys().copied().collect::<Vec<_>>().into_iter(),
         })
     }
 
@@ -79,6 +87,12 @@ impl FrameComparison {
                 (None, None) => {}
                 _ => return FrameComparisonStep::Complete(false),
             }
+        }
+        if let Some(symbol) = self.shared_keys.next() {
+            return match (a.shared[&symbol].value(), b.shared[&symbol].value()) {
+                (Some(left), Some(right)) => FrameComparisonStep::Child(compare(&left, &right)),
+                _ => FrameComparisonStep::Complete(false),
+            };
         }
         let Some(symbol) = self.restored_keys.next() else {
             if !self.parent_done {

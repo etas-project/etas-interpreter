@@ -88,6 +88,9 @@ pub(super) fn interface(
             for (name, ty) in captured.generic_bindings().iter() {
                 bindings.entry(name.clone()).or_insert(*ty);
             }
+            for (parameter, ty) in &captured.generic_bindings().parameters {
+                bindings.parameters.entry(*parameter).or_insert(*ty);
+            }
             for (name, row) in &captured.generic_bindings().rows {
                 bindings
                     .rows

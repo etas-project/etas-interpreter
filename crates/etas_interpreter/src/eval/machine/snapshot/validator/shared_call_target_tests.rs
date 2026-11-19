@@ -64,6 +64,8 @@ fn shared_callable_validation_visits_one_graph_across_separate_roots() {
 fn failed_frame_validation_is_not_cached_as_success() {
     with_validator(|validator, _| {
         let invalid = LocalsSnapshot {
+            reference: false,
+            shared_bindings: Default::default(),
             parent: None,
             handler_activations: Default::default(),
             residual_invocation: None,
@@ -219,12 +221,14 @@ fn checked_machine_validation_reuses_callable_graph_but_rejects_late_tampering()
         for count in [1000, 2000, 4000] {
             let continuation = ContinuationSnapshot::CallArgs {
                 call,
-                target: target(item, 128, true),
+                target: Some(target(item, 128, true)),
                 args: std::sync::Arc::clone(&args),
                 next_arg_index: 1,
                 evaluated_args: vec![],
                 span,
                 frame: LocalsSnapshot {
+                    reference: false,
+                    shared_bindings: Default::default(),
                     parent: None,
                     handler_activations: Default::default(),
                     residual_invocation: None,
@@ -256,7 +260,7 @@ fn checked_machine_validation_reuses_callable_graph_but_rejects_late_tampering()
             else {
                 panic!("call frame")
             };
-            *target = CallTargetSnapshot::FlowItem(HirItemId(u32::MAX));
+            *target = Some(CallTargetSnapshot::FlowItem(HirItemId(u32::MAX)));
             for _ in 0..2 {
                 let error = validator.validate_machine(&machine).unwrap_err();
                 assert!(
