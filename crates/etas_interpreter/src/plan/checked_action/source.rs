@@ -101,10 +101,7 @@ pub(crate) fn source_action(
             .agent_inferences
             .get(&expr)
             .ok_or("inference origin has no checked schema/output fact")?;
-        if inference.action_symbol != symbol
-            || checked.type_store.get(inference.schema)
-                != Some(&etas_types::Type::Schema(inference.output))
-        {
+        if inference.action_symbol != symbol {
             return Err("inference origin disagrees with its checked schema or action".into());
         }
     }
@@ -231,7 +228,7 @@ pub(crate) fn source_action(
         if substitute(context.subject)? != method.context_type {
             return Err("inference origin disagrees with its checked method context".into());
         }
-        if checked.type_store.get(*prompt) != Some(&etas_types::Type::Prompt)
+        if checked.types.expr_types.get(&inference.prompt) != Some(prompt)
             || *schema != inference.schema
             || abi.output != inference.output
         {

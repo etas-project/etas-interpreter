@@ -24,7 +24,16 @@ use super::{
     },
 };
 
-pub(super) fn awaited_task(perform: &PendingPerform) -> Option<TaskHandle> {
+pub(super) fn awaited_task(eval: &EvalContext<'_>, perform: &PendingPerform) -> Option<TaskHandle> {
+    if eval.checked.hir.source_standard_types {
+        let [task] = perform.args.as_slice() else {
+            return None;
+        };
+        if !eval.source_compiler_default(perform, etas_std::CompilerActionRole::TaskAwait) {
+            return None;
+        }
+        return crate::value::task::source::task(task, eval.checked).map(|task| task.handle);
+    }
     let is_async_await = perform.action.action == "await"
         && perform
             .action
@@ -1451,15 +1460,22 @@ async fn drive_one_with_root<'host>(
                 )?;
                 return Ok(true);
             }
-            if let Some(signal) = child.source_console_action(&perform) {
+            if let Some(signal) = child.source_host_action(&perform) {
                 task.machine.resume(signal);
                 continue;
             }
-            if let Some(signal) = child.source_filesystem_action(&perform) {
+            if child.source_compiler_default(&perform, etas_std::CompilerActionRole::TaskYield) {
+                let signal = child.resume_perform_signal(*perform, InterpValue::Unit);
                 task.machine.resume(signal);
-                continue;
+                drop(child);
+                eval.scheduler
+                    .restore_running(handle, task)
+                    .and_then(|()| eval.scheduler.requeue(handle))
+                    .map_err(|error| scheduler_failure(eval, error))?;
+                tokio::task::yield_now().await;
+                return Ok(true);
             }
-            if let Some(target) = awaited_task(&perform) {
+            if let Some(target) = awaited_task(&child, &perform) {
                 match child.scheduler.outcome(target) {
                     Ok(Some(outcome)) => {
                         match signal_from_outcome(outcome.clone(), perform.continuation) {

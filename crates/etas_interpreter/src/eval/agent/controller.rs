@@ -31,7 +31,7 @@ impl EvalContext<'_> {
         perform: &PendingPerform,
     ) -> ControlSignal {
         let span = perform.span;
-        let [InterpValue::Prompt(prompt), InterpValue::Schema(_)] = perform.args.as_slice() else {
+        let [prompt, _] = perform.args.as_slice() else {
             return ControlSignal::missing_checked_fact(
                 "default infer requires its checked Prompt/Schema payload",
                 span,
@@ -65,7 +65,17 @@ impl EvalContext<'_> {
                     trace,
                 });
         }
-        let history = match conversation::from_prompt(prompt.clone(), &self.storage_limits) {
+        let Some(fact) = self.checked.types.agent_inferences.get(&inference) else {
+            return ControlSignal::missing_checked_fact(
+                "controller has no checked inference",
+                span,
+            );
+        };
+        let prompt = match self.host_inference_prompt(fact, prompt) {
+            Ok(prompt) => prompt,
+            Err(reason) => return ControlSignal::invalid_arguments(reason, span),
+        };
+        let history = match conversation::from_prompt(prompt, &self.storage_limits) {
             Ok(history) => history,
             Err(error) => return ControlSignal::invalid_arguments(error.message, span),
         };
@@ -107,17 +117,14 @@ impl EvalContext<'_> {
                 span,
             );
         };
+        let schema = match self.inference_schema_value(fact) {
+            Ok(schema) => schema,
+            Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+        };
         let boundary = DefaultActionBoundary::AgentControllerStep {
             inference: state.inference,
-            conversation: history.clone(),
-            span,
         };
-        let signal = self.mediate_native_action(
-            proof,
-            vec![history, InterpValue::Schema(fact.output)],
-            boundary,
-            span,
-        );
+        let signal = self.mediate_native_action(proof, vec![history, schema], boundary, span);
         compose_signal_continuation(signal, Continuation::AgentControllerStep(state))
     }
 

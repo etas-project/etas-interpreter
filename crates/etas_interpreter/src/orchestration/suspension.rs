@@ -386,6 +386,7 @@ pub(crate) struct HandlerActivationSnapshot {
     pub rows: Vec<(String, etas_types::EffectRowRef)>,
     pub arm: etas_hir::HirHandlerArmId,
     pub request: ActionEvidenceSnapshot,
+    pub memory_place: Option<crate::control::handler_activation::SourceMemoryPlace>,
 }
 
 impl HandlerActivationSnapshot {
@@ -405,9 +406,14 @@ impl HandlerActivationSnapshot {
         let request =
             crate::control::CheckedActionInvocation::restore_evidence(&self.request, revisions)?;
         let activation = crate::control::handler_activation::HandlerActivation::checked(
-            checked, self.arm, request, outer,
+            checked,
+            self.arm,
+            request,
+            outer,
+            self.memory_place.clone(),
         )?;
         if activation.bindings != self.bindings()
+            || activation.memory_place != self.memory_place
             || self.types.len() != activation.bindings.types.len()
             || self.parameters.len() != activation.bindings.parameters.len()
             || self.rows.len() != activation.bindings.rows.len()

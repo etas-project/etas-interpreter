@@ -91,13 +91,37 @@ fn host_option(value: Option<HostValue>) -> HostValue {
 }
 
 fn message_event(message: &InterpValue) -> Result<WorkflowEvent, String> {
+    let message = source_message_value(message)?;
+    use crate::value::MessageRoleValue as Role;
+    let role = match message.role {
+        Role::System => "system",
+        Role::User => "user",
+        Role::Assistant => "assistant",
+        Role::Tool => "tool",
+    };
+    Ok(WorkflowEvent::MessageCreated {
+        id: message.id,
+        from: message.from,
+        to: message.to,
+        session: message.session,
+        role: role.into(),
+        created_at: message.created_at,
+        payload: Box::new(message.payload.as_ref().clone()),
+        provenance: message.provenance,
+    })
+}
+
+pub(super) fn source_message_value(
+    message: &InterpValue,
+) -> Result<crate::value::MessageValue, String> {
+    use crate::value::MessageRoleValue as Role;
     let field = |name| field(message, name);
     let role = match representation(field("role")?) {
         InterpValue::Variant { name, fields } if fields.is_empty() => match name.as_ref() {
-            "System" => "system",
-            "User" => "user",
-            "Assistant" => "assistant",
-            "Tool" => "tool",
+            "System" => Role::System,
+            "User" => Role::User,
+            "Assistant" => Role::Assistant,
+            "Tool" => Role::Tool,
             _ => return Err("message event has an unknown checked Role".into()),
         },
         _ => return Err("message event requires a checked source Role".into()),
@@ -116,14 +140,14 @@ fn message_event(message: &InterpValue) -> Result<WorkflowEvent, String> {
             })
         })
         .transpose()?;
-    Ok(WorkflowEvent::MessageCreated {
+    Ok(crate::value::MessageValue {
         id: text(field("id")?)?,
         from: optional_text(field("from")?)?,
         to: None,
         session: optional_text(field("session")?)?,
-        role: role.into(),
+        role,
         created_at: (millis / 1_000).to_string(),
-        payload: Box::new(field("content")?.clone()),
+        payload: field("content")?.clone().into(),
         provenance,
     })
 }

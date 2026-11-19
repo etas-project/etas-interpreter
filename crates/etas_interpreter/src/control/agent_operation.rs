@@ -10,10 +10,10 @@ pub(crate) enum AgentOperationKind {
 }
 
 impl AgentOperationKind {
-    pub(crate) fn intrinsic(self) -> u32 {
+    fn path(self) -> [&'static str; 3] {
         match self {
-            Self::Step => etas_std::intrinsic::runtime::AGENT_STEP,
-            Self::Invoke => etas_std::intrinsic::runtime::TOOL_INVOKE,
+            Self::Step => ["std", "agent", "step"],
+            Self::Invoke => ["std", "tool", "invoke"],
         }
     }
 }
@@ -21,6 +21,7 @@ impl AgentOperationKind {
 #[derive(Clone, Debug)]
 pub(crate) enum AgentOperationOrigin {
     Standard(CheckedStdIntrinsicCall),
+    SourceTool(Box<super::CheckedActionInvocation>),
     Controller {
         inference: HirExprId,
         operation: AgentOperationKind,
@@ -35,6 +36,44 @@ pub struct CheckedAgentOperation {
 }
 
 impl CheckedAgentOperation {
+    pub(crate) fn source_tool(proof: super::CheckedActionInvocation) -> Result<Self, String> {
+        let etas_effects::Effect::AppliedAction(request) = &proof.effect else {
+            return Err("source tool invocation requires a checked agent context selector".into());
+        };
+        let registry = &proof.program.effect_registry;
+        if registry.action_by_name("std.effects.Tool.call").as_ref() != Some(&request.action)
+            || !matches!(request.args.as_slice(), [etas_types::EffectArgRef::Type(_)])
+            || proof.parameters.len() != 3
+        {
+            return Err("tool invocation differs from the checked source Tool.call ABI".into());
+        }
+        Ok(Self {
+            parameter_types: proof.parameters.clone(),
+            result_type: proof.output,
+            origin: AgentOperationOrigin::SourceTool(Box::new(proof)),
+        })
+    }
+
+    pub(crate) fn tool_context(&self, checked: &etas_frontend::CheckedProject) -> Option<TypeId> {
+        if let AgentOperationOrigin::SourceTool(proof) = &self.origin {
+            let etas_effects::Effect::AppliedAction(request) = &proof.effect else {
+                return None;
+            };
+            let [etas_types::EffectArgRef::Type(context)] = request.args.as_slice() else {
+                return None;
+            };
+            return Some(*context);
+        }
+        let etas_types::Type::Applied { args, .. } = checked.type_store.get(self.result_type)?
+        else {
+            return None;
+        };
+        let [context] = args.as_slice() else {
+            return None;
+        };
+        Some(*context)
+    }
+
     pub(crate) fn standard(call: &CheckedStdIntrinsicCall) -> Self {
         Self {
             origin: AgentOperationOrigin::Standard(call.clone()),
@@ -59,14 +98,10 @@ impl CheckedAgentOperation {
         };
         let symbol = checked
             .std_registry
-            .symbol(operation_fact.target)
+            .lookup_qualified(&operation.path())
             .ok_or("agent operation declaration is missing")?;
-        if symbol
-            .intrinsic
-            .as_ref()
-            .is_none_or(|descriptor| descriptor.id.0 != operation.intrinsic())
-        {
-            return Err("agent operation differs from its canonical intrinsic".into());
+        if operation_fact.target != symbol.id {
+            return Err("agent operation differs from its canonical declaration".into());
         }
         Ok(Self {
             origin: AgentOperationOrigin::Controller {

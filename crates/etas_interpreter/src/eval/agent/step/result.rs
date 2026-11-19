@@ -72,24 +72,25 @@ impl EvalContext<'_> {
                 }
             }
             ModelTermination::Complete => {
-                let value = if self.type_is_string(output) {
-                    let mut text = String::new();
-                    let mut valid = true;
-                    for content in &response.message.content {
-                        match content {
-                            ModelContent::Text(value) => text.push_str(value),
-                            ModelContent::Value(_) => valid = false,
+                let value =
+                    if self.type_is_string(output) && model.request.response_schema.is_none() {
+                        let mut text = String::new();
+                        let mut valid = true;
+                        for content in &response.message.content {
+                            match content {
+                                ModelContent::Text(value) => text.push_str(value),
+                                ModelContent::Value(_) => valid = false,
+                            }
                         }
-                    }
-                    if valid {
-                        Ok(InterpValue::String(text.into()))
+                        if valid {
+                            Ok(InterpValue::String(text.into()))
+                        } else {
+                            Err("string output contains structured content".into())
+                        }
                     } else {
-                        Err("string output contains structured content".into())
-                    }
-                } else {
-                    self.typed_model_result_value(model, response, output)
-                        .map_err(|error| error.message)
-                };
+                        self.typed_model_result_value(model, response, output)
+                            .map_err(|error| error.message)
+                    };
                 match value {
                     Ok(value) => variant(
                         "Final",

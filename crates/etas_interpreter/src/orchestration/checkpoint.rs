@@ -294,6 +294,7 @@ pub(crate) enum CallTargetSnapshot {
         slot: u32,
     },
     EnumVariant(SymbolId),
+    DerivedResponseDecoder(etas_types::TypeId),
     NominalConstructor(etas_types::TypeId),
     PureIntrinsic {
         intrinsic: etas_std::StdIntrinsicId,
@@ -1065,6 +1066,7 @@ pub(crate) struct ToolInvocationSnapshot {
 pub(crate) enum ToolInvocationOriginSnapshot {
     Standard(CallTargetSnapshot),
     Controller { inference: etas_hir::HirExprId },
+    Source(super::ActionEvidenceSnapshot),
 }
 
 #[derive(Clone, Debug)]

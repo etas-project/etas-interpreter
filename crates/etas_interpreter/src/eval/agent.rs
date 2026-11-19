@@ -11,6 +11,7 @@ mod context;
 pub(crate) mod controller;
 mod inference;
 mod method;
+mod schema;
 mod step;
 
 impl<'a> EvalContext<'a> {

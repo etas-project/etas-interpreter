@@ -136,6 +136,7 @@ impl EvalMachine {
         ctx: &EvalContext<'_>,
         pending: &PendingPerform,
         range: std::ops::Range<usize>,
+        memory_target: Option<&crate::control::handler_activation::SourceMemoryPlace>,
     ) -> Result<bool, ExecutionFault> {
         let fail = |reason| {
             ExecutionFault::new(
@@ -171,7 +172,7 @@ impl EvalMachine {
                 let frame = frames.get(&scope.id).copied().ok_or_else(|| {
                     fail("active handler scope has no owning lexical frame".into())
                 })?;
-                if ctx.handler_matches_perform(pending, handler, Some(frame))? {
+                if ctx.handler_matches_perform(pending, handler, Some(frame), memory_target)? {
                     return Ok(true);
                 }
             }
@@ -194,33 +195,62 @@ impl EvalMachine {
                 reason,
             )
         };
-        let mut proof = pending
+        let proof = pending
             .checked_action
-            .clone()
+            .as_ref()
             .ok_or_else(|| fail("resumable action has no checked invocation ABI".into()))?;
+        let mut identity = action_identity(&proof.effect)
+            .ok_or_else(|| fail("resumable action has no checked action identity".into()))?
+            .clone();
+        let memory_target = ctx.source_memory_handler_target(pending);
+        let mut edges = Vec::new();
         let mut end = ctx.handler_floor;
         for frame in self.frames().iter().rev() {
             let EvalFrame::ProgramReturn(boundary) = frame else {
                 continue;
             };
-            let projection = ActionProjection::new(
-                proof,
-                boundary.call.action_projections().map_err(fail)?,
-                &boundary.parent_program,
-            )
-            .map_err(fail)?;
-            proof = projection.target().clone();
+            for edge in boundary.call.action_projections().map_err(fail)? {
+                let Some(action) = edge.corresponding_action(&identity) else {
+                    return Ok(false);
+                };
+                identity = action;
+                edges.push(edge);
+            }
             let start = boundary.parent_handler_floor;
-            let relocated = relocated_perform(
-                proof.clone(),
-                boundary.span,
-                Vec::new(),
-                Continuation::BlockValue,
-            )
-            .map_err(fail)?;
             let parent = ctx.scoped_context(&boundary.parent_program, start);
-            if self.has_action_handler_in(&parent, &relocated, start..end)? {
-                return Ok(true);
+            let range = start.max(parent.task.inherited_handlers)..end;
+            if !range.is_empty() {
+                let scopes = parent.task.handler_stack.get(range).ok_or_else(|| {
+                    fail("action handler search has an invalid dynamic scope range".into())
+                })?;
+                // Relocate the payload ABI only if an arm can handle this action.
+                if has_action_family(
+                    &parent,
+                    scopes.iter().rev().flat_map(|scope| &scope.handlers),
+                    &identity,
+                )? {
+                    let projection = ActionProjection::new(
+                        proof.clone(),
+                        edges.clone(),
+                        &boundary.parent_program,
+                    )
+                    .map_err(fail)?;
+                    let relocated = relocated_perform(
+                        projection.target().clone(),
+                        boundary.span,
+                        Vec::new(),
+                        Continuation::BlockValue,
+                    )
+                    .map_err(fail)?;
+                    if self.has_action_handler_in(
+                        &parent,
+                        &relocated,
+                        start..end,
+                        memory_target.as_ref(),
+                    )? {
+                        return Ok(true);
+                    }
+                }
             }
             end = start;
         }
@@ -631,7 +661,20 @@ pub(super) fn collect_park_handlers(
     Ok(())
 }
 
-fn action_identity(effect: &etas_effects::Effect) -> Option<&etas_effects::ActionRef> {
+pub(super) fn has_action_family<'a>(
+    ctx: &EvalContext<'_>,
+    handlers: impl IntoIterator<Item = &'a crate::orchestration::ActiveHandlerArmRecord>,
+    identity: &etas_effects::ActionRef,
+) -> Result<bool, ExecutionFault> {
+    for handler in handlers {
+        if action_identity(ctx.checked_handler_action(handler)?) == Some(identity) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(super) fn action_identity(effect: &etas_effects::Effect) -> Option<&etas_effects::ActionRef> {
     match effect {
         etas_effects::Effect::Action(action) => Some(action),
         etas_effects::Effect::AppliedAction(instance) => Some(&instance.action),

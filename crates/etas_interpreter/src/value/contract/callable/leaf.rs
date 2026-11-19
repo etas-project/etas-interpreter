@@ -170,6 +170,13 @@ pub(super) fn interface(
                 component: None,
             });
         }
+        Target::DerivedResponseDecoder(callable) => {
+            let layout = crate::value::source_schema::decoder_signature(checked, *callable)?;
+            return Ok(Interface {
+                signature: Some(layout.signature.clone()),
+                component: None,
+            });
+        }
         Target::NominalConstructor(ty) => {
             let representation = crate::plan::code::CheckedValueTypes::default()
                 .representation(checked, *ty)

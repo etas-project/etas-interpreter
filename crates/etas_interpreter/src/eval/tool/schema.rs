@@ -10,6 +10,9 @@ pub(in crate::eval) fn validate_host_value_schema(
     }
     match schema {
         HostSchema::Json => Ok(()),
+        HostSchema::JsonDefinition(_) => {
+            Err(format!("{path} requires a checked tool value schema"))
+        }
         HostSchema::Unit => matches_schema(matches!(value, HostValue::Unit), path, "unit"),
         HostSchema::Bool => matches_schema(matches!(value, HostValue::Bool(_)), path, "bool"),
         HostSchema::Int => matches_schema(matches!(value, HostValue::Int(_)), path, "int"),
@@ -92,6 +95,9 @@ fn validate_host_json_schema(
 ) -> Result<(), String> {
     match schema {
         HostSchema::Json => Ok(()),
+        HostSchema::JsonDefinition(_) => {
+            Err(format!("{path} requires a checked tool value schema"))
+        }
         HostSchema::Unit => matches_schema(matches!(value, HostJsonValue::Null), path, "unit"),
         HostSchema::Bool => matches_schema(matches!(value, HostJsonValue::Bool(_)), path, "bool"),
         HostSchema::Int => matches_schema(

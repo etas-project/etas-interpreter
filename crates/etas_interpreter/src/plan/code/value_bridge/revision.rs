@@ -92,6 +92,13 @@ impl RevisionProjection {
         .map_err(|error| error.to_string())
     }
 
+    pub(crate) fn source_method(&self, item: etas_hir::HirItemId) -> Option<&etas_code::MethodId> {
+        match self {
+            Self::Candidate(bridge) => bridge.native_method(item, false),
+            Self::Original(bridge) => bridge.native_method(item, true),
+        }
+    }
+
     pub(crate) fn type_in_scope(
         &self,
         scope: &etas_code::descriptor::GenericOwner,
@@ -144,6 +151,17 @@ impl RevisionProjection {
         }
         .map_err(|error| error.to_string())
     }
+
+    pub(crate) fn corresponding_action(
+        &self,
+        action: &etas_effects::ActionRef,
+    ) -> Option<etas_effects::ActionRef> {
+        match self {
+            Self::Candidate(bridge) => bridge.corresponding_action(action, true),
+            Self::Original(bridge) => bridge.corresponding_action(action, false),
+        }
+    }
+
     pub(crate) fn reversed(&self) -> Self {
         match self {
             Self::Candidate(bridge) => Self::Original(bridge.clone()),

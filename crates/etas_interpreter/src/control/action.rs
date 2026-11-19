@@ -220,8 +220,6 @@ impl CheckedActionInvocation {
 pub enum DefaultActionBoundary {
     AgentControllerStep {
         inference: etas_hir::HirExprId,
-        conversation: crate::value::InterpValue,
-        span: etas_core::Span,
     },
     Console(Box<super::PendingConsole>),
     Native {

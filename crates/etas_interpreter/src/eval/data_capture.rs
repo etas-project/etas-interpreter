@@ -374,6 +374,11 @@ pub(super) fn neutral_identity(checked: &etas_frontend::CheckedProject, ty: Type
         Some(Type::Applied { constructor, .. }) => TypeId(constructor.0),
         _ => ty,
     };
+    if matches!(store.get(constructor), Some(Type::Nominal(nominal))
+        if matches!(nominal.name.as_str(), "std.memory.MemoryRegion" | "std.memory.Store"))
+    {
+        return false;
+    }
     if let Some(role) = known.runtime_role(store, ty) {
         return matches!(
             role,
@@ -417,4 +422,138 @@ pub(super) fn neutral_identity(checked: &etas_frontend::CheckedProject, ty: Type
 }
 fn rejected(message: impl Into<String>) -> CaptureFailure {
     HostError::new(HostErrorCode::SchemaMismatch, message).into()
+}
+
+pub(super) fn source_data_to_host(
+    checked: &CheckedProject,
+    value: &InterpValue,
+    limits: &etas_host::StorageLimits,
+) -> Result<HostValue, String> {
+    let data_type = super::resolve_std_type(checked, &["std", "runtime", "value", "Data"])
+        .ok_or("missing checked source Data type")?;
+    if !matches!(value, InterpValue::Nominal { ty, .. } if *ty == data_type) {
+        return Err("source Data has a different checked identity".into());
+    }
+    let wire = super::host_value::interp_to_bounded_host_value(value, &mut limits.value_budget())
+        .map_err(|error| error.message)?;
+    restore_data(wire, 0, &mut limits.value_budget())
+}
+
+/// Encode neutral host data as the payload of the checked source Data enum.
+/// The caller validates the backend data against its result and storage budget first.
+pub(super) fn source_data_wire(value: HostValue) -> HostValue {
+    let (name, fields) = match value {
+        HostValue::Unit => ("Unit", vec![]),
+        value @ HostValue::Bool(_) => ("Bool", vec![value]),
+        value @ HostValue::Int(_) => ("Int", vec![value]),
+        value @ HostValue::UInt(_) => ("UInt", vec![value]),
+        value @ HostValue::Float(_) => ("Float", vec![value]),
+        value @ HostValue::String(_) => ("String", vec![value]),
+        value @ HostValue::Bytes(_) => ("Bytes", vec![value]),
+        value @ HostValue::Json(_) => ("Json", vec![value]),
+        HostValue::List(items) => (
+            "List",
+            vec![HostValue::List(
+                items.into_iter().map(source_data_wire).collect(),
+            )],
+        ),
+        HostValue::Map(entries) => (
+            "Map",
+            vec![HostValue::List(
+                entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        HostValue::List(vec![source_data_wire(key), source_data_wire(value)])
+                    })
+                    .collect(),
+            )],
+        ),
+        HostValue::Record(entries) => (
+            "Record",
+            vec![HostValue::List(
+                entries
+                    .into_iter()
+                    .map(|(name, value)| {
+                        HostValue::List(vec![HostValue::String(name), source_data_wire(value)])
+                    })
+                    .collect(),
+            )],
+        ),
+        HostValue::Variant { name, fields } => (
+            "Variant",
+            vec![
+                HostValue::String(name),
+                HostValue::List(fields.into_iter().map(source_data_wire).collect()),
+            ],
+        ),
+    };
+    HostValue::Variant {
+        name: name.into(),
+        fields,
+    }
+}
+
+pub(super) fn restore_data(
+    value: HostValue,
+    depth: usize,
+    budget: &mut etas_host::ValueBudget<'_>,
+) -> Result<HostValue, String> {
+    budget
+        .add(depth, std::mem::size_of::<HostValue>())
+        .map_err(|error| error.message)?;
+    let HostValue::Variant { name, fields } = value else {
+        return Err("source value lacks its Data variant".into());
+    };
+    let next = depth + 1;
+    match (name.as_str(), fields.as_slice()) {
+        ("Unit", []) => return Ok(HostValue::Unit),
+        ("Bool" | "Int" | "UInt" | "Float" | "String" | "Bytes" | "Json", [_]) => {
+            return Ok(fields.into_iter().next().unwrap());
+        }
+        _ => {}
+    }
+    let mut values = fields.into_iter();
+    match (name.as_str(), values.next(), values.next()) {
+        ("List", Some(HostValue::List(items)), None) => Ok(HostValue::List(
+            items
+                .into_iter()
+                .map(|item| restore_data(item, next, budget))
+                .collect::<Result<_, _>>()?,
+        )),
+        ("Variant", Some(HostValue::String(name)), Some(HostValue::List(items))) => {
+            Ok(HostValue::Variant {
+                name,
+                fields: items
+                    .into_iter()
+                    .map(|item| restore_data(item, next, budget))
+                    .collect::<Result<_, _>>()?,
+            })
+        }
+        (kind @ ("Record" | "Map"), Some(HostValue::List(pairs)), None) => {
+            let mut record = Vec::new();
+            let mut map = Vec::new();
+            for pair in pairs {
+                let HostValue::List(pair) = pair else {
+                    return Err("source Data entries require pairs".into());
+                };
+                let [key, item]: [_; 2] = pair
+                    .try_into()
+                    .map_err(|_| "source Data entries require pairs")?;
+                let item = restore_data(item, next, budget)?;
+                if kind == "Map" {
+                    map.push((restore_data(key, next, budget)?, item));
+                } else if let HostValue::String(key) = key {
+                    record.push((key, item));
+                } else {
+                    return Err("source Data record key requires text".into());
+                }
+            }
+            Ok(if kind == "Map" {
+                HostValue::Map(map)
+            } else {
+                HostValue::Record(record)
+            })
+        }
+        _ => Err(format!("invalid source Data.{name}")),
+    }
 }

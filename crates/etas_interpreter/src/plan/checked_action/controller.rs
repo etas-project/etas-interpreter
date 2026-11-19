@@ -28,35 +28,46 @@ pub(crate) fn controller_step(
     }
     let operation =
         CheckedAgentOperation::controller(checked, inference, AgentOperationKind::Step)?;
-    let descriptor = checked
-        .std_registry
-        .intrinsic(etas_std::StdIntrinsicId(
-            etas_std::intrinsic::runtime::AGENT_STEP,
-        ))
-        .ok_or("controller step intrinsic is missing")?;
-    let etas_std::LoweringHint::DefaultAction { stable_id, payload } = &descriptor.lowering else {
-        return Err("controller step has no canonical action adapter".into());
-    };
     let signature = checked
         .effect_registry
-        .standard_action(etas_effects::EffectActionId(*stable_id))
+        .compiler_action(
+            &checked.std_registry,
+            etas_std::CompilerActionRole::AgentStep,
+        )
         .ok_or("controller step action is missing")?;
-    let Some(row) = &contract.step.signature.requested_actions else {
-        return Err("controller step has no checked request contract".into());
+    let action = etas_effects::ActionRef {
+        tag: signature.owner,
+        action: signature.id,
     };
-    let [requested] = row.effects.as_slice() else {
-        return Err("controller step must request one checked action".into());
-    };
-    if row.tail.is_some() || payload != &[0, 1] || operation.parameter_types.len() != 2 {
-        return Err("controller step has an inconsistent payload contract".into());
+    let args = vec![
+        etas_types::EffectArgRef::Type(contract.context),
+        etas_types::EffectArgRef::Type(inference_fact.output),
+    ];
+    let request = contract
+        .step
+        .signature
+        .requested_actions
+        .as_ref()
+        .filter(|row| row.tail.is_none())
+        .and_then(|row| match row.effects.as_slice() {
+            [request] => Some(request),
+            _ => None,
+        })
+        .ok_or("controller step must request one checked action")?;
+    if checked
+        .effect_registry
+        .standard_action_by_name(&request.name)
+        .as_ref()
+        != Some(&action)
+        || request.args != args
+        || operation.parameter_types.len() != 2
+    {
+        return Err("controller step differs from its checked action contract".into());
     }
     let abi = CheckedActionAbi {
         effect: etas_effects::Effect::AppliedAction(etas_effects::ActionInstanceRef {
-            action: etas_effects::ActionRef {
-                tag: signature.owner,
-                action: signature.id,
-            },
-            args: requested.args.clone(),
+            action,
+            args,
         }),
         parameters: operation.parameter_types,
         output: operation.result_type,

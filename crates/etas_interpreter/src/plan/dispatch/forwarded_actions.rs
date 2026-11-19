@@ -22,18 +22,40 @@ pub(crate) struct CheckedCompilerAction {
 pub(super) fn lower_compilers(
     project: &CheckedProject,
 ) -> Result<HashMap<ActionRef, CheckedCompilerAction>, String> {
+    use etas_host::compiler::CompilerOperation;
     let mut targets = HashMap::new();
+    if project.hir.source_standard_types {
+        for (name, operation) in [
+            ("check", CompilerOperation::Check),
+            ("compile", CompilerOperation::Compile),
+        ] {
+            let signature_path = format!("std.effects.Code.{name}");
+            let Some(action) = project.effect_registry.action_by_name(&signature_path) else {
+                continue;
+            };
+            if project
+                .effect_registry
+                .action_signature(&action)
+                .is_some_and(|signature| signature.has_default_handler)
+            {
+                targets.insert(
+                    action,
+                    CheckedCompilerAction {
+                        operation,
+                        signature_path,
+                    },
+                );
+            }
+        }
+        return Ok(targets);
+    }
     for symbol in project.std_registry.symbols() {
         let Some(descriptor) = &symbol.intrinsic else {
             continue;
         };
         let operation = match descriptor.id.0 {
-            etas_std::intrinsic::runtime::CODE_CHECK => {
-                etas_host::compiler::CompilerOperation::Check
-            }
-            etas_std::intrinsic::runtime::CODE_COMPILE => {
-                etas_host::compiler::CompilerOperation::Compile
-            }
+            etas_std::intrinsic::runtime::CODE_CHECK => CompilerOperation::Check,
+            etas_std::intrinsic::runtime::CODE_COMPILE => CompilerOperation::Compile,
             _ => continue,
         };
         let LoweringHint::ForwardAction { stable_id } = descriptor.lowering else {

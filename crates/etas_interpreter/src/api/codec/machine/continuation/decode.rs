@@ -80,6 +80,13 @@ fn continuation_leaf_from_snapshot(
                     "controller" => Origin::Controller {
                         inference: HirExprId(required_u32(required(value, "call")?, "inference")?),
                     },
+                    "source" => Origin::Source(
+                        crate::api::codec::checkpoint::suspension::decode_evidence(
+                            limits,
+                            required(value, "call")?,
+                        )
+                        .map_err(|error| error.to_string())?,
+                    ),
                     _ => return Err("invalid tool invocation origin".into()),
                 },
                 input: crate::api::codec::value::snapshot_from_json_with_limits(

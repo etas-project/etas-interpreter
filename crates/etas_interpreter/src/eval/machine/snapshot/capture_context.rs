@@ -416,6 +416,7 @@ impl CaptureContext {
                 Ok(crate::orchestration::HandlerActivationSnapshot {
                     arm: activation.arm,
                     request: activation.request.checkpoint_evidence(self)?,
+                    memory_place: activation.memory_place.clone(),
                     types: activation.bindings.sorted_types(),
                     parameters: activation.bindings.sorted_parameters(),
                     rows: activation.bindings.sorted_rows(),

@@ -39,6 +39,7 @@ pub(super) enum DecodedTarget<F, T> {
     AgentItem(HirItemId),
     ToolItem(HirItemId),
     EnumVariant(SymbolId),
+    DerivedResponseDecoder(TypeId),
     NominalConstructor(TypeId),
     Lambda {
         expr: HirExprId,
@@ -117,6 +118,7 @@ impl TargetValue for CallTargetSnapshot {
             DecodedTarget::AgentItem(value) => Self::AgentItem(value),
             DecodedTarget::ToolItem(value) => Self::ToolItem(value),
             DecodedTarget::EnumVariant(value) => Self::EnumVariant(value),
+            DecodedTarget::DerivedResponseDecoder(value) => Self::DerivedResponseDecoder(value),
             DecodedTarget::NominalConstructor(value) => Self::NominalConstructor(value),
             DecodedTarget::Composed(value) => Self::Composed(value.into()),
             DecodedTarget::Lambda { expr, captured } => Self::Lambda { expr, captured },
@@ -206,6 +208,7 @@ impl TargetValue for CallTarget {
             DecodedTarget::AgentItem(value) => Self::AgentItem(value),
             DecodedTarget::ToolItem(value) => Self::ToolItem(value),
             DecodedTarget::EnumVariant(value) => Self::EnumVariant(value),
+            DecodedTarget::DerivedResponseDecoder(value) => Self::DerivedResponseDecoder(value),
             DecodedTarget::NominalConstructor(value) => Self::NominalConstructor(value),
             DecodedTarget::Composed(value) => Self::Composed(value.into()),
             DecodedTarget::Lambda { expr, captured } => Self::Lambda { expr, captured },

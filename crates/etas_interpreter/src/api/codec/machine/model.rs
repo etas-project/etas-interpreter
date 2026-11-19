@@ -225,6 +225,9 @@ pub(crate) fn host_schema_snapshot(schema: &etas_host::HostSchema) -> Value {
         etas_host::HostSchema::String => json!({ "kind": "string" }),
         etas_host::HostSchema::Bytes => json!({ "kind": "bytes" }),
         etas_host::HostSchema::Json => json!({ "kind": "json" }),
+        etas_host::HostSchema::JsonDefinition(definition) => {
+            json!({ "kind": "json-definition", "definition": definition })
+        }
         etas_host::HostSchema::List(element) => {
             json!({ "kind": "list", "element": host_schema_snapshot(element) })
         }
@@ -261,6 +264,9 @@ pub(crate) fn host_schema_from_snapshot(value: &Value) -> Result<etas_host::Host
         "string" => Ok(etas_host::HostSchema::String),
         "bytes" => Ok(etas_host::HostSchema::Bytes),
         "json" => Ok(etas_host::HostSchema::Json),
+        "json-definition" => Ok(etas_host::HostSchema::JsonDefinition(
+            required(value, "definition")?.clone(),
+        )),
         "list" => Ok(etas_host::HostSchema::List(Box::new(
             host_schema_from_snapshot(required(value, "element")?)?,
         ))),

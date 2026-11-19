@@ -77,10 +77,10 @@ pub(super) fn option_value(value: Option<HostValue>) -> HostValue {
     }
 }
 
-fn version_value(version: MemoryVersion) -> HostValue {
+pub(super) fn version_value(version: MemoryVersion) -> HostValue {
     opaque_value(version.as_token().to_owned())
 }
 
-fn opaque_value(opaque: String) -> HostValue {
+pub(super) fn opaque_value(opaque: String) -> HostValue {
     HostValue::Record(vec![("opaque".into(), HostValue::String(opaque))])
 }

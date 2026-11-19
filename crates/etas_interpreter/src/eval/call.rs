@@ -512,6 +512,9 @@ impl<'a> EvalContext<'a> {
                     Err(fault) => ControlSignal::Fault(Box::new(fault)),
                 }
             }
+            CallTarget::DerivedResponseDecoder(schema) => {
+                self.decode_source_model_response(schema, call_args, span)
+            }
             CallTarget::NominalConstructor(ty) => {
                 match <Vec<InterpValue> as TryInto<[InterpValue; 1]>>::try_into(call_args) {
                     Ok([value]) => ControlSignal::Value(InterpValue::Nominal {

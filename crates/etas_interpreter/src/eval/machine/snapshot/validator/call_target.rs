@@ -207,6 +207,9 @@ impl SnapshotValidator<'_> {
                     ))
                 }
             }
+            CallTargetSnapshot::DerivedResponseDecoder(ty) => {
+                crate::value::source_schema::decoder_signature(self.checked, *ty).map(|_| ())
+            }
             CallTargetSnapshot::NominalConstructor(ty) => self.type_id(*ty, context),
             CallTargetSnapshot::PureIntrinsic {
                 intrinsic,

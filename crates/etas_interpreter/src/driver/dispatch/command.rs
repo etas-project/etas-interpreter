@@ -127,7 +127,12 @@ pub(in crate::driver) fn finish(
     match HostDispatch::finish(eval, completion) {
         Ok(response) => match response.result {
             Ok(output) => {
-                let value = eval.command_result_value(&command, output)?;
+                let value = match eval.command_result_value(&command, output) {
+                    Ok(value) => value,
+                    Err(reason) => {
+                        return Some(ControlSignal::missing_checked_fact(reason, command.span));
+                    }
+                };
                 if let Err(fault) = eval.record_completed_host_boundary(
                     crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                     "command",

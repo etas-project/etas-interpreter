@@ -12,7 +12,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     continuation: &'a Continuation,
     slot: &'a mut Value,
     pending: &mut Pending<'a>,
-    _budget: &mut crate::api::codec::snapshot::EncodingBudget,
+    budget: &mut crate::api::codec::snapshot::EncodingBudget,
 ) -> Result<(), crate::api::codec::InterpreterCodecError> {
     match continuation {
         Continuation::DefaultArguments(state) => {
@@ -53,13 +53,19 @@ pub(in crate::api::codec) fn write_continuation<'a>(
         Continuation::ToolInvocationStart(invocation)
         | Continuation::ToolInvocationResult(invocation) => {
             use crate::orchestration::ToolInvocationOriginSnapshot as Origin;
-            let (kind, call): (&str, crate::api::codec::snapshot::Field<'a>) =
-                match &invocation.call {
-                    Origin::Standard(call) => ("standard", Node::CallTarget(call).into()),
-                    Origin::Controller { inference } => {
-                        ("controller", json!({"inference":inference.0}).into())
-                    }
-                };
+            let (kind, call): (&str, crate::api::codec::snapshot::Field<'a>) = match &invocation
+                .call
+            {
+                Origin::Standard(call) => ("standard", Node::CallTarget(call).into()),
+                Origin::Controller { inference } => {
+                    ("controller", json!({"inference":inference.0}).into())
+                }
+                Origin::Source(evidence) => (
+                    "source",
+                    crate::api::codec::checkpoint::suspension::encode_evidence(evidence, budget)?
+                        .into(),
+                ),
+            };
             object! { slot, pending;
             "kind": json!(if matches!(continuation, Continuation::ToolInvocationStart(_)) { "tool_invocation_start" } else { "tool_invocation_result" }),
             "origin_kind": json!(kind), "call": call, "input": Node::Value(&invocation.input),

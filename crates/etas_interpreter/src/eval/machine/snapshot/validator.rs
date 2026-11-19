@@ -710,6 +710,37 @@ impl<'a> SnapshotValidator<'a> {
                         )?
                         .parameter_types
                     }
+                    Origin::Source(evidence) => {
+                        let proof = crate::control::CheckedActionInvocation::restore_evidence(
+                            evidence,
+                            self.revisions
+                                .ok_or("source tool invocation has no checked revisions")?,
+                        )?;
+                        if !std::sync::Arc::ptr_eq(&proof.program, self.checked) {
+                            return Err(
+                                "source tool invocation has a different checked program".into()
+                            );
+                        }
+                        let operation = crate::control::CheckedAgentOperation::source_tool(proof)?;
+                        let ValueSnapshot::Tuple(args) = &invocation.input else {
+                            return Err("source tool checkpoint has no argument tuple".into());
+                        };
+                        if args.len() != operation.parameter_types.len() {
+                            return Err(
+                                "source tool arguments differ from the checked action ABI".into()
+                            );
+                        }
+                        return crate::value::contract::validate(
+                            self,
+                            args.iter()
+                                .zip(operation.parameter_types)
+                                .map(|(value, ty)| crate::value::contract::Seed {
+                                    value: crate::value::contract::Value::Snapshot(value),
+                                    ty,
+                                }),
+                            &crate::control::GenericBindings::new(),
+                        );
+                    }
                 };
                 if parameter_types.len() != 1 {
                     return Err("native tool invocation has no single checked input".into());

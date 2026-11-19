@@ -154,18 +154,32 @@ impl<'a> EvalContext<'a> {
                 span,
                 type_bindings,
             ),
-            StdCallable::Tcp(callable) => self.execute_tcp_callable(callable, call_args, span),
+            StdCallable::Tcp(callable) => {
+                self.execute_tcp_callable(callable, call_args, HostBoundaryDecode::TcpStream, span)
+            }
             StdCallable::Stream(callable) => {
-                self.execute_stream_callable(callable, checked_call, call_args, span)
+                self.execute_stream_callable(callable, checked_call.result_type, call_args, span)
             }
-            StdCallable::Tls(callable) => self.execute_tls_callable(callable, call_args, span),
-            StdCallable::Secret(callable) => {
-                self.execute_secret_callable(callable, checked_call, call_args, span)
+            StdCallable::Tls(callable) => {
+                self.execute_tls_callable(callable, call_args, HostBoundaryDecode::TlsStream, span)
             }
+            StdCallable::Secret(callable) => self.execute_secret_callable(
+                callable,
+                checked_call.parameter_types[0],
+                checked_call.result_type,
+                HostBoundaryDecode::SecretValue {
+                    result_type: checked_call.result_type,
+                },
+                call_args,
+                span,
+            ),
             StdCallable::Json(callable) => self.execute_json_callable(callable, call_args, span),
-            StdCallable::Browser(callable) => {
-                self.execute_browser_callable(callable, call_args, span)
-            }
+            StdCallable::Browser(callable) => self.execute_browser_callable(
+                callable,
+                call_args,
+                HostBoundaryDecode::BrowserPayload,
+                span,
+            ),
         }
     }
 
@@ -1108,21 +1122,10 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> ControlSignal {
         let _action = std_value!(self.require_checked_default_action(action, span));
-        ControlSignal::pending_host(PendingHostBoundary {
-            request: HostBoundaryRequest::CommandProcess(CommandProcessRequest {
-                id: self.next_host_request_id(),
-                operation,
-                authority: self.host_authority(),
-                trace: self.host_trace(),
-                budget: self.host_budget(),
-            }),
-            decode,
-            span,
-            continuation: Continuation::BlockValue,
-        })
+        self.pending_command_process(operation, decode, span, Continuation::BlockValue)
     }
 
-    fn command_process_id_argument(
+    pub(super) fn command_process_id_argument(
         &self,
         value: &InterpValue,
         span: Span,
@@ -1299,10 +1302,11 @@ impl<'a> EvalContext<'a> {
         })
     }
 
-    fn execute_tcp_callable(
+    pub(super) fn execute_tcp_callable(
         &mut self,
         callable: TcpCallable,
         call_args: Vec<InterpValue>,
+        decode: HostBoundaryDecode,
         span: Span,
     ) -> ControlSignal {
         match callable {
@@ -1328,7 +1332,7 @@ impl<'a> EvalContext<'a> {
                         trace: self.host_trace(),
                         budget: self.host_budget(),
                     }),
-                    decode: HostBoundaryDecode::TcpStream,
+                    decode,
                     span,
                     continuation: Continuation::BlockValue,
                 })
@@ -1336,10 +1340,10 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn execute_stream_callable(
+    pub(super) fn execute_stream_callable(
         &mut self,
         callable: StreamCallable,
-        checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        result_type: etas_types::TypeId,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
@@ -1365,9 +1369,7 @@ impl<'a> EvalContext<'a> {
                         max_bytes,
                         timeout_ms,
                     },
-                    HostBoundaryDecode::StreamRead {
-                        result_type: checked_call.result_type,
-                    },
+                    HostBoundaryDecode::StreamRead { result_type },
                 )
             }
             StreamCallable::ReadUntilLimit => {
@@ -1421,10 +1423,11 @@ impl<'a> EvalContext<'a> {
         })
     }
 
-    fn execute_tls_callable(
+    pub(super) fn execute_tls_callable(
         &mut self,
         callable: TlsCallable,
         call_args: Vec<InterpValue>,
+        decode: HostBoundaryDecode,
         span: Span,
     ) -> ControlSignal {
         match callable {
@@ -1453,7 +1456,7 @@ impl<'a> EvalContext<'a> {
                         trace: self.host_trace(),
                         budget: self.host_budget(),
                     }),
-                    decode: HostBoundaryDecode::TlsStream,
+                    decode,
                     span,
                     continuation: Continuation::BlockValue,
                 })
@@ -1461,14 +1464,15 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn execute_secret_callable(
+    pub(super) fn execute_secret_callable(
         &mut self,
         callable: SecretCallable,
-        call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        key_type: etas_types::TypeId,
+        result_type: etas_types::TypeId,
+        read_decode: HostBoundaryDecode,
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        let result_type = call.result_type;
         match callable {
             SecretCallable::Read => {
                 let [key] = call_args.as_slice() else {
@@ -1488,7 +1492,7 @@ impl<'a> EvalContext<'a> {
                         trace: self.host_trace(),
                         budget: self.host_budget(),
                     }),
-                    decode: HostBoundaryDecode::SecretValue { result_type },
+                    decode: read_decode,
                     span,
                     continuation: Continuation::BlockValue,
                 })
@@ -1506,7 +1510,7 @@ impl<'a> EvalContext<'a> {
                         "std.crypto.hmac_sha256 expects a sealed SecretValue host handle",
                     );
                 };
-                if call.parameter_types.first() != Some(&handle.nominal_type()) {
+                if key_type != handle.nominal_type() {
                     return ControlSignal::missing_checked_fact(
                         "secret handle does not match the checked SecretValue<K> parameter",
                         span,
@@ -1537,10 +1541,11 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn execute_browser_callable(
+    pub(super) fn execute_browser_callable(
         &mut self,
         callable: BrowserCallable,
         call_args: Vec<InterpValue>,
+        payload_decode: HostBoundaryDecode,
         span: Span,
     ) -> ControlSignal {
         let (operation, decode) = match callable {
@@ -1565,7 +1570,7 @@ impl<'a> EvalContext<'a> {
                     | BrowserCallable::Screenshot
                     | BrowserCallable::Close => unreachable!(),
                 };
-                (operation, HostBoundaryDecode::BrowserPayload)
+                (operation, payload_decode)
             }
             BrowserCallable::Send => {
                 let [session, message] = call_args.as_slice() else {
@@ -1594,7 +1599,7 @@ impl<'a> EvalContext<'a> {
                         session,
                         max_bytes: 1024 * 1024,
                     },
-                    HostBoundaryDecode::BrowserPayload,
+                    payload_decode,
                 )
             }
             BrowserCallable::Screenshot => {
@@ -1610,7 +1615,7 @@ impl<'a> EvalContext<'a> {
                         session,
                         max_bytes: 1024 * 1024,
                     },
-                    HostBoundaryDecode::BrowserPayload,
+                    payload_decode,
                 )
             }
             BrowserCallable::Close => {

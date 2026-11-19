@@ -85,8 +85,24 @@ impl ProgramSpecialization {
             return Err("generic program call has inconsistent frozen binder identities".into());
         }
         let mut mapped = bindings.clone();
-        for edge in call
-            .action_projections()?
+        let projections = call.action_projections()?;
+        let native_item = match call.target() {
+            ProgramCallTarget::Callable(call) => {
+                let mut target = call.target_ref();
+                while let CallTarget::Specialized { target: inner, .. } = target {
+                    target = inner;
+                }
+                match target {
+                    CallTarget::FlowItem(item) => Some(*item),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let method_scope = native_item
+            .and_then(|item| projections.first()?.source_method(item))
+            .map(|method| etas_code::descriptor::GenericOwner::Method(method.clone()));
+        for edge in projections
             .iter()
             .rev()
             .map(crate::plan::code::RevisionProjection::reversed)
@@ -100,7 +116,19 @@ impl ProgramSpecialization {
                 .parameters
                 .into_iter()
                 .map(|(parameter, argument)| {
-                    Ok((edge.runtime_type(parameter)?, edge.runtime_type(argument)?))
+                    // Receiver binders can share their lexical name with the
+                    // type declaration; the selected method owns the ABI.
+                    let scope = method_scope.as_ref().or_else(|| {
+                        edge.source()
+                            .type_store
+                            .parameter_identity(parameter)
+                            .map(|identity| identity.owner())
+                    });
+                    let parameter = match scope {
+                        Some(scope) => edge.type_in_scope(scope, parameter)?,
+                        None => edge.runtime_type(parameter)?,
+                    };
+                    Ok((parameter, edge.runtime_type(argument)?))
                 })
                 .collect::<Result<_, String>>()?;
             mapped.rows = mapped
@@ -141,19 +169,13 @@ impl ProgramSpecialization {
             &destination_bindings,
         )
         .map_err(|error| format!("generic destination signature is not materialized: {error}"))?;
-        if let ProgramCallTarget::Callable(call) = call.target() {
-            let mut target = call.target_ref();
-            while let CallTarget::Specialized { target: inner, .. } = target {
-                target = inner;
-            }
-            if let CallTarget::FlowItem(item) = target {
-                crate::value::ScopedCallableValue::checked_item_application(
-                    &destination.checked,
-                    etas_frontend::CheckedCallableRoot::Item(*item),
-                    &destination_bindings,
-                )?
-                .ok_or("specialized method has no checked native application")?;
-            }
+        if let Some(item) = native_item {
+            crate::value::ScopedCallableValue::checked_item_application(
+                &destination.checked,
+                etas_frontend::CheckedCallableRoot::Item(item),
+                &destination_bindings,
+            )?
+            .ok_or("specialized method has no checked native application")?;
         }
         Ok(Self {
             presented_types: types,

@@ -68,6 +68,12 @@ struct PathField {
 
 type PathFields = HashMap<SymbolId, HashMap<Vec<String>, Vec<PathField>>>;
 
+fn source_memory_field(project: &CheckedProject, field: &etas_types::FieldProjectionFact) -> bool {
+    use etas_types::value_representation::{memory_region_schema, source_memory_store_parameters};
+    memory_region_schema(&project.type_store, field.receiver).is_some()
+        && source_memory_store_parameters(&project.type_store, field.output).is_some()
+}
+
 #[derive(Clone, Debug, Default)]
 pub struct RecordLayoutTable {
     source_iterators: HashMap<HirExprId, super::iteration::SourceIteratorProtocol>,
@@ -393,7 +399,9 @@ impl RecordLayoutTable {
                             "record field `{field}` differs from checked projection fact"
                         ));
                     }
-                    table.fields.insert(expr, checked_field(names, field)?);
+                    if !source_memory_field(project, &projections[0]) {
+                        table.fields.insert(expr, checked_field(names, field)?);
+                    }
                 }
                 HirExpr::Path(path) => {
                     let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
@@ -439,10 +447,14 @@ impl RecordLayoutTable {
                                 "value path field `{name}` differs from checked projection facts"
                             ));
                         }
-                        let field = shapes
-                            .get(projection.receiver)?
-                            .map(|names| checked_field(names, name))
-                            .transpose()?;
+                        let field = if source_memory_field(project, projection) {
+                            None
+                        } else {
+                            shapes
+                                .get(projection.receiver)?
+                                .map(|names| checked_field(names, name))
+                                .transpose()?
+                        };
                         current = projection.output;
                         if project.type_store.get(current).is_none() {
                             return Err("checked field projection output type is missing".into());

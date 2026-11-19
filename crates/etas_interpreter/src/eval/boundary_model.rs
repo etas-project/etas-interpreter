@@ -2,13 +2,11 @@ use super::host_value::decode_checked_host_value;
 use super::*;
 use etas_types::{PrimitiveType, Type, TypeId, TypeStore};
 mod json;
+use json::from_host_with_layouts as json_host_value_to_typed_interp_value_with_layouts;
+pub(super) use json::from_serde_with_layouts as json_to_typed_interp_value_with_layouts;
 #[cfg(test)]
 use json::{
     from_host as json_host_value_to_typed_interp_value, from_serde as json_to_typed_interp_value,
-};
-use json::{
-    from_host_with_layouts as json_host_value_to_typed_interp_value_with_layouts,
-    from_serde_with_layouts as json_to_typed_interp_value_with_layouts,
 };
 
 #[cfg(test)]
@@ -218,7 +216,7 @@ fn text_preview(text: &str) -> String {
     preview.escape_debug().to_string()
 }
 
-fn host_value_to_typed_interp_value(
+pub(super) fn host_value_to_typed_interp_value(
     value: HostValue,
     expected: TypeId,
     checked: &etas_frontend::CheckedProject,

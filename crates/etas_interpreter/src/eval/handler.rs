@@ -468,9 +468,15 @@ impl<'a> EvalContext<'a> {
         handlers: &[ActiveHandlerArmRecord],
         frame: &Frame,
     ) -> Option<ControlSignal> {
+        let memory_target = self.source_memory_handler_target(&perform);
         let mut matched = None;
         for handler in handlers {
-            match self.handler_matches_perform(&perform, handler, Some(frame)) {
+            match self.handler_matches_perform(
+                &perform,
+                handler,
+                Some(frame),
+                memory_target.as_ref(),
+            ) {
                 Ok(true) => {
                     matched = Some(handler);
                     break;
@@ -510,6 +516,7 @@ impl<'a> EvalContext<'a> {
                 handler.arm,
                 request.clone(),
                 frame.generic_bindings(),
+                memory_target,
             ) {
                 Ok(activation) => handler_frame.bind_handler_activation(activation),
                 Err(reason) => {
@@ -1116,6 +1123,7 @@ impl<'a> EvalContext<'a> {
         perform: &PendingPerform,
         handler: &ActiveHandlerArmRecord,
         frame: Option<&Frame>,
+        memory_target: Option<&crate::control::handler_activation::SourceMemoryPlace>,
     ) -> Result<bool, ExecutionFault> {
         if is_error_raise_perform(perform) || is_error_raise_handler(handler) {
             return self.error_raise_matches_record(perform, handler, frame);
@@ -1147,7 +1155,16 @@ impl<'a> EvalContext<'a> {
                 registry: &self.checked.effect_registry,
                 types: &self.checked.type_store,
             };
-            return Ok(coverage.covers(&effect, &actual));
+            if coverage.covers(&effect, &actual) {
+                return Ok(true);
+            }
+            let local_target = memory_target
+                .is_none()
+                .then(|| self.source_memory_handler_target(perform))
+                .flatten();
+            return Ok(memory_target
+                .or(local_target.as_ref())
+                .is_some_and(|target| target.matches_action(self.checked, &effect, &actual)));
         }
         if !action_matches_record(&perform.action, handler) {
             return Ok(false);

@@ -42,12 +42,10 @@ impl EvalContext<'_> {
                 span,
             );
         };
-        if !matches!(value, InterpValue::Prompt(_)) {
-            return ControlSignal::invalid_arguments(
-                "checked inference operand is not a Prompt",
-                span,
-            );
-        }
+        let schema = match self.inference_schema_value(fact) {
+            Ok(schema) => schema,
+            Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+        };
         let mut pending = PendingPerform {
             checked_action: None,
             default_boundary: None,
@@ -55,7 +53,7 @@ impl EvalContext<'_> {
             expr: Some(expr),
             action: action.clone(),
             error_type: None,
-            args: vec![value, InterpValue::Schema(fact.output)],
+            args: vec![value, schema],
             inference: Some(Box::new(self.new_agent_context(fact.method))),
             span,
             continuation: Continuation::BlockValue,
@@ -69,14 +67,31 @@ impl EvalContext<'_> {
         ControlSignal::pending_perform(pending)
     }
 
+    pub(super) fn host_inference_prompt(
+        &self,
+        fact: &etas_types::facts::inference::CheckedAgentInferenceFact,
+        value: &InterpValue,
+    ) -> Result<crate::value::PromptValue, String> {
+        let expected = self
+            .checked
+            .types
+            .expr_types
+            .get(&fact.prompt)
+            .ok_or("inference has no checked prompt operand type")?;
+        if let InterpValue::Prompt(prompt) = value {
+            if self.checked.type_store.get(*expected) == Some(&Type::Prompt) {
+                return Ok(prompt.clone());
+            }
+        }
+        crate::value::source_prompt::to_host(value, *expected)
+    }
+
     fn inference_action_invocation(
         &self,
         pending: &PendingPerform,
         fact: &etas_types::facts::inference::CheckedAgentInferenceFact,
     ) -> Result<crate::control::CheckedActionInvocation, String> {
         if !matches!(pending.action.action_symbol, ResolveResult::Resolved(symbol) if symbol == fact.action_symbol)
-            || self.checked.type_store.get(fact.schema)
-                != Some(&etas_types::Type::Schema(fact.output))
         {
             return Err("inference invocation disagrees with its checked schema or action".into());
         }
@@ -109,7 +124,7 @@ impl EvalContext<'_> {
         let [prompt, schema] = proof.parameters.as_slice() else {
             return Err("inference action has no checked Prompt/Schema payload contract".into());
         };
-        if self.checked.type_store.get(*prompt) != Some(&etas_types::Type::Prompt)
+        if self.checked.types.expr_types.get(&fact.prompt) != Some(prompt)
             || *schema != fact.schema
             || proof.output != fact.output
         {
@@ -173,14 +188,13 @@ impl EvalContext<'_> {
                 span,
             );
         }
-        let [InterpValue::Prompt(prompt), InterpValue::Schema(output)] = perform.args.as_slice()
-        else {
+        let [prompt, schema] = perform.args.as_slice() else {
             return ControlSignal::invalid_arguments(
                 "inference action requires Prompt and checked Schema arguments",
                 span,
             );
         };
-        if *output != fact.output {
+        if !crate::value::source_schema::matches_output(self.checked, schema, fact.output) {
             return ControlSignal::missing_checked_fact(
                 "inference schema does not match its checked output type",
                 span,
@@ -200,7 +214,10 @@ impl EvalContext<'_> {
         }
         let item = fact.agent;
         let output_type = fact.output;
-        let prompt = prompt.clone();
+        let prompt = match self.host_inference_prompt(fact, prompt) {
+            Ok(prompt) => prompt,
+            Err(reason) => return ControlSignal::invalid_arguments(reason, span),
+        };
         let Some(policy) = &perform.inference else {
             return ControlSignal::missing_checked_fact(
                 "inference action is missing its scoped model context",

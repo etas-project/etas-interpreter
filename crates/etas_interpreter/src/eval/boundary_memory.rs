@@ -16,6 +16,7 @@ impl<'a> EvalContext<'a> {
                 | (MemoryOperation::Scan { .. }, MemoryDecode::Page { .. })
                 | (MemoryOperation::Scan { .. }, MemoryDecode::JsonEntries)
                 | (MemoryOperation::Query { .. }, MemoryDecode::JsonEntries)
+                | (_, MemoryDecode::SourceRead { .. })
         ) {
             return Ok(None);
         }
@@ -137,6 +138,21 @@ impl<'a> EvalContext<'a> {
         result: MemoryResult,
     ) -> Result<InterpValue, ExecutionFault> {
         match (memory.decode, result) {
+            (
+                MemoryDecode::SourceRead {
+                    result_type,
+                    selection,
+                },
+                result,
+            ) => self
+                .source_memory_result(&memory.request, result, result_type, selection)
+                .map_err(|error| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::UnhandledRuntimeError,
+                        memory.span,
+                        error,
+                    )
+                }),
             (MemoryDecode::Page { result_type }, MemoryResult::Entries { entries, cursor }) => self
                 .decode_memory_record(
                     super::memory_page::page_value(entries, cursor),

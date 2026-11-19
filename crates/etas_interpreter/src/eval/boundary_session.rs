@@ -1,5 +1,8 @@
 use super::host_value::decode_checked_host_value;
 use super::*;
+use etas_std::RuntimeTypeRole as Role;
+
+mod source;
 
 impl<'a> EvalContext<'a> {
     pub(crate) fn replayed_session_result(
@@ -51,6 +54,9 @@ impl<'a> EvalContext<'a> {
             )
             .map(InterpValue::Conversation)
             .map(Some),
+            (SessionDecode::SourceValue { result_type }, result) => self
+                .decode_source_session_result(&session.request.operation, result, *result_type)
+                .map(Some),
             _ => Ok(None),
         }
     }
@@ -186,12 +192,17 @@ impl<'a> EvalContext<'a> {
                 session,
                 messages,
                 cursor,
+                published_context,
                 ..
             } => {
                 self.events.push(WorkflowEvent::SessionHistoryLoaded {
                     session: session.id.clone(),
                     message_count: messages.len(),
-                    has_summary: matches!(value, Some(InterpValue::Conversation(view)) if view.selected_context.is_some()),
+                    has_summary: match value {
+                        Some(InterpValue::Conversation(view)) => view.selected_context.is_some(),
+                        Some(_) => published_context.is_some(),
+                        None => false,
+                    },
                     cursor: cursor.as_ref().map(|cursor| cursor.opaque.clone()),
                 });
             }
@@ -203,11 +214,21 @@ impl<'a> EvalContext<'a> {
         session: PendingSession,
         error: etas_host::HostError,
     ) -> ControlSignal {
-        let message = format!("session host boundary failed: {}", error.message);
         if let Some(signal) = self.cancellation_signal(session.span) {
             return signal;
         }
-        ControlSignal::runtime_fault(message, session.span)
+        if matches!(session.decode, SessionDecode::SourceValue { .. })
+            && matches!(
+                session.request.operation,
+                etas_host::SessionOperation::Load { .. }
+            )
+        {
+            return self.storage_error_with_continuation(error, session.span, session.continuation);
+        }
+        ControlSignal::runtime_fault(
+            format!("session host boundary failed: {}", error.message),
+            session.span,
+        )
     }
 }
 
@@ -290,6 +311,18 @@ pub(crate) fn session_config_to_host(
         context,
         retention,
     })
+}
+
+pub(super) fn session_std_type(
+    checked: &etas_frontend::CheckedProject,
+    role: Role,
+    name: &str,
+) -> Option<etas_types::TypeId> {
+    checked
+        .types
+        .known_std_types
+        .runtime_type(role)
+        .or_else(|| super::resolve_std_type(checked, &["std", "agent", "session", name]))
 }
 
 pub(super) fn session_message_from_message_value(
@@ -444,10 +477,7 @@ fn context_policy_from_value(
     value: &InterpValue,
     checked: &etas_frontend::CheckedProject,
 ) -> Result<etas_host::ContextPolicy, String> {
-    let ty = checked
-        .types
-        .known_std_types
-        .runtime_type(etas_std::RuntimeTypeRole::ContextPolicy)
+    let ty = session_std_type(checked, Role::ContextPolicy, "ContextPolicy")
         .ok_or("missing checked ContextPolicy identity")?;
     let (name, fields) = crate::value::enum_value::payload(value, ty, checked)?;
     match (name, fields) {
@@ -466,10 +496,7 @@ fn retention_policy_from_value(
     value: &InterpValue,
     checked: &etas_frontend::CheckedProject,
 ) -> Result<etas_host::RetentionPolicy, String> {
-    let ty = checked
-        .types
-        .known_std_types
-        .runtime_type(etas_std::RuntimeTypeRole::RetentionPolicy)
+    let ty = session_std_type(checked, Role::RetentionPolicy, "RetentionPolicy")
         .ok_or("missing checked RetentionPolicy identity")?;
     let (name, fields) = crate::value::enum_value::payload(value, ty, checked)?;
     match (name, fields) {

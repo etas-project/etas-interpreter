@@ -63,6 +63,18 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    fn source_store_field_type(
+        &self,
+        site: FieldAccessSite<'_>,
+        region: etas_types::TypeId,
+    ) -> Option<etas_types::TypeId> {
+        let types = &self.checked.type_store;
+        etas_types::value_representation::memory_region_schema(types, region)?;
+        let output = self.plan.records.field_type(self.checked, site)?;
+        etas_types::value_representation::source_memory_store_parameters(types, output)?;
+        Some(output)
+    }
+
     fn memory_store_types_for_expr(
         &self,
         site: FieldAccessSite<'_>,
@@ -158,7 +170,13 @@ impl<'a> EvalContext<'a> {
             InterpValue::SyntaxBlock(syntax) => {
                 return self.eval_syntax_text_projection(site, syntax, field, span);
             }
-            InterpValue::Nominal { value, .. } => {
+            InterpValue::Nominal { ty, value }
+                if etas_types::value_representation::source_memory_region_parameter(
+                    &self.checked.type_store,
+                    ty,
+                )
+                .is_none() =>
+            {
                 return self.eval_field_value_signal(site, value.into_value(), field, span);
             }
             _ => {}
@@ -299,7 +317,27 @@ impl<'a> EvalContext<'a> {
                 span,
                 "syntax text requires a controlled runtime projection, not constant evaluation",
             )),
-            InterpValue::Nominal { value, .. } => {
+            InterpValue::Nominal { ty, value } => {
+                if let Some(output) = self.source_store_field_type(site, ty) {
+                    let field_value =
+                        crate::value::conversation::protocol::field(&value, "stable_id");
+                    let Ok(InterpValue::String(stable_id)) = field_value else {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "source region has no stable identity",
+                        ));
+                    };
+                    return self
+                        .project_source_memory_store(output, stable_id.as_str(), field)
+                        .map_err(|error| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                error,
+                            )
+                        });
+                }
                 self.try_eval_field_value(site, value.into_value(), field, span)
             }
             InterpValue::Record(fields) => {
@@ -322,6 +360,17 @@ impl<'a> EvalContext<'a> {
                 })
             }
             InterpValue::ResourceHandle { stable_id, ty, .. } => {
+                if let Some(output) = self.source_store_field_type(site, ty) {
+                    return self
+                        .project_source_memory_store(output, &stable_id, field)
+                        .map_err(|error| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                error,
+                            )
+                        });
+                }
                 let (key_type, value_type) =
                     self.memory_store_types_for_resource_field(ty, field, span)?;
                 Ok(InterpValue::MemoryStore {

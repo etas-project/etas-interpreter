@@ -536,12 +536,19 @@ impl EvalMachine {
                             ctx,
                             &pending,
                             ctx.handler_floor..ctx.task.handler_stack.len(),
+                            None,
                         ) {
                             Ok(false) => {
                                 match self.has_outer_action_handler(ctx, &pending) {
                                     Ok(true) => return self.suspend_program_action(ctx, *pending),
                                     Ok(false) => {}
                                     Err(fault) => return MachinePoll::Fault(fault),
+                                }
+                                if self.program_scope.is_some()
+                                    && (ctx.agent_action_uses_caller_context(&pending)
+                                        || ctx.compiler_action_uses_caller_context(&pending))
+                                {
+                                    return self.suspend_program_action(ctx, *pending);
                                 }
                                 if pending.default_boundary.is_some()
                                     && ctx.task.inherited_handlers == 0

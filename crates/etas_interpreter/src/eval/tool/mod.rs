@@ -13,6 +13,25 @@ pub struct ToolInvocation {
     pub(crate) span: etas_core::Span,
 }
 
+impl ToolInvocation {
+    fn parts(&self) -> Result<(&InterpValue, &InterpValue, &InterpValue), String> {
+        use crate::value::conversation::protocol::field;
+        if matches!(
+            self.call.origin,
+            crate::control::AgentOperationOrigin::SourceTool(_)
+        ) {
+            if let InterpValue::Tuple(values) = &self.input
+                && let [tool, args, id] = values.as_slice()
+            {
+                return Ok((tool, args, id));
+            }
+            return Err("Tool.call arguments differ from their checked ABI".into());
+        }
+        let get = |name| field(&self.input, name).map_err(|error| error.message);
+        Ok((get("tool")?, get("args")?, get("id")?))
+    }
+}
+
 pub(in crate::eval) struct ResolvedToolInvocation {
     pub binding: NativeToolBinding,
     pub call_id: String,

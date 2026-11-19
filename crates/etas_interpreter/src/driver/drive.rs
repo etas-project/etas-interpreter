@@ -352,11 +352,14 @@ async fn drive_scope<'host>(
                         crate::api::RunFailure::ExecutionFault(fault),
                     ));
                 }
-                if let Some(signal) = eval.source_console_action(&perform) {
+                if let Some(signal) = eval.source_host_action(&perform) {
                     signal
-                } else if let Some(signal) = eval.source_filesystem_action(&perform) {
-                    signal
-                } else if let Some(target) = super::task::awaited_task(&perform) {
+                } else if eval
+                    .source_compiler_default(&perform, etas_std::CompilerActionRole::TaskYield)
+                {
+                    tokio::task::yield_now().await;
+                    eval.resume_perform_signal(*perform, InterpValue::Unit)
+                } else if let Some(target) = super::task::awaited_task(eval, &perform) {
                     match super::task::await_from_root(
                         eval,
                         host,

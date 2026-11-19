@@ -6,7 +6,6 @@ use crate::{
     eval::{EvalContext, host_value::decode_checked_host_value},
     intrinsic::dispatch::CheckedStdIntrinsicCall,
     orchestration::BoundaryOccurrenceId,
-    value::conversation::protocol,
 };
 use etas_core::{AnalysisDiagnosticCode, Span};
 use etas_host::{HostTraceFieldSensitivity as Sensitivity, HostTracePayload, HostValue};
@@ -43,12 +42,6 @@ impl EvalContext<'_> {
         args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        let Some(context) = self.task.agent_context.clone() else {
-            return ControlSignal::missing_checked_fact(
-                "invoke requires an active checked agent context",
-                span,
-            );
-        };
         let [input]: [InterpValue; 1] = match args.try_into() {
             Ok(args) => args,
             Err(_) => {
@@ -57,6 +50,44 @@ impl EvalContext<'_> {
                     span,
                 );
             }
+        };
+        self.start_checked_tool_invocation(call, input, span)
+    }
+
+    pub(in crate::eval) fn source_tool_action(
+        &mut self,
+        perform: &crate::control::PendingPerform,
+    ) -> Option<ControlSignal> {
+        if self.source_default_signature(perform) != Some(("Tool", "call")) {
+            return None;
+        }
+        let proof = perform
+            .checked_action
+            .as_ref()
+            .expect("checked source tool call");
+        let call = match crate::control::CheckedAgentOperation::source_tool(proof.clone()) {
+            Ok(call) => call,
+            Err(reason) => return Some(ControlSignal::missing_checked_fact(reason, perform.span)),
+        };
+        let signal = self.start_checked_tool_invocation(
+            call,
+            InterpValue::Tuple(perform.args.clone().into()),
+            perform.span,
+        );
+        Some(self.continue_chain_signal(signal, perform.continuation.clone()))
+    }
+
+    fn start_checked_tool_invocation(
+        &mut self,
+        call: crate::control::CheckedAgentOperation,
+        input: InterpValue,
+        span: Span,
+    ) -> ControlSignal {
+        let Some(context) = self.task.agent_context.clone() else {
+            return ControlSignal::missing_checked_fact(
+                "invoke requires an active checked agent context",
+                span,
+            );
         };
         let invocation = Box::new(ToolInvocation {
             call,
@@ -76,8 +107,8 @@ impl EvalContext<'_> {
         invocation: &ToolInvocation,
         rejection: ToolRejection,
     ) -> ControlSignal {
-        let call_id = match protocol::field(&invocation.input, "id") {
-            Ok(InterpValue::String(id)) => id.to_string(),
+        let call_id = match invocation.parts() {
+            Ok((_, _, InterpValue::String(id))) => id.to_string(),
             _ => return ControlSignal::invalid_arguments(rejection.message, invocation.span),
         };
         let error = HostValue::Record(vec![
@@ -101,16 +132,21 @@ impl EvalContext<'_> {
         variant: &str,
         payload: HostValue,
     ) -> ControlSignal {
-        let value = HostValue::Record(vec![
-            ("call_id".into(), HostValue::String(call_id)),
-            (
-                "result".into(),
-                HostValue::Variant {
-                    name: variant.into(),
-                    fields: vec![payload],
-                },
-            ),
-        ]);
+        let result = HostValue::Variant {
+            name: variant.into(),
+            fields: vec![payload],
+        };
+        let value = if matches!(
+            invocation.call.origin,
+            crate::control::AgentOperationOrigin::SourceTool(_)
+        ) {
+            result
+        } else {
+            HostValue::Record(vec![
+                ("call_id".into(), HostValue::String(call_id)),
+                ("result".into(), result),
+            ])
+        };
         match decode_checked_host_value(value, invocation.call.result_type, self.checked) {
             Ok(value) => ControlSignal::Value(value),
             Err(reason) => ControlSignal::missing_checked_fact(reason, invocation.span),

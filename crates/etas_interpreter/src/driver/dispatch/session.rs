@@ -1,5 +1,5 @@
 use crate::{
-    control::{ControlSignal, PendingSession},
+    control::{ControlSignal, PendingSession, SessionDecode},
     eval::EvalContext,
     host::HostServices,
 };
@@ -7,7 +7,7 @@ use crate::{
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
-    session: PendingSession,
+    mut session: PendingSession,
 ) -> ControlSignal {
     let key = match eval.session_boundary_key(&session) {
         Ok(key) => key,
@@ -17,6 +17,19 @@ pub(in crate::driver) async fn dispatch(
         Ok(Some(value)) => return eval.replay_session_signal(session, value),
         Ok(None) => (),
         Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+    }
+    if matches!(session.decode, SessionDecode::SourceValue { .. }) {
+        if let Err(error) = super::policy::authorize_before_boundary(
+            eval,
+            host,
+            eval.boundary_policy_ref(),
+            policy_subject(&session.request.operation),
+        )
+        .await
+        {
+            return eval.session_host_error_signal(session, error);
+        }
+        session.request.authority = eval.host_authority();
     }
     if let Err(error) = session.request.budget.check_time() {
         return eval.session_host_error_signal(session, error);
@@ -43,11 +56,12 @@ pub(in crate::driver) async fn dispatch(
                             crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                             "session",
                             key,
-                            value,
+                            value.clone(),
                             session.span,
                         ) {
                             return ControlSignal::Fault(Box::new(fault));
                         }
+                        return eval.replay_session_signal(session, value);
                     }
                     Ok(None) => eval.record_session_result_event(&result, None),
                     Err(error) => {
@@ -59,5 +73,23 @@ pub(in crate::driver) async fn dispatch(
             Err(error) => eval.session_host_error_signal(session, error),
         },
         Err(error) => eval.session_host_error_signal(session, error),
+    }
+}
+
+fn policy_subject(operation: &etas_host::SessionOperation) -> etas_host::PolicySubject {
+    use etas_host::{HostValue, SessionOperation};
+    let (action, operation, session) = match operation {
+        SessionOperation::Resolve { config } => ("Memory.write", "resolve", &config.id),
+        SessionOperation::Append { message } => ("Memory.write", "append", &message.session.id),
+        SessionOperation::Load { session, .. } => ("Memory.read", "history_page", &session.id),
+    };
+    etas_host::PolicySubject {
+        kind: "session".into(),
+        attributes: vec![
+            ("qualified_action".into(), HostValue::String(action.into())),
+            ("operation".into(), HostValue::String(operation.into())),
+            ("session".into(), HostValue::String(session.clone())),
+            ("resource".into(), HostValue::String(session.clone())),
+        ],
     }
 }

@@ -1,7 +1,7 @@
 use super::{CheckedActionInvocation, GenericBindings};
 use etas_frontend::CheckedProgram;
 use etas_hir::{HirHandlerArmId, HirOwner};
-use etas_types::{CallableGenericParamKind, Type};
+use etas_types::{CallableGenericParamKind, EffectArgRef, Type};
 use std::{
     borrow::Cow,
     collections::{BTreeSet, HashSet},
@@ -14,6 +14,70 @@ pub(crate) struct HandlerActivation {
     pub arm: HirHandlerArmId,
     pub request: CheckedActionInvocation,
     pub bindings: GenericBindings,
+    pub memory_place: Option<SourceMemoryPlace>,
+}
+
+/// The resource selected by an installed source Store request whose shared
+/// action ABI has a wildcard selector. This does not change the action origin.
+#[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
+pub(crate) struct SourceMemoryPlace {
+    region: String,
+    path: Vec<String>,
+}
+
+impl SourceMemoryPlace {
+    pub fn from_store(store: etas_host::StoreRef) -> Self {
+        Self {
+            region: store.region.stable_id,
+            path: store.path,
+        }
+    }
+
+    pub fn matches_action(
+        &self,
+        checked: &etas_frontend::CheckedProject,
+        arm: &etas_effects::Effect,
+        request: &etas_effects::Effect,
+    ) -> bool {
+        let (
+            etas_effects::Effect::AppliedAction(arm),
+            etas_effects::Effect::AppliedAction(request),
+        ) = (arm, request)
+        else {
+            return false;
+        };
+        arm.action == request.action
+            && request.action.tag == etas_effects::MEMORY_TAG
+            && request.args.as_slice() == [EffectArgRef::Wildcard]
+            && Self::matches_selector(checked, &arm.args, &self.region, &self.path) == Some(true)
+    }
+
+    pub fn matches_selector(
+        checked: &etas_frontend::CheckedProject,
+        selector: &[EffectArgRef],
+        region: &str,
+        store_path: &[String],
+    ) -> Option<bool> {
+        let path = match selector {
+            [EffectArgRef::Path(path)] => path,
+            [EffectArgRef::Type(ty)] => match checked.type_store.get(*ty)? {
+                Type::MemoryPlace(place) => &place.segments,
+                _ => return None,
+            },
+            _ => return None,
+        };
+        for (root, fact) in &checked.types.resource_handles {
+            let Some(prefix) = checked.hir.declaration_path(*root) else {
+                continue;
+            };
+            let Some(fields) = path.strip_prefix(prefix.as_slice()) else {
+                continue;
+            };
+            let etas_types::ResourceHandleFact::MemoryRegion { stable_id, .. } = fact;
+            return Some(stable_id == region && store_path.starts_with(fields));
+        }
+        None
+    }
 }
 
 impl HandlerActivation {
@@ -22,6 +86,7 @@ impl HandlerActivation {
         arm: HirHandlerArmId,
         request: CheckedActionInvocation,
         outer: &GenericBindings,
+        memory_place: Option<SourceMemoryPlace>,
     ) -> Result<Self, String> {
         request.validate_origin()?;
         if !std::sync::Arc::ptr_eq(checked, &request.program) {
@@ -48,14 +113,20 @@ impl HandlerActivation {
                 }
             }
         }
-        if !(etas_effects::EffectCoverage {
+        let memory_place = if (etas_effects::EffectCoverage {
             registry: &checked.effect_registry,
             types: &checked.type_store,
         })
         .covers(&effect, &request.effect)
         {
-            return Err("Handler activation differs from its checked action selector".into());
-        }
+            None
+        } else {
+            Some(
+                memory_place
+                    .filter(|place| place.matches_action(checked, &effect, &request.effect))
+                    .ok_or("Handler activation differs from its checked action selector")?,
+            )
+        };
         let signature = checked
             .types
             .action_signatures
@@ -216,6 +287,7 @@ impl HandlerActivation {
             arm,
             request,
             bindings,
+            memory_place,
         })
     }
 }

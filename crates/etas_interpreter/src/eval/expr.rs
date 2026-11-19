@@ -174,6 +174,27 @@ impl<'a> EvalContext<'a> {
                 args,
                 span,
             } => {
+                if self.checked.types.trusted_literals.contains(&expr) {
+                    let [etas_hir::HirArg::Positional(argument)] = args.as_slice() else {
+                        return ControlSignal::missing_checked_fact(
+                            "trusted literal requires one argument",
+                            *span,
+                        );
+                    };
+                    let HirExpr::Literal(HirLiteral::String { value, .. }) =
+                        &self.checked.hir.exprs[*argument]
+                    else {
+                        return ControlSignal::missing_checked_fact(
+                            "trusted literal requires its checked string literal",
+                            *span,
+                        );
+                    };
+                    let ty = self.checked.types.expr_types[&expr];
+                    return ControlSignal::Value(crate::value::source_prompt::trusted_literal(
+                        ty,
+                        value.clone().into(),
+                    ));
+                }
                 let Some(type_args) = self.checked_type_args_from_generic_args(expr, generic_args)
                 else {
                     return ControlSignal::missing_checked_fact(

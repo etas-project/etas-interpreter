@@ -23,6 +23,51 @@ pub(super) fn interp_to_bounded_host_value(
     )
 }
 
+/// Project a native map or the checked Etas Map record to a host map.
+pub(in crate::eval) fn checked_map_to_host(
+    value: &InterpValue,
+    checked: &etas_frontend::CheckedProject,
+    limits: &etas_host::StorageLimits,
+) -> Result<HostValue, String> {
+    let source_map = match value {
+        InterpValue::Nominal { ty, .. } => match checked.type_store.get(*ty) {
+            Some(Type::Applied { constructor, .. }) => {
+                super::resolve_std_type(checked, &["std", "collections", "Map"])
+                    == Some(TypeId(constructor.0))
+            }
+            _ => false,
+        },
+        _ => false,
+    };
+    let wire = interp_to_bounded_host_value(value, &mut limits.value_budget())
+        .map_err(|error| error.message)?;
+    match wire {
+        wire @ HostValue::Map(_) => Ok(wire),
+        HostValue::Record(fields) if source_map => {
+            let entries = fields
+                .into_iter()
+                .find_map(|(field, value)| match (field.as_str(), value) {
+                    ("entries", HostValue::List(entries)) => Some(entries),
+                    _ => None,
+                })
+                .ok_or("checked source Map has no entry list")?;
+            let entries = entries
+                .into_iter()
+                .map(|entry| match entry {
+                    HostValue::List(values) => {
+                        let [key, value]: [_; 2] =
+                            values.try_into().map_err(|_| "Map entry is not a pair")?;
+                        Ok((key, value))
+                    }
+                    _ => Err("Map entry is not a pair"),
+                })
+                .collect::<Result<_, _>>()?;
+            Ok(HostValue::Map(entries))
+        }
+        _ => Err("host projection requires a checked map".into()),
+    }
+}
+
 pub(super) fn interp_to_host_json_string(
     value: &InterpValue,
 ) -> Result<String, etas_host::HostError> {
@@ -109,7 +154,7 @@ pub(crate) fn decode_checked_host_value(
         value,
         expected,
         &checked.type_store,
-        &super::host_type_environment::HostTypeEnvironment::with_checked_types(&checked.types),
+        &super::host_type_environment::HostTypeEnvironment::with_checked_types(checked),
     )
 }
 
@@ -297,6 +342,26 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                     nominal.name
                 )
             })?;
+            let value = match value {
+                HostValue::Map(entries)
+                    if substitutions.source_map == Some(TypeId(constructor.0)) =>
+                {
+                    let length = entries.len() as u128;
+                    HostValue::Record(vec![
+                        (
+                            "entries".into(),
+                            HostValue::List(
+                                entries
+                                    .into_iter()
+                                    .map(|(key, value)| HostValue::List(vec![key, value]))
+                                    .collect(),
+                            ),
+                        ),
+                        ("length".into(), HostValue::UInt(length)),
+                    ])
+                }
+                value => value,
+            };
             host_to_typed_interp_value_with_substitutions(
                 value,
                 representation,

@@ -152,6 +152,9 @@ pub(crate) fn validate<'a>(
                     pending.push(Task::Visit(Seed::new(inner, representation), false));
                 }
             }
+            (_, Node::Trust(etas_types::TrustWrapper::Trusted, literal))
+                if crate::value::source_prompt::evidence_type(checked, expected)
+                    && matches!(literal.node(), Node::String(_)) => {}
             (Type::Trust { wrapper, inner }, Node::Trust(actual, value)) if wrapper == &actual => {
                 pending.push(Task::Visit(Seed::new(value, *inner), false))
             }

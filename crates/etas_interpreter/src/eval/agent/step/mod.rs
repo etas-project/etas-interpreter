@@ -25,7 +25,47 @@ impl EvalContext<'_> {
         args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
-        match self.prepare_agent_step(call, args, span) {
+        let controller_round = matches!(
+            call.origin,
+            crate::control::AgentOperationOrigin::Controller { .. }
+        );
+        self.start_agent_step(call.result_type, args, controller_round, span)
+    }
+
+    pub(in crate::eval) fn source_agent_step(
+        &mut self,
+        perform: &PendingPerform,
+    ) -> Option<ControlSignal> {
+        if !self.source_compiler_default(perform, etas_std::CompilerActionRole::AgentStep) {
+            return None;
+        }
+        let proof = perform
+            .checked_action
+            .as_ref()
+            .expect("checked source step");
+        let signal = self.start_agent_step(proof.output, perform.args.clone(), false, perform.span);
+        Some(self.continue_chain_signal(signal, perform.continuation.clone()))
+    }
+
+    pub(in crate::eval) fn agent_action_uses_caller_context(
+        &self,
+        perform: &PendingPerform,
+    ) -> bool {
+        self.task.agent_context.as_ref().is_some_and(|context| {
+            !std::sync::Arc::ptr_eq(&context.program.checked, self.checked)
+                && (self.source_compiler_default(perform, etas_std::CompilerActionRole::AgentStep)
+                    || self.source_default_signature(perform) == Some(("Tool", "call")))
+        })
+    }
+
+    fn start_agent_step(
+        &mut self,
+        result_type: etas_types::TypeId,
+        args: Vec<InterpValue>,
+        controller_round: bool,
+        span: Span,
+    ) -> ControlSignal {
+        match self.prepare_agent_step(result_type, args, controller_round, span) {
             Ok(model) => ControlSignal::pending_model(model),
             Err(fault) => ControlSignal::Fault(Box::new(fault)),
         }
@@ -33,8 +73,9 @@ impl EvalContext<'_> {
 
     fn prepare_agent_step(
         &mut self,
-        call: &crate::control::CheckedAgentOperation,
+        result_type: etas_types::TypeId,
         args: Vec<InterpValue>,
+        controller_round: bool,
         span: Span,
     ) -> Result<PendingModel, ExecutionFault> {
         let missing =
@@ -44,7 +85,7 @@ impl EvalContext<'_> {
                 "step requires an active checked agent request context",
             ));
         };
-        let Some(Type::Applied { args: types, .. }) = self.checked.type_store.get(call.result_type)
+        let Some(Type::Applied { args: types, .. }) = self.checked.type_store.get(result_type)
         else {
             return Err(missing("step has no checked StepResult<C, O> result"));
         };
@@ -59,16 +100,10 @@ impl EvalContext<'_> {
                 "step context does not match the active checked agent method",
             ));
         }
-        let [
-            InterpValue::Conversation(conversation),
-            InterpValue::Schema(schema),
-        ]: [InterpValue; 2] = args
+        let [conversation, schema]: [InterpValue; 2] = args
             .try_into()
-            .map_err(|_| missing("step requires Conversation and Schema<O>"))?
-        else {
-            return Err(missing("step arguments disagree with the checked ABI"));
-        };
-        if schema != output {
+            .map_err(|_| missing("step requires Conversation and Schema<O>"))?;
+        if !crate::value::source_schema::matches_output(self.checked, &schema, output) {
             return Err(missing("step output and supplied schema disagree"));
         }
         let method = self
@@ -89,19 +124,17 @@ impl EvalContext<'_> {
         let mut native_tools = Vec::new();
         let mut trace_plan = Vec::new();
         self.apply_agent_annotations(agent, &mut policy, &mut native_tools, &mut trace_plan)?;
-        if matches!(
-            call.origin,
-            crate::control::AgentOperationOrigin::Controller { .. }
-        ) {
+        if controller_round {
             policy.tools = context.policy.tools.clone();
             policy.tool_choice = context.policy.tool_choice.clone();
         }
-        let messages = self.step_messages(&conversation, &native_tools, span)?;
-        let response_schema = if self.type_is_string(output) {
-            None
-        } else {
-            Some(self.host_schema_for_type(output, span, 0)?)
+        let messages = match conversation {
+            InterpValue::Conversation(conversation) => {
+                self.step_messages(&conversation, &native_tools, span)?
+            }
+            value => self.source_step_messages(&value, &native_tools, span)?,
         };
+        let response_schema = self.step_response_schema(&schema, output, span)?;
         self.model_provider_supports_request(&policy, response_schema.is_some(), span)?;
         let budget = match policy.budget.clone() {
             Some(limits) => self.host_budget().with_limits(limits).map_err(|error| {
@@ -132,7 +165,7 @@ impl EvalContext<'_> {
                 budget,
             },
             decode: ModelDecode::Step {
-                result: call.result_type,
+                result: result_type,
                 output,
             },
             span,

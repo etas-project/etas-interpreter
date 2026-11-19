@@ -142,6 +142,9 @@ pub(super) fn target<'c>(a: &T, b: &T, context: &'c Context<'_>) -> Comparison<C
             return Comparison::Ready(a == b);
         }
         (T::AgentRevision(a), T::AgentRevision(b)) => return Comparison::Ready(a == b),
+        (T::DerivedResponseDecoder(a), T::DerivedResponseDecoder(b)) => {
+            return Comparison::Ready(a == b);
+        }
         (T::NominalConstructor(a), T::NominalConstructor(b)) => return Comparison::Ready(a == b),
         (T::PureIntrinsic(a), T::PureIntrinsic(b)) => return Comparison::Ready(a == b),
         (T::StdIntrinsic(a), T::StdIntrinsic(b)) => return Comparison::Ready(a == b),

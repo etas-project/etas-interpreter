@@ -226,6 +226,21 @@ impl RevisionTypeBridge {
         &self.original
     }
 
+    pub(crate) fn native_method(
+        &self,
+        item: etas_hir::HirItemId,
+        candidate: bool,
+    ) -> Option<&etas_code::MethodId> {
+        let callables = if candidate {
+            &self.candidate_callables
+        } else {
+            &self.original_callables
+        };
+        callables
+            .iter()
+            .find_map(|(identity, owner)| (*owner == item).then(|| identity.as_method()).flatten())
+    }
+
     pub(crate) fn bind_runtime_owner(
         &self,
         owner: &std::sync::Arc<crate::api::code::PreparedCodeRevision>,
@@ -363,6 +378,14 @@ impl RevisionTypeBridge {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
         self.actions.to_candidate(action)
+    }
+
+    pub(crate) fn corresponding_action(
+        &self,
+        action: &etas_effects::ActionRef,
+        forward: bool,
+    ) -> Option<etas_effects::ActionRef> {
+        self.actions.corresponding_action(action, forward)
     }
 
     pub(crate) fn action_to_original(

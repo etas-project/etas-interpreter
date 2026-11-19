@@ -15,6 +15,9 @@ impl ToolInvocationSnapshot {
                 AgentOperationOrigin::Standard(call) => {
                     Origin::Standard(context.call_target(&CallTarget::StdIntrinsic(call.clone()))?)
                 }
+                AgentOperationOrigin::SourceTool(proof) => {
+                    Origin::Source(proof.checkpoint_evidence(context)?)
+                }
                 AgentOperationOrigin::Controller {
                     inference,
                     operation: AgentOperationKind::Invoke,
@@ -50,6 +53,21 @@ impl ToolInvocationSnapshot {
                 inference,
                 AgentOperationKind::Invoke,
             )?,
+            Origin::Source(evidence) => {
+                let proof = crate::control::CheckedActionInvocation::restore_evidence(
+                    &evidence,
+                    context
+                        .revisions
+                        .as_deref()
+                        .ok_or("source tool invocation has no checked revisions")?,
+                )?;
+                if !std::sync::Arc::ptr_eq(&proof.program, &request_context.program.checked) {
+                    return Err(
+                        "source tool invocation differs from its checked request program".into(),
+                    );
+                }
+                CheckedAgentOperation::source_tool(proof)?
+            }
         };
         Ok(Box::new(ToolInvocation {
             call,

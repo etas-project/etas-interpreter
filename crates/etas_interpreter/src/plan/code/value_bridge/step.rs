@@ -50,6 +50,25 @@ impl Walk<'_> {
             self.values.push(value);
             return Ok(());
         }
+        if let InterpValue::Trust {
+            wrapper: etas_types::TrustWrapper::Trusted,
+            value: literal,
+        } = &value
+            && matches!(literal.as_ref(), InterpValue::String(_))
+            && crate::value::source_prompt::evidence_type(self.source, from)
+            && crate::value::source_prompt::evidence_type(self.target, to)
+        {
+            self.values.push(value);
+            return Ok(());
+        }
+        if matches!(&value, InterpValue::Json(_))
+            && self.source.types.known_std_types.json_value == Some(from)
+            && self.target.types.known_std_types.json_value == Some(to)
+        {
+            // The immutable JSON payload carries no program-local type ids.
+            self.values.push(value);
+            return Ok(());
+        }
         if matches!(
             (source, target),
             (Type::Existential { .. }, Type::Existential { .. })

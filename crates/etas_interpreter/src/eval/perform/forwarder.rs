@@ -54,30 +54,18 @@ impl EvalContext<'_> {
             .clone()
             .map(|context| self.enter_agent_context(context));
         let signal = match *boundary {
-            crate::control::DefaultActionBoundary::AgentControllerStep {
-                inference,
-                conversation,
-                span,
-            } => {
+            crate::control::DefaultActionBoundary::AgentControllerStep { inference } => {
                 match crate::control::CheckedAgentOperation::controller(
                     self.checked,
                     inference,
                     crate::control::AgentOperationKind::Step,
                 ) {
-                    Ok(operation) => {
-                        let Some(fact) = self.checked.types.agent_inferences.get(&inference) else {
-                            return ControlSignal::missing_checked_fact(
-                                "controller has no inference fact",
-                                span,
-                            );
-                        };
-                        self.execute_checked_agent_step(
-                            &operation,
-                            vec![conversation, InterpValue::Schema(fact.output)],
-                            span,
-                        )
-                    }
-                    Err(error) => ControlSignal::missing_checked_fact(error, span),
+                    Ok(operation) => self.execute_checked_agent_step(
+                        &operation,
+                        std::mem::take(&mut perform.args),
+                        perform.span,
+                    ),
+                    Err(error) => ControlSignal::missing_checked_fact(error, perform.span),
                 }
             }
             crate::control::DefaultActionBoundary::Console(pending) => {

@@ -9,6 +9,83 @@ use etas_host::console::{ConsoleOperation, ConsoleRequest};
 use etas_types::{EffectArgRef, PrimitiveType, Type};
 
 impl EvalContext<'_> {
+    pub(crate) fn source_compiler_default(
+        &self,
+        perform: &PendingPerform,
+        role: etas_std::CompilerActionRole,
+    ) -> bool {
+        let (Some(proof), Some(signature)) = (
+            perform.checked_action.as_ref(),
+            self.checked
+                .effect_registry
+                .compiler_action(&self.checked.std_registry, role),
+        ) else {
+            return false;
+        };
+        let action = etas_effects::ActionRef {
+            tag: signature.owner,
+            action: signature.id,
+        };
+        self.checked.hir.source_standard_types
+            && std::sync::Arc::ptr_eq(&proof.program, self.checked)
+            && signature.has_default_handler
+            && self.plan.action_mediation.has_default_action(&action)
+            && match &proof.effect {
+                etas_effects::Effect::Action(actual) => actual == &action,
+                etas_effects::Effect::AppliedAction(actual) => actual.action == action,
+                _ => false,
+            }
+    }
+
+    pub(crate) fn source_host_action(&mut self, perform: &PendingPerform) -> Option<ControlSignal> {
+        self.source_console_action(perform)
+            .or_else(|| self.source_filesystem_action(perform))
+            .or_else(|| self.source_network_action(perform))
+            .or_else(|| self.source_browser_action(perform))
+            .or_else(|| self.source_secret_action(perform))
+            .or_else(|| self.source_command_action(perform))
+            .or_else(|| self.source_session_action(perform))
+            .or_else(|| self.source_memory_action(perform))
+            .or_else(|| self.source_agent_step(perform))
+            .or_else(|| self.source_tool_action(perform))
+    }
+
+    pub(in crate::eval) fn source_default_signature<'a>(
+        &'a self,
+        perform: &PendingPerform,
+    ) -> Option<(&'a str, &'a str)> {
+        let proof = perform.checked_action.as_ref()?;
+        let action = match &proof.effect {
+            etas_effects::Effect::Action(action) => action,
+            etas_effects::Effect::AppliedAction(instance) => &instance.action,
+            _ => return None,
+        };
+        if !self.checked.hir.source_standard_types
+            || !std::sync::Arc::ptr_eq(&proof.program, self.checked)
+            || !self.plan.action_mediation.has_default_action(action)
+        {
+            return None;
+        }
+        let registry = &self.checked.effect_registry;
+        let signature = registry.action_signature(action)?;
+        if !signature.has_default_handler {
+            return None;
+        }
+        let owner = registry.tag_name(action.tag)?.rsplit('.').next()?;
+        let name = signature.name.as_str();
+        // Actions introduced in the source SDK can have session-local ids.
+        // Only the action under the reserved std package supplies the default.
+        if registry.standard_action(action.action).is_none()
+            && registry
+                .action_by_name(&format!("std.effects.{owner}.{name}"))
+                .as_ref()
+                != Some(action)
+        {
+            return None;
+        }
+        Some((owner, name))
+    }
+
     pub(crate) fn source_console_action(
         &mut self,
         perform: &PendingPerform,

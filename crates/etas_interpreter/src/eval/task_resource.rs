@@ -69,13 +69,17 @@ impl EvalContext<'_> {
                     self.resource_fields(value, *symbol, fields)?
                 }
             };
-            let InterpValue::MemoryStore {
-                region_stable_id,
-                path,
-                ..
-            } = store
-            else {
-                return None;
+            let (region, path) = match store {
+                InterpValue::MemoryStore {
+                    region_stable_id,
+                    path,
+                    ..
+                } => (region_stable_id, path),
+                InterpValue::Nominal { ty, .. } => {
+                    let store = self.source_memory_store(&store, ty).ok()?;
+                    (store.region.stable_id, store.path)
+                }
+                _ => return None,
             };
             let key = if let Some(expr) = selector.key {
                 let value = self.resource_expr(expr, &locals, captured)?;
@@ -97,11 +101,7 @@ impl EvalContext<'_> {
             };
             keys.push(RuntimeResourceKey {
                 effect: EffectIdentity::Memory,
-                selector: FrozenSelector {
-                    region: region_stable_id,
-                    path,
-                    key,
-                },
+                selector: FrozenSelector { region, path, key },
             });
         }
         for call in &plan.calls {

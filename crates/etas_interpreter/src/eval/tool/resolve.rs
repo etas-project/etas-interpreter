@@ -1,6 +1,5 @@
 use super::*;
 use crate::{eval::EvalContext, value::conversation::protocol};
-use etas_types::Type;
 
 impl EvalContext<'_> {
     pub(in crate::eval) fn resolve_tool_invocation(
@@ -25,12 +24,11 @@ impl EvalContext<'_> {
                 "tool context belongs to a different checked program",
             ));
         }
-        let Some(Type::Applied { args, .. }) =
-            self.checked.type_store.get(invocation.call.result_type)
-        else {
-            return Err(missing("invoke requires its checked ToolResult<C> ABI"));
-        };
-        if args.len() != 1 || !self.agent_context_matches(args[0], invocation.context.method) {
+        let context_type = invocation
+            .call
+            .tool_context(self.checked)
+            .ok_or_else(|| missing("invoke requires its checked agent context"))?;
+        if !self.agent_context_matches(context_type, invocation.context.method) {
             return Err(missing(
                 "invoke context differs from the active checked agent method",
             ));
@@ -41,15 +39,14 @@ impl EvalContext<'_> {
             InterpValue::String(text) => Ok(text.to_string()),
             _ => Err(reject("tool protocol identity is not text".into())),
         };
-        let call_id = text(field(&invocation.input, "id")?)?;
+        let (tool, args, id) = invocation.parts().map_err(reject)?;
+        let call_id = text(id)?;
         if call_id.is_empty() {
             return Err(reject("tool call ID must be nonempty".into()));
         }
-        let tool = field(&invocation.input, "tool")?;
         let identity = text(field(tool, "id")?)?;
         let revision = text(field(tool, "revision")?)?;
-        let args =
-            crate::eval::interp_to_host_value(field(&invocation.input, "args")?).map_err(reject)?;
+        let args = crate::eval::interp_to_host_value(args).map_err(reject)?;
         self.storage_limits
             .result_value_size(&args)
             .map_err(|error| ToolRejection {

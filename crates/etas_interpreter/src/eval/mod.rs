@@ -70,6 +70,7 @@ mod reflection;
 pub(crate) mod replay;
 pub(crate) mod residual;
 mod run_state;
+mod source_memory;
 pub(crate) use run_state::CpuJobRecord;
 pub(crate) use run_state::{EvalRunState, TaskLocalState};
 mod collection_call;

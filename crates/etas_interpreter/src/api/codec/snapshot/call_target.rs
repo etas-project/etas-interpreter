@@ -14,9 +14,11 @@ pub(super) fn frame<'a>(
         return Ok(());
     }
     let activations = frame.handler_activations.iter().map(|activation| {
-        let metadata = json!({"arm":activation.arm.0, "types":activation.types, "parameters":activation.parameters, "rows":activation.rows});
-        budget.json_metadata(&metadata)?;
-        let mut value = metadata;
+        let mut value = json!({"arm":activation.arm.0, "types":activation.types, "parameters":activation.parameters, "rows":activation.rows});
+        if let Some(place) = &activation.memory_place {
+            value["memory_place"] = json!(place);
+        }
+        budget.json_metadata(&value)?;
         value["request"] = crate::api::codec::checkpoint::suspension::encode_evidence(&activation.request,budget)?;
         Ok(value)
     }).collect::<Result<Vec<_>, crate::api::codec::InterpreterCodecError>>()?;
@@ -96,6 +98,9 @@ pub(super) fn encode<'a>(
         }
         T::ToolItem(item) => *slot = json!({"kind":"tool","item":item.0}),
         T::EnumVariant(symbol) => *slot = json!({"kind":"enum_variant","symbol":symbol.0}),
+        T::DerivedResponseDecoder(ty) => {
+            *slot = json!({"kind":"derived_response_decoder","ty":ty.0})
+        }
         T::NominalConstructor(ty) => *slot = json!({"kind":"nominal_constructor","ty":ty.0}),
         T::Lambda { expr, captured } => {
             *slot = json!({"kind":"lambda","expr":expr.0,"captured":null});

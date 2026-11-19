@@ -2,6 +2,7 @@ use super::storage::{field, invalid, text};
 use super::*;
 use etas_host::session::{SessionContextContent, SessionHistoryFence};
 use etas_host::{HostError, HostErrorCode};
+use etas_std::RuntimeTypeRole as Role;
 
 impl EvalContext<'_> {
     pub(super) fn checked_session_config(
@@ -9,12 +10,12 @@ impl EvalContext<'_> {
         value: &InterpValue,
         expected: Option<&etas_types::TypeId>,
     ) -> Result<etas_host::SessionConfig, HostError> {
-        let ty = self
-            .checked
-            .types
-            .known_std_types
-            .runtime_type(etas_std::RuntimeTypeRole::SessionConfig)
-            .ok_or_else(|| invalid("missing checked SessionConfig type"))?;
+        let ty = super::boundary_session::session_std_type(
+            self.checked,
+            Role::SessionConfig,
+            "SessionConfig",
+        )
+        .ok_or_else(|| invalid("missing checked SessionConfig type"))?;
         if expected != Some(&ty) {
             return Err(invalid("config does not match checked SessionConfig ABI"));
         }
@@ -31,11 +32,12 @@ impl EvalContext<'_> {
         &self,
         value: &InterpValue,
     ) -> Result<crate::value::SessionConfigValue, String> {
-        use etas_std::RuntimeTypeRole as Role;
-        let known = &self.checked.types.known_std_types;
-        let config = known
-            .runtime_type(Role::SessionConfig)
-            .ok_or("missing checked SessionConfig identity")?;
+        let config = super::boundary_session::session_std_type(
+            self.checked,
+            Role::SessionConfig,
+            "SessionConfig",
+        )
+        .ok_or("missing checked SessionConfig identity")?;
         crate::value::contract::runtime::validate_value(
             self.checked,
             self.plan,
@@ -57,18 +59,10 @@ impl EvalContext<'_> {
                 .map(|(_, value)| value)
                 .ok_or_else(|| format!("SessionConfig is missing {name}"))
         };
-        let id_type = known
-            .runtime_type(Role::SessionId)
-            .ok_or("missing checked SessionId identity")?;
-        let InterpValue::Nominal { ty, value: id } = get("id")? else {
-            return Err("SessionConfig.id is not a checked SessionId".into());
-        };
-        let InterpValue::String(id) = id.as_ref() else {
+        let InterpValue::String(id) = super::std_call::nominal_representation_ref(get("id")?)
+        else {
             return Err("SessionId has no string representation".into());
         };
-        if *ty != id_type {
-            return Err("SessionConfig.id has a different nominal identity".into());
-        }
         Ok(crate::value::SessionConfigValue {
             id: id.to_string(),
             context: Some(Box::new(get("context")?.clone())),
@@ -101,11 +95,16 @@ impl EvalContext<'_> {
             return Err(invalid("invalid context fields"));
         }
         let text = text(fields, "text", &self.storage_limits)?;
-        let InterpValue::Map(provenance) = field(fields, "provenance")? else {
+        let limits = self.storage_limits.clone();
+        let HostValue::Map(provenance) = super::host_value::checked_map_to_host(
+            field(fields, "provenance")?,
+            self.checked,
+            &limits,
+        )
+        .map_err(invalid)?
+        else {
             return Err(invalid("context provenance must be Map<string,string>"));
         };
-        let provenance = provenance.borrow();
-        let limits = self.storage_limits.clone();
         if provenance.len() > limits.max_nodes {
             return Err(exceeded());
         }
@@ -133,9 +132,9 @@ impl EvalContext<'_> {
         })
     }
 }
-fn strings(entry: &(InterpValue, InterpValue)) -> Result<(&str, &str), HostError> {
+fn strings(entry: &(HostValue, HostValue)) -> Result<(&str, &str), HostError> {
     match entry {
-        (InterpValue::String(key), InterpValue::String(value)) => Ok((key, value)),
+        (HostValue::String(key), HostValue::String(value)) => Ok((key, value)),
         _ => Err(invalid("invalid context provenance entry")),
     }
 }

@@ -213,6 +213,9 @@ fn decode_leaf<T: TargetValue>(
             captured: T::frame(required(value, "captured")?, cache)?,
         },
         "enum_variant" => DecodedTarget::EnumVariant(SymbolId(required_u32(value, "symbol")?)),
+        "derived_response_decoder" => {
+            DecodedTarget::DerivedResponseDecoder(etas_types::TypeId(required_u32(value, "ty")?))
+        }
         "nominal_constructor" => {
             DecodedTarget::NominalConstructor(etas_types::TypeId(required_u32(value, "ty")?))
         }

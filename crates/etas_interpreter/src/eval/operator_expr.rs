@@ -364,6 +364,15 @@ impl<'a> EvalContext<'a> {
             (InterpValue::Array(lhs), InterpValue::Array(rhs)) => {
                 Ok(InterpValue::Array(lhs.concat(rhs)))
             }
+            (InterpValue::Bytes(lhs), InterpValue::Bytes(rhs)) => {
+                lhs.concat(rhs).map(InterpValue::Bytes).map_err(|_| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::InvalidArguments,
+                        span,
+                        "concatenated bytes exceed representable capacity",
+                    )
+                })
+            }
             (InterpValue::List(mut lhs), InterpValue::List(rhs)) => {
                 lhs.append(rhs);
                 Ok(InterpValue::List(lhs))
@@ -372,7 +381,7 @@ impl<'a> EvalContext<'a> {
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
                 format!(
-                    "addition expects ints, strings, arrays, or lists, got {:?} and {:?}",
+                    "addition expects numbers, strings, bytes, arrays, or lists, got {:?} and {:?}",
                     lhs, rhs
                 ),
             )),

@@ -17,7 +17,7 @@ pub(super) fn from_serde(
     )
 }
 
-pub(super) fn from_serde_with_layouts(
+pub(in crate::eval) fn from_serde_with_layouts(
     value: &serde_json::Value,
     expected: TypeId,
     store: &TypeStore,

@@ -335,8 +335,9 @@ pub(in crate::driver) async fn validate_replayed_memory_version(
     replayed: &InterpValue,
 ) -> bool {
     match (&memory.request.operation, memory.decode) {
-        (MemoryOperation::Scan { .. }, crate::eval::MemoryDecode::Page { .. }) => {
-            validate_replayed_memory_page(eval, host, memory, replayed).await
+        (_, crate::eval::MemoryDecode::SourceRead { .. })
+        | (MemoryOperation::Scan { .. }, crate::eval::MemoryDecode::Page { .. }) => {
+            validate_replayed_memory_result(eval, host, memory, replayed).await
         }
         (MemoryOperation::Get { .. }, _) => {
             validate_replayed_memory_get_version(eval, host, memory, replayed).await
@@ -352,7 +353,7 @@ pub(in crate::driver) async fn validate_replayed_memory_version(
     }
 }
 
-async fn validate_replayed_memory_page(
+async fn validate_replayed_memory_result(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
     memory: &PendingMemory,
@@ -368,14 +369,14 @@ async fn validate_replayed_memory_page(
     let message = match result {
         Ok(result) => match eval.memory_result_value(memory, result) {
             Ok(actual) if &actual == replayed => return true,
-            Ok(_) => "checkpoint memory page no longer matches the recorded page".to_owned(),
+            Ok(_) => "checkpoint memory result no longer matches the recorded value".to_owned(),
             Err(fault) => {
                 eval.diagnostics.push(fault.into_diagnostic());
                 return false;
             }
         },
         Err(error) => format!(
-            "checkpoint memory page validation failed: {}",
+            "checkpoint memory result validation failed: {}",
             error.message
         ),
     };

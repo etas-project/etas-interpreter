@@ -13,7 +13,7 @@ impl EvalContext<'_> {
         args: &[InterpValue],
         span: Span,
     ) -> ControlSignal {
-        match self.session_context_operation(kind, checked, args) {
+        match self.session_context_operation(kind, &checked.parameter_types, args) {
             Ok(operation) if kind == SessionContextCallable::Prepare => {
                 let SessionWriteOperation::PublishContext(publication) = operation else {
                     return ControlSignal::missing_checked_fact(
@@ -39,41 +39,48 @@ impl EvalContext<'_> {
                     Err(error) => ControlSignal::missing_checked_fact(error, span),
                 }
             }
-            Ok(operation) => ControlSignal::pending_host(PendingHostBoundary {
-                request: HostBoundaryRequest::SessionContext(SessionWriteRequest {
-                    id: self.next_host_request_id(),
-                    operation,
-                    authority: self.host_authority(),
-                    trace: self.host_trace(),
-                    budget: self.host_budget(),
-                }),
-                decode: HostBoundaryDecode::SessionContext {
-                    result_type: checked.result_type,
-                },
-                span,
-                continuation: Continuation::BlockValue,
-            }),
+            Ok(operation) => self.pending_session_context(operation, checked.result_type, span),
             Err(error) => self.storage_error_signal(error, span),
         }
     }
-    fn session_context_operation(
+
+    pub(super) fn pending_session_context(
+        &mut self,
+        operation: SessionWriteOperation,
+        result_type: etas_types::TypeId,
+        span: Span,
+    ) -> ControlSignal {
+        ControlSignal::pending_host(PendingHostBoundary {
+            request: HostBoundaryRequest::SessionContext(SessionWriteRequest {
+                id: self.next_host_request_id(),
+                operation,
+                authority: self.host_authority(),
+                trace: self.host_trace(),
+                budget: self.host_budget(),
+            }),
+            decode: HostBoundaryDecode::SessionContext { result_type },
+            span,
+            continuation: Continuation::BlockValue,
+        })
+    }
+
+    pub(super) fn session_context_operation(
         &self,
         kind: SessionContextCallable,
-        checked: &CheckedStdIntrinsicCall,
+        parameter_types: &[etas_types::TypeId],
         args: &[InterpValue],
     ) -> Result<SessionWriteOperation, HostError> {
         let (config, rest) = args
             .split_first()
             .ok_or_else(|| invalid("context operation requires session"))?;
-        let config = self.checked_session_config(config, checked.parameter_types.first())?;
+        let config = self.checked_session_config(config, parameter_types.first())?;
         let session = SessionRef { id: config.id };
         let limits = self.storage_limits.clone();
         match (kind, rest) {
             (SessionContextCallable::Reconcile, [operation]) => {
                 Ok(SessionWriteOperation::ReconcileContext {
                     session,
-                    operation: self
-                        .checked_operation_ref(operation, checked.parameter_types.get(1))?,
+                    operation: self.checked_operation_ref(operation, parameter_types.get(1))?,
                 })
             }
             (SessionContextCallable::Prepare, [fence, content]) => {
@@ -89,8 +96,7 @@ impl EvalContext<'_> {
             (SessionContextCallable::Publish, [fence, content, operation]) => {
                 let fence = self.session_history_fence(fence)?;
                 let content = self.session_context_content(content)?;
-                let operation =
-                    self.checked_operation_ref(operation, checked.parameter_types.get(3))?;
+                let operation = self.checked_operation_ref(operation, parameter_types.get(3))?;
                 let expected = etas_host::session::context_operation_ref(
                     &session,
                     &fence,

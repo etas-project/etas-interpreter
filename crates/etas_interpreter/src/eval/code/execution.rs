@@ -15,6 +15,27 @@ pub(crate) struct CompilerInvocation {
 }
 
 impl EvalContext<'_> {
+    pub(in crate::eval) fn compiler_action_uses_caller_context(
+        &self,
+        perform: &PendingPerform,
+    ) -> bool {
+        if !matches!(
+            self.source_default_signature(perform),
+            Some(("Code", "compile" | "check"))
+        ) {
+            return false;
+        }
+        let [value] = perform.args.as_slice() else {
+            return false;
+        };
+        crate::value::source_code::Definition::input(value, self.checked).is_ok_and(|definition| {
+            !std::sync::Arc::ptr_eq(
+                definition.backend().catalog().checked_program(),
+                self.checked,
+            )
+        })
+    }
+
     pub(crate) fn compiler_invocation(
         &mut self,
         perform: &PendingPerform,
@@ -31,6 +52,9 @@ impl EvalContext<'_> {
         };
         let action = match effect {
             etas_effects::Effect::Action(action) => action,
+            etas_effects::Effect::AppliedAction(instance) if instance.args.is_empty() => {
+                instance.action
+            }
             _ => return Ok(None),
         };
         let Some(target) = self.plan.dispatch.compiler_action(&action) else {
@@ -63,6 +87,8 @@ impl EvalContext<'_> {
             .ok_or_else(|| missing("compiler action has no checked service error contract"))?;
         let result_type = if let Some(call) = &perform.forwarded_call {
             call.result_type
+        } else if let Some(invocation) = &perform.checked_action {
+            invocation.output
         } else {
             *perform
                 .expr

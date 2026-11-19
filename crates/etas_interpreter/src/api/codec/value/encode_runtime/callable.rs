@@ -16,6 +16,9 @@ pub(super) fn write<'a>(
         }
         CallTarget::ToolItem(item) => *slot = json!({"kind":"tool","item":item.0}),
         CallTarget::EnumVariant(symbol) => *slot = json!({"kind":"enum_variant","symbol":symbol.0}),
+        CallTarget::DerivedResponseDecoder(ty) => {
+            *slot = json!({"kind":"derived_response_decoder","ty":ty.0});
+        }
         CallTarget::NominalConstructor(ty) => {
             *slot = json!({"kind":"nominal_constructor","ty":ty.0})
         }

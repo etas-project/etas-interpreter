@@ -111,6 +111,7 @@ pub(super) fn target<'a>(
         | (Target::ToolItem(a), Target::ToolItem(b)) => a == b,
         (Target::AgentRevision(a), Target::AgentRevision(b)) => a == b,
         (Target::EnumVariant(a), Target::EnumVariant(b)) => a == b,
+        (Target::DerivedResponseDecoder(a), Target::DerivedResponseDecoder(b)) => a == b,
         (Target::NominalConstructor(a), Target::NominalConstructor(b)) => a == b,
         (
             Target::Lambda {

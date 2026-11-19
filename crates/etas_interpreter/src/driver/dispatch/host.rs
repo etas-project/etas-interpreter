@@ -211,7 +211,10 @@ pub(in crate::driver) async fn begin<'host>(
             request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
-            |operation| host.tcp(operation, request),
+            |operation| async move {
+                host.tcp(operation.retain_resources_in_parent_scope()?, request)
+                    .await
+            },
         ) {
             Ok(pending) => pending_boundary(boundary, key, pending, HostBoundaryCompletion::Tcp),
             Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
@@ -397,6 +400,14 @@ pub(in crate::driver) fn finish(
             Ok(response) => response
                 .result
                 .map(|stream| {
+                    if let HostBoundaryDecode::SourceConnection { result_type } = boundary.decode {
+                        return crate::value::host_handle::source_handle(
+                            eval.checked,
+                            result_type,
+                            "connection",
+                            |inner| HostHandleValue::tcp_stream(inner, stream),
+                        );
+                    }
                     let nominal_type = eval.known_std_types.tcp_stream.ok_or_else(|| {
                         "TCP response requires checked std.net.tcp.TcpStream type".to_owned()
                     })?;
@@ -425,6 +436,14 @@ pub(in crate::driver) fn finish(
             Ok(response) => response
                 .result
                 .map(|stream| {
+                    if let HostBoundaryDecode::SourceConnection { result_type } = boundary.decode {
+                        return crate::value::host_handle::source_handle(
+                            eval.checked,
+                            result_type,
+                            "connection",
+                            |inner| HostHandleValue::tls_stream(inner, stream),
+                        );
+                    }
                     let nominal_type = eval.known_std_types.tls_stream.ok_or_else(|| {
                         "TLS response requires checked std.tls.TlsStream type".to_owned()
                     })?;
@@ -438,6 +457,18 @@ pub(in crate::driver) fn finish(
                 Ok(response) => response
                     .result
                     .map(|secret| {
+                        if let (
+                            HostBoundaryDecode::SourceSecret { result_type },
+                            SecretPayload::Value(secret),
+                        ) = (boundary.decode, &secret)
+                        {
+                            return crate::value::host_handle::source_handle(
+                                eval.checked,
+                                result_type,
+                                "handle",
+                                |inner| HostHandleValue::secret_value(inner, secret.clone()),
+                            );
+                        }
                         host_boundary_value_from_secret(
                             boundary.decode,
                             secret,
@@ -452,12 +483,22 @@ pub(in crate::driver) fn finish(
             match HostDispatch::finish(eval, completion) {
                 Ok(response) => response
                     .result
-                    .map(|payload| {
-                        host_boundary_value_from_browser_payload(
+                    .and_then(|payload| {
+                        if let HostBoundaryDecode::SourceBrowser { result_type } = boundary.decode {
+                            return host_boundary_source_browser(eval, result_type, payload)
+                                .map(Ok)
+                                .map_err(|message| {
+                                    HostError::new(
+                                        etas_host::HostErrorCode::SchemaMismatch,
+                                        message,
+                                    )
+                                });
+                        }
+                        Ok(host_boundary_value_from_browser_payload(
                             boundary.decode,
                             eval.known_std_types.browser_session,
                             payload,
-                        )
+                        ))
                     })
                     .map_err(HostBoundaryFailure::Host),
                 Err(error) => Err(HostBoundaryFailure::Host(error)),
@@ -763,6 +804,30 @@ pub(in crate::driver) fn host_boundary_value_from_command_process(
             )))
         }
         (
+            HostBoundaryDecode::SourceCommandHandle { result_type },
+            CommandProcessPayload::Handle { id },
+        ) => {
+            let state =
+                crate::value::host_handle::source_handle_type(checked, result_type, "process")?;
+            Ok(InterpValue::Nominal {
+                ty: result_type,
+                value: InterpValue::Record(
+                    vec![
+                        (
+                            "process".into(),
+                            InterpValue::HostHandle(HostHandleValue::command_process(
+                                state,
+                                id.clone(),
+                            )),
+                        ),
+                        ("reconnect_id".into(), InterpValue::String(id.into())),
+                    ]
+                    .into(),
+                )
+                .into(),
+            })
+        }
+        (
             HostBoundaryDecode::CommandProcessEvent { result_type },
             CommandProcessPayload::Event(event),
         ) => {
@@ -943,6 +1008,55 @@ pub(in crate::driver) fn host_boundary_value_from_browser_payload(
             payload, decode
         )),
     }
+}
+
+fn host_boundary_source_browser(
+    eval: &EvalContext<'_>,
+    result_type: etas_types::TypeId,
+    payload: BrowserProtocolPayload,
+) -> Result<InterpValue, String> {
+    let value = match payload {
+        BrowserProtocolPayload::Session { id } => {
+            return crate::value::host_handle::source_handle(
+                eval.checked,
+                result_type,
+                "connection",
+                |inner| HostHandleValue::browser_session(inner, id),
+            );
+        }
+        BrowserProtocolPayload::Message(bytes) => {
+            let json = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            etas_host::value::json::host_json_to_value(json).map_err(|error| error.message)?
+        }
+        BrowserProtocolPayload::Screenshot(bytes) => {
+            let mime_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                "image/png"
+            } else if bytes.starts_with(b"\xff\xd8\xff") {
+                "image/jpeg"
+            } else {
+                "application/octet-stream"
+            };
+            let absent = || HostValue::Variant {
+                name: "None".into(),
+                fields: Vec::new(),
+            };
+            HostValue::Record(vec![
+                ("content".into(), HostValue::Bytes(bytes)),
+                ("mime_type".into(), HostValue::String(mime_type.into())),
+                ("width".into(), absent()),
+                ("height".into(), absent()),
+            ])
+        }
+        BrowserProtocolPayload::Unit => {
+            return Err("browser action received an unexpected unit response".into());
+        }
+    };
+    crate::eval::host_to_checked_interp_value(
+        value,
+        result_type,
+        eval.checked,
+        &eval.storage_limits,
+    )
 }
 
 pub(in crate::driver) fn host_boundary_policy_subject(

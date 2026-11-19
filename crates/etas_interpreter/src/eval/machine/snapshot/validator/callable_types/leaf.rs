@@ -162,6 +162,14 @@ impl SnapshotValidator<'_> {
                     component: None,
                 });
             }
+            Target::DerivedResponseDecoder(callable) => {
+                let layout =
+                    crate::value::source_schema::decoder_signature(self.checked, *callable)?;
+                return Ok(Interface {
+                    signature: Some(layout.signature.clone().into()),
+                    component: None,
+                });
+            }
             Target::NominalConstructor(ty) => {
                 let representation = crate::plan::code::CheckedValueTypes::default().representation(self.checked, *ty)
                     .map_err(|error| format!("checkpoint nominal constructor has no checked representation: {error:?}"))?;

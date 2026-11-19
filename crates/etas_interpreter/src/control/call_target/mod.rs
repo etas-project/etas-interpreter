@@ -25,6 +25,7 @@ pub enum CallTarget {
         slot: u32,
     },
     EnumVariant(SymbolId),
+    DerivedResponseDecoder(etas_types::TypeId),
     NominalConstructor(etas_types::TypeId),
     PureIntrinsic(CheckedPureIntrinsicCall),
     StdIntrinsic(CheckedStdIntrinsicCall),

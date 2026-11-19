@@ -6,6 +6,7 @@ use super::{
     EvalMachine, MachinePoll,
     frame::EvalFrame,
     state::{MachineInput, ProgramScope},
+    suspension::{action_identity, has_action_family},
 };
 use crate::{
     control::{Continuation, ControlSignal, ExecutionFault, PendingPerform, PendingTaskControl},
@@ -370,27 +371,38 @@ fn match_task_action(
     handler: &super::frame::HandlerFrame,
     edges: &[crate::plan::code::RevisionProjection],
 ) -> Result<Option<(ActionProjection, PendingPerform)>, ExecutionFault> {
+    let fail = |reason| {
+        ExecutionFault::new(
+            AnalysisDiagnosticCode::MissingCheckedFact,
+            pending.span,
+            reason,
+        )
+    };
+    let identity = action_identity(&proof.effect)
+        .ok_or_else(|| fail("task action has no checked action identity".into()))?;
     // Each edge is an actual checked call on the child's or caller's captured stack.
-    let mut routes = vec![(proof.program.clone(), Vec::new())];
+    let mut routes = vec![(proof.program.clone(), identity.clone(), Vec::new())];
     let mut seen = std::collections::HashSet::new();
-    while let Some((cursor, path)) = routes.pop() {
+    while let Some((cursor, identity, path)) = routes.pop() {
         if Arc::ptr_eq(&cursor, &owner.checked) {
-            let projection =
-                ActionProjection::new(proof.clone(), path, owner).map_err(|reason| {
-                    ExecutionFault::new(
-                        AnalysisDiagnosticCode::MissingCheckedFact,
-                        pending.span,
-                        reason,
-                    )
-                })?;
+            let memory_target = ctx.source_memory_handler_target(pending);
+            let owner_ctx = ctx.scoped_context(owner, floor);
+            if !has_action_family(&owner_ctx, &handler.handlers, &identity)? {
+                return Ok(None);
+            }
+            let projection = ActionProjection::new(proof.clone(), path, owner).map_err(fail)?;
             let mut action = pending.clone();
             action.checked_action = Some(projection.target().clone());
             action.expr = None;
             action.default_boundary = None;
             action.forwarded_call = None;
-            let owner_ctx = ctx.scoped_context(owner, floor);
             for arm in &handler.handlers {
-                if owner_ctx.handler_matches_perform(&action, arm, Some(&handler.frame))? {
+                if owner_ctx.handler_matches_perform(
+                    &action,
+                    arm,
+                    Some(&handler.frame),
+                    memory_target.as_ref(),
+                )? {
                     return Ok(Some((projection, action)));
                 }
             }
@@ -402,9 +414,11 @@ fn match_task_action(
                 .rev()
                 .filter(|edge| Arc::ptr_eq(edge.source(), &cursor))
             {
-                let mut next = path.clone();
-                next.push(edge.clone());
-                routes.push((edge.target().clone(), next));
+                if let Some(mapped) = edge.corresponding_action(&identity) {
+                    let mut next = path.clone();
+                    next.push(edge.clone());
+                    routes.push((edge.target().clone(), mapped, next));
+                }
             }
         }
     }

@@ -214,6 +214,11 @@ fn decode_locals<T>(
                     .map_err(|error| error.to_string())?,
                 rows: serde_json::from_value(required(activation, "rows")?.clone())
                     .map_err(|error| error.to_string())?,
+                memory_place: activation
+                    .get("memory_place")
+                    .map(|place| serde_json::from_value(place.clone()))
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
                 request: crate::api::codec::checkpoint::suspension::decode_evidence(
                     limits,
                     required(activation, "request")?,

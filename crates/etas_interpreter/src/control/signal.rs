@@ -392,11 +392,23 @@ pub struct SourceToolBinding {
 
 #[derive(Clone, Copy, Debug)]
 pub enum MemoryDecode {
-    Page { result_type: etas_types::TypeId },
-    Entry { result_type: etas_types::TypeId },
-    OptionValue { value_type: etas_types::TypeId },
+    SourceRead {
+        result_type: etas_types::TypeId,
+        selection: bool,
+    },
+    Page {
+        result_type: etas_types::TypeId,
+    },
+    Entry {
+        result_type: etas_types::TypeId,
+    },
+    OptionValue {
+        value_type: etas_types::TypeId,
+    },
     BoolContains,
-    KeyList { key_type: etas_types::TypeId },
+    KeyList {
+        key_type: etas_types::TypeId,
+    },
     JsonEntries,
     Unit,
 }
@@ -416,6 +428,9 @@ pub enum SessionDecode {
     ReturnConversation {
         payload_type: etas_types::TypeId,
     },
+    SourceValue {
+        result_type: etas_types::TypeId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -427,6 +442,7 @@ pub enum ConsoleDecode {
 #[derive(Clone, Copy, Debug)]
 pub enum CommandDecode {
     CommandResult,
+    SourceResult { result_type: etas_types::TypeId },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -467,10 +483,16 @@ pub enum HostBoundaryDecode {
     CommandProcessHandle {
         result_type: etas_types::TypeId,
     },
+    SourceCommandHandle {
+        result_type: etas_types::TypeId,
+    },
     CommandProcessEvent {
         result_type: etas_types::TypeId,
     },
     TcpStream,
+    SourceConnection {
+        result_type: etas_types::TypeId,
+    },
     StreamRead {
         result_type: etas_types::TypeId,
     },
@@ -478,10 +500,16 @@ pub enum HostBoundaryDecode {
     SecretValue {
         result_type: etas_types::TypeId,
     },
+    SourceSecret {
+        result_type: etas_types::TypeId,
+    },
     SecretBytes {
         result_type: etas_types::TypeId,
     },
     BrowserPayload,
+    SourceBrowser {
+        result_type: etas_types::TypeId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]

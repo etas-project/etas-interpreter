@@ -83,6 +83,17 @@ impl ScopedCallableValue {
         let destination = projection.target().0.clone();
         let (source, ty) = projection.source();
         let mut value = match target {
+            CallTarget::DerivedResponseDecoder(callable) => {
+                if !Arc::ptr_eq(&execution.checked, source) || callable != ty {
+                    return Err(
+                        "derived decoder disagrees with the checked source interface".into(),
+                    );
+                }
+                crate::value::source_schema::decoder_signature(source, callable)?;
+                let (target, ty) = projection.target();
+                crate::value::source_schema::decoder_signature(target, ty)?;
+                return Ok(CallTarget::DerivedResponseDecoder(ty));
+            }
             CallTarget::Scoped(value) => {
                 if !Arc::ptr_eq(value.presented_program(), source) || value.presented_type() != ty {
                     return Err(
@@ -468,7 +479,10 @@ impl ScopedCallableValue {
                 .get(&parameter.subject)
                 .copied()
                 .map(|argument| (parameter.subject, argument))
-                .ok_or("native method application is missing an implementation owner argument")
+                .ok_or_else(|| format!(
+                    "native method application {item:?} is missing implementation owner parameter `{}` ({:?})",
+                    parameter.name, parameter.subject,
+                ))
         })
         .collect::<Result<Vec<_>, _>>()?;
         program

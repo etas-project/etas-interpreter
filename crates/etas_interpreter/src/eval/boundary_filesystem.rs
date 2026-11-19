@@ -156,7 +156,7 @@ impl EvalContext<'_> {
                 {
                     return Err(fail("Fs.read byte limit must use checked Option<usize>"));
                 }
-                let max_bytes = match self.filesystem_option(maximum, *maximum_type) {
+                let max_bytes = match self.checked_option_payload(maximum, *maximum_type) {
                     Some(None) => None,
                     Some(Some(value)) => {
                         Some(self.usize_argument(value, "Fs.read byte limit", perform.span)?)
@@ -240,7 +240,7 @@ impl EvalContext<'_> {
                         "Fs.list limits must use checked Option<(usize, usize)>",
                     ));
                 }
-                let limits = match self.filesystem_option(limits, *limits_type) {
+                let limits = match self.checked_option_payload(limits, *limits_type) {
                     Some(None) => None,
                     Some(Some(value)) => {
                         let InterpValue::Tuple(values) = value else {
@@ -326,7 +326,7 @@ impl EvalContext<'_> {
         })
     }
 
-    fn filesystem_option<'a>(
+    pub(super) fn checked_option_payload<'a>(
         &self,
         value: &'a InterpValue,
         ty: etas_types::TypeId,
@@ -361,7 +361,7 @@ impl EvalContext<'_> {
         }
     }
 
-    fn source_workspace_path(
+    pub(super) fn source_workspace_path(
         &self,
         value: &InterpValue,
         ty: etas_types::TypeId,
