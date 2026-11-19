@@ -4,8 +4,8 @@ mod suspension;
 pub(crate) use suspension::{
     ActionEvidenceSnapshot, ActionInvocationSnapshot, ActionOriginSnapshot,
     ActionProjectionSnapshot, CheckedProjectionSnapshot, ExecutionProgramSnapshot,
-    ExecutionRootSnapshot, SuspendedExecutionSnapshot, SuspendedProgramSnapshot,
-    SuspendedTaskHandlerSnapshot, TaskHandlerWaitSnapshot,
+    ExecutionRootSnapshot, ResultProjectionPathSnapshot, SuspendedExecutionSnapshot,
+    SuspendedProgramSnapshot, SuspendedTaskHandlerSnapshot, TaskHandlerWaitSnapshot,
 };
 mod checkpoint;
 pub(crate) use checkpoint::{

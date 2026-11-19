@@ -107,6 +107,7 @@ pub(crate) struct TaskScheduler {
     groups: BTreeMap<TaskScopeId, group::TaskGroup>,
     tasks: BTreeMap<TaskId, ScheduledTask>,
     ready: VecDeque<TaskId>,
+    deferred_handlers: BTreeMap<TaskId, TaskId>,
     enqueue_orders: BTreeMap<TaskId, u64>,
     next_enqueue_order: BTreeMap<TaskScopeId, u64>,
     policies: BTreeMap<TaskScopeId, SourceSchedulingPolicy>,
@@ -131,6 +132,7 @@ impl TaskScheduler {
             groups,
             tasks: BTreeMap::new(),
             ready: VecDeque::new(),
+            deferred_handlers: BTreeMap::new(),
             enqueue_orders: BTreeMap::new(),
             next_enqueue_order: BTreeMap::new(),
             policies: BTreeMap::new(),
@@ -813,25 +815,94 @@ impl TaskScheduler {
         self.tasks.get(&id)?.local.parent
     }
 
+    pub(crate) fn arm_owned_continuations(
+        &self,
+        task: TaskId,
+    ) -> Vec<(
+        crate::value::CheckedExecutionProgram,
+        crate::control::Continuation,
+    )> {
+        self.continuations
+            .arm_owned_for(TaskIdentity::Scheduled(task))
+            .map(|(program, continuation)| (program.clone(), continuation.clone()))
+            .collect()
+    }
+
+    pub(crate) fn wait_for_handler_owner(
+        &mut self,
+        handle: TaskHandle,
+        owner: TaskId,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Running {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Waiting(TaskWait::HandlerOwner(owner));
+        let scope = task.scope;
+        if task.active_slot {
+            task.active_slot = false;
+            self.change_active(scope, false);
+        }
+        self.deferred_handlers.insert(id, owner);
+        Ok(())
+    }
+
+    pub(crate) fn wake_exposed_handlers(&mut self) -> Result<(), SchedulerError> {
+        let mut ready = Vec::new();
+        let mut cancelled = Vec::new();
+        self.deferred_handlers.retain(|id, owner| {
+            let task = &self.tasks[id];
+            if task.state != TaskState::Waiting(TaskWait::HandlerOwner(*owner)) {
+                return false;
+            }
+            let Some(TaskResume::DeferredHandler { handler }) = task.waiting_continuation else {
+                unreachable!("deferred task owns its selected Handler")
+            };
+            let owner = &self.tasks[owner];
+            if owner.state.is_terminal() {
+                cancelled.push(TaskHandle {
+                    owner: task.scope,
+                    task: *id,
+                });
+                false
+            } else if owner.can_relay_handler() && owner.local.has_owned_handler(handler) {
+                ready.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in ready {
+            self.tasks.get_mut(&id).expect("waiting child").state = TaskState::Ready;
+            self.enqueue(id);
+        }
+        for handle in cancelled {
+            self.cancel(
+                handle,
+                etas_host::execution::CancellationReason::OwnerDropped,
+            )?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn take_handler_caller(
         &mut self,
         id: TaskId,
         inherited: &[crate::orchestration::ActiveHandlerRecord],
     ) -> Option<(TaskHandle, ScheduledTask)> {
         let task = self.tasks.get(&id)?;
-        if !task.local.owns_inherited_handler(inherited) {
+        if !task.local.owns_inherited_handler(inherited)
+            && !(task.state == TaskState::Ready
+                && self
+                    .continuations
+                    .arm_owned_for(TaskIdentity::Scheduled(id))
+                    .next()
+                    .is_some())
+        {
             return None;
         }
-        if !matches!(
-            task.state,
-            TaskState::Waiting(
-                TaskWait::Task(_)
-                    | TaskWait::Scope(_)
-                    | TaskWait::Completion(_)
-                    | TaskWait::Host(_)
-            )
-        ) && !(task.state == TaskState::Ready && task.machine.has_input())
-        {
+        if !task.can_relay_handler() {
             return None;
         }
         let handle = TaskHandle {
@@ -954,7 +1025,8 @@ impl TaskScheduler {
         if !self
             .tasks
             .values()
-            .any(|task| task.state == TaskState::Waiting(TaskWait::Handler(handler)))
+            .any(|task| task.state == TaskState::Waiting(TaskWait::Handler(handler)) ||
+                matches!(task.waiting_continuation, Some(TaskResume::DeferredHandler { handler: reserved }) if reserved == handler))
         {
             return Ok(());
         }

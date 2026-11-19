@@ -25,6 +25,7 @@ pub(crate) enum MachineInputSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) enum ControlSignalSnapshot {
     HandlerRequest {
+        evidence: Option<super::ActionEvidenceSnapshot>,
         action: etas_hir::ResolvedActionRef,
         inference: Option<Box<super::AgentRequestContextSnapshot>>,
         args: Vec<ValueSnapshot>,

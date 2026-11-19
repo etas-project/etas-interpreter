@@ -27,6 +27,18 @@ pub fn checkpoint_artifact_json(
     Ok(artifact)
 }
 
+pub(super) fn readable_schema(value: &Value) -> Result<&str, InterpreterCodecError> {
+    let schema = required_str(value, "schema")?;
+    match schema {
+        crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
+        | "etas.cli.interpreter-checkpoint.v100" => Ok(schema),
+        _ => Err(InterpreterCodecError::new(format!(
+            "unsupported checkpoint artifact schema `{schema}`; expected `{}`",
+            crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
+        ))),
+    }
+}
+
 pub fn checkpoint_id(checkpoint: &InterpreterCheckpoint) -> u32 {
     checkpoint.id.0
 }
@@ -58,13 +70,7 @@ pub fn checkpoint_from_json_with_revisions(
     limits
         .validate()
         .map_err(|e| InterpreterCodecError::new(e.message))?;
-    let schema = required_str(value, "schema")?;
-    if schema != crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA {
-        return Err(InterpreterCodecError::new(format!(
-            "unsupported checkpoint artifact schema `{schema}`; expected `{}`",
-            crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
-        )));
-    }
+    let schema = readable_schema(value)?;
     let checkpoint = value
         .get("checkpoint")
         .ok_or_else(|| InterpreterCodecError::new("checkpoint artifact is missing `checkpoint`"))?;
@@ -75,7 +81,8 @@ pub fn checkpoint_from_json_with_revisions(
             entry_item.0
         )));
     }
-    let compilation = compilation_identity_from_json(required_obj(checkpoint, "compilation")?)?;
+    let compilation =
+        compilation_identity_from_json(schema, required_obj(checkpoint, "compilation")?)?;
     compilation
         .validate_for_project(checked, entry_item)
         .map_err(InterpreterCodecError::new)?;
@@ -895,10 +902,17 @@ pub(super) fn compilation_identity_json(identity: &CheckpointCompilationIdentity
 }
 
 pub(super) fn compilation_identity_from_json(
+    artifact_schema: &str,
     value: &Value,
 ) -> Result<CheckpointCompilationIdentity, InterpreterCodecError> {
+    let schema = required_str(value, "schema_version")?;
+    if schema != artifact_schema {
+        return Err(InterpreterCodecError::new(format!(
+            "checkpoint schema identity `{schema}` does not match artifact schema `{artifact_schema}`"
+        )));
+    }
     Ok(CheckpointCompilationIdentity {
-        schema_version: required_str(value, "schema_version")?.to_owned(),
+        schema_version: crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA.to_owned(),
         compiler_version: required_str(value, "compiler_version")?.to_owned(),
         project_fingerprint: required_str(value, "project_fingerprint")?.to_owned(),
         checked_hir_fingerprint: required_str(value, "checked_hir_fingerprint")?.to_owned(),
@@ -965,10 +979,14 @@ fn machine_json_with_budget(
         .unwrap_or(Value::Null);
     object.value_mut()["auxiliary"] = machine.auxiliary.iter().map(|entry| {
         budget.metadata(2, 0)?;
-        Ok(json!({
+        let mut value = json!({
             "program": entry.program,
             "continuation": snapshot::continuation_json_with_budget(&entry.continuation, budget)?,
-        }))
+        });
+        if let Some(path) = &entry.projections {
+            value["result_projections"] = suspension::task_handler::encode_result_path(path, budget)?;
+        }
+        Ok(value)
     }).collect::<Result<Vec<_>, InterpreterCodecError>>()?.into();
     Ok(object.into_value())
 }
@@ -1080,6 +1098,7 @@ fn machine_from_json_with_revisions(
             Ok(crate::orchestration::AuxiliaryContinuationSnapshot {
                 program,
                 continuation,
+                projections: suspension::task_handler::decode_result_path(limits, entry)?,
             })
         })
         .collect::<Result<_, InterpreterCodecError>>()?;

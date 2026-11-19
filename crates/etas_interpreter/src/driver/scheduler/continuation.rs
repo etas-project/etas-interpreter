@@ -63,6 +63,18 @@ pub(crate) struct ContinuationEntrySnapshot {
 }
 
 impl ContinuationArena {
+    pub(super) fn arm_owned_for(
+        &self,
+        origin: TaskIdentity,
+    ) -> impl Iterator<Item = (&crate::value::CheckedExecutionProgram, &Continuation)> {
+        self.entries.values().filter_map(move |entry| {
+            if entry.origin != origin || entry.state != ContinuationState::ArmOwned {
+                return None;
+            }
+            Some((entry.program.as_ref()?, entry.continuation.as_ref()?))
+        })
+    }
+
     pub(super) fn capture(
         &self,
         context: &mut crate::eval::machine::snapshot::CaptureContext,

@@ -928,7 +928,7 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         }
-        if let Err(fault) = self.close_handler_scope(scope_id, span) {
+        if let Err(fault) = self.pop_handler_scope(scope_id, span) {
             return ControlSignal::Fault(Box::new(fault));
         }
         perform.continuation = Continuation::ReenterHandler {
@@ -949,17 +949,28 @@ impl<'a> EvalContext<'a> {
         boundary: crate::control::ContinuationLink,
         value: InterpValue,
     ) -> ControlSignal {
+        if let Err(fault) = self.enter_saved_handler(&boundary) {
+            return ControlSignal::Fault(Box::new(fault));
+        }
+        self.apply_continuation(boundary.into_value(), value)
+    }
+
+    pub(super) fn enter_saved_handler(
+        &mut self,
+        boundary: &Continuation,
+    ) -> Result<(), ExecutionFault> {
         let Continuation::HandleBoundary {
             scope_id,
             handlers,
             span,
             ..
-        } = &*boundary
+        } = boundary
         else {
-            return ControlSignal::missing_checked_fact(
-                "handler reentry requires a saved handler boundary",
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
                 item_span(self.checked, self.entry_item),
-            );
+                "handler reentry requires a saved handler boundary",
+            ));
         };
         if self
             .task
@@ -967,7 +978,11 @@ impl<'a> EvalContext<'a> {
             .last()
             .is_some_and(|active| active.id >= *scope_id)
         {
-            return ControlSignal::runtime_fault("handler reentry scope order is invalid", *span);
+            return Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::UnhandledRuntimeError,
+                *span,
+                "handler reentry scope order is invalid",
+            ));
         }
         self.task.handler_stack.push(ActiveHandlerRecord {
             id: *scope_id,
@@ -978,7 +993,7 @@ impl<'a> EvalContext<'a> {
             handlers: handlers.clone(),
             span: *span,
         });
-        self.apply_continuation(boundary.into_value(), value)
+        Ok(())
     }
 
     fn wrap_handler_boundary_signal(
@@ -1032,6 +1047,22 @@ impl<'a> EvalContext<'a> {
         scope_id: HandlerScopeId,
         span: Span,
     ) -> Result<(), ExecutionFault> {
+        self.pop_handler_scope(scope_id, span)?;
+        self.scheduler.close_handler(scope_id).map_err(|error| {
+            ExecutionFault::new(
+                AnalysisDiagnosticCode::UnhandledRuntimeError,
+                span,
+                error.to_string(),
+            )
+        })?;
+        Ok(())
+    }
+
+    fn pop_handler_scope(
+        &mut self,
+        scope_id: HandlerScopeId,
+        span: Span,
+    ) -> Result<(), ExecutionFault> {
         if self.handler_floor != 0 && self.task.handler_stack.len() <= self.handler_floor {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -1060,13 +1091,6 @@ impl<'a> EvalContext<'a> {
             ));
         }
         self.task.handler_stack.pop();
-        self.scheduler.close_handler(scope_id).map_err(|error| {
-            ExecutionFault::new(
-                AnalysisDiagnosticCode::UnhandledRuntimeError,
-                span,
-                error.to_string(),
-            )
-        })?;
         Ok(())
     }
 

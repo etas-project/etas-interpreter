@@ -4,6 +4,61 @@ use crate::orchestration::{
     TaskHandlerWaitSnapshot as Wait,
 };
 
+fn field<T: serde::de::DeserializeOwned>(
+    value: &Value,
+    name: &'static str,
+) -> Result<T, InterpreterCodecError> {
+    serde_json::from_value(required_obj(value, name)?.clone()).map_err(|error| {
+        InterpreterCodecError::new(format!("invalid task Handler {name}: {error}"))
+    })
+}
+
+fn decode_projection(
+    limits: &etas_host::StorageLimits,
+    value: &Value,
+) -> Result<ActionProjectionSnapshot, InterpreterCodecError> {
+    let source = required_obj(value, "source")?;
+    Ok(ActionProjectionSnapshot {
+        source: ActionEvidenceSnapshot {
+            origin: decode_action(limits, required_obj(source, "origin")?)?,
+            projections: field(source, "projections")?,
+        },
+        steps: field(value, "steps")?,
+    })
+}
+
+pub(in crate::api::codec) fn encode_result_path(
+    path: &crate::orchestration::ResultProjectionPathSnapshot,
+    budget: &mut snapshot::EncodingBudget,
+) -> Result<Value, InterpreterCodecError> {
+    budget.metadata(1, 0)?;
+    path.iter()
+        .map(|(owner, projection)| {
+            let mut value = json!({"owner":owner, "steps":projection.steps, "source":null});
+            budget.json_metadata(&value)?;
+            value["source"] = super::encode_evidence(&projection.source, budget)?;
+            Ok(value)
+        })
+        .collect::<Result<Vec<_>, InterpreterCodecError>>()
+        .map(Value::Array)
+}
+
+pub(in crate::api::codec) fn decode_result_path(
+    limits: &etas_host::StorageLimits,
+    entry: &Value,
+) -> Result<Option<crate::orchestration::ResultProjectionPathSnapshot>, InterpreterCodecError> {
+    let Some(path) = entry.get("result_projections") else {
+        return Ok(None);
+    };
+    let path = path
+        .as_array()
+        .ok_or_else(|| InterpreterCodecError::new("invalid task result projection path"))?;
+    path.iter()
+        .map(|step| Ok((field(step, "owner")?, decode_projection(limits, step)?)))
+        .collect::<Result<_, _>>()
+        .map(Some)
+}
+
 pub(in crate::api::codec) fn encode(
     node: &SuspendedTaskHandlerSnapshot,
     budget: &mut snapshot::EncodingBudget,
@@ -72,6 +127,13 @@ pub(in crate::api::codec) fn encode(
         }
         Wait::Run { .. } => (),
     }
+    if let Wait::Transfer {
+        projections: Some(path),
+        ..
+    } = &node.wait
+    {
+        wait["result_projections"] = encode_result_path(path, budget)?;
+    }
     value["wait"] = wait;
     Ok(value)
 }
@@ -81,14 +143,6 @@ pub(crate) fn decode(
     value: &Value,
     revisions: &crate::api::code::PreparedRevisionSet,
 ) -> Result<SuspendedTaskHandlerSnapshot, InterpreterCodecError> {
-    fn field<T: serde::de::DeserializeOwned>(
-        value: &Value,
-        name: &'static str,
-    ) -> Result<T, InterpreterCodecError> {
-        serde_json::from_value(required_obj(value, name)?.clone()).map_err(|error| {
-            InterpreterCodecError::new(format!("invalid task Handler {name}: {error}"))
-        })
-    }
     let owner = field(value, "owner")?;
     let owner_program = revisions
         .execution_snapshot(&owner)
@@ -136,6 +190,7 @@ pub(crate) fn decode(
         "transfer" => Wait::Transfer {
             target: field(wait, "target")?,
             token: field(wait, "token")?,
+            projections: decode_result_path(limits, wait)?,
             continuation: continuation()?,
             output: field(wait, "output")?,
             span: span_from_json(required_obj(wait, "span")?)?,
@@ -146,8 +201,6 @@ pub(crate) fn decode(
             )));
         }
     };
-    let projection = required_obj(value, "projection")?;
-    let source = required_obj(projection, "source")?;
     Ok(SuspendedTaskHandlerSnapshot {
         child: field(value, "child")?,
         owner_task: field(value, "owner_task")?,
@@ -179,13 +232,7 @@ pub(crate) fn decode(
         },
         model_policy: machine::model_policy_from_snapshot(required_obj(value, "model_policy")?)
             .map_err(InterpreterCodecError::new)?,
-        projection: ActionProjectionSnapshot {
-            source: ActionEvidenceSnapshot {
-                origin: decode_action(limits, required_obj(source, "origin")?)?,
-                projections: field(source, "projections")?,
-            },
-            steps: field(projection, "steps")?,
-        },
+        projection: decode_projection(limits, required_obj(value, "projection")?)?,
         span: span_from_json(required_obj(value, "span")?)?,
     })
 }

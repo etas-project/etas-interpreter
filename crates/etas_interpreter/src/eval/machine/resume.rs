@@ -42,6 +42,15 @@ impl EvalMachine {
         token: crate::value::ContinuationTokenValue,
         signal: ControlSignal,
     ) {
+        self.begin_transfer(local, token);
+        self.resume(signal);
+    }
+
+    pub(super) fn begin_transfer(
+        &mut self,
+        local: &mut crate::eval::TaskLocalState,
+        token: crate::value::ContinuationTokenValue,
+    ) {
         let boundary = self.stack.iter().rposition(|frame| {
             matches!(
                 frame,
@@ -88,7 +97,6 @@ impl EvalMachine {
             local.agent_context = call.parent_agent_context.clone();
         }
         self.truncate_to(retained);
-        self.resume(signal);
     }
 
     pub(crate) fn resume_model_result(

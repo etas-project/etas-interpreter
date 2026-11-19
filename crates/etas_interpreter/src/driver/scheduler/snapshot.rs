@@ -156,6 +156,13 @@ impl TaskScheduler {
         >,
     ) -> Result<Self, String> {
         snapshot.validate(&tasks)?;
+        let deferred_handlers = tasks
+            .iter()
+            .filter_map(|(id, task)| match task.state {
+                TaskState::Waiting(TaskWait::HandlerOwner(owner)) => Some((*id, owner)),
+                _ => None,
+            })
+            .collect();
         let mut scheduler = Self {
             next_scope: snapshot.next_scope,
             next_task: snapshot.next_task,
@@ -166,6 +173,7 @@ impl TaskScheduler {
                 .collect(),
             tasks,
             ready: snapshot.ready,
+            deferred_handlers,
             enqueue_orders: snapshot.enqueue_orders,
             next_enqueue_order: snapshot.next_enqueue_order,
             policies: BTreeMap::new(),
@@ -361,6 +369,32 @@ impl TaskSchedulerMetadataSnapshot {
                 .ok_or("checkpoint task has no owning scope")?;
             if id.0 >= self.next_task || !group.0.tasks.contains(id) {
                 return Err("checkpoint task identity/counter is inconsistent".into());
+            }
+            if let TaskState::Waiting(TaskWait::HandlerOwner(owner)) = task.state {
+                let Some(TaskResume::DeferredHandler { handler }) = task.waiting_continuation
+                else {
+                    return Err("checkpoint deferred handler wait has no selected scope".into());
+                };
+                let mut ancestor = task.local.parent;
+                for _ in 0..tasks.len() {
+                    let Some(TaskIdentity::Scheduled(parent)) = ancestor else {
+                        break;
+                    };
+                    if parent == owner {
+                        break;
+                    }
+                    ancestor = tasks.get(&parent).and_then(|task| task.local.parent);
+                }
+                if !tasks.contains_key(&owner)
+                    || ancestor != Some(TaskIdentity::Scheduled(owner))
+                    || !task
+                        .local
+                        .inherited_handler_records()
+                        .iter()
+                        .any(|record| record.id == handler)
+                {
+                    return Err("checkpoint deferred handler wait has no lexical owner".into());
+                }
             }
             if let TaskState::Waiting(TaskWait::Completion(scope)) = task.state {
                 if scope != task.scope || group.0.completion_waiter != Some(*id) {

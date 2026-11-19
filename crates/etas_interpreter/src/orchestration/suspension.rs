@@ -82,6 +82,9 @@ pub(crate) struct ActionProjectionSnapshot {
     pub steps: Vec<CheckedProjectionSnapshot>,
 }
 
+pub(crate) type ResultProjectionPathSnapshot =
+    Vec<(ExecutionProgramSnapshot, ActionProjectionSnapshot)>;
+
 #[derive(Clone, Debug)]
 pub(crate) enum TaskHandlerWaitSnapshot {
     Completion {
@@ -102,6 +105,7 @@ pub(crate) enum TaskHandlerWaitSnapshot {
         target: crate::driver::scheduler::TaskHandle,
         token: crate::value::ContinuationTokenValue,
         continuation: ContinuationSnapshot,
+        projections: Option<ResultProjectionPathSnapshot>,
         output: TypeId,
         span: Span,
     },

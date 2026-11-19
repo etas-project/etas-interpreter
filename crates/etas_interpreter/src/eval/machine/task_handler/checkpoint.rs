@@ -7,6 +7,63 @@ use crate::{
     },
 };
 
+impl crate::eval::machine::ParkedContinuation {
+    pub(crate) fn checkpoint_projections(
+        &self,
+        context: &mut CaptureContext,
+    ) -> Result<Option<crate::orchestration::ResultProjectionPathSnapshot>, String> {
+        self.projections
+            .as_ref()
+            .map(|path| {
+                path.iter()
+                    .map(|(program, projection)| {
+                        Ok((
+                            context.execution_identity(program)?,
+                            projection.checkpoint(context)?,
+                        ))
+                    })
+                    .collect()
+            })
+            .transpose()
+    }
+
+    pub(crate) fn restore_checkpoint(
+        continuation: Continuation,
+        path: Option<&crate::orchestration::ResultProjectionPathSnapshot>,
+        source: &CheckedExecutionProgram,
+        revisions: Option<&crate::api::code::PreparedRevisionSet>,
+    ) -> Result<Self, String> {
+        let projections = path
+            .map(|path| {
+                let native;
+                let revisions = match revisions {
+                    Some(revisions) => revisions,
+                    None => {
+                        native = crate::api::code::PreparedRevisionSet::new(source.checked.clone());
+                        &native
+                    }
+                };
+                path.iter()
+                    .map(|(owner, projection)| {
+                        let owner = CheckedExecutionProgram::restore_identity(
+                            owner,
+                            source,
+                            Some(revisions),
+                        )?;
+                        let projection =
+                            ActionProjection::restore_checkpoint(projection, &owner, revisions)?;
+                        Ok::<_, String>((owner, projection))
+                    })
+                    .collect::<Result<_, _>>()
+            })
+            .transpose()?;
+        Ok(Self {
+            continuation,
+            projections,
+        })
+    }
+}
+
 impl TaskHandlerContinuation {
     pub(in crate::eval::machine) fn checkpoint_identity(&self) -> Result<usize, String> {
         let state = self
@@ -122,7 +179,8 @@ impl TaskHandlerContinuation {
             } => TaskHandlerWaitSnapshot::Transfer {
                 target: *target,
                 token: *token,
-                continuation: context.continuation(continuation)?,
+                continuation: context.continuation(&continuation.continuation)?,
+                projections: continuation.checkpoint_projections(context)?,
                 output: *output,
                 span: *span,
             },
@@ -289,12 +347,18 @@ pub(in crate::eval::machine) fn restore(
             target,
             token,
             continuation,
+            projections,
             output,
             span,
         } => RootTaskWait::Transfer {
             target: *target,
             token: *token,
-            continuation: continuation.clone().restore_with(ctx)?,
+            continuation: crate::eval::machine::ParkedContinuation::restore_checkpoint(
+                continuation.clone().restore_with(ctx)?,
+                projections.as_ref(),
+                active,
+                Some(revisions),
+            )?,
             output: *output,
             span: *span,
         },

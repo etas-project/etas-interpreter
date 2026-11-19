@@ -88,6 +88,23 @@ impl RestoredMachineSnapshot {
         entry.continuation.clone().restore_with(context)
     }
 
+    pub(crate) fn restore_parked_auxiliary(
+        &mut self,
+        snapshot: &crate::orchestration::MachineSnapshot,
+        index: u32,
+        source: &crate::value::CheckedExecutionProgram,
+        revisions: Option<&crate::api::code::PreparedRevisionSet>,
+    ) -> Result<super::ParkedContinuation, String> {
+        let continuation = self.restore_auxiliary(snapshot, index, source, revisions)?;
+        let entry = &snapshot.auxiliary[index as usize];
+        super::ParkedContinuation::restore_checkpoint(
+            continuation,
+            entry.projections.as_ref(),
+            source,
+            revisions,
+        )
+    }
+
     pub(crate) fn active_context(&mut self) -> &mut RestoreContext {
         let program = self
             .machine

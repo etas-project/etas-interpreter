@@ -75,6 +75,15 @@ impl TaskCapture {
         program: &CheckedExecutionProgram,
         continuation: &Continuation,
     ) -> Result<u32, String> {
+        self.continuation_entry(program, continuation, None)
+    }
+
+    fn continuation_entry(
+        &mut self,
+        program: &CheckedExecutionProgram,
+        continuation: &Continuation,
+        projections: Option<crate::orchestration::ResultProjectionPathSnapshot>,
+    ) -> Result<u32, String> {
         let index =
             u32::try_from(self.auxiliary.len()).map_err(|_| "too many task continuations")?;
         let program = self.context.execution_identity(program)?;
@@ -82,6 +91,7 @@ impl TaskCapture {
         self.auxiliary.push(AuxiliaryContinuationSnapshot {
             program,
             continuation,
+            projections,
         });
         Ok(index)
     }
@@ -90,13 +100,18 @@ impl TaskCapture {
         &mut self,
         scheduler: &crate::driver::scheduler::TaskScheduler,
         token: crate::value::ContinuationTokenValue,
-        continuation: &Continuation,
+        active: &CheckedExecutionProgram,
+        parked: &crate::eval::machine::ParkedContinuation,
     ) -> Result<u32, String> {
+        if parked.projections.is_some() {
+            let projections = parked.checkpoint_projections(&mut self.context)?;
+            return self.continuation_entry(active, &parked.continuation, projections);
+        }
         let owner = scheduler
             .continuation_program(token)
             .map_err(|error| error.to_string())?
             .ok_or("transferred continuation has no checked execution program")?;
-        self.continuation(&owner, continuation)
+        self.continuation(&owner, &parked.continuation)
     }
 
     fn resume(
@@ -106,6 +121,9 @@ impl TaskCapture {
         resume: &TaskResume,
     ) -> Result<TaskResumeSnapshot, String> {
         Ok(match resume {
+            TaskResume::DeferredHandler { handler } => {
+                TaskResumeSnapshot::DeferredHandler { handler: *handler }
+            }
             TaskResume::Handler {
                 continuation,
                 handler,
@@ -135,7 +153,12 @@ impl TaskCapture {
                 span,
             } => TaskResumeSnapshot::Transfer {
                 token: *token,
-                continuation: self.transferred_continuation(scheduler, *token, continuation)?,
+                continuation: self.transferred_continuation(
+                    scheduler,
+                    *token,
+                    program,
+                    continuation,
+                )?,
                 output: *output,
                 span: *span,
             },
@@ -263,6 +286,9 @@ impl super::EvalContext<'_> {
             };
             let state = match task.state {
                 TaskState::Ready => ScheduledTaskStateSnapshot::Ready,
+                TaskState::Waiting(TaskWait::HandlerOwner(owner)) => {
+                    ScheduledTaskStateSnapshot::WaitingHandlerOwner(owner)
+                }
                 TaskState::Waiting(TaskWait::Handler(handler)) => {
                     ScheduledTaskStateSnapshot::WaitingHandler(handler)
                 }
@@ -385,6 +411,7 @@ impl super::EvalContext<'_> {
                         continuation: root_capture.transferred_continuation(
                             &self.scheduler,
                             *token,
+                            &active,
                             continuation,
                         )?,
                         output: *output,
@@ -695,6 +722,9 @@ impl super::EvalContext<'_> {
                         )
                     };
                     Ok::<_, String>(match resume {
+                        TaskResumeSnapshot::DeferredHandler { handler } => {
+                            TaskResume::DeferredHandler { handler: *handler }
+                        }
                         TaskResumeSnapshot::Handler {
                             continuation: index,
                             handler,
@@ -722,7 +752,12 @@ impl super::EvalContext<'_> {
                             span,
                         } => TaskResume::Transfer {
                             token: *token,
-                            continuation: continuation(*index)?,
+                            continuation: machine.restore_parked_auxiliary(
+                                snapshot,
+                                *index,
+                                &root.program,
+                                revisions.as_deref(),
+                            )?,
                             output: *output,
                             span: *span,
                         },
@@ -765,6 +800,9 @@ impl super::EvalContext<'_> {
                 })
                 .transpose()?;
             let state = match task.state {
+                ScheduledTaskStateSnapshot::WaitingHandlerOwner(owner) => {
+                    TaskState::Waiting(TaskWait::HandlerOwner(owner))
+                }
                 ScheduledTaskStateSnapshot::WaitingHandler(handler) => {
                     TaskState::Waiting(TaskWait::Handler(handler))
                 }
@@ -963,7 +1001,7 @@ impl super::EvalContext<'_> {
                         token: *token,
                         output: *output,
                         span: *span,
-                        continuation: root_restored.restore_auxiliary(
+                        continuation: root_restored.restore_parked_auxiliary(
                             root_snapshot,
                             *continuation,
                             &root.program,

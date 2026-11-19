@@ -31,10 +31,34 @@ impl SnapshotValidator<'_> {
             .rev()
             .map(|handler| handler.id)
             .collect::<Vec<_>>();
+        if let Some(crate::orchestration::TaskResumeSnapshot::DeferredHandler { handler }) =
+            &task.waiting_continuation
+        {
+            use crate::orchestration::{
+                ControlSignalSnapshot, MachineInputSnapshot, ScheduledTaskStateSnapshot,
+            };
+            if !matches!(
+                task.state,
+                ScheduledTaskStateSnapshot::WaitingHandlerOwner(_)
+                    | ScheduledTaskStateSnapshot::Ready
+            ) || !task.local.handlers.handlers[..handlers]
+                .iter()
+                .any(|record| record.id == *handler)
+                || !matches!(machine.input.as_deref(), Some(MachineInputSnapshot::Signal(signal)) if matches!(signal.as_ref(), ControlSignalSnapshot::HandlerRequest { .. }))
+            {
+                return Err(
+                    "deferred Handler request has no matching task state, inherited scope or input"
+                        .into(),
+                );
+            }
+        }
         let mut found = Vec::new();
         let mut attempts = Vec::new();
-        if let Some(resume) = &task.waiting_continuation {
-            let index = match resume {
+        let auxiliary = task
+            .waiting_continuation
+            .as_ref()
+            .and_then(|resume| match resume {
+                crate::orchestration::TaskResumeSnapshot::DeferredHandler { .. } => None,
                 crate::orchestration::TaskResumeSnapshot::Await(index)
                 | crate::orchestration::TaskResumeSnapshot::Run(index)
                 | crate::orchestration::TaskResumeSnapshot::Handler {
@@ -48,13 +72,16 @@ impl SnapshotValidator<'_> {
                 | crate::orchestration::TaskResumeSnapshot::Transfer {
                     continuation: index,
                     ..
-                } => *index,
-            };
+                } => Some(*index),
+            });
+        if let Some(index) = auxiliary {
             let pending = machine
                 .auxiliary
                 .get(index as usize)
                 .ok_or("task wait has no captured continuation")?;
-            if let crate::orchestration::TaskResumeSnapshot::Completion { result_type, .. } = resume
+            if let Some(crate::orchestration::TaskResumeSnapshot::Completion {
+                result_type, ..
+            }) = &task.waiting_continuation
             {
                 if let Some(revisions) = self.revisions {
                     let program = revisions.execution_snapshot(&pending.program)?;

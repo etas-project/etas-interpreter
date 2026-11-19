@@ -284,7 +284,8 @@ pub(in crate::api::codec) fn decode_evidence(
     let origin = decode_action(limits, required_obj(value, "origin")?)?;
     match &origin {
         ActionInvocationSnapshot::Native {
-            origin: ActionOriginSnapshot::Source { .. },
+            origin:
+                ActionOriginSnapshot::Source { .. } | ActionOriginSnapshot::ControllerStep { .. },
             ..
         }
         | ActionInvocationSnapshot::Native {

@@ -76,13 +76,25 @@ impl SnapshotValidator<'_> {
                 )
             }
             S::HandlerRequest {
+                evidence,
                 inference,
                 args,
                 continuation,
                 residual,
                 ..
             } => {
-                if !matches!(continuation, ContinuationSnapshot::TaskResume { .. }) {
+                if let Some(evidence) = evidence {
+                    let proof = crate::control::CheckedActionInvocation::restore_evidence(
+                        evidence,
+                        self.revisions
+                            .ok_or("deferred Handler request has no prepared revisions")?,
+                    )?;
+                    if !std::sync::Arc::ptr_eq(&proof.program, self.checked) {
+                        return Err(
+                            "deferred Handler request differs from its checked owner".into()
+                        );
+                    }
+                } else if !matches!(continuation, ContinuationSnapshot::TaskResume { .. }) {
                     return Err("delegated Handler request has no caller segment".into());
                 }
                 if let Some(request) = inference {

@@ -138,6 +138,7 @@ pub(crate) struct TaskLocalSnapshot {
 pub(crate) enum ScheduledTaskStateSnapshot {
     Ready,
     WaitingHandler(super::HandlerScopeId),
+    WaitingHandlerOwner(TaskId),
     WaitingTask(TaskId),
     WaitingScope(TaskScopeId),
     WaitingCompletion(TaskScopeId),
@@ -164,6 +165,9 @@ pub(crate) enum TaskOutcomeSnapshot {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskResumeSnapshot {
+    DeferredHandler {
+        handler: super::HandlerScopeId,
+    },
     Handler {
         continuation: u32,
         handler: super::HandlerScopeId,
@@ -187,6 +191,7 @@ pub(crate) enum TaskResumeSnapshot {
 pub(crate) struct AuxiliaryContinuationSnapshot {
     pub program: ExecutionProgramSnapshot,
     pub continuation: ContinuationSnapshot,
+    pub projections: Option<super::ResultProjectionPathSnapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

@@ -110,10 +110,9 @@ pub(super) async fn resume_root_wait<'host>(
             output,
             span,
             ..
-        } => match outcome {
-            TaskOutcome::Completed(value) => {
-                validate_continuation_value(eval, token, &value, output, span)?;
-                machine.transfer_from(eval.task, token, continuation, value);
+        } => {
+            if let TaskOutcome::Completed(value) = &outcome {
+                validate_continuation_value(eval, token, value, output, span)?;
                 eval.events.push(WorkflowEvent::ContinuationTransferred {
                     scope: token.owner.0,
                     continuation: token.continuation.0,
@@ -121,12 +120,8 @@ pub(super) async fn resume_root_wait<'host>(
                     kind: "park".to_owned(),
                 });
             }
-            outcome => machine.transfer_signal(
-                eval.task,
-                token,
-                signal_from_outcome(outcome, continuation)?,
-            ),
-        },
+            finish_parked_transfer(machine, eval.task, token, continuation, outcome, span)?;
+        }
         RootTaskWait::Host(_)
         | RootTaskWait::Settling(_)
         | RootTaskWait::Ready(_)
@@ -205,10 +200,15 @@ pub(super) async fn control_from_root<'host>(
                 task: None,
                 kind: "park".to_owned(),
             });
+            let continuation = machine
+                .park_transfer(eval, token, consumed.continuation, span)
+                .map_err(|fault| {
+                    EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+                })?;
             machine.root_wait = Some(RootTaskWait::Transfer {
                 target: task,
                 token,
-                continuation: consumed.continuation,
+                continuation,
                 output: consumed.output,
                 span,
             });
@@ -487,28 +487,23 @@ fn resume_task_wakeup(
                     continuation,
                     output,
                     span,
-                } => match outcome {
-                    TaskOutcome::Completed(value) => {
-                        validate_continuation_value(eval, token, &value, output, span)?;
-                        task.machine
-                            .transfer_from(&mut task.local, token, continuation, value);
+                } => {
+                    if let TaskOutcome::Completed(value) = &outcome {
+                        validate_continuation_value(eval, token, value, output, span)?;
                     }
-                    TaskOutcome::Raised(perform) => {
-                        let Ok(signal) =
-                            signal_from_outcome(TaskOutcome::Raised(perform), continuation)
-                        else {
-                            unreachable!("typed error produces a control signal")
-                        };
-                        task.machine.transfer_signal(&mut task.local, token, signal);
-                    }
-                    TaskOutcome::Failed(failure) => {
-                        return Err(EvaluationOutcome::Failed(failure));
-                    }
-                    TaskOutcome::Cancelled(cause) => {
-                        return Err(EvaluationOutcome::Cancelled(cause));
-                    }
-                },
-                TaskResume::Run(_) | TaskResume::Handler { .. } | TaskResume::Completion { .. } => {
+                    finish_parked_transfer(
+                        &mut task.machine,
+                        &mut task.local,
+                        token,
+                        continuation,
+                        outcome,
+                        span,
+                    )?;
+                }
+                TaskResume::Run(_)
+                | TaskResume::Handler { .. }
+                | TaskResume::DeferredHandler { .. }
+                | TaskResume::Completion { .. } => {
                     return Err(task_fault(eval, "task wakeup has a scope continuation"));
                 }
             }
@@ -595,6 +590,9 @@ async fn drive_one_with_root<'host>(
     if drain_task_wakeups(eval)? {
         return Ok(true);
     }
+    eval.scheduler
+        .wake_exposed_handlers()
+        .map_err(|error| scheduler_failure(eval, error))?;
     let ready = dispatch_ready(eval)?;
     record_resource_events(eval);
     let Some(handle) = ready else {
@@ -1052,9 +1050,21 @@ async fn drive_one_with_root<'host>(
                         task: Some(handle.task.0),
                         kind: "park".to_owned(),
                     });
+                    let continuation = match task.machine.park_transfer(
+                        &mut child,
+                        token,
+                        consumed.continuation,
+                        span,
+                    ) {
+                        Ok(continuation) => continuation,
+                        Err(fault) => {
+                            task.machine.resume(ControlSignal::Fault(Box::new(fault)));
+                            continue;
+                        }
+                    };
                     task.waiting_continuation = Some(TaskResume::Transfer {
                         token,
-                        continuation: consumed.continuation,
+                        continuation,
                         output: consumed.output,
                         span,
                     });
@@ -1102,57 +1112,32 @@ async fn drive_one_with_root<'host>(
                                     "ready parked task has an await continuation",
                                 ));
                             };
-                            match outcome {
-                                TaskOutcome::Completed(value) => {
-                                    if let Err(outcome) = validate_continuation_value(
-                                        eval, token, &value, output, span,
-                                    ) {
-                                        finish_task(eval, handle, task, outcome)?;
-                                        return Ok(true);
-                                    }
-                                    task.machine.transfer_from(
-                                        &mut task.local,
-                                        token,
-                                        continuation,
-                                        value,
-                                    );
-                                    eval.events.push(WorkflowEvent::ContinuationTransferred {
-                                        scope: token.owner.0,
-                                        continuation: token.continuation.0,
-                                        task: Some(handle.task.0),
-                                        kind: "park".to_owned(),
-                                    });
-                                    continue;
-                                }
-                                TaskOutcome::Raised(perform) => {
-                                    let Ok(signal) = signal_from_outcome(
-                                        TaskOutcome::Raised(perform),
-                                        continuation,
-                                    ) else {
-                                        unreachable!("typed error produces a control signal")
-                                    };
-                                    task.machine.transfer_signal(&mut task.local, token, signal);
-                                    continue;
-                                }
-                                TaskOutcome::Failed(failure) => {
-                                    finish_task(
-                                        eval,
-                                        handle,
-                                        task,
-                                        EvaluationOutcome::Failed(failure),
-                                    )?;
+                            if let TaskOutcome::Completed(value) = &outcome {
+                                if let Err(outcome) =
+                                    validate_continuation_value(eval, token, value, output, span)
+                                {
+                                    finish_task(eval, handle, task, outcome)?;
                                     return Ok(true);
                                 }
-                                TaskOutcome::Cancelled(cause) => {
-                                    finish_task(
-                                        eval,
-                                        handle,
-                                        task,
-                                        EvaluationOutcome::Cancelled(cause),
-                                    )?;
-                                    return Ok(true);
-                                }
+                                eval.events.push(WorkflowEvent::ContinuationTransferred {
+                                    scope: token.owner.0,
+                                    continuation: token.continuation.0,
+                                    task: Some(handle.task.0),
+                                    kind: "park".to_owned(),
+                                });
                             }
+                            if let Err(outcome) = finish_parked_transfer(
+                                &mut task.machine,
+                                &mut task.local,
+                                token,
+                                continuation,
+                                outcome,
+                                span,
+                            ) {
+                                finish_task(eval, handle, task, outcome)?;
+                                return Ok(true);
+                            }
+                            continue;
                         }
                     }
                 }
@@ -1171,7 +1156,18 @@ async fn drive_one_with_root<'host>(
 
         if let PendingBoundary::Perform(perform) = boundary {
             if perform.error_type.is_none() && child.task.inherited_handlers != 0 {
-                let inherited = child.task.inherited_handler_records().to_vec();
+                let reserved = match task.waiting_continuation.take() {
+                    Some(TaskResume::DeferredHandler { handler }) => Some(handler),
+                    None => None,
+                    Some(_) => unreachable!("performing task still owns a scheduler wait"),
+                };
+                let inherited = child
+                    .task
+                    .inherited_handler_records()
+                    .iter()
+                    .filter(|scope| reserved.is_none_or(|handler| handler == scope.id))
+                    .cloned()
+                    .collect::<Vec<_>>();
                 let child_logical_identity = child.task.logical_identity;
                 drop(child);
                 let mut owner = None;
@@ -1269,21 +1265,42 @@ async fn drive_one_with_root<'host>(
                     let caller_floor = caller_scope
                         .as_ref()
                         .map_or(caller.handler_floor, |scope| scope.handler_floor);
+                    let held = if caller.state == super::scheduler::TaskState::Ready {
+                        eval.scheduler.arm_owned_continuations(id)
+                    } else {
+                        Vec::new()
+                    };
                     let mut caller_ctx = eval.scheduled_task_context(
                         &caller_program,
                         &mut caller.local,
                         caller_handle.task,
                         caller_floor,
                     );
-                    let relay = caller.machine.relay_task_handler(
-                        &mut caller_ctx,
-                        handle,
-                        child_logical_identity,
-                        &task.machine,
-                        &program,
-                        &perform,
-                        &inherited,
-                    );
+                    let dormant = if held.is_empty() {
+                        Ok(None)
+                    } else {
+                        caller.machine.dormant_task_handler(
+                            &mut caller_ctx,
+                            &task.machine,
+                            &program,
+                            &perform,
+                            &inherited,
+                            &held,
+                        )
+                    };
+                    let relay = match dormant {
+                        Ok(None) => caller.machine.relay_task_handler(
+                            &mut caller_ctx,
+                            handle,
+                            child_logical_identity,
+                            &task.machine,
+                            &program,
+                            &perform,
+                            &inherited,
+                        ),
+                        Ok(Some(_)) => Ok(None),
+                        Err(ref fault) => Err(fault.clone()),
+                    };
                     let relay_fault = match relay {
                         Ok(handler) => {
                             owner = handler;
@@ -1355,6 +1372,21 @@ async fn drive_one_with_root<'host>(
                         task.machine.resume(ControlSignal::Fault(Box::new(fault)));
                         continue 'poll;
                     }
+                    if let Ok(Some(handler)) = dormant {
+                        // The checked arm owns this request. Its action arguments and
+                        // continuation stay with the child until the owner exposes it.
+                        let mut perform = perform;
+                        perform.expr = None;
+                        perform.forwarded_call = None;
+                        perform.default_boundary = None;
+                        task.machine.resume(ControlSignal::Perform(perform));
+                        task.waiting_continuation = Some(TaskResume::DeferredHandler { handler });
+                        eval.scheduler
+                            .restore_running(handle, task)
+                            .and_then(|()| eval.scheduler.wait_for_handler_owner(handle, id))
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                        return Ok(true);
+                    }
                     if owner.is_some() {
                         break;
                     }
@@ -1389,6 +1421,12 @@ async fn drive_one_with_root<'host>(
                         .and_then(|()| eval.scheduler.wait_for_handler(handle, handler))
                         .map_err(|error| scheduler_failure(eval, error))?;
                     return Ok(true);
+                }
+                if reserved.is_some() {
+                    return Err(task_fault(
+                        eval,
+                        "selected lexical Handler ended with a child request outstanding",
+                    ));
                 }
                 child = eval.scheduled_task_context(
                     &program,
@@ -1914,6 +1952,42 @@ fn wake_from_host(
         scope: handle.owner.0,
         task: handle.task.0,
     });
+    Ok(())
+}
+
+fn finish_parked_transfer(
+    machine: &mut crate::eval::machine::EvalMachine,
+    local: &mut crate::eval::TaskLocalState,
+    token: crate::value::ContinuationTokenValue,
+    parked: crate::eval::machine::ParkedContinuation,
+    outcome: TaskOutcome,
+    span: etas_core::Span,
+) -> Result<(), EvaluationOutcome> {
+    let Some(projections) = parked.projections else {
+        machine.transfer_signal(
+            local,
+            token,
+            signal_from_outcome(outcome, parked.continuation)?,
+        );
+        return Ok(());
+    };
+    let outcome = match outcome {
+        TaskOutcome::Completed(mut value) => {
+            for (responder, projection) in projections {
+                value = projection.resume(value, &responder).map_err(|reason| {
+                    let fault = crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        reason,
+                    );
+                    EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+                })?;
+            }
+            TaskOutcome::Completed(value)
+        }
+        outcome => outcome,
+    };
+    machine.resume(signal_from_outcome(outcome, parked.continuation)?);
     Ok(())
 }
 

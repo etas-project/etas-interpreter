@@ -6,6 +6,7 @@ mod program;
 mod suspension;
 mod task_handler;
 mod tool;
+pub(crate) use suspension::ParkedContinuation;
 pub use suspension::ProgramContinuation;
 pub use task_handler::TaskHandlerContinuation;
 #[cfg(test)]

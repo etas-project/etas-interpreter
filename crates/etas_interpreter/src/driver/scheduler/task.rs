@@ -42,6 +42,7 @@ pub(crate) enum TaskWait {
     Cpu(crate::driver::cpu::CpuJobId),
     Resource(super::resource::ResourceGuardId),
     Handler(crate::orchestration::HandlerScopeId),
+    HandlerOwner(TaskId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -95,6 +96,9 @@ pub(crate) struct CheckedTaskStart {
 }
 
 pub(crate) enum TaskResume {
+    DeferredHandler {
+        handler: crate::orchestration::HandlerScopeId,
+    },
     Handler {
         continuation: Continuation,
         handler: crate::orchestration::HandlerScopeId,
@@ -108,7 +112,7 @@ pub(crate) enum TaskResume {
     },
     Transfer {
         token: crate::value::ContinuationTokenValue,
-        continuation: Continuation,
+        continuation: crate::eval::machine::ParkedContinuation,
         output: etas_types::TypeId,
         span: etas_core::Span,
     },
@@ -133,7 +137,7 @@ pub(crate) enum RootTaskWait {
     Transfer {
         target: TaskHandle,
         token: crate::value::ContinuationTokenValue,
-        continuation: Continuation,
+        continuation: crate::eval::machine::ParkedContinuation,
         output: etas_types::TypeId,
         span: etas_core::Span,
     },
@@ -162,6 +166,23 @@ pub(crate) struct ScheduledTask {
 }
 
 impl ScheduledTask {
+    pub(super) fn can_relay_handler(&self) -> bool {
+        matches!(
+            self.state,
+            TaskState::Waiting(
+                TaskWait::Task(_)
+                    | TaskWait::Scope(_)
+                    | TaskWait::Completion(_)
+                    | TaskWait::Host(_)
+            )
+        ) || self.state == TaskState::Ready
+            && self.machine.has_input()
+            && !matches!(
+                self.waiting_continuation,
+                Some(TaskResume::DeferredHandler { .. })
+            )
+    }
+
     pub(crate) fn new(
         scope: TaskScopeId,
         machine: EvalMachine,

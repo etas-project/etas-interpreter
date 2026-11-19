@@ -54,6 +54,7 @@ fn signal_json(
             "residual":residual,
         }),
         S::HandlerRequest {
+            evidence,
             action,
             inference,
             args,
@@ -65,6 +66,9 @@ fn signal_json(
                 "inference":machine::agent_context::request_json(inference.as_deref()),
                 "span":span_json(*span), "residual":residual});
             budget.json_metadata(&value)?;
+            if let Some(evidence) = evidence {
+                value["evidence"] = super::suspension::encode_evidence(evidence, budget)?;
+            }
             value["args"] = json!(values_json(args, budget)?);
             value["continuation"] = snapshot::continuation_json_with_budget(continuation, budget)?;
             value
@@ -266,6 +270,10 @@ fn signal_from_json(
             residual: field(value, "residual")?,
         },
         "handler_request" => S::HandlerRequest {
+            evidence: value
+                .get("evidence")
+                .map(|evidence| super::suspension::decode_evidence(limits, evidence))
+                .transpose()?,
             action: field(value, "action")?,
             inference: machine::agent_context::request_from_json(required_obj(value, "inference")?)
                 .map_err(InterpreterCodecError::new)?,

@@ -260,8 +260,7 @@ impl ControlSignalSnapshot {
                     .transpose()?,
             },
             ControlSignal::Perform(perform)
-                if matches!(perform.continuation, Continuation::TaskResume(_))
-                    && perform.expr.is_none()
+                if perform.expr.is_none()
                     && perform.default_boundary.is_none()
                     && perform.forwarded_call.is_none() =>
             {
@@ -270,7 +269,18 @@ impl ControlSignalSnapshot {
                     .as_ref()
                     .ok_or("delegated Handler request has no checked invocation")?
                     .validate_origin()?;
+                let evidence = match &perform.continuation {
+                    Continuation::TaskResume(_) => None,
+                    _ => Some(
+                        perform
+                            .checked_action
+                            .as_ref()
+                            .unwrap()
+                            .checkpoint_evidence(context)?,
+                    ),
+                };
                 Self::HandlerRequest {
+                    evidence,
                     action: perform.action.clone(),
                     inference: perform
                         .inference
@@ -322,6 +332,7 @@ impl ControlSignalSnapshot {
                 ControlSignal::pending_perform(perform)
             }
             Self::HandlerRequest {
+                evidence,
                 action,
                 inference,
                 args,
@@ -330,10 +341,21 @@ impl ControlSignalSnapshot {
                 residual,
             } => {
                 let continuation = continuation.restore_with(context)?;
-                let Continuation::TaskResume(saved) = &continuation else {
-                    return Err("delegated Handler request has no caller segment".into());
+                let proof = match evidence {
+                    Some(evidence) => CheckedActionInvocation::restore_evidence(
+                        &evidence,
+                        context
+                            .revisions
+                            .as_deref()
+                            .ok_or("deferred Handler request has no checked revisions")?,
+                    )?,
+                    None => {
+                        let Continuation::TaskResume(saved) = &continuation else {
+                            return Err("delegated Handler request has no caller segment".into());
+                        };
+                        saved.projected_action()?
+                    }
                 };
-                let proof = saved.projected_action()?;
                 let owner = program.ok_or("delegated Handler request has no checked owner")?;
                 if !std::sync::Arc::ptr_eq(&proof.program, &owner.checked) {
                     return Err("delegated Handler request differs from its checked owner".into());

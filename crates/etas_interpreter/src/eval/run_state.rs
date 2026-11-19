@@ -88,6 +88,12 @@ impl TaskLocalState {
     pub(crate) fn inherited_handler_records(&self) -> &[ActiveHandlerRecord] {
         &self.handler_stack[..self.inherited_handlers]
     }
+    pub(crate) fn has_owned_handler(&self, id: crate::orchestration::HandlerScopeId) -> bool {
+        self.handler_stack[self.inherited_handlers..]
+            .iter()
+            .any(|record| record.id == id)
+    }
+
     pub(crate) fn owns_inherited_handler(&self, handlers: &[ActiveHandlerRecord]) -> bool {
         self.handler_stack[self.inherited_handlers..]
             .iter()
