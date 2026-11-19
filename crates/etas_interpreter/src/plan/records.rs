@@ -208,8 +208,10 @@ impl RecordLayoutTable {
         let mut table = Self::default();
         let spec_facts = etas_types::SpecFacts::from(project.types.as_ref());
         let mut shapes = RecordShapes::new(&project.type_store);
-        for (_, statement) in project.hir.stmts.iter() {
-            if let etas_hir::HirStmt::For { iter, .. } = statement {
+        // An entry-scoped check keeps HIR for other flows, but only publishes
+        // body facts for the selected execution closure.
+        for stmt in project.types.stmt_types.keys() {
+            if let etas_hir::HirStmt::For { iter, .. } = &project.hir.stmts[*stmt] {
                 match super::iteration::SourceIteratorProtocol::checked(project, *iter)? {
                     Some(protocol) => {
                         table.source_iterators.insert(*iter, protocol);
