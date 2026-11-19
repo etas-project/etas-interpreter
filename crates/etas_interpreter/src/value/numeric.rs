@@ -37,6 +37,22 @@ impl NumericValue {
         Self::USize(value as u64)
     }
 
+    /// Zero-extended storage bits; signed values retain their width's two's complement.
+    pub(crate) fn raw_bits(self) -> u128 {
+        match self {
+            Self::I8(v) => v as u8 as u128,
+            Self::I16(v) => v as u16 as u128,
+            Self::I32(v) => v as u32 as u128,
+            Self::I64(v) | Self::ISize(v) => v as u64 as u128,
+            Self::I128(v) => v as u128,
+            Self::U8(v) => v as u128,
+            Self::U16(v) => v as u128,
+            Self::U32(v) | Self::F32(v) => v as u128,
+            Self::U64(v) | Self::USize(v) | Self::F64(v) => v as u128,
+            Self::U128(v) => v,
+        }
+    }
+
     pub fn primitive(self) -> PrimitiveType {
         match self {
             Self::I8(_) => PrimitiveType::I8,

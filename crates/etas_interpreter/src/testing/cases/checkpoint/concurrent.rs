@@ -139,9 +139,8 @@ flow main() -> string {
                 task.machine
                     .as_ref()
                     .and_then(|machine| machine.input.as_deref()),
-                Some(crate::orchestration::MachineInputSnapshot::Signal(
-                    crate::orchestration::ControlSignalSnapshot::Error { .. }
-                ))
+                Some(crate::orchestration::MachineInputSnapshot::Signal(signal))
+                    if matches!(&**signal, crate::orchestration::ControlSignalSnapshot::Error { .. })
             )),
         "Host error is committed before its handler runs"
     );
@@ -250,8 +249,8 @@ flow main() -> string {
     host.seed_model_response_text_with_usage(
         "ok",
         Some(etas_host::ModelUsage {
-            input_tokens: 2,
-            output_tokens: 3,
+            input_tokens: Some(2),
+            output_tokens: Some(3),
             cost: None,
         }),
     );
@@ -462,8 +461,9 @@ flow main(input: string) -> string {
     let before = &first.checkpoints[0];
     assert!(before.tasks.as_ref().unwrap().tasks.values().any(|task|
         matches!(task.machine.as_ref().and_then(|machine| machine.input.as_deref()),
-            Some(crate::orchestration::MachineInputSnapshot::Signal(crate::orchestration::ControlSignalSnapshot::Input(
-                crate::orchestration::ContinuationInputSnapshot::Value(crate::orchestration::ValueSnapshot::String(value))))) if value.len() == 200000)),
+            Some(crate::orchestration::MachineInputSnapshot::Signal(signal))
+                if matches!(&**signal, crate::orchestration::ControlSignalSnapshot::Input(
+                    crate::orchestration::ContinuationInputSnapshot::Value(crate::orchestration::ValueSnapshot::String(value))) if value.len() == 200000))),
         "checkpoint drains the admitted kernel before capturing the ready input");
     let wire =
         crate::api::codec::checkpoint_artifact_json(&["main.es".into()], "main", before).unwrap();

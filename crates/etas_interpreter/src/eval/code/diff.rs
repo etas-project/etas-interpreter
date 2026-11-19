@@ -145,7 +145,12 @@ fn project(
 ) -> Result<V, String> {
     let store = &context.checked.type_store;
     let known = &context.checked.types.known_std_types.code;
-    let p = Projector { store, known };
+    let enums = &context.checked.types.enum_layouts;
+    let p = Projector {
+        store,
+        known,
+        enums,
+    };
     p.record(
         ty,
         vec![
@@ -165,6 +170,7 @@ fn project(
                 report::revision_info(
                     store,
                     known,
+                    enums,
                     p.field(ty, "old_revision")?,
                     &value.old_revision,
                 )?,
@@ -174,6 +180,7 @@ fn project(
                 report::revision_info(
                     store,
                     known,
+                    enums,
                     p.field(ty, "new_revision")?,
                     &value.new_revision,
                 )?,

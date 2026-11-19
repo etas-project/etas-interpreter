@@ -53,7 +53,7 @@ pub(in crate::eval::machine::snapshot) fn capture_call_target_with(
                 continue;
             }
             CallTarget::Scoped(call) => {
-                let metadata = call.checkpoint_metadata(&mut context.revisions)?;
+                let metadata = call.checkpoint_metadata(context)?;
                 pending.push(PendingParent::Scoped(Box::new(metadata)));
                 current = call.target_ref();
                 continue;

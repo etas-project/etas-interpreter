@@ -46,19 +46,22 @@ impl EvalContext<'_> {
                 Some(value) => value,
                 None => match self.eval_global_symbol(binding, span) {
                     Ok(value) => value,
-                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                    Err(error) => return error.into_signal(),
                 },
             };
             let descriptor_type = match self.materialized_type(
                 fact.descriptor_type,
-                frame.generic_bindings(),
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
                 span,
             ) {
                 Ok(ty) => ty,
                 Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             };
-            let signature = match self.materialized_type(signature, frame.generic_bindings(), span)
-            {
+            let signature = match self.materialized_type(
+                signature,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                span,
+            ) {
                 Ok(ty) => ty,
                 Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             };
@@ -75,7 +78,7 @@ impl EvalContext<'_> {
             ) {
                 Ok(value) => self
                     .code_operation_boundary(span)
-                    .unwrap_or(ControlSignal::Value(value)),
+                    .unwrap_or_else(|| self.source_compiler_value(value, span)),
                 Err(error) => error.into_signal(span),
             };
         }
@@ -84,13 +87,13 @@ impl EvalContext<'_> {
                 Some(value) => value,
                 None => match self.eval_global_symbol(binding, span) {
                     Ok(value) => value,
-                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                    Err(error) => return error.into_signal(),
                 },
             };
             return match self.reflect_agent_binding(expr, fact.descriptor_type, value) {
                 Ok(value) => self
                     .code_operation_boundary(span)
-                    .unwrap_or(ControlSignal::Value(value)),
+                    .unwrap_or_else(|| self.source_compiler_value(value, span)),
                 Err(error) => error.into_signal(span),
             };
         }
@@ -107,7 +110,7 @@ impl EvalContext<'_> {
         {
             let descriptor_type = match self.materialized_type(
                 fact.descriptor_type,
-                frame.generic_bindings(),
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
                 span,
             ) {
                 Ok(ty) => ty,
@@ -133,7 +136,7 @@ impl EvalContext<'_> {
                 ) {
                     Ok(value) => self
                         .code_operation_boundary(span)
-                        .unwrap_or(ControlSignal::Value(value)),
+                        .unwrap_or_else(|| self.source_compiler_value(value, span)),
                     Err(error) => error.into_signal(span),
                 };
             }
@@ -155,7 +158,7 @@ impl EvalContext<'_> {
             };
             let value = match self.eval_global_symbol(symbol, span) {
                 Ok(value) => value,
-                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                Err(error) => return error.into_signal(),
             };
             let InterpValue::Callable(target) = value else {
                 return ControlSignal::missing_checked_fact(
@@ -205,7 +208,7 @@ impl EvalContext<'_> {
             ) {
                 Ok(value) => self
                     .code_operation_boundary(span)
-                    .unwrap_or(ControlSignal::Value(value)),
+                    .unwrap_or_else(|| self.source_compiler_value(value, span)),
                 Err(error) => error.into_signal(span),
             };
         }
@@ -214,7 +217,7 @@ impl EvalContext<'_> {
             return match self.reflect_frozen_source(expr, fact.descriptor_type, None) {
                 Ok(value) => self
                     .code_operation_boundary(span)
-                    .unwrap_or(ControlSignal::Value(value)),
+                    .unwrap_or_else(|| self.source_compiler_value(value, span)),
                 Err(error) => error.into_signal(span),
             };
         }
@@ -277,6 +280,6 @@ impl EvalContext<'_> {
             Err(error) => return ControlSignal::missing_checked_fact(error.to_string(), span),
         };
         self.code_operation_boundary(span)
-            .unwrap_or(ControlSignal::Value(value))
+            .unwrap_or_else(|| self.source_compiler_value(value, span))
     }
 }

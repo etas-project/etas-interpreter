@@ -5,6 +5,22 @@ use crate::orchestration::ValueSnapshot;
 impl DecodedValue for ValueSnapshot {
     const ALLOW_EXISTENTIAL: bool = true;
     type Frame = crate::orchestration::LocalsSnapshot;
+    fn handler(
+        value: &Value,
+        cache: &machine::FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, InterpreterCodecError> {
+        Ok(Self::Handler {
+            fact_expr: etas_hir::HirExprId(required_u32(value, "fact_expr")?),
+            handlers: required_array(value, "handlers")?
+                .iter()
+                .map(handler_arm_from_json)
+                .collect::<Result<_, _>>()?,
+            captured: value
+                .get("captured")
+                .map(|value| cache.get(value).map_err(InterpreterCodecError::new))
+                .transpose()?,
+        })
+    }
     fn frame_cache(
         limits: &etas_host::StorageLimits,
         root: machine::DecodeRoot<'_>,
@@ -29,6 +45,7 @@ impl DecodedValue for ValueSnapshot {
     fn unary(kind: Unary, value: Self) -> Self {
         let value = crate::orchestration::SnapshotBox::new(value);
         match kind {
+            Unary::ScopedHandler(metadata) => Self::ScopedHandler { metadata, value },
             Unary::Existential(header) => Self::Existential { header, value },
             Unary::Nominal(ty) => Self::Nominal { ty, value },
             Unary::Trust(wrapper) => Self::Trust { wrapper, value },

@@ -1,6 +1,9 @@
+mod completion;
 mod continuation;
 mod group;
 mod host;
+mod host_wait;
+mod policy;
 mod resource;
 mod snapshot;
 mod task;
@@ -14,20 +17,24 @@ use std::{
     num::NonZeroUsize,
 };
 
+pub(crate) use completion::{CompletionDecision, TaskCompletion};
 pub(crate) use continuation::{ConsumedContinuation, ContinuationTransfer};
 pub(crate) use continuation::{
     ContinuationArenaSnapshot, ContinuationEntrySnapshot, ContinuationState,
 };
 pub(crate) use group::{TaskGroupPolicy, TaskScopeSnapshot};
-pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, TaskHostReactor};
+pub(in crate::driver) use host::{CompletedTaskHost, HostOwner, ReadyTaskHost, TaskHostReactor};
+pub(crate) use host_wait::HostWait;
+pub(in crate::driver) use host_wait::{HostOperation, HostOperationScope};
+pub(crate) use policy::{ReadyTaskSnapshot, SourcePolicySnapshot, SourceSchedulingPolicy};
 pub(crate) use resource::ResourceGuardsSnapshot;
 pub(crate) use snapshot::TaskSchedulerMetadataSnapshot;
 pub(crate) use task::{
-    ContinuationId, RootTaskWait, ScheduledTask, TaskHandle, TaskId, TaskIdentity, TaskOutcome,
-    TaskResume, TaskScopeId, TaskState, TaskWait, TaskWaiter,
+    CheckedTaskStart, ContinuationId, RootTaskWait, ScheduledTask, TaskHandle, TaskId,
+    TaskIdentity, TaskOutcome, TaskResume, TaskScopeId, TaskState, TaskWait, TaskWaiter,
 };
 
-pub(crate) const MAX_CONCURRENCY: usize = 65_536;
+pub(crate) const MAX_CONCURRENCY: usize = etas_std::intrinsic::task::MAX_CONCURRENCY as usize;
 
 use crate::{api::RunFailure, eval::machine::EvalMachine, value::InterpValue};
 
@@ -66,6 +73,10 @@ impl std::error::Error for SchedulerError {}
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskWakeup {
+    Completion {
+        scope: TaskScopeId,
+        event: TaskCompletion,
+    },
     Task {
         completed: TaskHandle,
         outcome: TaskOutcome,
@@ -96,8 +107,13 @@ pub(crate) struct TaskScheduler {
     groups: BTreeMap<TaskScopeId, group::TaskGroup>,
     tasks: BTreeMap<TaskId, ScheduledTask>,
     ready: VecDeque<TaskId>,
+    deferred_handlers: BTreeMap<TaskId, TaskId>,
+    enqueue_orders: BTreeMap<TaskId, u64>,
+    next_enqueue_order: BTreeMap<TaskScopeId, u64>,
+    policies: BTreeMap<TaskScopeId, SourceSchedulingPolicy>,
     wakeups: BTreeMap<TaskId, VecDeque<TaskWakeup>>,
     cancellation_events: Vec<(TaskHandle, etas_host::execution::CancellationReason)>,
+    terminal_events: Vec<(TaskHandle, TaskState)>,
     continuations: continuation::ContinuationArena,
     resources: resource::ResourceGuards,
     checkpoint_barrier: bool,
@@ -116,8 +132,13 @@ impl TaskScheduler {
             groups,
             tasks: BTreeMap::new(),
             ready: VecDeque::new(),
+            deferred_handlers: BTreeMap::new(),
+            enqueue_orders: BTreeMap::new(),
+            next_enqueue_order: BTreeMap::new(),
+            policies: BTreeMap::new(),
             wakeups: BTreeMap::new(),
             cancellation_events: Vec::new(),
+            terminal_events: Vec::new(),
             continuations: continuation::ContinuationArena::new(),
             resources: Default::default(),
             checkpoint_barrier: false,
@@ -175,17 +196,14 @@ impl TaskScheduler {
 
     pub(crate) fn capture_continuations(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
         capture: impl FnMut(
             TaskIdentity,
             Option<&crate::value::CheckedExecutionProgram>,
             &crate::control::Continuation,
         ) -> Result<u32, String>,
     ) -> Result<ContinuationArenaSnapshot, String> {
-        self.continuations.capture(revisions, capture)
+        self.continuations.capture(context, capture)
     }
 
     pub(crate) fn consume_continuation(
@@ -203,6 +221,13 @@ impl TaskScheduler {
         origin: TaskIdentity,
     ) -> Result<(), SchedulerError> {
         self.continuations.dispose(token, origin)
+    }
+
+    pub(crate) fn continuation_program(
+        &self,
+        token: crate::value::ContinuationTokenValue,
+    ) -> Result<Option<crate::value::CheckedExecutionProgram>, SchedulerError> {
+        self.continuations.program(token)
     }
 
     pub(crate) fn spawn(
@@ -251,7 +276,7 @@ impl TaskScheduler {
             .expect("validated task scope")
             .tasks
             .insert(id);
-        self.ready.push_back(id);
+        self.enqueue(id);
         Ok(TaskHandle {
             owner: scope,
             task: id,
@@ -262,6 +287,7 @@ impl TaskScheduler {
         &mut self,
         scope: TaskScopeId,
         owner: TaskHandle,
+        logical_identity: TaskIdentity,
     ) -> Result<(), SchedulerError> {
         self.resolve_id(owner)?;
         if owner.owner != scope {
@@ -274,6 +300,11 @@ impl TaskScheduler {
         if group.owner.replace(owner.task).is_some() {
             return Err(SchedulerError::InvalidTransition);
         }
+        self.tasks
+            .get_mut(&owner.task)
+            .expect("scope owner task")
+            .local
+            .logical_identity = logical_identity;
         Ok(())
     }
 
@@ -294,7 +325,7 @@ impl TaskScheduler {
     pub(crate) fn attach_start(
         &mut self,
         handle: TaskHandle,
-        call: crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
+        call: CheckedTaskStart,
     ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
         let task = self.tasks.get_mut(&id).expect("resolved task");
@@ -422,6 +453,22 @@ impl TaskScheduler {
         std::mem::take(&mut self.cancellation_events)
     }
 
+    pub(crate) fn take_terminal_events(
+        &mut self,
+        mut ready: impl FnMut(TaskHandle) -> bool,
+    ) -> Vec<(TaskHandle, TaskState)> {
+        let mut events = Vec::new();
+        self.terminal_events.retain(|(handle, state)| {
+            if ready(*handle) {
+                events.push((*handle, *state));
+                false
+            } else {
+                true
+            }
+        });
+        events
+    }
+
     /// FIFO admission. Stale queue entries from cancellation are skipped.
     pub(crate) fn dispatch_ready(&mut self) -> Option<TaskHandle> {
         if self.checkpoint_barrier {
@@ -452,6 +499,7 @@ impl TaskScheduler {
             }
             let task = self.tasks.get_mut(&id).expect("ready task must exist");
             task.state = TaskState::Running;
+            self.enqueue_orders.remove(&id);
             if !active_slot {
                 task.active_slot = true;
                 self.change_active(scope, true);
@@ -474,20 +522,12 @@ impl TaskScheduler {
         self.checkpoint_barrier = false;
     }
 
-    /// Commit completed Host operations without running the task or changing
-    /// FIFO order, active slots, resource permits, or waiter ownership.
     pub(crate) fn take_checkpoint_task(&mut self, handle: TaskHandle) -> ScheduledTask {
         assert!(
             self.checkpoint_barrier,
             "checkpoint task access requires a barrier"
         );
-        let task = self
-            .tasks
-            .remove(&handle.task)
-            .expect("completed Host task exists");
-        assert_eq!(task.scope, handle.owner);
-        assert_eq!(task.state, TaskState::Ready);
-        task
+        self.take_ready_task(handle)
     }
 
     pub(crate) fn restore_checkpoint_task(&mut self, handle: TaskHandle, task: ScheduledTask) {
@@ -495,11 +535,39 @@ impl TaskScheduler {
             self.checkpoint_barrier,
             "checkpoint task access requires a barrier"
         );
+        self.restore_ready_task(handle, task);
+    }
+
+    /// Commit a completed input without running source or changing admission,
+    /// FIFO order, active slots, resource permits, or waiter ownership.
+    /// Host settlement can address a suspended wait while its owner is in a
+    /// Handler arm or already terminal; it never executes the owner's source.
+    pub(crate) fn take_host_owner(&mut self, handle: TaskHandle) -> ScheduledTask {
+        let task = self.tasks.remove(&handle.task).expect("Host owner exists");
+        assert_eq!(task.scope, handle.owner);
+        task
+    }
+    pub(crate) fn restore_host_owner(&mut self, handle: TaskHandle, task: ScheduledTask) {
+        assert_eq!(task.scope, handle.owner);
+        assert!(
+            self.tasks.insert(handle.task, task).is_none(),
+            "Host owner restored once"
+        );
+    }
+
+    pub(crate) fn take_ready_task(&mut self, handle: TaskHandle) -> ScheduledTask {
+        let task = self.tasks.remove(&handle.task).expect("ready task exists");
+        assert_eq!(task.scope, handle.owner);
+        assert_eq!(task.state, TaskState::Ready);
+        task
+    }
+
+    pub(crate) fn restore_ready_task(&mut self, handle: TaskHandle, task: ScheduledTask) {
         assert_eq!(task.scope, handle.owner);
         assert_eq!(task.state, TaskState::Ready);
         assert!(
             self.tasks.insert(handle.task, task).is_none(),
-            "checkpoint task restored once"
+            "ready task restored once"
         );
     }
 
@@ -541,7 +609,7 @@ impl TaskScheduler {
             task.active_slot = false;
             self.change_active(scope, false);
         }
-        self.ready.push_back(id);
+        self.enqueue(id);
         Ok(())
     }
 
@@ -617,6 +685,11 @@ impl TaskScheduler {
         scope: TaskScopeId,
     ) -> Result<Option<TaskOutcome>, SchedulerError> {
         let group = self.groups.get(&scope).ok_or(SchedulerError::WrongOwner)?;
+        // A running machine is leased out of the task table. It still owns
+        // its admission slot, so the scope cannot settle while that lease lives.
+        if group.active != 0 {
+            return Ok(None);
+        }
         if group
             .tasks
             .iter()
@@ -724,6 +797,262 @@ impl TaskScheduler {
         output.ok_or(SchedulerError::InvalidTransition).map(Some)
     }
 
+    pub(crate) fn task_logical_identity(
+        &self,
+        identity: TaskIdentity,
+    ) -> Result<TaskIdentity, SchedulerError> {
+        match identity {
+            TaskIdentity::Root => Ok(TaskIdentity::Root),
+            TaskIdentity::Scheduled(id) => self
+                .tasks
+                .get(&id)
+                .map(|task| task.local.logical_identity)
+                .ok_or(SchedulerError::UnknownTask),
+        }
+    }
+
+    pub(crate) fn task_parent(&self, id: TaskId) -> Option<TaskIdentity> {
+        self.tasks.get(&id)?.local.parent
+    }
+
+    pub(crate) fn arm_owned_continuations(
+        &self,
+        task: TaskId,
+    ) -> Vec<(
+        crate::value::CheckedExecutionProgram,
+        crate::control::Continuation,
+    )> {
+        self.continuations
+            .arm_owned_for(TaskIdentity::Scheduled(task))
+            .map(|(program, continuation)| (program.clone(), continuation.clone()))
+            .collect()
+    }
+
+    pub(crate) fn wait_for_handler_owner(
+        &mut self,
+        handle: TaskHandle,
+        owner: TaskId,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Running {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Waiting(TaskWait::HandlerOwner(owner));
+        let scope = task.scope;
+        if task.active_slot {
+            task.active_slot = false;
+            self.change_active(scope, false);
+        }
+        self.deferred_handlers.insert(id, owner);
+        Ok(())
+    }
+
+    pub(crate) fn wake_exposed_handlers(&mut self) -> Result<(), SchedulerError> {
+        let mut ready = Vec::new();
+        let mut cancelled = Vec::new();
+        self.deferred_handlers.retain(|id, owner| {
+            let task = &self.tasks[id];
+            if task.state != TaskState::Waiting(TaskWait::HandlerOwner(*owner)) {
+                return false;
+            }
+            let Some(TaskResume::DeferredHandler { handler }) = task.waiting_continuation else {
+                unreachable!("deferred task owns its selected Handler")
+            };
+            let owner = &self.tasks[owner];
+            if owner.state.is_terminal() {
+                cancelled.push(TaskHandle {
+                    owner: task.scope,
+                    task: *id,
+                });
+                false
+            } else if owner.can_relay_handler() && owner.local.has_owned_handler(handler) {
+                ready.push(*id);
+                false
+            } else {
+                true
+            }
+        });
+        for id in ready {
+            self.tasks.get_mut(&id).expect("waiting child").state = TaskState::Ready;
+            self.enqueue(id);
+        }
+        for handle in cancelled {
+            self.cancel(
+                handle,
+                etas_host::execution::CancellationReason::OwnerDropped,
+            )?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn take_handler_caller(
+        &mut self,
+        id: TaskId,
+        inherited: &[crate::orchestration::ActiveHandlerRecord],
+    ) -> Option<(TaskHandle, ScheduledTask)> {
+        let task = self.tasks.get(&id)?;
+        if !task.local.owns_inherited_handler(inherited)
+            && !(task.state == TaskState::Ready
+                && self
+                    .continuations
+                    .arm_owned_for(TaskIdentity::Scheduled(id))
+                    .next()
+                    .is_some())
+        {
+            return None;
+        }
+        if !task.can_relay_handler() {
+            return None;
+        }
+        let handle = TaskHandle {
+            owner: task.scope,
+            task: id,
+        };
+        Some((handle, self.tasks.remove(&id).expect("handler caller")))
+    }
+
+    pub(crate) fn restore_handler_caller(
+        &mut self,
+        handle: TaskHandle,
+        mut task: ScheduledTask,
+        dispatch: bool,
+        active: TaskId,
+    ) {
+        let previous = task.state;
+        if dispatch {
+            match previous {
+                TaskState::Waiting(TaskWait::Completion(scope)) => {
+                    self.groups
+                        .get_mut(&scope)
+                        .expect("completion scope")
+                        .completion_waiter = None;
+                }
+                TaskState::Waiting(TaskWait::Task(target)) if target != active => self
+                    .tasks
+                    .get_mut(&target)
+                    .expect("awaited task")
+                    .waiters
+                    .retain(|waiter| !matches!(waiter, TaskWaiter::Task(id) if *id == handle.task)),
+                TaskState::Waiting(TaskWait::Scope(scope)) => self
+                    .groups
+                    .get_mut(&scope)
+                    .expect("awaited scope")
+                    .waiters
+                    .retain(|id| *id != handle.task),
+                _ => (),
+            }
+            task.state = TaskState::Ready;
+        }
+        assert!(
+            self.tasks.insert(handle.task, task).is_none(),
+            "handler caller remains unique"
+        );
+        if dispatch && previous != TaskState::Ready {
+            self.enqueue(handle.task);
+        }
+    }
+
+    pub(crate) fn wake_task_wait(
+        &mut self,
+        handle: TaskHandle,
+        wakeup: TaskWakeup,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        self.wakeups.entry(id).or_default().push_back(wakeup);
+        self.requeue(handle)
+    }
+
+    pub(crate) fn wait_for_handler(
+        &mut self,
+        handle: TaskHandle,
+        handler: crate::orchestration::HandlerScopeId,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        if task.state != TaskState::Running {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.state = TaskState::Waiting(TaskWait::Handler(handler));
+        let scope = task.scope;
+        if task.active_slot {
+            task.active_slot = false;
+            self.change_active(scope, false);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn resume_handled_action(
+        &mut self,
+        handle: TaskHandle,
+        expected_handler: crate::orchestration::HandlerScopeId,
+        value: InterpValue,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resolved task");
+        let TaskState::Waiting(TaskWait::Handler(handler)) = task.state else {
+            return Err(SchedulerError::InvalidTransition);
+        };
+        if handler != expected_handler {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        let Some(TaskResume::Handler {
+            continuation,
+            handler: expected,
+        }) = task.waiting_continuation.take()
+        else {
+            return Err(SchedulerError::InvalidTransition);
+        };
+        if expected != handler {
+            return Err(SchedulerError::InvalidTransition);
+        }
+        task.machine
+            .resume(crate::control::ControlSignal::pending_continuation(
+                crate::control::PendingContinuation {
+                    continuation,
+                    input: crate::control::ContinuationInput::Value(value),
+                },
+            ));
+        task.state = TaskState::Ready;
+        self.enqueue(id);
+        Ok(())
+    }
+
+    pub(crate) fn close_handler(
+        &mut self,
+        handler: crate::orchestration::HandlerScopeId,
+    ) -> Result<(), SchedulerError> {
+        if !self
+            .tasks
+            .values()
+            .any(|task| task.state == TaskState::Waiting(TaskWait::Handler(handler)) ||
+                matches!(task.waiting_continuation, Some(TaskResume::DeferredHandler { handler: reserved }) if reserved == handler))
+        {
+            return Ok(());
+        }
+        // `finish` disposes requests delegated to this lexical boundary. Only
+        // descendants that inherited it are affected; the task running the arm
+        // can continue after the handled expression.
+        let tasks = self
+            .tasks
+            .iter()
+            .filter(|(_, task)| {
+                task.local
+                    .inherited_handler_records()
+                    .iter()
+                    .any(|scope| scope.id == handler)
+            })
+            .map(|(id, task)| TaskHandle {
+                owner: task.scope,
+                task: *id,
+            })
+            .collect::<Vec<_>>();
+        for task in tasks {
+            self.cancel(task, etas_host::execution::CancellationReason::OwnerDropped)?;
+        }
+        Ok(())
+    }
+
     pub(crate) fn wait_for_host(
         &mut self,
         handle: TaskHandle,
@@ -783,7 +1112,7 @@ impl TaskScheduler {
             return Err(SchedulerError::InvalidTransition);
         }
         task.state = TaskState::Ready;
-        self.ready.push_back(id);
+        self.enqueue(id);
         Ok(())
     }
 
@@ -830,6 +1159,7 @@ impl TaskScheduler {
         let outcome = self.tasks[&id]
             .outcome
             .as_ref()
+            .or(self.tasks[&id].pending_outcome.as_ref())
             .ok_or(SchedulerError::InvalidTransition)?;
         let reason = match outcome {
             TaskOutcome::Completed(_)
@@ -854,7 +1184,7 @@ impl TaskScheduler {
             _ => None,
         };
         if let Some(reason) = reason {
-            self.cancel_scope_unsettled(scope, reason)?;
+            self.cancel_scope_except(scope, reason, id)?;
         }
         Ok(())
     }
@@ -874,7 +1204,10 @@ impl TaskScheduler {
         if !already_cancelled {
             self.cancellation_events.push((handle, reason));
         }
-        if matches!(task.state, TaskState::Waiting(TaskWait::Host(_))) {
+        if matches!(
+            task.state,
+            TaskState::Waiting(TaskWait::Host(_) | TaskWait::HostDrain)
+        ) {
             return Ok(());
         }
         let cause = task
@@ -894,12 +1227,26 @@ impl TaskScheduler {
         self.terminal(handle, TaskOutcome::Cancelled(cause))
     }
 
+    pub(crate) fn next_ready_wakeup(&self) -> Option<TaskHandle> {
+        self.wakeups.iter().find_map(|(id, pending)| {
+            let task = self.tasks.get(id)?;
+            (task.state == TaskState::Ready && !pending.is_empty()).then_some(TaskHandle {
+                owner: task.scope,
+                task: *id,
+            })
+        })
+    }
+
     pub(crate) fn take_wakeup(
         &mut self,
         handle: TaskHandle,
     ) -> Result<Option<TaskWakeup>, SchedulerError> {
         let id = self.resolve_id(handle)?;
-        Ok(self.wakeups.get_mut(&id).and_then(VecDeque::pop_front))
+        let wakeup = self.wakeups.get_mut(&id).and_then(VecDeque::pop_front);
+        if self.wakeups.get(&id).is_some_and(VecDeque::is_empty) {
+            self.wakeups.remove(&id);
+        }
+        Ok(wakeup)
     }
 
     pub(crate) fn has_unsettled_tasks(&self) -> bool {
@@ -925,10 +1272,11 @@ impl TaskScheduler {
         Ok(())
     }
 
-    pub(crate) fn cancel_scope_unsettled(
+    fn cancel_scope_except(
         &mut self,
         scope: TaskScopeId,
         reason: etas_host::execution::CancellationReason,
+        except: TaskId,
     ) -> Result<(), SchedulerError> {
         if !self.groups.contains_key(&scope) {
             return Err(SchedulerError::WrongOwner);
@@ -942,7 +1290,7 @@ impl TaskScheduler {
         let handles = scopes
             .iter()
             .flat_map(|scope| self.groups[scope].tasks.iter())
-            .filter(|task| !self.tasks[task].state.is_terminal())
+            .filter(|task| **task != except && !self.tasks[task].state.is_terminal())
             .map(|task| TaskHandle {
                 owner: self.tasks[task].scope,
                 task: *task,
@@ -965,14 +1313,60 @@ impl TaskScheduler {
             })
     }
 
+    /// A language body can finish while an abandoned Host supervisor still
+    /// owns work. Retain its resource permits and result until that work settles.
+    pub(crate) fn finish_host_drain(&mut self, handle: TaskHandle) -> Result<bool, SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("Host owner exists");
+        if task.state != TaskState::Waiting(TaskWait::HostDrain)
+            || task
+                .local
+                .host_operations
+                .as_ref()
+                .is_some_and(|count| count.get() != 0)
+        {
+            return Ok(false);
+        }
+        let mut outcome = task
+            .pending_outcome
+            .take()
+            .expect("draining task has its body outcome");
+        if matches!(outcome, TaskOutcome::Completed(_) | TaskOutcome::Raised(_))
+            && let Some(cause) = task.local.execution.signal()?.cause()?
+        {
+            outcome = TaskOutcome::Cancelled(cause);
+        }
+        self.terminal(handle, outcome)?;
+        self.apply_group_policy(handle)?;
+        Ok(true)
+    }
+
     fn terminal(&mut self, handle: TaskHandle, outcome: TaskOutcome) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        let group = self.groups.get_mut(&handle.owner).expect("task scope");
+        if group.completion_waiter == Some(id) {
+            group.completion_waiter = None;
+        }
+        self.wakeups.remove(&id);
         self.continuations
             .dispose_origin(TaskIdentity::Scheduled(id));
         let (waiters, was_running) = {
             let task = self.tasks.get_mut(&id).expect("resolved task");
             if task.state.is_terminal() {
                 return Err(SchedulerError::InvalidTransition);
+            }
+            if task
+                .local
+                .host_operations
+                .as_ref()
+                .is_some_and(|count| count.get() != 0)
+            {
+                task.pending_outcome = Some(outcome);
+                task.state = TaskState::Waiting(TaskWait::HostDrain);
+                task.host_wait = None;
+                task.waiting_continuation = None;
+                task.machine = EvalMachine::new();
+                return Ok(());
             }
             let was_running = task.active_slot;
             task.active_slot = false;
@@ -982,6 +1376,9 @@ impl TaskScheduler {
             ))?;
             task.state = outcome.state();
             task.outcome = Some(outcome.clone());
+            task.waiting_continuation = None;
+            task.host_wait = None;
+            task.machine = EvalMachine::new();
             (std::mem::take(&mut task.waiters), was_running)
         };
         if was_running {
@@ -998,7 +1395,7 @@ impl TaskScheduler {
             }
             if self.resources.acquire(waiting, &task.resource_keys) {
                 task.state = TaskState::Ready;
-                self.ready.push_back(waiting);
+                self.enqueue(waiting);
             } else {
                 self.resources.waiting.push_back(waiting);
             }
@@ -1009,7 +1406,7 @@ impl TaskScheduler {
                     let task = self.tasks.get_mut(&waiter).expect("registered waiter");
                     if task.state == TaskState::Waiting(TaskWait::Task(id)) {
                         task.state = TaskState::Ready;
-                        self.ready.push_back(waiter);
+                        self.enqueue(waiter);
                         self.wakeups
                             .entry(waiter)
                             .or_default()
@@ -1021,7 +1418,9 @@ impl TaskScheduler {
                 }
             }
         }
+        self.record_completion(id);
         self.wake_scope_if_settled(self.tasks[&id].scope)?;
+        self.terminal_events.push((handle, outcome.state()));
         Ok(())
     }
 
@@ -1151,7 +1550,7 @@ impl TaskScheduler {
                 .expect("registered scope waiter");
             if task.state == TaskState::Waiting(TaskWait::Scope(scope)) {
                 task.state = TaskState::Ready;
-                self.ready.push_back(waiter);
+                self.enqueue(waiter);
                 self.wakeups
                     .entry(waiter)
                     .or_default()

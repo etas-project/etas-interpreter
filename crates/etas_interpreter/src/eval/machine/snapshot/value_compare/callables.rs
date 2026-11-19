@@ -9,8 +9,18 @@ impl PartialEq for Target {
 
 impl PartialEq for LocalsSnapshot {
     fn eq(&self, other: &Self) -> bool {
-        if std::rc::Rc::ptr_eq(&self.locals, &other.locals) {
-            return self.id == other.id
+        if self.reference || other.reference {
+            return self.id == other.id;
+        }
+        let shared_parent = match (&self.parent, &other.parent) {
+            (None, None) => true,
+            (Some(a), Some(b)) => std::rc::Rc::ptr_eq(a, b),
+            _ => false,
+        };
+        if shared_parent && std::rc::Rc::ptr_eq(&self.locals, &other.locals) {
+            return self.handler_activations == other.handler_activations
+                && self.shared_bindings == other.shared_bindings
+                && self.id == other.id
                 && self.residual_invocation == other.residual_invocation
                 && self.type_bindings == other.type_bindings
                 && self.type_parameter_bindings == other.type_parameter_bindings
@@ -27,7 +37,12 @@ pub(super) fn frame<'a>(
     seen: &mut Seen,
     compare_ids: bool,
 ) -> bool {
-    if (compare_ids && a.id != b.id)
+    if a.reference || b.reference {
+        return a.id == b.id;
+    }
+    if a.handler_activations != b.handler_activations
+        || a.shared_bindings != b.shared_bindings
+        || (compare_ids && a.id != b.id)
         || a.residual_invocation != b.residual_invocation
         || a.type_bindings != b.type_bindings
         || a.type_parameter_bindings != b.type_parameter_bindings
@@ -35,6 +50,15 @@ pub(super) fn frame<'a>(
         || a.locals.len() != b.locals.len()
     {
         return false;
+    }
+    match (&a.parent, &b.parent) {
+        (Some(a), Some(b)) => {
+            if !std::rc::Rc::ptr_eq(a, b) {
+                pending.0.push(Comparison::Frame(a, b));
+            }
+        }
+        (None, None) => (),
+        _ => return false,
     }
     if std::rc::Rc::ptr_eq(&a.locals, &b.locals) {
         return true;
@@ -87,6 +111,7 @@ pub(super) fn target<'a>(
         | (Target::ToolItem(a), Target::ToolItem(b)) => a == b,
         (Target::AgentRevision(a), Target::AgentRevision(b)) => a == b,
         (Target::EnumVariant(a), Target::EnumVariant(b)) => a == b,
+        (Target::DerivedResponseDecoder(a), Target::DerivedResponseDecoder(b)) => a == b,
         (Target::NominalConstructor(a), Target::NominalConstructor(b)) => a == b,
         (
             Target::Lambda {

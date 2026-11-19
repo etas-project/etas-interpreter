@@ -67,19 +67,38 @@ pub(crate) struct CpuJobRecord {
 
 /// Execution stacks owned by one cooperatively scheduled task.
 pub(crate) struct TaskLocalState {
+    pub(crate) receiver_updates: crate::control::ReceiverAccessSet,
     pub(crate) identity: crate::driver::scheduler::TaskIdentity,
+    pub(crate) logical_identity: crate::driver::scheduler::TaskIdentity,
     pub(crate) parent: Option<crate::driver::scheduler::TaskIdentity>,
     pub(crate) task_scope: crate::driver::scheduler::TaskScopeId,
     pub(crate) execution: etas_host::execution::ExecutionScope,
     pub(crate) cancellation: Result<etas_host::execution::CancelSignal, etas_host::HostError>,
     pub(crate) model_policy: ModelExecutionPolicy,
+    pub(crate) host_operations: Option<std::rc::Rc<std::cell::Cell<usize>>>,
+    pub(crate) agent_context: Option<Box<crate::control::AgentRequestContext>>,
     pub(super) retry_stack: Vec<RetryAttemptRecord>,
     pub(super) handler_stack: Vec<ActiveHandlerRecord>,
+    pub(crate) inherited_handlers: usize,
     /// Live residual monitor bookkeeping for this task's program scopes.
     pub(crate) residual: crate::eval::residual::ResidualRunState,
 }
 
 impl TaskLocalState {
+    pub(crate) fn inherited_handler_records(&self) -> &[ActiveHandlerRecord] {
+        &self.handler_stack[..self.inherited_handlers]
+    }
+    pub(crate) fn has_owned_handler(&self, id: crate::orchestration::HandlerScopeId) -> bool {
+        self.handler_stack[self.inherited_handlers..]
+            .iter()
+            .any(|record| record.id == id)
+    }
+
+    pub(crate) fn owns_inherited_handler(&self, handlers: &[ActiveHandlerRecord]) -> bool {
+        self.handler_stack[self.inherited_handlers..]
+            .iter()
+            .any(|own| handlers.iter().any(|handler| handler.id == own.id))
+    }
     pub(crate) fn dynamic_depths(&self) -> (usize, usize) {
         (self.handler_stack.len(), self.retry_stack.len())
     }
@@ -90,13 +109,18 @@ impl TaskLocalState {
     ) -> Self {
         Self {
             identity: crate::driver::scheduler::TaskIdentity::Root,
+            logical_identity: crate::driver::scheduler::TaskIdentity::Root,
             parent: None,
             task_scope,
             cancellation: execution.signal(),
             execution,
             model_policy,
+            host_operations: None,
+            receiver_updates: Default::default(),
+            agent_context: None,
             retry_stack: Vec::new(),
             handler_stack: Vec::new(),
+            inherited_handlers: 0,
             residual: Default::default(),
         }
     }
@@ -113,13 +137,18 @@ impl TaskLocalState {
         execution.claim_body()?;
         Ok(Self {
             identity: crate::driver::scheduler::TaskIdentity::Scheduled(identity),
+            logical_identity: crate::driver::scheduler::TaskIdentity::Scheduled(identity),
             parent: Some(self.identity),
             task_scope,
             cancellation: execution.signal(),
             execution,
             model_policy: self.model_policy.clone(),
+            host_operations: None,
+            receiver_updates: Default::default(),
+            agent_context: self.agent_context.clone(),
             retry_stack: self.retry_stack.clone(),
             handler_stack: self.handler_stack.clone(),
+            inherited_handlers: self.handler_stack.len(),
             residual: Default::default(),
         })
     }

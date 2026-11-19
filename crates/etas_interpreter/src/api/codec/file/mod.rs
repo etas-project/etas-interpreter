@@ -79,12 +79,5 @@ enum Node {
 }
 
 fn check_document_schema(value: &Value) -> Result<(), InterpreterCodecError> {
-    let schema = super::required_str(value, "schema")?;
-    if schema != crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA {
-        return Err(InterpreterCodecError::new(format!(
-            "unsupported checkpoint artifact schema `{schema}`; expected `{}`",
-            crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA,
-        )));
-    }
-    Ok(())
+    super::checkpoint::readable_schema(value).map(|_| ())
 }

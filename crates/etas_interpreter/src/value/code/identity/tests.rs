@@ -33,10 +33,6 @@ fn compiler_identity_snapshots_require_the_current_checked_type_role() {
             TypeId(13),
             CodeIdentitySnapshot::Callable(CallableId::declaration(flow).unwrap()),
         ),
-        (
-            TypeId(14),
-            CodeIdentitySnapshot::Tool(key(etas_code::DefinitionKind::Tool)),
-        ),
     ] {
         let value = identity.restore(&known, ty).unwrap();
         assert_eq!(CodeIdentitySnapshot::capture(&value).unwrap(), identity);
@@ -52,11 +48,6 @@ fn compiler_identity_snapshots_require_the_current_checked_type_role() {
     assert!(
         CodeIdentitySnapshot::Agent(key(etas_code::DefinitionKind::Tool))
             .restore(&known, TypeId(11))
-            .is_err()
-    );
-    assert!(
-        CodeIdentitySnapshot::Tool(key(etas_code::DefinitionKind::Agent))
-            .restore(&known, TypeId(14))
             .is_err()
     );
 }

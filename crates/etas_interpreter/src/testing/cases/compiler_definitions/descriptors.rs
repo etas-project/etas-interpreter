@@ -378,6 +378,24 @@ flow main() -> Array<std.compiler.ToolRef> { return (^Worker).tools; }
     })
     .collect();
     let (checked, definitions) = prepared_project(input, &[]);
+    let store = definitions.definitions();
+    let mut expected = checked
+        .hir
+        .items
+        .iter()
+        .filter_map(|(_, item)| {
+            let etas_hir::HirItem::Tool(tool) = item else {
+                return None;
+            };
+            Some(
+                store
+                    .catalog()
+                    .tool_reference_for_symbol(tool.symbol, store.syntax_operations())
+                    .unwrap(),
+            )
+        })
+        .collect::<Vec<_>>();
+    expected.sort_by(|(left, _), (right, _)| left.module().cmp(right.module()));
     let result = execute(
         &checked,
         RunOptions {
@@ -390,19 +408,26 @@ flow main() -> Array<std.compiler.ToolRef> { return (^Worker).tools; }
     let Some(InterpValue::Array(tools)) = result.value() else {
         panic!("missing tool descriptors")
     };
-    let identities = tools
-        .borrow()
-        .iter()
-        .map(|tool| {
-            let InterpValue::CodeMetadata(tool) = tool else {
-                panic!("untyped tool metadata")
-            };
-            let crate::value::CodeMetadataPayload::Tool(identity) = tool.payload() else {
-                panic!("incorrect metadata role")
-            };
-            assert_eq!(identity.kind(), etas_code::DefinitionKind::Tool);
-            identity.clone()
-        })
+    let tools = tools.borrow();
+    assert_eq!(tools.len(), expected.len());
+    for (tool, (identity, revision)) in tools.iter().zip(&expected) {
+        let record = spec_record(tool);
+        assert_eq!(
+            record.get("id"),
+            Some(InterpValue::String(
+                identity.fingerprint().to_string().into()
+            ))
+        );
+        assert_eq!(
+            record.get("revision"),
+            Some(InterpValue::String(
+                revision.key().fingerprint().to_string().into()
+            ))
+        );
+    }
+    let identities = expected
+        .into_iter()
+        .map(|(identity, _)| identity)
         .collect::<Vec<_>>();
     assert_eq!(identities.len(), 2);
     assert_eq!(identities[0].declaration(), ["lookup"]);

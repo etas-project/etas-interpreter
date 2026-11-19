@@ -2,6 +2,55 @@ use super::*;
 use etas_hir::HirExpr;
 
 impl SnapshotValidator<'_> {
+    pub(super) fn pending_execution_call(
+        &self,
+        site: Option<&crate::orchestration::CallSiteSnapshot>,
+        target: &CallTargetSnapshot,
+        receiver: Option<&ValueSnapshot>,
+        span: etas_core::Span,
+    ) -> Result<(), String> {
+        let context = "checkpoint pending call";
+        let Some(site) = site else {
+            return self.call_target(target, context);
+        };
+        self.invocation_site(site, span, context)?;
+        self.call_target_in(target, context, call_target::ReferenceScope::CheckedSlot)?;
+        let bindings = site.bindings(self.checked);
+        if let Some(composition) = &site.composition {
+            if composition.selected()? != target {
+                return Err("pending call differs from its checked composition stage".into());
+            }
+            return Ok(());
+        }
+        use crate::control::CallSiteKind;
+        match site.kind {
+            CallSiteKind::TaskCallback { .. } | CallSiteKind::SourceTaskCallback { .. } => self
+                .reference_target_type_with_bindings(
+                    target,
+                    site.task_callback_type(self.checked)?,
+                    &bindings,
+                ),
+            CallSiteKind::Expr { expr } => self.pending_call_target(
+                expr,
+                target,
+                &self.checked.hir.exprs[expr],
+                &bindings,
+                receiver,
+            ),
+            CallSiteKind::PipelineStage { .. } => {
+                let (callee, _) = site.receiver(self.checked, span)?;
+                self.reference_target_type_with_bindings(
+                    target,
+                    self.checked.types.expr_types[&callee],
+                    &bindings,
+                )
+            }
+            CallSiteKind::Pipeline { .. } => {
+                Err("pending call has no selected pipeline stage".into())
+            }
+        }
+    }
+
     pub(super) fn pending_method_target(
         &self,
         call: HirExprId,
@@ -72,11 +121,35 @@ impl SnapshotValidator<'_> {
         context: &str,
     ) -> Result<(), String> {
         use crate::control::CallSiteKind;
+        if let CallSiteKind::SourceTaskCallback { item } = origin.kind {
+            self.item(item, context)?;
+            return if matches!(
+                self.checked.hir.items.get(item),
+                Some(etas_hir::HirItem::Flow(etas_hir::HirFlowDecl {
+                    body: etas_hir::HirFlowBody::Runtime {
+                        role: etas_std::StdExecutionRole::TaskStart,
+                        ..
+                    },
+                    ..
+                }))
+            ) {
+                Ok(())
+            } else {
+                Err("source task callback origin is not a checked task entry".into())
+            };
+        }
         let (CallSiteKind::Expr { expr }
+        | CallSiteKind::TaskCallback { expr }
         | CallSiteKind::Pipeline { expr }
-        | CallSiteKind::PipelineStage { expr, .. }) = origin.kind;
+        | CallSiteKind::PipelineStage { expr, .. }) = origin.kind
+        else {
+            unreachable!()
+        };
         self.expr(expr, context)?;
         let source = &self.checked.hir.exprs[expr];
+        if matches!(origin.kind, CallSiteKind::TaskCallback { .. }) {
+            return self.dispatch.task_callback_origin(expr).map(|_| ());
+        }
         let valid = match (origin.kind, source) {
             (
                 CallSiteKind::Expr { .. },
@@ -103,6 +176,13 @@ impl SnapshotValidator<'_> {
         context: &str,
     ) -> Result<(), String> {
         self.frame(&site.frame, context)?;
+        if matches!(
+            site.kind,
+            crate::control::CallSiteKind::SourceTaskCallback { .. }
+        ) {
+            site.task_callback_type(self.checked)?;
+            return Ok(());
+        }
         let (receiver, _) = site.receiver(self.checked, span)?;
         if let Some(composition) = &site.composition {
             self.call_target_in(
@@ -116,7 +196,7 @@ impl SnapshotValidator<'_> {
                 .expr_types
                 .get(&receiver)
                 .ok_or("checkpoint composed invocation has no checked receiver type")?;
-            let bindings = site.frame.generic_bindings();
+            let bindings = site.bindings(self.checked);
             self.reference_target_type_with_bindings(&composition.root, ty, &bindings)?;
             composition.stages_and_index()?;
         }
@@ -277,10 +357,39 @@ impl SnapshotValidator<'_> {
         else {
             return Err(format!("{context}: expected a pending call"));
         };
-        self.call_target_in(target, context, call_target::ReferenceScope::CheckedSlot)?;
         let site = self.call_site(*call, args, *span, context)?;
-        let bindings = frame.generic_bindings();
-        self.pending_call_target(*call, target, site, &bindings, evaluated_args.first())?;
+        let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*call));
+        match target {
+            Some(target) => {
+                if self
+                    .dispatch
+                    .method(*call)
+                    .is_some_and(|method| method.receiver.is_updating())
+                {
+                    return Err(
+                        "updating call must acquire its receiver after ordinary arguments".into(),
+                    );
+                }
+                self.call_target_in(target, context, call_target::ReferenceScope::CheckedSlot)?;
+                self.pending_call_target(*call, target, site, &bindings, evaluated_args.first())?;
+            }
+            None => {
+                if !self
+                    .dispatch
+                    .method(*call)
+                    .is_some_and(|method| method.receiver.is_updating())
+                {
+                    return Err(
+                        "only updating calls may defer their target until after arguments".into(),
+                    );
+                }
+                etas_types::method::updating_receiver_symbol(
+                    &self.checked.hir,
+                    &self.checked.types,
+                    *call,
+                )?;
+            }
+        }
         self.index_at_most(*next_arg_index, args.len(), context)?;
         let prefix = next_arg_index
             .checked_sub(1)

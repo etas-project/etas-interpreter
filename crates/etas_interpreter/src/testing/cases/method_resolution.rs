@@ -530,7 +530,7 @@ async fn checked_method_chains_restore_receiver_and_source_argument_progress() {
         if let crate::orchestration::MachineFrameSnapshot::Continuation {
             continuation:
                 crate::orchestration::ContinuationSnapshot::CallArgs {
-                    target: crate::orchestration::CallTargetSnapshot::FlowItem(target),
+                    target: Some(crate::orchestration::CallTargetSnapshot::FlowItem(target)),
                     ..
                 },
         } = frame

@@ -2,13 +2,11 @@ use super::host_value::decode_checked_host_value;
 use super::*;
 use etas_types::{PrimitiveType, Type, TypeId, TypeStore};
 mod json;
+use json::from_host_with_layouts as json_host_value_to_typed_interp_value_with_layouts;
+pub(super) use json::from_serde_with_layouts as json_to_typed_interp_value_with_layouts;
 #[cfg(test)]
 use json::{
     from_host as json_host_value_to_typed_interp_value, from_serde as json_to_typed_interp_value,
-};
-use json::{
-    from_host_with_layouts as json_host_value_to_typed_interp_value_with_layouts,
-    from_serde_with_layouts as json_to_typed_interp_value_with_layouts,
 };
 
 #[cfg(test)]
@@ -22,7 +20,9 @@ impl<'a> EvalContext<'a> {
         id: etas_host::HostRequestId,
         usage: Option<etas_host::ModelUsage>,
     ) -> Result<InterpValue, ModelResultError> {
-        if !response.tool_calls.is_empty() && !matches!(model.decode, ModelDecode::ModelResponse) {
+        if !response.message.tool_calls.is_empty()
+            && !matches!(model.decode, ModelDecode::ModelResponse)
+        {
             return Err(ModelResultError::fatal(
                 "model returned unresolved tool calls after the tool-call loop completed",
             ));
@@ -47,16 +47,10 @@ impl<'a> EvalContext<'a> {
             ModelDecode::Typed(expected) => {
                 self.typed_model_result_value(model, response, expected)
             }
+            ModelDecode::Step { .. } => Err(ModelResultError::fatal(
+                "step response must use the single-generation decoder",
+            )),
         }
-    }
-
-    pub(crate) fn record_model_result_error(
-        &mut self,
-        model: &PendingModel,
-        error: ModelResultError,
-    ) {
-        self.diagnostics
-            .push(Diagnostic::analysis(error.code, model.span, error.message));
     }
 
     pub(crate) fn model_boundary_key(
@@ -66,7 +60,7 @@ impl<'a> EvalContext<'a> {
         self.replay_fingerprint(&model.request, model.request.id, model.span)
     }
 
-    fn typed_model_result_value(
+    pub(in crate::eval) fn typed_model_result_value(
         &self,
         model: &PendingModel,
         response: etas_host::ModelOutput,
@@ -133,7 +127,6 @@ impl<'a> EvalContext<'a> {
 pub(crate) struct ModelResultError {
     pub(crate) code: AnalysisDiagnosticCode,
     pub(crate) message: String,
-    pub(crate) retryable_typed_output: bool,
 }
 
 impl ModelResultError {
@@ -141,7 +134,6 @@ impl ModelResultError {
         Self {
             code: AnalysisDiagnosticCode::UnhandledRuntimeError,
             message: message.into(),
-            retryable_typed_output: false,
         }
     }
 
@@ -149,7 +141,6 @@ impl ModelResultError {
         Self {
             code: AnalysisDiagnosticCode::InvalidArguments,
             message: message.into(),
-            retryable_typed_output: true,
         }
     }
 }
@@ -178,6 +169,7 @@ fn display_type_name(ty: Type, store: &TypeStore) -> String {
         Type::Tuple(_) => "Tuple".to_owned(),
         Type::Enum(enum_ref) => enum_ref.name,
         Type::Function(_) => "Function".to_owned(),
+        Type::AgentContext(method) => format!("agent method context {method}"),
         Type::Handler(_) => "Handler".to_owned(),
         Type::Task(_) => "Task".to_owned(),
         Type::SchedulerHandle => "Scheduler".to_owned(),
@@ -224,7 +216,7 @@ fn text_preview(text: &str) -> String {
     preview.escape_debug().to_string()
 }
 
-fn host_value_to_typed_interp_value(
+pub(super) fn host_value_to_typed_interp_value(
     value: HostValue,
     expected: TypeId,
     checked: &etas_frontend::CheckedProject,
@@ -251,20 +243,19 @@ fn model_response_value_from_host(
 ) -> crate::value::ModelResponseValue {
     crate::value::ModelResponseValue {
         id: id.0,
-        message: model_message_value_from_host(response.message),
         tool_calls: response
+            .message
             .tool_calls
-            .into_iter()
+            .iter()
+            .cloned()
             .map(|call| crate::value::ModelToolCallValue {
                 id: call.id,
                 tool: call.tool,
                 args: call.args.into(),
             })
             .collect(),
-        usage: usage.map(|usage| crate::value::ModelUsageValue {
-            input_tokens: usage.input_tokens,
-            output_tokens: usage.output_tokens,
-        }),
+        message: model_message_value_from_host(response.message),
+        usage,
     }
 }
 

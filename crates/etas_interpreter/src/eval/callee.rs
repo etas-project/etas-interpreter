@@ -2,6 +2,41 @@ use super::*;
 use etas_frontend::AstItemRef;
 
 impl<'a> EvalContext<'a> {
+    pub(super) fn artifact_std_callable(
+        &self,
+        symbol: SymbolId,
+        span: Span,
+    ) -> Result<Option<CallTarget>, crate::control::ExecutionFault> {
+        let Some(symbol) = self.checked.symbols.get(symbol) else {
+            return Ok(None);
+        };
+        let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
+            return Ok(None);
+        };
+        let Some(declaration) = self.checked.std_registry.lookup_qualified(path) else {
+            return Ok(None);
+        };
+        if self
+            .checked
+            .std_registry
+            .body_binding(declaration.id)
+            .is_none()
+        {
+            return Ok(None);
+        }
+        let missing = |reason| {
+            crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                reason,
+            )
+        };
+        let library = self.plan.standard_library.as_ref().ok_or_else(|| {
+            missing("standard library artifact is missing its checked body owner".to_owned())
+        })?;
+        library.callable(declaration.id).map(Some).map_err(missing)
+    }
+
     pub(super) fn eval_std_callable_value(
         &mut self,
         expr: HirExprId,
@@ -15,7 +50,6 @@ impl<'a> EvalContext<'a> {
             return Ok(None);
         };
         if frame.get(symbol).is_some()
-            || self.std_intrinsic(symbol).is_none()
             || !matches!(
                 self.checked
                     .types
@@ -34,24 +68,31 @@ impl<'a> EvalContext<'a> {
                 message,
             )
         };
-        self.checked
-            .checked_callable_owner(etas_frontend::CheckedCallableRoot::StdReference(expr))
-            .map_err(|error| missing(error.to_string()))?;
-        let target = self
-            .resolve_static_call_target(expr, frame, span)?
-            .ok_or_else(|| {
-                missing("checked standard callable reference has no native target".to_owned())
-            })?;
+        let target = if let Some(target) = self.artifact_std_callable(symbol, span)? {
+            target
+        } else {
+            if self.std_intrinsic(symbol).is_none() {
+                return Ok(None);
+            }
+            self.checked
+                .checked_callable_owner(etas_frontend::CheckedCallableRoot::StdReference(expr))
+                .map_err(|error| missing(error.to_string()))?;
+            self.resolve_static_call_target(expr, frame, span)?
+                .ok_or_else(|| {
+                    missing("checked standard callable reference has no native target".to_owned())
+                })?
+        };
+        let request_bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr));
         // Keep the checked template ABI and its lexical substitutions together;
         // the callable may outlive the generic frame that created it.
-        let target = if frame.generic_bindings().is_empty() {
+        let target = if request_bindings.is_empty() {
             target
         } else {
             CallTarget::Specialized {
                 target: target.into(),
-                type_bindings: frame.sorted_type_bindings(),
-                type_parameter_bindings: frame.generic_bindings().sorted_parameters(),
-                effect_row_bindings: frame.generic_bindings().sorted_rows(),
+                type_bindings: request_bindings.sorted_types(),
+                type_parameter_bindings: request_bindings.sorted_parameters(),
+                effect_row_bindings: request_bindings.sorted_rows(),
             }
         };
         Ok(Some(InterpValue::Callable(target)))
@@ -134,12 +175,13 @@ impl<'a> EvalContext<'a> {
         frame: &Frame,
         span: Span,
     ) -> Result<CallTarget, crate::control::ExecutionFault> {
+        let request_bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(call));
         let target = match target {
             CallTarget::NominalConstructor(ty) => CallTarget::NominalConstructor(
-                self.materialized_type(ty, frame.generic_bindings(), span)?,
+                self.materialized_type(ty, &request_bindings, span)?,
             ),
             CallTarget::PureIntrinsic(call) => CallTarget::PureIntrinsic(
-                call.specialize(&self.checked.type_store, frame.generic_bindings())
+                call.specialize(&self.checked.type_store, &request_bindings)
                     .map_err(|message| {
                         crate::control::ExecutionFault::new(
                             AnalysisDiagnosticCode::MissingCheckedFact,
@@ -149,7 +191,7 @@ impl<'a> EvalContext<'a> {
                     })?,
             ),
             CallTarget::StdIntrinsic(call) => CallTarget::StdIntrinsic(
-                call.specialize_generic(&self.checked.type_store, frame.generic_bindings())
+                call.specialize_generic(&self.checked.type_store, &request_bindings)
                     .map_err(|message| {
                         crate::control::ExecutionFault::new(
                             AnalysisDiagnosticCode::MissingCheckedFact,
@@ -160,18 +202,15 @@ impl<'a> EvalContext<'a> {
             ),
             other => other,
         };
-        let bindings = crate::control::CheckedCallBindings::resolve(
-            self.checked,
-            call,
-            frame.generic_bindings(),
-        )
-        .map_err(|error| {
-            crate::control::ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                format!("checked call bindings cannot be materialized: {error}"),
-            )
-        })?;
+        let bindings =
+            crate::control::CheckedCallBindings::resolve(self.checked, call, &request_bindings)
+                .map_err(|error| {
+                    crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        format!("checked call bindings cannot be materialized: {error}"),
+                    )
+                })?;
         if bindings.types.is_empty() && bindings.parameters.is_empty() && bindings.rows.is_empty() {
             return Ok(target);
         }
@@ -248,6 +287,34 @@ impl<'a> EvalContext<'a> {
         frame: &Frame,
         span: Span,
     ) -> Result<Option<CallTarget>, crate::control::ExecutionFault> {
+        if let Some(symbol) = self.checked.types.source_flow_calls.get(&call) {
+            let SymbolDef::Item { item } = &self
+                .checked
+                .symbols
+                .get(*symbol)
+                .expect("prepared source overload symbol")
+                .def
+            else {
+                unreachable!("prepared source overload is a flow item")
+            };
+            return self.source_flow_call_target(*item, span).map(Some);
+        }
+        if let Some(selected) = self.checked.types.library_flow_calls.get(&call) {
+            return self
+                .plan
+                .standard_library
+                .as_ref()
+                .expect("prepared source library overload owner")
+                .project(&selected.callable)
+                .map(Some)
+                .map_err(|reason| {
+                    crate::control::ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        reason,
+                    )
+                });
+        }
         if let Some(checked) = self.plan.dispatch.std_type_member(call) {
             return Ok(Some(CallTarget::StdIntrinsic(checked.clone())));
         }
@@ -278,6 +345,9 @@ impl<'a> EvalContext<'a> {
                 Some(self.source_tool_call_target(*item, span)?)
             }
             SymbolDef::ImportAlias { path, .. } => {
+                if let Some(target) = self.artifact_std_callable(symbol, span)? {
+                    return Ok(Some(target));
+                }
                 if self.plan.dispatch.enum_constructor(symbol).is_some() {
                     return Ok(Some(CallTarget::EnumVariant(symbol)));
                 }
@@ -341,6 +411,9 @@ impl<'a> EvalContext<'a> {
                 Some(self.source_tool_call_target(*item, span)?)
             }
             SymbolDef::ImportAlias { path, .. } => {
+                if let Some(target) = self.artifact_std_callable(symbol, span)? {
+                    return Ok(Some(target));
+                }
                 if self.plan.dispatch.enum_constructor(symbol).is_some() {
                     return Ok(Some(CallTarget::EnumVariant(symbol)));
                 }

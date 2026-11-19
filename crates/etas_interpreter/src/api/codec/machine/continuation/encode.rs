@@ -15,17 +15,75 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     budget: &mut crate::api::codec::snapshot::EncodingBudget,
 ) -> Result<(), crate::api::codec::InterpreterCodecError> {
     match continuation {
+        Continuation::DefaultArguments(state) => {
+            let (operation, target, action, type_args, args) = match &state.destination {
+                crate::orchestration::ArgumentDestinationSnapshot::Call { target } => {
+                    ("call", target.as_ref(), None, &[][..], &[][..])
+                }
+                crate::orchestration::ArgumentDestinationSnapshot::Perform {
+                    action,
+                    type_args,
+                    source_args,
+                } => (
+                    "perform",
+                    None,
+                    Some(action),
+                    type_args.as_slice(),
+                    source_args.as_ref(),
+                ),
+            };
+            object! { slot, pending;
+                "kind": json!("default_arguments"), "operation": json!(operation), "expr": json!(state.expr.0),
+                "parameter_count": json!(state.parameter_count), "slots": json!(state.slots), "values": Node::Values(&state.values),
+                "defaults": json!(state.defaults), "next_default": json!(state.next_default),
+                "target": target.map(Node::CallTarget), "action": json!(action),
+                "type_args": json!(type_args.iter().map(|ty| ty.0).collect::<Vec<_>>()),
+                "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
+                "span": json!(span_snapshot(state.span)), "frame": Node::Frame(&state.frame),
+            }
+        }
+        Continuation::AgentControllerStep(state) | Continuation::AgentControllerTool(state) => {
+            object! { slot, pending;
+                "kind": json!(if matches!(continuation, Continuation::AgentControllerStep(_)) { "agent_controller_step" } else { "agent_controller_tool" }),
+                "inference": json!(state.inference.0), "conversation": Node::Value(&state.conversation),
+                "calls": Node::Value(&state.calls), "next_call": json!(state.next_call), "results": Node::Values(&state.results),
+                "round": json!(state.round), "repairs": json!(state.repairs), "max_tool_rounds": json!(state.max_tool_rounds), "span": json!(span_snapshot(state.span)),
+            }
+        }
+        Continuation::ToolInvocationStart(invocation)
+        | Continuation::ToolInvocationResult(invocation) => {
+            use crate::orchestration::ToolInvocationOriginSnapshot as Origin;
+            let (kind, call): (&str, crate::api::codec::snapshot::Field<'a>) = match &invocation
+                .call
+            {
+                Origin::Standard(call) => ("standard", Node::CallTarget(call).into()),
+                Origin::Controller { inference } => {
+                    ("controller", json!({"inference":inference.0}).into())
+                }
+                Origin::Source(evidence) => (
+                    "source",
+                    crate::api::codec::checkpoint::suspension::encode_evidence(evidence, budget)?
+                        .into(),
+                ),
+            };
+            object! { slot, pending;
+            "kind": json!(if matches!(continuation, Continuation::ToolInvocationStart(_)) { "tool_invocation_start" } else { "tool_invocation_result" }),
+            "origin_kind": json!(kind), "call": call, "input": Node::Value(&invocation.input),
+            "context": json!(super::super::agent_context::request_json(Some(&invocation.context))),
+            "request": json!(invocation.request.0), "span": json!(span_snapshot(invocation.span)),
+            }
+        }
+        Continuation::AgentExecutionState(state) => {
+            *slot = json!({ "kind": "agent_execution_state", "state": super::super::agent_context::state_json(state) });
+        }
+        Continuation::AgentExecutionScope { state, inner } => object! { slot, pending;
+            "kind": json!("agent_execution_scope"),
+            "state": json!(super::super::agent_context::state_json(state)),
+            "inner": Node::Continuation(inner),
+        },
         Continuation::PackExistential { expr, frame } => object! { slot, pending;
             "kind": json!("pack_existential"), "expr": json!(expr.0), "frame": Node::Frame(frame),
         },
-        Continuation::SourceToolReturn(frame) => {
-            frame
-                .validate_continuation()
-                .map_err(crate::api::codec::InterpreterCodecError::new)?;
-            *slot = json!({ "kind": "source_tool_return", "source_tool": null });
-            slot["source_tool"] =
-                crate::api::codec::checkpoint::source_tool_return_frame_json(frame, budget)?;
-        }
         Continuation::DirectoryListReduction {
             call,
             args,
@@ -44,6 +102,9 @@ pub(in crate::api::codec) fn write_continuation<'a>(
         } => object! { slot, pending;
             "kind": json!("file_read_reduction"), "call": Node::CallTarget(call),
             "args": Node::Values(args), "limit": json!(limit), "span": json!(span_snapshot(*span)),
+        },
+        Continuation::TaskResume { id } => object! { slot, pending;
+            "kind": json!("task_resume"), "id": json!(id)
         },
         Continuation::ProgramResume { id } => object! { slot, pending;
             "kind": json!("program_resume"), "id": json!(id),
@@ -69,6 +130,11 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "deadline_unix_ms": json!(deadline_unix_ms),
             "body": Node::Value(body),
             "span": json!(span_snapshot(*span)),
+        },
+        Continuation::ScopeExit { block, keep, frame } => object! { slot, pending;
+            "kind": json!("scope_exit"), "block": json!(block.0),
+            "keep": json!(keep.iter().map(|symbol| symbol.0).collect::<Vec<_>>()),
+            "frame": Node::Frame(frame),
         },
         Continuation::ContinueBlock {
             block,
@@ -377,7 +443,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
         } => object! { slot, pending;
             "kind": json!("call_args"),
             "call": json!(call.0),
-            "target": Node::CallTarget(target),
+            "target": target.as_ref().map(Node::CallTarget),
             "args": json!(args.iter().map(arg_snapshot).collect::<Vec<_>>()),
             "next_arg_index": json!(next_arg_index),
             "evaluated_args": Node::Values(evaluated_args),
@@ -518,10 +584,15 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "inner": Node::Continuation(inner),
             }
         }
-        Continuation::TryExpr { expr, span } => {
+        Continuation::TryExpr {
+            expr,
+            result_type,
+            span,
+        } => {
             object! { slot, pending;
             "kind": json!("try_expr"),
                 "expr": json!(expr.0),
+                "result_type": json!(result_type.0),
                 "span": json!(span_snapshot(*span)),
             }
         }
@@ -549,6 +620,11 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "next_index": json!(next_index),
             "span": json!(span_snapshot(*span)),
         },
+        Continuation::LoopLimit { stmt, frame } => object! { slot, pending;
+            "kind": json!("loop_limit"),
+            "stmt": json!(stmt.0),
+            "frame": Node::Frame(frame),
+        },
         Continuation::ForLoop {
             pat,
             source,
@@ -567,6 +643,34 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "pat": json!(pat.0),
                 "source": source.as_ref().map(Node::Value),
                 "text_cursor": json!(text_cursor.as_ref().map(crate::api::codec::value::text_cursor_json)),
+                "next_index": json!(next_index),
+                "body": json!(body.0),
+                "iterations": json!(iterations),
+                "loop_scope": json!(scope),
+                "span": json!(span_snapshot(*span)),
+                "frame": Node::Frame(frame),
+            }
+        }
+        Continuation::SourceForLoop {
+            iter,
+            pat,
+            source,
+            awaiting_step,
+            next_index,
+            body,
+            iterations,
+            loop_scope,
+            span,
+            frame,
+        } => {
+            let mut scope = loop_scope.iter().map(|symbol| symbol.0).collect::<Vec<_>>();
+            scope.sort_unstable();
+            object! { slot, pending;
+                "kind": json!("source_for_loop"),
+                "iter": json!(iter.0),
+                "pat": json!(pat.0),
+                "source": source.as_ref().map(Node::Value),
+                "awaiting_step": json!(awaiting_step),
                 "next_index": json!(next_index),
                 "body": json!(body.0),
                 "iterations": json!(iterations),

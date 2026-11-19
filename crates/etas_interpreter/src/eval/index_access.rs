@@ -71,62 +71,41 @@ impl<'a> EvalContext<'a> {
                 let Some(index) = self.index_usize(index, span) else {
                     return self.raise_index_error(
                         expr,
-                        "array index is not a non-negative integer",
+                        None,
+                        values.borrow().len(),
+                        "array",
                         span,
                     );
                 };
                 let values = values.borrow();
                 match values.get(index).cloned() {
                     Some(value) => ControlSignal::Value(value),
-                    None => self.raise_index_error(
-                        expr,
-                        format!(
-                            "array index {index} is out of bounds, length is {}",
-                            values.len()
-                        ),
-                        span,
-                    ),
+                    None => self.raise_index_error(expr, Some(index), values.len(), "array", span),
                 }
             }
             InterpValue::List(values) => {
                 let Some(index) = self.index_usize(index, span) else {
-                    return self.raise_index_error(
-                        expr,
-                        "list index is not a non-negative integer",
-                        span,
-                    );
+                    return self.raise_index_error(expr, None, values.len(), "list", span);
                 };
                 match values.get(index).cloned() {
                     Some(value) => ControlSignal::Value(value),
-                    None => self.raise_index_error(
-                        expr,
-                        format!(
-                            "list index {index} is out of bounds, length is {}",
-                            values.len()
-                        ),
-                        span,
-                    ),
+                    None => self.raise_index_error(expr, Some(index), values.len(), "list", span),
                 }
             }
             InterpValue::Slice(values) => {
                 let Some(index) = self.index_usize(index, span) else {
                     return self.raise_index_error(
                         expr,
-                        "slice index is not a non-negative integer",
+                        None,
+                        values.borrow().len(),
+                        "slice",
                         span,
                     );
                 };
                 let values = values.borrow();
                 match values.get(index).cloned() {
                     Some(value) => ControlSignal::Value(value),
-                    None => self.raise_index_error(
-                        expr,
-                        format!(
-                            "slice index {index} is out of bounds, length is {}",
-                            values.len()
-                        ),
-                        span,
-                    ),
+                    None => self.raise_index_error(expr, Some(index), values.len(), "slice", span),
                 }
             }
             InterpValue::Map(entries) => entries
@@ -140,25 +119,14 @@ impl<'a> EvalContext<'a> {
                 }),
             InterpValue::Bytes(values) => {
                 let Some(index) = self.index_usize(index, span) else {
-                    return self.raise_index_error(
-                        expr,
-                        "bytes index is not a non-negative integer",
-                        span,
-                    );
+                    return self.raise_index_error(expr, None, values.len(), "bytes", span);
                 };
                 values
                     .get(index)
                     .map(|value| InterpValue::u8(*value))
                     .map(ControlSignal::Value)
                     .unwrap_or_else(|| {
-                        self.raise_index_error(
-                            expr,
-                            format!(
-                                "bytes index {index} is out of bounds, length is {}",
-                                values.len()
-                            ),
-                            span,
-                        )
+                        self.raise_index_error(expr, Some(index), values.len(), "bytes", span)
                     })
             }
             other => ControlSignal::fault(
@@ -175,7 +143,9 @@ impl<'a> EvalContext<'a> {
     fn raise_index_error(
         &mut self,
         expr: HirExprId,
-        message: impl Into<String>,
+        index: Option<usize>,
+        length: usize,
+        kind: &str,
         span: Span,
     ) -> ControlSignal {
         let Some(error_type) = self.checked.types.checked_index_errors.get(&expr).copied() else {
@@ -184,6 +154,28 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
+        if self.checked.hir.source_standard_types {
+            let error = InterpValue::Nominal {
+                ty: error_type,
+                value: InterpValue::Record(crate::value::RecordValue::new(
+                    [
+                        (
+                            "index".into(),
+                            InterpValue::usize(index.unwrap_or(usize::MAX)),
+                        ),
+                        ("length".into(), InterpValue::usize(length)),
+                    ]
+                    .into_iter()
+                    .collect(),
+                ))
+                .into(),
+            };
+            return self.raise_index_error_value(error_type, error, span);
+        }
+        let message = match index {
+            Some(index) => format!("{kind} index {index} is out of bounds, length is {length}"),
+            None => format!("{kind} index is not a non-negative integer"),
+        };
         self.raise_typed_index_error(error_type, message, span)
     }
 
@@ -191,6 +183,19 @@ impl<'a> EvalContext<'a> {
         &mut self,
         error_type: etas_types::TypeId,
         message: impl Into<String>,
+        span: Span,
+    ) -> ControlSignal {
+        let error = InterpValue::Variant {
+            name: "IndexError".to_owned().into(),
+            fields: vec![InterpValue::String(message.into().into())].into(),
+        };
+        self.raise_index_error_value(error_type, error, span)
+    }
+
+    fn raise_index_error_value(
+        &self,
+        error_type: etas_types::TypeId,
+        error: InterpValue,
         span: Span,
     ) -> ControlSignal {
         ControlSignal::pending_perform(PendingPerform {
@@ -210,10 +215,7 @@ impl<'a> EvalContext<'a> {
                 action_symbol: ResolveResult::Unresolved,
                 span,
             },
-            args: vec![InterpValue::Variant {
-                name: "IndexError".to_owned().into(),
-                fields: vec![InterpValue::String(message.into().into())].into(),
-            }],
+            args: vec![error],
             span,
             continuation: Continuation::BlockValue,
             residual: None,

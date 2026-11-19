@@ -24,14 +24,14 @@ impl EvalContext<'_> {
         if target.operation != etas_host::compiler::CompilerOperation::Compile {
             return Ok(None);
         }
-        let [definition @ (InterpValue::AgentDefinition(_) | InterpValue::CallableDefinition(_))] =
-            perform.args.as_slice()
-        else {
+        let [definition] = perform.args.as_slice() else {
             return Err(missing(
                 "compile handler requires its checked typed definition argument",
                 perform.span,
             ));
         };
+        crate::value::source_code::Definition::input(definition, self.checked)
+            .map_err(|reason| missing(reason, perform.span))?;
         Ok(Some(Continuation::ValidateCompileResult {
             definition: Box::new(definition.clone()),
             span: perform.span,
@@ -44,28 +44,12 @@ impl EvalContext<'_> {
         value: &InterpValue,
         span: Span,
     ) -> Result<(), ExecutionFault> {
-        let (program, backend, reference) = match definition {
-            InterpValue::AgentDefinition(value) => {
-                (value.program(), value.backend(), value.definition())
-            }
-            InterpValue::CallableDefinition(value) => (
-                value.program(),
-                value.backend(),
-                value.definition().map_err(|reason| missing(reason, span))?,
-            ),
-            _ => {
-                return Err(missing(
-                    "compile result guard has no native typed definition",
-                    span,
-                ));
-            }
-        };
-        if !Arc::ptr_eq(program, self.checked) {
-            return Err(missing(
-                "compile result guard belongs to a different checked program",
-                span,
-            ));
-        }
+        let retained = crate::value::source_code::Definition::input(definition, self.checked)
+            .map_err(|reason| missing(reason, span))?;
+        let backend = retained.backend();
+        let reference = retained
+            .reference()
+            .map_err(|reason| missing(reason, span))?;
         let view = backend
             .resolve(reference)
             .map_err(|error| missing(error.to_string(), span))?;

@@ -25,12 +25,7 @@ impl SourceCheckpoint {
         value: super::super::CheckpointDocument,
         checked: &etas_frontend::CheckedProject,
     ) -> Result<Self, InterpreterCodecError> {
-        let schema = required_str(&value, "schema")?;
-        if schema != crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA {
-            return Err(InterpreterCodecError::new(format!(
-                "unsupported checkpoint artifact schema `{schema}`"
-            )));
-        }
+        let schema = readable_schema(&value)?;
         let checkpoint = required_obj(&value, "checkpoint")?;
         if !required_obj(checkpoint, "code_revision")?.is_null() {
             return Err(InterpreterCodecError::new(
@@ -38,7 +33,8 @@ impl SourceCheckpoint {
             ));
         }
         let entry = HirItemId(required_u32(checkpoint, "entry_item")?);
-        let compilation = compilation_identity_from_json(required_obj(checkpoint, "compilation")?)?;
+        let compilation =
+            compilation_identity_from_json(schema, required_obj(checkpoint, "compilation")?)?;
         compilation
             .validate_for_project(checked, entry)
             .map_err(InterpreterCodecError::new)?;

@@ -14,6 +14,27 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub enum Continuation {
+    DefaultArguments(Box<crate::eval::arguments::DefaultArguments>),
+    FinishReceiver {
+        outcome: super::ReceiverOutcome,
+        frame: Frame,
+        symbol: SymbolId,
+        span: Span,
+    },
+    CommitReceiver {
+        lease: super::ReceiverLease,
+        outcome: super::ReceiverOutcome,
+        span: Span,
+    },
+    ToolInvocationStart(Box<crate::eval::tool::ToolInvocation>),
+    ToolInvocationResult(Box<crate::eval::tool::ToolInvocation>),
+    /// Restore the caller's scoped agent identity and model policy on exit.
+    AgentExecutionState(Box<super::AgentExecutionState>),
+    /// Reenter suspended code once, then restore the state of its resumer.
+    AgentExecutionScope {
+        state: Box<super::AgentExecutionState>,
+        inner: ContinuationLink,
+    },
     PackExistential {
         expr: HirExprId,
         frame: Frame,
@@ -28,13 +49,20 @@ pub enum Continuation {
     FileReadReduction(Box<super::FileReadReduction>),
     DirectoryListReduction(Box<super::DirectoryListReduction>),
     ProgramResume(crate::eval::machine::ProgramContinuation),
+    TaskResume(crate::eval::machine::TaskHandlerContinuation),
     /// An invocation's residual scope captured while an effect request is
     /// handled outside it. Restored as its explicit frame on resume.
     ResidualScope(super::residual::SharedResidualScope),
     /// Correlates a governed action's completed outcome with the scopes that
     /// observed it, then continues with the outcome value.
     ResidualOutcome(super::residual::ResidualAttemptTag),
-    SourceToolReturn(crate::eval::machine::SourceToolContinuation),
+    /// Leave a lexical block after its final expression or suspended work completes.
+    ScopeExit {
+        block: HirBlockId,
+        guard: Option<std::rc::Rc<super::ScopeExitGuard>>,
+        keep: std::rc::Rc<std::collections::HashSet<SymbolId>>,
+        frame: Frame,
+    },
     ContinueBlock {
         block: HirBlockId,
         next_stmt_index: usize,
@@ -188,7 +216,7 @@ pub enum Continuation {
     },
     CallArgs {
         call: HirExprId,
-        target: CallTarget,
+        target: Option<CallTarget>,
         args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<InterpValue>,
@@ -272,6 +300,10 @@ pub enum Continuation {
         span: Span,
         outer: ContinuationLink,
     },
+    LoopLimit {
+        stmt: etas_hir::HirStmtId,
+        frame: Frame,
+    },
     ForLoop {
         pat: HirPatId,
         source: Option<Box<crate::value::iteration::IterationSource>>,
@@ -282,11 +314,23 @@ pub enum Continuation {
         span: Span,
         frame: Frame,
     },
+    SourceForLoop {
+        iter: HirExprId,
+        pat: HirPatId,
+        source: Option<Box<InterpValue>>,
+        awaiting_step: bool,
+        next_index: usize,
+        body: HirBlockId,
+        iterations: usize,
+        loop_scope: std::collections::HashSet<SymbolId>,
+        span: Span,
+        frame: Frame,
+    },
     WhileLoop {
         cond: HirExprId,
         body: HirBlockId,
-        iteration: u32,
-        max_iterations: u32,
+        iteration: u64,
+        max_iterations: u64,
         resume_after_body: bool,
         span: Span,
         frame: Frame,
@@ -302,6 +346,7 @@ pub enum Continuation {
     },
     TryExpr {
         expr: HirExprId,
+        result_type: etas_types::TypeId,
         span: Span,
     },
     MemoryClearDeleteAll {
@@ -335,6 +380,8 @@ pub enum Continuation {
         span: Span,
         model_policy: Box<crate::api::ModelExecutionPolicy>,
     },
+    AgentControllerStep(Box<crate::eval::agent::controller::AgentController>),
+    AgentControllerTool(Box<crate::eval::agent::controller::AgentController>),
     ScopedModelPolicy {
         policy: Box<crate::api::ModelExecutionPolicy>,
         inner: ContinuationLink,
@@ -350,24 +397,6 @@ pub enum Continuation {
 }
 
 impl Continuation {
-    // Retry lookup follows sequencing only; nested boundary wrappers stay opaque.
-    pub(crate) fn find_retry_attempt(&self) -> Option<&Self> {
-        let mut current = self;
-        let mut pending = Vec::new();
-        loop {
-            match current {
-                Self::RetryAttempt { .. } => return Some(current),
-                Self::Chain { inner, outer } => {
-                    pending.push(outer.as_ref());
-                    current = inner;
-                    continue;
-                }
-                _ => {}
-            }
-            current = pending.pop()?;
-        }
-    }
-
     pub(crate) fn handler_scope_occurrences(&self, scope_id: HandlerScopeId) -> usize {
         let mut count = 0;
         let mut pending = vec![self];

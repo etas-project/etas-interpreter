@@ -1,9 +1,9 @@
 mod aggregate;
 mod bytes;
 mod code;
+pub(crate) use code::source as source_code;
 pub(crate) mod contract;
 pub(crate) mod enum_value;
-pub(crate) use code::CheckedExecutionProgram;
 pub(crate) use code::CodeIdentitySnapshot;
 pub(crate) use code::CodeMetadataPayload;
 pub use code::ScopedCallableValue;
@@ -11,6 +11,7 @@ pub use code::{
     AgentDefinitionValue, AgentRevisionValue, CallableDefinitionValue, CodeMetadataValue,
     SyntaxBlockValue,
 };
+pub(crate) use code::{CheckedExecutionProgram, ForeignExecutionLink};
 pub(crate) use code::{validate_snapshot_bounds, validate_snapshot_signature};
 pub(crate) mod codec;
 pub(crate) mod comparison;
@@ -20,7 +21,10 @@ mod deque;
 #[cfg(test)]
 mod equality_tests;
 pub(crate) mod graph;
-mod host_handle;
+mod handler;
+pub(crate) mod host_handle;
+pub(crate) use handler::ScopedHandlerMetadata;
+pub use handler::ScopedHandlerValue;
 pub(crate) mod identity;
 pub(crate) mod iteration;
 pub(crate) mod json;
@@ -32,12 +36,15 @@ pub(crate) mod ordered;
 pub use ordered::{OrderedMapValue, OrderedSetValue};
 mod existential;
 mod primitive;
+pub(crate) mod representation;
 pub(crate) use existential::ExistentialEvidence;
 pub(crate) use existential::ExistentialHeader;
 pub use existential::ExistentialValue;
 pub(crate) mod priority_queue;
 pub use priority_queue::PriorityQueueValue;
 mod prompt;
+pub(crate) mod source_prompt;
+pub(crate) mod source_schema;
 pub use prompt::PromptValue;
 mod shared;
 pub(crate) use shared::release_value;
@@ -47,7 +54,7 @@ pub(crate) mod record;
 mod resource;
 mod std_constant;
 mod storage;
-mod task;
+pub(crate) mod task;
 pub use std_constant::StdConstantValue;
 mod support;
 mod text;
@@ -75,7 +82,7 @@ pub use storage::MemoryWriteIntentValue;
 pub use support::{
     ConversationValue, HostJsonSupportValue, HostSupportValue, MessageList, MessageRoleValue,
     MessageValue, ModelContentValue, ModelMessageValue, ModelResponseValue, ModelRoleValue,
-    ModelToolCallValue, ModelUsageValue, PromptMessage, PromptRole, ProvenanceValue, RangeBounds,
-    RangeValue, SessionConfigValue,
+    ModelToolCallValue, PromptMessage, PromptRole, ProvenanceValue, RangeBounds, RangeValue,
+    SessionConfigValue,
 };
 pub use task::{ContinuationTokenValue, SchedulerHandleValue, TaskHandleValue};

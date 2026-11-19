@@ -1,4 +1,7 @@
-use std::{collections::BTreeSet, num::NonZeroUsize};
+use std::{
+    collections::{BTreeSet, VecDeque},
+    num::NonZeroUsize,
+};
 
 use super::{TaskId, TaskScopeId};
 
@@ -44,6 +47,9 @@ pub(super) struct TaskGroup {
     pub(super) waiters: Vec<TaskId>,
     pub(super) primary_failure: Option<TaskId>,
     pub(super) winner: Option<TaskId>,
+    pub(super) completions: VecDeque<super::TaskCompletion>,
+    pub(super) completion_waiter: Option<TaskId>,
+    pub(super) next_completion_order: u64,
 }
 
 /// Scope state contains only stable task/scope IDs and admission counters.
@@ -70,6 +76,9 @@ impl TaskGroup {
             waiters: Vec::new(),
             primary_failure: None,
             winner: None,
+            completions: VecDeque::new(),
+            completion_waiter: None,
+            next_completion_order: 0,
         }
     }
 }

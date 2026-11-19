@@ -4,6 +4,7 @@ use super::{
 };
 use etas_core::Span;
 use etas_hir::{HirBlockId, HirExprId, HirItemId};
+use etas_types::TypeId;
 
 /// The saved input is separate from the stack: a ready task has an input while
 /// an await/park waiter retains its continuation in the scheduler.
@@ -11,11 +12,11 @@ use etas_hir::{HirBlockId, HirExprId, HirItemId};
 pub(crate) enum MachineInputSnapshot {
     EnterProgram {
         owner: ExecutionProgramSnapshot,
-        call: CallTargetSnapshot,
+        call: super::ProgramCallSnapshot,
         args: Vec<ValueSnapshot>,
         span: Span,
     },
-    Signal(ControlSignalSnapshot),
+    Signal(Box<ControlSignalSnapshot>),
     ModelResult(Result<etas_host::ModelResponse, etas_host::HostError>),
     ToolResult(Result<etas_host::ToolResponse, etas_host::HostError>),
     SourceToolApproved,
@@ -23,6 +24,15 @@ pub(crate) enum MachineInputSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum ControlSignalSnapshot {
+    HandlerRequest {
+        evidence: Option<super::ActionEvidenceSnapshot>,
+        action: etas_hir::ResolvedActionRef,
+        inference: Option<Box<super::AgentRequestContextSnapshot>>,
+        args: Vec<ValueSnapshot>,
+        span: Span,
+        continuation: ContinuationSnapshot,
+        residual: Option<u32>,
+    },
     Error {
         error_type: etas_types::TypeId,
         payload: ValueSnapshot,
@@ -44,7 +54,14 @@ pub(crate) enum ControlSignalSnapshot {
         frame: LocalsSnapshot,
         continuation: ContinuationSnapshot,
     },
+    ProgramExpr {
+        call: Box<super::ExpressionCallSnapshot>,
+        args: Vec<ValueSnapshot>,
+        span: Span,
+        continuation: ContinuationSnapshot,
+    },
     Block {
+        agent_context: Option<Box<super::checkpoint::AgentRequestContextSnapshot>>,
         block: HirBlockId,
         next_stmt_index: usize,
         frame: LocalsSnapshot,
@@ -71,6 +88,7 @@ pub(crate) enum ContinuationInputSnapshot {
     Finish(ValueSnapshot),
     Break,
     Continue,
+    RetryFailure { span: Span, message: String },
 }
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
@@ -82,6 +100,18 @@ pub(crate) struct ResidualActivationSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum TaskControlSnapshot {
+    NextCompletion {
+        scope: u64,
+        result_type: TypeId,
+        span: Span,
+    },
+    ResumeHandled {
+        owner: u64,
+        task: u64,
+        handler: super::HandlerScopeId,
+        value: ValueSnapshot,
+        span: Span,
+    },
     Run {
         scope: u64,
         span: Span,
@@ -100,16 +130,23 @@ pub(crate) enum TaskControlSnapshot {
 }
 
 impl MachineInputSnapshot {
-    pub(crate) fn continuation_root(&self) -> Option<&ContinuationSnapshot> {
+    pub(crate) fn signal(&self) -> Option<&ControlSignalSnapshot> {
         match self {
-            Self::Signal(
-                ControlSignalSnapshot::Apply { continuation, .. }
-                | ControlSignalSnapshot::Error { continuation, .. }
-                | ControlSignalSnapshot::Checkpoint { continuation, .. }
-                | ControlSignalSnapshot::Expr { continuation, .. }
-                | ControlSignalSnapshot::Block { continuation, .. }
-                | ControlSignalSnapshot::Call { continuation, .. },
-            ) => Some(continuation),
+            Self::Signal(signal) => Some(signal),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn continuation_root(&self) -> Option<&ContinuationSnapshot> {
+        match self.signal()? {
+            ControlSignalSnapshot::Apply { continuation, .. }
+            | ControlSignalSnapshot::Error { continuation, .. }
+            | ControlSignalSnapshot::HandlerRequest { continuation, .. }
+            | ControlSignalSnapshot::Checkpoint { continuation, .. }
+            | ControlSignalSnapshot::Expr { continuation, .. }
+            | ControlSignalSnapshot::ProgramExpr { continuation, .. }
+            | ControlSignalSnapshot::Block { continuation, .. }
+            | ControlSignalSnapshot::Call { continuation, .. } => Some(continuation),
             _ => None,
         }
     }

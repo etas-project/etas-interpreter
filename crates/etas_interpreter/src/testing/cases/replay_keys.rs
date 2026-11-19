@@ -239,7 +239,7 @@ async fn checkpoint_codec_rejects_plaintext_replay_keys_and_unbound_key_ids() {
 
 #[tokio::test(flavor = "current_thread")]
 async fn model_tool_loop_replays_the_original_invocation_only_when_its_request_matches() {
-    let checked = checked_project(
+    let checked = checked_host_search_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
@@ -253,7 +253,10 @@ flow main(input: string) -> string {
 }
 "#,
     );
-    let mut options = RunOptions::default();
+    let mut options = RunOptions {
+        code_definitions: Some(project::prepared_tool_definitions(&checked)),
+        ..Default::default()
+    };
     options.host_context.authority.grants = vec![HostActionGrant::allow("Agentic", "infer")];
     options.model_policy.provider_capabilities = Some(full_model_capabilities());
     options.model_policy.tools = vec![ToolSchema {

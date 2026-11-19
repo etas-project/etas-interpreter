@@ -104,6 +104,10 @@ pub(super) fn optional_model_policy(
 
 pub(crate) fn model_options_snapshot(options: &etas_host::ModelOptions) -> Value {
     json!({
+        "attempt_policy": match options.attempt_policy {
+            etas_host::ModelAttemptPolicy::Configured => "configured",
+            etas_host::ModelAttemptPolicy::Single => "single",
+        },
         "temperature": options.temperature,
         "max_output_tokens": options.max_output_tokens,
         "metadata": options.metadata.iter().map(|(key, value)| json!({
@@ -148,6 +152,11 @@ pub(crate) fn model_options_from_snapshot(
         })
         .collect::<Result<Vec<_>, String>>()?;
     Ok(etas_host::ModelOptions {
+        attempt_policy: match required_str(value, "attempt_policy")? {
+            "configured" => etas_host::ModelAttemptPolicy::Configured,
+            "single" => etas_host::ModelAttemptPolicy::Single,
+            value => return Err(format!("unknown model attempt policy `{value}`")),
+        },
         temperature,
         max_output_tokens,
         metadata,
@@ -216,6 +225,9 @@ pub(crate) fn host_schema_snapshot(schema: &etas_host::HostSchema) -> Value {
         etas_host::HostSchema::String => json!({ "kind": "string" }),
         etas_host::HostSchema::Bytes => json!({ "kind": "bytes" }),
         etas_host::HostSchema::Json => json!({ "kind": "json" }),
+        etas_host::HostSchema::JsonDefinition(definition) => {
+            json!({ "kind": "json-definition", "definition": definition })
+        }
         etas_host::HostSchema::List(element) => {
             json!({ "kind": "list", "element": host_schema_snapshot(element) })
         }
@@ -252,6 +264,9 @@ pub(crate) fn host_schema_from_snapshot(value: &Value) -> Result<etas_host::Host
         "string" => Ok(etas_host::HostSchema::String),
         "bytes" => Ok(etas_host::HostSchema::Bytes),
         "json" => Ok(etas_host::HostSchema::Json),
+        "json-definition" => Ok(etas_host::HostSchema::JsonDefinition(
+            required(value, "definition")?.clone(),
+        )),
         "list" => Ok(etas_host::HostSchema::List(Box::new(
             host_schema_from_snapshot(required(value, "element")?)?,
         ))),

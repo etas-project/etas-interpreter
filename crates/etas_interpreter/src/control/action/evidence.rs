@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub(super) enum NativeActionOrigin {
+    ControllerStep(etas_hir::HirExprId),
     Source {
         expr: etas_hir::HirExprId,
         bindings: crate::control::GenericBindings,
@@ -21,12 +22,17 @@ struct NativeActionEvidence {
     origin: NativeActionOrigin,
 }
 
+enum ProjectionOwner {
+    Revision(Arc<PreparedCodeRevision>),
+    StandardLibrary(Arc<etas_frontend::StandardLibrary>),
+}
+
 enum EvidenceNode {
     Native(Box<NativeActionEvidence>),
     Projected {
         source: ActionEvidence,
         edge: RevisionProjection,
-        owner: Arc<PreparedCodeRevision>,
+        owner: ProjectionOwner,
     },
 }
 
@@ -41,6 +47,42 @@ impl std::fmt::Debug for ActionEvidence {
 }
 
 impl ActionEvidence {
+    pub(super) fn checkpoint_full(
+        &self,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
+    ) -> Result<crate::orchestration::ActionEvidenceSnapshot, String> {
+        let mut current = self;
+        let mut edges = Vec::new();
+        let native = loop {
+            match current
+                .0
+                .as_deref()
+                .ok_or("action invocation has no checked origin")?
+            {
+                EvidenceNode::Projected { source, edge, .. } => {
+                    edges.push(edge);
+                    current = source;
+                }
+                EvidenceNode::Native(native) => break native,
+            }
+        };
+        for edge in &edges {
+            if let Some(owner) = edge.runtime_owner() {
+                context.bind_revision(&owner);
+            }
+        }
+        context.bind_program(&native.execution);
+        let projections = edges
+            .into_iter()
+            .rev()
+            .map(|edge| edge.checkpoint(context))
+            .collect::<Result<_, _>>()?;
+        Ok(crate::orchestration::ActionEvidenceSnapshot {
+            origin: current.checkpoint(context)?,
+            projections,
+        })
+    }
+
     pub(super) fn identity(&self) -> Result<usize, String> {
         self.0
             .as_ref()
@@ -49,10 +91,7 @@ impl ActionEvidence {
     }
     pub(super) fn checkpoint(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            Arc<PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<crate::orchestration::ActionInvocationSnapshot, String> {
         use crate::orchestration::{
             ActionInvocationSnapshot, ActionOriginSnapshot, CallTargetSnapshot,
@@ -61,6 +100,9 @@ impl ActionEvidence {
             return Err("projected action origin requires its owning suspended segment".into());
         };
         let origin = match &native.origin {
+            NativeActionOrigin::ControllerStep(inference) => ActionOriginSnapshot::ControllerStep {
+                inference: *inference,
+            },
             NativeActionOrigin::Source { expr, bindings } => ActionOriginSnapshot::Source {
                 expr: *expr,
                 bindings: bindings.sorted_types(),
@@ -79,7 +121,7 @@ impl ActionEvidence {
             },
         };
         Ok(ActionInvocationSnapshot::Native {
-            native: native.execution.checkpoint_identity(revisions),
+            native: context.execution_identity(&native.execution)?,
             origin,
         })
     }
@@ -90,12 +132,16 @@ impl ActionEvidence {
     }
 
     pub(super) fn project(&self, edge: RevisionProjection) -> Result<Self, String> {
-        let owner = edge
-            .runtime_owner()
-            .ok_or("action projection has no pinned native revision owner")?;
-        if !Arc::ptr_eq(owner.type_bridge().candidate_program(), owner.program()) {
-            return Err("action projection has an inconsistent native revision owner".into());
-        }
+        let owner = if let Some(owner) = edge.runtime_owner() {
+            if !Arc::ptr_eq(owner.type_bridge().candidate_program(), owner.program()) {
+                return Err("action projection has an inconsistent native revision owner".into());
+            }
+            ProjectionOwner::Revision(owner)
+        } else if let Some(owner) = edge.standard_library_owner() {
+            ProjectionOwner::StandardLibrary(owner.clone())
+        } else {
+            return Err("action projection has no pinned checked program owner".into());
+        };
         Ok(Self(Some(Arc::new(EvidenceNode::Projected {
             source: self.clone(),
             edge,
@@ -120,15 +166,35 @@ impl ActionEvidence {
                     edge,
                     owner,
                 } => {
-                    let bridge = owner.type_bridge();
-                    let candidate_edge = Arc::ptr_eq(edge.target(), bridge.candidate_program())
-                        && Arc::ptr_eq(edge.source(), bridge.original_program());
-                    let original_edge = Arc::ptr_eq(edge.source(), bridge.candidate_program())
-                        && Arc::ptr_eq(edge.target(), bridge.original_program());
-                    if !candidate_edge && !original_edge {
-                        return Err(
-                            "action projection does not belong to its pinned revision".into()
-                        );
+                    match owner {
+                        ProjectionOwner::Revision(owner) => {
+                            let bridge = owner.type_bridge();
+                            let candidate_edge =
+                                Arc::ptr_eq(edge.target(), bridge.candidate_program())
+                                    && Arc::ptr_eq(edge.source(), bridge.original_program());
+                            let original_edge =
+                                Arc::ptr_eq(edge.source(), bridge.candidate_program())
+                                    && Arc::ptr_eq(edge.target(), bridge.original_program());
+                            if !candidate_edge && !original_edge {
+                                return Err(
+                                    "action projection does not belong to its pinned revision"
+                                        .into(),
+                                );
+                            }
+                        }
+                        ProjectionOwner::StandardLibrary(owner) => {
+                            if !edge
+                                .standard_library_owner()
+                                .is_some_and(|selected| Arc::ptr_eq(selected, owner))
+                                || (!Arc::ptr_eq(edge.source(), &owner.program)
+                                    && !Arc::ptr_eq(edge.target(), &owner.program))
+                            {
+                                return Err(
+                                    "action projection does not belong to its pinned std library"
+                                        .into(),
+                                );
+                            }
+                        }
                     }
                     edges.push(edge);
                     current = source;
@@ -136,6 +202,9 @@ impl ActionEvidence {
             }
         };
         let mut abi = match &native.origin {
+            NativeActionOrigin::ControllerStep(inference) => {
+                crate::plan::checked_action::controller_step(&native.execution, *inference)?
+            }
             NativeActionOrigin::Source { expr, bindings } => {
                 crate::plan::checked_action::source_action(&native.execution, *expr, bindings)?
             }

@@ -61,6 +61,79 @@ impl<'a> EvalContext<'a> {
         args: &[InterpValue],
         bindings: crate::control::GenericBindings,
     ) -> ControlSignal {
+        self.execute_flow_with_receiver(item, flow, args, bindings, None)
+    }
+
+    pub(super) fn execute_flow_with_receiver(
+        &mut self,
+        item: HirItemId,
+        flow: &HirFlowDecl,
+        args: &[InterpValue],
+        bindings: crate::control::GenericBindings,
+        update: Option<crate::control::ReceiverOutcome>,
+    ) -> ControlSignal {
+        if let etas_hir::HirFlowBody::Runtime { role, span } = flow.body {
+            return match role {
+                etas_std::StdExecutionRole::PayloadConvert => {
+                    self.execute_payload_conversion(item, args, &bindings, span)
+                }
+                etas_std::StdExecutionRole::MessageContextCapture
+                | etas_std::StdExecutionRole::MessageContextRecord => {
+                    self.execute_message_context(item, role, args, span)
+                }
+                etas_std::StdExecutionRole::ToolReference => ControlSignal::missing_checked_fact(
+                    "tool.reference requires its checked declaration operand at the call site",
+                    span,
+                ),
+                etas_std::StdExecutionRole::ParseBody
+                | etas_std::StdExecutionRole::AgentWithBody
+                | etas_std::StdExecutionRole::CallableWithBody => {
+                    self.execute_source_code_primitive(item, role, args, &bindings, span)
+                }
+                etas_std::StdExecutionRole::TaskStart => {
+                    self.execute_source_task_start(item, args.to_vec(), &bindings, span)
+                }
+                etas_std::StdExecutionRole::TaskNextCompletion
+                | etas_std::StdExecutionRole::TaskCancel => {
+                    self.execute_source_scheduler_control(item, role, args, &bindings, span)
+                }
+                etas_std::StdExecutionRole::ScopeEnter => {
+                    self.execute_runtime_scope(item, args.to_vec(), &bindings, None, span)
+                }
+                etas_std::StdExecutionRole::Abort => match args {
+                    [InterpValue::String(message)] => {
+                        ControlSignal::execution_aborted(message.to_string(), span)
+                    }
+                    _ => ControlSignal::missing_checked_fact(
+                        "abort execution role requires its checked string argument",
+                        span,
+                    ),
+                },
+                etas_std::StdExecutionRole::Checkpoint => {
+                    self.execute_checkpoint_callable(args.to_vec(), span)
+                }
+                etas_std::StdExecutionRole::StorageContext
+                | etas_std::StdExecutionRole::StorageNonce
+                | etas_std::StdExecutionRole::StreamClock
+                | etas_std::StdExecutionRole::CurrentSession => {
+                    self.execute_runtime_observation(item, role, args, span)
+                }
+                etas_std::StdExecutionRole::CaptureData => {
+                    self.execute_data_capture(item, args, &bindings, span)
+                }
+                etas_std::StdExecutionRole::Requeue | etas_std::StdExecutionRole::Park => {
+                    self.execute_runtime_transfer(item, role, args.to_vec(), &bindings, span)
+                }
+            };
+        }
+        if (flow.receiver_mode == etas_hir::HirReceiverMode::Updating) != update.is_some()
+            || update.as_ref().is_some_and(|outcome| outcome.slot != 0)
+        {
+            return ControlSignal::missing_checked_fact(
+                "updating method invocation requires its checked receiver access",
+                flow.span,
+            );
+        }
         let mut frame = match self.callable_frame_with_generics(flow.scope, bindings, flow.span) {
             Ok(frame) => frame,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
@@ -75,7 +148,27 @@ impl<'a> EvalContext<'a> {
             );
         };
         let signal = self.execute_item_body(item, body, &mut frame);
-        self.drive_restored_handlers(signal, &mut frame)
+        let signal = self.drive_restored_handlers(signal, &mut frame);
+        match update {
+            Some(outcome) => {
+                let Some(&symbol) = flow.params.get(outcome.slot as usize) else {
+                    return ControlSignal::missing_checked_fact(
+                        "updating flow has no receiver parameter",
+                        flow.span,
+                    );
+                };
+                self.continue_chain_signal(
+                    signal,
+                    Continuation::FinishReceiver {
+                        outcome,
+                        frame,
+                        symbol,
+                        span: flow.span,
+                    },
+                )
+            }
+            None => signal,
+        }
     }
 
     pub(super) fn callable_frame_with_generics(

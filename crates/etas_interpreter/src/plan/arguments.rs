@@ -10,6 +10,11 @@ use super::context::{PlanContext, plan_pass};
 #[derive(Clone, Debug, Default)]
 pub(crate) struct CallArgumentTable {
     entries: HashMap<HirExprId, Arc<[HirArg]>>,
+    default_units: std::collections::BTreeMap<
+        etas_code::descriptor::ParameterDefaultInfo,
+        etas_frontend::code::parameter_defaults::ParameterDefaultUnit,
+    >,
+    source_defaults: HashMap<etas_hir::SymbolId, etas_code::descriptor::ParameterDefaultInfo>,
 }
 
 impl CallArgumentTable {
@@ -24,11 +29,28 @@ impl CallArgumentTable {
                 _ => None,
             })
             .collect();
-        Self { entries }
+        Self {
+            entries,
+            ..Self::default()
+        }
     }
 
     pub(crate) fn get(&self, expr: HirExprId) -> Option<Arc<[HirArg]>> {
         self.entries.get(&expr).cloned()
+    }
+
+    pub(crate) fn default_unit(
+        &self,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Option<&etas_frontend::code::parameter_defaults::ParameterDefaultUnit> {
+        self.default_units.get(reference)
+    }
+
+    pub(crate) fn source_default_reference(
+        &self,
+        parameter: etas_hir::SymbolId,
+    ) -> Option<&etas_code::descriptor::ParameterDefaultInfo> {
+        self.source_defaults.get(&parameter)
     }
 }
 
@@ -45,7 +67,18 @@ impl Pass<PlanContext<'_>> for BuildCallArgumentsPass {
         _: &PassContext<PlanContext<'_>>,
         _: &mut PassManager<PlanContext<'_>>,
     ) -> PassResult {
-        context.arguments = Some(CallArgumentTable::build(&context.project.hir));
+        let mut arguments = CallArgumentTable::build(&context.project.hir);
+        arguments.default_units =
+            match etas_frontend::code::parameter_defaults::for_program(context.project) {
+                Ok(units) => units,
+                Err(error) => return PassResult::failed(error.to_string()),
+            };
+        arguments.source_defaults = arguments
+            .default_units
+            .iter()
+            .map(|(reference, unit)| (unit.parameter, reference.clone()))
+            .collect();
+        context.arguments = Some(arguments);
         PassResult::unchanged()
     }
 }

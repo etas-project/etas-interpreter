@@ -47,6 +47,7 @@ impl<'a> EvalContext<'a> {
                     | ControlSignal::Checkpoint(_)
                     | ControlSignal::Block(_)
                     | ControlSignal::Expr(_)
+                    | ControlSignal::ProgramExpr(_)
                     | ControlSignal::Call(_)
                     | ControlSignal::Native(_)
                     | ControlSignal::Perform(_)
@@ -176,9 +177,11 @@ impl<'a> EvalContext<'a> {
             vec![input],
             span,
             Some(crate::control::CallSite {
+                receiver_update: None,
                 kind: crate::control::CallSiteKind::Pipeline { expr },
                 frame: frame.clone(),
                 composition: None,
+                task_callback: None,
             }),
         )
     }

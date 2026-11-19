@@ -9,10 +9,11 @@ impl<'a> EvalContext<'a> {
         let ResolveResult::Resolved(symbol) = path?.resolution else {
             return None;
         };
-        matches!(
-            self.checked.symbols.get(symbol)?.def,
-            SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. }
-        )
+        (self.plan.dispatch.enum_constructor(symbol).is_some()
+            || matches!(
+                self.checked.symbols.get(symbol)?.def,
+                SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. }
+            ))
         .then_some(symbol)
     }
 
@@ -81,6 +82,38 @@ impl<'a> EvalContext<'a> {
                 ),
             ));
         }
+        if matches!(
+            self.checked.type_store.get(result),
+            Some(etas_types::Type::Option(_))
+        ) && self.checked.types.known_std_types.option_enum == Some(owner)
+        {
+            return Ok(match name.as_str() {
+                "Some" => InterpValue::OptionSome(
+                    fields
+                        .into_iter()
+                        .next()
+                        .expect("checked Some payload")
+                        .into(),
+                ),
+                "None" => InterpValue::OptionNone,
+                _ => unreachable!("checked Option role variants"),
+            });
+        }
+        if matches!(
+            self.checked.type_store.get(result),
+            Some(etas_types::Type::Result { .. })
+        ) && self.checked.types.known_std_types.result_enum == Some(owner)
+        {
+            return Ok(InterpValue::Variant {
+                name: name.into(),
+                fields: fields.into(),
+            });
+        }
+        if self.checked.types.known_std_types.json_value == Some(result) {
+            return crate::value::json::construct(&name, fields, self.checked)
+                .map(InterpValue::Json)
+                .map_err(|message| self.enum_fact_fault(span, message));
+        }
         Ok(InterpValue::Nominal {
             ty: result,
             value: InterpValue::Variant {
@@ -128,6 +161,8 @@ impl<'a> EvalContext<'a> {
 
     fn enum_owner(&self, ty: etas_types::TypeId) -> Option<etas_types::TypeId> {
         match self.checked.type_store.get(ty)? {
+            etas_types::Type::Result { .. } => self.checked.types.known_std_types.result_enum,
+            etas_types::Type::Option(_) => self.checked.types.known_std_types.option_enum,
             etas_types::Type::Enum(_) => Some(ty),
             etas_types::Type::Applied { constructor, .. }
                 if matches!(
@@ -172,14 +207,20 @@ impl<'a> EvalContext<'a> {
             .get(&expr)
             .ok_or_else(|| self.enum_fact_fault(span, "enum reference has no checked type"))?;
         let output = match self.checked.type_store.get(ty) {
-            Some(etas_types::Type::Function(signature)) => {
-                self.materialized_type(signature.output, frame.generic_bindings(), span)?
-            }
+            Some(etas_types::Type::Function(signature)) => self.materialized_type(
+                signature.output,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                span,
+            )?,
             _ => {
                 return self
                     .construct_enum_value(
                         symbol,
-                        self.materialized_type(ty, frame.generic_bindings(), span)?,
+                        self.materialized_type(
+                            ty,
+                            &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                            span,
+                        )?,
                         Vec::new(),
                         span,
                     )
@@ -199,8 +240,10 @@ impl<'a> EvalContext<'a> {
             )
         })?;
         let args = match self.checked.type_store.get(output) {
-            Some(etas_types::Type::Applied { args, .. }) => args.as_slice(),
-            _ => &[],
+            Some(etas_types::Type::Applied { args, .. }) => args.clone(),
+            Some(etas_types::Type::Result { ok, err }) => vec![*ok, *err],
+            Some(etas_types::Type::Option(inner)) => vec![*inner],
+            _ => Vec::new(),
         };
         if args.len() != layout.type_params.len() {
             return Err(self.enum_fact_fault(
@@ -246,6 +289,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)

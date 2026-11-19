@@ -31,7 +31,9 @@ pub(in crate::api::codec) fn decode_with_frames<T: DecodedValue>(
             }
             frame.finish()?
         } else {
-            if required_str(next, "kind")? == "callable" {
+            if required_str(next, "kind")? == "handler" {
+                T::handler(next, cache)?
+            } else if required_str(next, "kind")? == "callable" {
                 T::callable(limits, required_obj(next, "target")?, cache)?
             } else {
                 T::scalar(limits, next)?
@@ -53,6 +55,7 @@ pub(in crate::api::codec) fn decode_with_frames<T: DecodedValue>(
 }
 
 pub(in crate::api::codec) enum Unary {
+    ScopedHandler(Box<crate::value::ScopedHandlerMetadata>),
     Existential(crate::value::ExistentialHeader),
     Nominal(TypeId),
     Trust(etas_types::TrustWrapper),
@@ -130,6 +133,22 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
                         },
                     )?,
                 ))
+            }
+            "scoped_handler" => {
+                if !T::ALLOW_EXISTENTIAL {
+                    return Err(InterpreterCodecError::new(
+                        "scoped Handler requires checked checkpoint restoration",
+                    ));
+                }
+                Some(Unary::ScopedHandler(Box::new(
+                    serde_json::from_value(required_obj(value, "metadata")?.clone()).map_err(
+                        |error| {
+                            InterpreterCodecError::new(format!(
+                                "invalid scoped Handler metadata: {error}"
+                            ))
+                        },
+                    )?,
+                )))
             }
             "nominal" => Some(Unary::Nominal(TypeId(required_u32(value, "ty")?))),
             "trust" => Some(Unary::Trust(
@@ -370,6 +389,10 @@ impl<'a, T: DecodedValue> Frame<'a, T> {
 pub(in crate::api::codec) trait DecodedValue: Sized {
     const ALLOW_EXISTENTIAL: bool = false;
     type Frame: Clone;
+    fn handler(
+        value: &Value,
+        cache: &machine::FrameDecodeCache<Self::Frame>,
+    ) -> Result<Self, InterpreterCodecError>;
     fn frame_cache(
         limits: &etas_host::StorageLimits,
         root: machine::DecodeRoot<'_>,

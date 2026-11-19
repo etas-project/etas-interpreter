@@ -61,19 +61,62 @@ impl<'a> EvalContext<'a> {
                 continuation => {
                     signal = match signal {
                         ControlSignal::Perform(mut pending) => match continuation {
+                            Continuation::CommitReceiver { lease, span, .. } => {
+                                lease.abort();
+                                if pending.error_type.is_some() {
+                                    ControlSignal::Perform(pending)
+                                } else {
+                                    ControlSignal::invalid_arguments(
+                                        "updating method attempted to suspend",
+                                        span,
+                                    )
+                                }
+                            }
+                            Continuation::FinishReceiver { .. } if pending.error_type.is_some() => {
+                                ControlSignal::Perform(pending)
+                            }
+                            Continuation::AgentExecutionState(previous) => {
+                                let active = self.agent_execution_state();
+                                self.restore_agent_context((*previous).clone());
+                                pending.continuation = Continuation::AgentExecutionScope {
+                                    state: Box::new(active),
+                                    inner: pending.continuation.into(),
+                                };
+                                ControlSignal::Perform(pending)
+                            }
                             Continuation::RestoreModelPolicy { previous, .. }
                                 if pending.error_type.is_some() =>
                             {
                                 self.task.model_policy = *previous;
                                 ControlSignal::Perform(pending)
                             }
-                            Continuation::TryExpr { expr, span } => {
-                                if self.can_capture_error_raise(expr, &pending) {
-                                    self.capture_error_raise(expr, &pending, span)
+                            Continuation::ScopeExit {
+                                block,
+                                keep,
+                                guard,
+                                mut frame,
+                            } if pending.error_type.is_some() => self.finish_scope_signal(
+                                block,
+                                &mut frame,
+                                keep,
+                                guard,
+                                ControlSignal::Perform(pending),
+                            ),
+                            Continuation::TryExpr {
+                                expr,
+                                result_type,
+                                span,
+                            } => {
+                                if self.can_capture_error_raise(expr, result_type, &pending) {
+                                    self.capture_error_raise(expr, result_type, &pending, span)
                                 } else {
                                     pending.continuation = compose_continuation(
                                         pending.continuation,
-                                        Continuation::TryExpr { expr, span },
+                                        Continuation::TryExpr {
+                                            expr,
+                                            result_type,
+                                            span,
+                                        },
                                     );
                                     ControlSignal::Perform(pending)
                                 }
@@ -172,6 +215,10 @@ impl<'a> EvalContext<'a> {
                 pending.continuation = compose_continuation(pending.continuation, outer);
                 ControlSignal::Expr(pending)
             }
+            ControlSignal::ProgramExpr(mut pending) => {
+                pending.continuation = compose_continuation(pending.continuation, outer);
+                ControlSignal::ProgramExpr(pending)
+            }
             ControlSignal::Resume(value) => self.propagate_resume_to_continuation(value, outer),
             ControlSignal::Finish(value) => self.propagate_finish_to_continuation(value, outer),
             ControlSignal::Fault(fault) => ControlSignal::Fault(fault),
@@ -201,6 +248,45 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         match continuation {
+            Continuation::ScopeExit {
+                block,
+                keep,
+                guard,
+                mut frame,
+            } => self.finish_scope_signal(
+                block,
+                &mut frame,
+                keep,
+                guard,
+                ControlSignal::Return(value),
+            ),
+            Continuation::DefaultArguments(state) => self.resume_default_argument(*state, value),
+            Continuation::FinishReceiver {
+                outcome,
+                frame,
+                symbol,
+                span,
+            } => match frame.get(symbol) {
+                Some(receiver) => {
+                    outcome.store(receiver);
+                    ControlSignal::Return(value)
+                }
+                None => {
+                    ControlSignal::missing_checked_fact("final updating receiver is missing", span)
+                }
+            },
+            Continuation::CommitReceiver { lease, .. } => {
+                lease.abort();
+                ControlSignal::Return(value)
+            }
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.propagate_return_to_continuation(value, continuation)
+            }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Return(value)
+            }
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
@@ -257,6 +343,26 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         match continuation {
+            Continuation::ScopeExit {
+                block,
+                keep,
+                guard,
+                mut frame,
+            } => self.finish_scope_signal(
+                block,
+                &mut frame,
+                keep,
+                guard,
+                ControlSignal::Resume(value),
+            ),
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.propagate_resume_to_continuation(value, continuation)
+            }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Resume(value)
+            }
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
@@ -322,6 +428,30 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         match continuation {
+            Continuation::ScopeExit {
+                block,
+                keep,
+                guard,
+                mut frame,
+            } => self.finish_scope_signal(
+                block,
+                &mut frame,
+                keep,
+                guard,
+                ControlSignal::Finish(value),
+            ),
+            Continuation::CommitReceiver { lease, .. } => {
+                lease.abort();
+                ControlSignal::Finish(value)
+            }
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.propagate_finish_to_continuation(value, continuation)
+            }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Finish(value)
+            }
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
@@ -385,17 +515,31 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
     ) -> ControlSignal {
         match continuation {
+            Continuation::ScopeExit {
+                block,
+                keep,
+                guard,
+                mut frame,
+            } => self.finish_scope_signal(block, &mut frame, keep, guard, signal),
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            continuation @ (Continuation::ForLoop { .. } | Continuation::WhileLoop { .. }) => {
-                match signal {
-                    ControlSignal::Continue => {
-                        self.apply_continuation(continuation, InterpValue::Unit)
-                    }
-                    ControlSignal::Break => ControlSignal::Value(InterpValue::Unit),
-                    _ => unreachable!("loop-control propagation requires break or continue"),
+            continuation @ (Continuation::ForLoop { .. }
+            | Continuation::SourceForLoop { .. }
+            | Continuation::WhileLoop { .. }) => match signal {
+                ControlSignal::Continue => self.apply_continuation(continuation, InterpValue::Unit),
+                ControlSignal::Break => ControlSignal::Value(InterpValue::Unit),
+                _ => unreachable!("loop-control propagation requires break or continue"),
+            },
+            Continuation::HandleBoundary { scope_id, span, .. } => {
+                match self.close_handler_scope(scope_id, span) {
+                    Ok(()) => signal,
+                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
                 }
+            }
+            Continuation::RetryAttempt { retry, .. } => {
+                self.finish_retry_attempt_success(&retry);
+                signal
             }
             Continuation::ResidualScope(scope) => self.residual_exit_signal(
                 &scope,
@@ -431,9 +575,38 @@ impl<'a> EvalContext<'a> {
         value: InterpValue,
     ) -> ControlSignal {
         match continuation {
-            Continuation::PackExistential { expr, frame } => {
-                self.pack_existential(expr, value, frame.generic_bindings())
+            Continuation::DefaultArguments(state) => self.resume_default_argument(*state, value),
+            Continuation::FinishReceiver {
+                outcome,
+                frame,
+                symbol,
+                span,
+            } => match frame.get(symbol) {
+                Some(receiver) => {
+                    outcome.store(receiver);
+                    ControlSignal::Value(value)
+                }
+                None => {
+                    ControlSignal::missing_checked_fact("final updating receiver is missing", span)
+                }
+            },
+            Continuation::CommitReceiver {
+                lease,
+                outcome,
+                span,
+            } => match outcome.take().and_then(|receiver| lease.commit(receiver)) {
+                Ok(()) => ControlSignal::Value(value),
+                Err(reason) => ControlSignal::missing_checked_fact(reason, span),
+            },
+            Continuation::AgentExecutionScope { state, inner } => {
+                let continuation = self.agent_scope_continuation(*state, inner.into_value());
+                self.apply_continuation(continuation, value)
             }
+            Continuation::PackExistential { expr, frame } => self.pack_existential(
+                expr,
+                value,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+            ),
             Continuation::PriorityQueueUpdate(state) => {
                 self.continue_priority_update(*state, value)
             }
@@ -648,7 +821,7 @@ impl<'a> EvalContext<'a> {
                     self.resume_call_args(
                         CallArgsState {
                             call,
-                            target,
+                            target: Some(target),
                             args,
                             start_arg_index: 0,
                             evaluated_args: Vec::new(),
@@ -811,9 +984,11 @@ impl<'a> EvalContext<'a> {
                         vec![input],
                         span,
                         Some(crate::control::CallSite {
+                            receiver_update: None,
                             kind: crate::control::CallSiteKind::Pipeline { expr },
                             frame,
                             composition: None,
+                            task_callback: None,
                         }),
                     ),
                 other => {
@@ -833,8 +1008,21 @@ impl<'a> EvalContext<'a> {
                 self.task.model_policy = *previous;
                 self.apply_continuation(inner.into_value(), value)
             }
+            Continuation::AgentExecutionState(previous) => {
+                self.restore_agent_context(*previous);
+                ControlSignal::Value(value)
+            }
+            Continuation::AgentControllerStep(state) => {
+                self.resume_agent_controller_step(state, value)
+            }
+            Continuation::AgentControllerTool(state) => {
+                self.resume_agent_controller_tool(state, value)
+            }
             Continuation::CallBoundary { outer, .. } => {
                 self.apply_continuation(outer.into_value(), value)
+            }
+            Continuation::LoopLimit { stmt, mut frame } => {
+                self.resume_loop_limit(stmt, value, &mut frame)
             }
             Continuation::ForLoop {
                 pat,
@@ -849,6 +1037,32 @@ impl<'a> EvalContext<'a> {
                 crate::eval::loop_control::ForLoopResume {
                     pat,
                     source: source.map(|source| *source),
+                    next_index,
+                    body,
+                    iterations,
+                    loop_scope,
+                    span,
+                },
+                value,
+                &mut frame,
+            ),
+            Continuation::SourceForLoop {
+                iter,
+                pat,
+                source,
+                awaiting_step,
+                next_index,
+                body,
+                iterations,
+                loop_scope,
+                span,
+                mut frame,
+            } => self.resume_source_for_loop(
+                super::source_iteration::SourceForLoopResume {
+                    iter,
+                    pat,
+                    source: source.map(|value| *value),
+                    awaiting_step,
                     next_index,
                     body,
                     iterations,
@@ -900,7 +1114,11 @@ impl<'a> EvalContext<'a> {
                 let _ = value;
                 self.execute_block_from(block, next_stmt_index, &mut frame)
             }
-            Continuation::TryExpr { expr, span } => self.resume_try_expr(expr, value, span),
+            Continuation::TryExpr {
+                expr,
+                result_type,
+                span,
+            } => self.resume_try_expr(expr, result_type, value, span),
             Continuation::MemoryClearDeleteAll {
                 region_stable_id,
                 path,
@@ -1008,12 +1226,15 @@ impl<'a> EvalContext<'a> {
             Continuation::Chain { .. } => {
                 unreachable!("EvalMachine must flatten continuation chains")
             }
-            Continuation::ProgramResume(_) | Continuation::SourceToolReturn(_) => {
-                ControlSignal::missing_checked_fact(
-                    "program continuation must be resumed by its owning evaluation machine",
-                    crate::diagnostics::item_span(self.checked, self.entry_item),
-                )
+            Continuation::ToolInvocationResult(invocation) => {
+                self.complete_tool_invocation(*invocation, value)
             }
+            Continuation::ToolInvocationStart(_)
+            | Continuation::ProgramResume(_)
+            | Continuation::TaskResume(_) => ControlSignal::missing_checked_fact(
+                "program continuation must be resumed by its owning evaluation machine",
+                crate::diagnostics::item_span(self.checked, self.entry_item),
+            ),
             Continuation::ResidualScope(scope) => {
                 let span = crate::diagnostics::item_span(self.checked, self.entry_item);
                 match self.exit_residual_scope(
@@ -1035,6 +1256,18 @@ impl<'a> EvalContext<'a> {
             Continuation::Return => ControlSignal::Return(value),
             Continuation::Resume => ControlSignal::Resume(value),
             Continuation::Finish => ControlSignal::Finish(value),
+            Continuation::ScopeExit {
+                block,
+                keep,
+                guard,
+                mut frame,
+            } => self.finish_scope_signal(
+                block,
+                &mut frame,
+                keep,
+                guard,
+                ControlSignal::Value(value),
+            ),
             Continuation::BlockValue => ControlSignal::Value(value),
         }
     }
@@ -1081,6 +1314,11 @@ impl<'a> EvalContext<'a> {
                 pending.continuation =
                     scoped_model_policy_continuation(policy, pending.continuation);
                 ControlSignal::Expr(pending)
+            }
+            ControlSignal::ProgramExpr(mut pending) => {
+                pending.continuation =
+                    scoped_model_policy_continuation(policy, pending.continuation);
+                ControlSignal::ProgramExpr(pending)
             }
             ControlSignal::Call(mut pending) => {
                 pending.continuation =

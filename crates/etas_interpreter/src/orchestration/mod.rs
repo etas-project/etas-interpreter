@@ -2,10 +2,16 @@ mod call_target_storage;
 mod callable;
 mod suspension;
 pub(crate) use suspension::{
-    ActionInvocationSnapshot, ActionOriginSnapshot, ExecutionProgramSnapshot,
-    ExecutionRootSnapshot, SuspendedProgramSnapshot,
+    ActionEvidenceSnapshot, ActionInvocationSnapshot, ActionOriginSnapshot,
+    ActionProjectionSnapshot, CheckedProjectionSnapshot, ExecutionProgramSnapshot,
+    ExecutionRootSnapshot, ResultProjectionPathSnapshot, SuspendedExecutionSnapshot,
+    SuspendedProgramSnapshot, SuspendedTaskHandlerSnapshot, TaskHandlerWaitSnapshot,
 };
 mod checkpoint;
+pub(crate) use checkpoint::{
+    AgentExecutionStateSnapshot, AgentRequestContextSnapshot, ArgumentDestinationSnapshot,
+    DefaultArgumentsSnapshot, ToolInvocationSnapshot,
+};
 mod task;
 pub(crate) use task::{
     AuxiliaryContinuationSnapshot, RootTaskWaitSnapshot, ScheduledTaskSnapshot,
@@ -15,7 +21,8 @@ pub(crate) use task::{
 mod cooperative;
 pub(crate) use call_target_storage::{CallTargetSnapshotChildren, CallTargetSnapshotLink};
 pub(crate) use callable::{
-    CallableProjectionSnapshot, CheckpointProgramReference, ScopedCallableMetadata,
+    CallableProjectionOrigin, CallableProjectionSnapshot, CheckpointProgramReference,
+    ScopedCallableMetadata,
 };
 pub(crate) use cooperative::{
     ContinuationInputSnapshot, ControlSignalSnapshot, MachineInputSnapshot,
@@ -48,15 +55,17 @@ pub use checkpoint::{
     RetrySnapshot, TraceSnapshot,
 };
 pub(crate) use checkpoint::{
-    CallSiteSnapshot, CallTargetSnapshot, CheckpointAgentReference, ComposedInvocationSnapshot,
-    ContinuationSnapshot, ConversationSnapshot, FrameProgramOwners, HostToolProgressSnapshot,
-    LocalPlaceComponentSnapshot, LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot,
-    MessageSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelLoopFrameSnapshot,
-    ModelRepairSnapshot, ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramReturnSnapshot,
-    SliceExprEvalSnapshot, SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
-    TaskValueSnapshot, ValueSnapshot,
+    AgentControllerSnapshot, CallSiteSnapshot, CallTargetSnapshot, CheckpointAgentReference,
+    ComposedInvocationSnapshot, ContinuationSnapshot, ConversationSnapshot, ExpressionCallSnapshot,
+    ExpressionUnitSnapshot, FrameProgramOwners, LocalPlaceComponentSnapshot,
+    LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot, MessageSnapshot,
+    ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelRequestFrameSnapshot,
+    ModelResponseDecodeSnapshot, PendingModelSnapshot, ProgramCallSnapshot, ProgramReturnSnapshot,
+    SliceExprEvalSnapshot, TaskValueSnapshot, ToolInvocationOriginSnapshot, ValueSnapshot,
 };
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{CpuWorkerId, WorkflowEvent, WorkflowEventLayer, WorkflowStepId};
 mod model_request;
 pub(crate) use model_request::{ModelRequestSnapshot, bounded_model_options};
+
+pub(crate) use suspension::HandlerActivationSnapshot;

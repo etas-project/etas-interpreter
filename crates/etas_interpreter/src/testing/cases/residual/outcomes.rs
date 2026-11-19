@@ -45,7 +45,7 @@ async fn host_guard_attempt_without_a_completed_outcome_never_authorizes_the_tar
     let source = HOST_GUARD.replace(
         "    print(\"guard\");",
         r#"
-        let ignored = {
+        let ignored: Result<unit, i32> = {
             handle { perform Console.stdout_write("guard"); } with {
                 Console.stdout_write(_) => { finish perform Error<i32>.raise(7); }
             }

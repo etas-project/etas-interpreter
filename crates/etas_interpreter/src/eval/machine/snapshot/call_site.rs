@@ -9,8 +9,16 @@ impl CallSiteSnapshot {
         site: &CallSite,
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
+        if site.receiver_update.is_some() {
+            return Err("cannot checkpoint an updating invocation".into());
+        }
         Ok(Self {
             kind: site.kind,
+            task_callback: site
+                .task_callback
+                .as_ref()
+                .map(|call| context.call_target(call).map(Box::new))
+                .transpose()?,
             frame: context.frame(&site.frame)?,
             composition: site
                 .composition
@@ -30,7 +38,12 @@ impl CallSiteSnapshot {
         context: &mut RestoreContext,
     ) -> Result<CallSite, String> {
         Ok(CallSite {
+            receiver_update: None,
             kind: self.kind,
+            task_callback: self
+                .task_callback
+                .map(|call| context.restore_call_target(*call).map(Box::new))
+                .transpose()?,
             frame: context.frame(self.frame)?,
             composition: self
                 .composition
@@ -48,13 +61,48 @@ impl CallSiteSnapshot {
         })
     }
 
+    pub(in crate::eval::machine) fn bindings(
+        &self,
+        checked: &etas_frontend::CheckedProgram,
+    ) -> crate::control::GenericBindings {
+        if let CallSiteKind::SourceTaskCallback { item } = self.kind {
+            return self
+                .frame
+                .bindings_at(checked, etas_hir::HirOwner::Item(item));
+        }
+        let (CallSiteKind::Expr { expr }
+        | CallSiteKind::TaskCallback { expr }
+        | CallSiteKind::Pipeline { expr }
+        | CallSiteKind::PipelineStage { expr, .. }) = self.kind
+        else {
+            unreachable!()
+        };
+        self.frame
+            .bindings_at(checked, etas_hir::HirOwner::Expr(expr))
+    }
+
     pub(in crate::eval::machine) fn receiver(
         &self,
         parent: &etas_frontend::CheckedProgram,
         span: etas_core::Span,
     ) -> Result<(etas_hir::HirExprId, Option<etas_hir::HirExprId>), String> {
         use etas_hir::HirExpr;
+        if matches!(self.kind, CallSiteKind::SourceTaskCallback { .. }) {
+            return Err(
+                "source task callback uses its primitive item, not an expression receiver".into(),
+            );
+        }
+        if let CallSiteKind::TaskCallback { expr } = self.kind {
+            self.task_callback_type(parent)?;
+            return Ok((expr, None));
+        }
+        if self.task_callback.is_some() {
+            return Err("ordinary call carries a task callback origin".into());
+        }
         match self.kind {
+            CallSiteKind::TaskCallback { .. } | CallSiteKind::SourceTaskCallback { .. } => {
+                unreachable!()
+            }
             CallSiteKind::Pipeline { .. } => {
                 Err("program boundary has an unselected pipeline invocation".into())
             }
@@ -69,9 +117,11 @@ impl CallSiteSnapshot {
                     span: expected,
                     ..
                 }) if *expected == span => Ok((*receiver, Some(expr))),
-                _ => {
-                    Err("program boundary references a missing or changed checked call site".into())
-                }
+                _ => Err(format!(
+                    "program boundary references a missing or changed checked call site: \
+                         expression {expr:?}, saved span {span:?}, checked expression {:?}",
+                    parent.hir.exprs.get(expr)
+                )),
             },
             CallSiteKind::PipelineStage { expr, index } => {
                 let Some(HirExpr::Pipeline { .. }) = parent.hir.exprs.get(expr) else {
@@ -84,6 +134,60 @@ impl CallSiteSnapshot {
                 Ok((stage.expr, None))
             }
         }
+    }
+    pub(in crate::eval::machine) fn task_callback_type(
+        &self,
+        parent: &etas_frontend::CheckedProgram,
+    ) -> Result<etas_types::TypeId, String> {
+        if let CallSiteKind::SourceTaskCallback { item } = self.kind {
+            if self.composition.is_some() {
+                return Err("source task callback cannot be a pipeline stage".into());
+            }
+            let target = self
+                .task_callback
+                .as_deref()
+                .ok_or("source task callback has no checked entry")?;
+            let (actual, callback, _) =
+                crate::eval::task_start::source_start_types(parent, target)?;
+            return if actual == item {
+                Ok(callback)
+            } else {
+                Err("source task callback differs from its entry item".into())
+            };
+        }
+        let CallSiteKind::TaskCallback { expr } = self.kind else {
+            return Err("call site is not a task callback".into());
+        };
+        if self.composition.is_some() {
+            return Err("task callback cannot be a pipeline stage".into());
+        }
+        let Some(crate::orchestration::CallTargetSnapshot::StdIntrinsic {
+            origin,
+            substitutions,
+            intrinsic,
+            dispatch,
+            parameter_types,
+            result_type,
+        }) = self.task_callback.as_deref()
+        else {
+            return Err("task callback has no checked primitive origin".into());
+        };
+        if *origin != expr {
+            return Err("task callback differs from its primitive origin".into());
+        }
+        crate::plan::IntrinsicDispatchTable::recheck_task_callback(
+            parent,
+            &crate::intrinsic::dispatch::CheckedStdIntrinsicCall {
+                origin: *origin,
+                substitutions: substitutions.clone(),
+                identity: crate::intrinsic::dispatch::StdIntrinsicIdentity {
+                    intrinsic: *intrinsic,
+                    dispatch: *dispatch,
+                },
+                parameter_types: parameter_types.clone(),
+                result_type: *result_type,
+            },
+        )
     }
 }
 

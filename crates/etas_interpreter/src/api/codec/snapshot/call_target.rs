@@ -3,12 +3,57 @@ use crate::api::codec::machine::{intrinsic_dispatch_name, runtime_limit_snapshot
 use crate::orchestration::{CallTargetSnapshot, LocalsSnapshot};
 use serde_json::{Value, json};
 
-pub(super) fn frame<'a>(frame: &'a LocalsSnapshot, slot: &'a mut Value, pending: &mut Pending<'a>) {
+pub(super) fn frame<'a>(
+    frame: &'a LocalsSnapshot,
+    slot: &'a mut Value,
+    pending: &mut Pending<'a>,
+    budget: &mut super::EncodingBudget,
+) -> Result<(), crate::api::codec::InterpreterCodecError> {
+    if frame.reference {
+        *slot = json!({"reference": frame.id});
+        return Ok(());
+    }
+    let activations = frame.handler_activations.iter().map(|activation| {
+        let mut value = json!({"arm":activation.arm.0, "types":activation.types, "parameters":activation.parameters, "rows":activation.rows});
+        if let Some(place) = &activation.memory_place {
+            value["memory_place"] = json!(place);
+        }
+        budget.json_metadata(&value)?;
+        value["request"] = crate::api::codec::checkpoint::suspension::encode_evidence(&activation.request,budget)?;
+        Ok(value)
+    }).collect::<Result<Vec<_>, crate::api::codec::InterpreterCodecError>>()?;
     *slot = json!({"id":frame.id, "locals":null,
         "residual_invocation": frame.residual_invocation,
         "effect_row_bindings": frame.effect_row_bindings,
         "type_parameter_bindings": frame.type_parameter_bindings,
         "type_bindings":frame.type_bindings.iter().map(|(name,ty)|json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
+    if !activations.is_empty() {
+        slot["handler_activations"] = Value::Array(activations);
+    }
+    if !frame.shared_bindings.is_empty() {
+        let bindings =
+            serde_json::to_value(&frame.shared_bindings).expect("captured binding metadata");
+        budget.json_metadata(&bindings)?;
+        slot["shared_bindings"] = bindings;
+    }
+    if let Some(parent) = &frame.parent {
+        slot["parent"] = Value::Null;
+        // Split object fields so child slots stay disjoint on the worklist.
+        let object = slot.as_object_mut().expect("frame object");
+        for (name, slot) in object.iter_mut() {
+            if name == "parent" {
+                pending.push((Node::Frame(parent), slot));
+            } else if name == "locals" {
+                for ((symbol, value), entry) in
+                    frame.locals.iter().zip(array(slot, frame.locals.len()))
+                {
+                    *entry = json!({"symbol":symbol.0,"value":null});
+                    pending.push((Node::Value(value), &mut entry["value"]));
+                }
+            }
+        }
+        return Ok(());
+    }
     for ((symbol, value), entry) in frame
         .locals
         .iter()
@@ -17,6 +62,7 @@ pub(super) fn frame<'a>(frame: &'a LocalsSnapshot, slot: &'a mut Value, pending:
         *entry = json!({"symbol":symbol.0,"value":null});
         pending.push((Node::Value(value), &mut entry["value"]));
     }
+    Ok(())
 }
 
 pub(super) fn encode<'a>(
@@ -52,6 +98,9 @@ pub(super) fn encode<'a>(
         }
         T::ToolItem(item) => *slot = json!({"kind":"tool","item":item.0}),
         T::EnumVariant(symbol) => *slot = json!({"kind":"enum_variant","symbol":symbol.0}),
+        T::DerivedResponseDecoder(ty) => {
+            *slot = json!({"kind":"derived_response_decoder","ty":ty.0})
+        }
         T::NominalConstructor(ty) => *slot = json!({"kind":"nominal_constructor","ty":ty.0}),
         T::Lambda { expr, captured } => {
             *slot = json!({"kind":"lambda","expr":expr.0,"captured":null});

@@ -28,6 +28,39 @@ mod drop;
 #[derive(Clone, Debug)]
 pub struct ProgramContinuation(Option<Rc<RefCell<Option<SuspendedProgram>>>>);
 
+#[derive(Clone, Debug)]
+pub(in crate::eval::machine) enum SuspendedExecution {
+    Program(ProgramContinuation),
+    Task(super::TaskHandlerContinuation),
+}
+
+impl SuspendedExecution {
+    pub(in crate::eval::machine) fn identity(&self) -> Result<usize, String> {
+        match self {
+            Self::Program(value) => value.checkpoint_identity(),
+            Self::Task(value) => value.checkpoint_identity(),
+        }
+    }
+    pub(in crate::eval::machine) fn projected_action(
+        &self,
+    ) -> Result<crate::control::CheckedActionInvocation, String> {
+        match self {
+            Self::Program(value) => value.projected_action(),
+            Self::Task(value) => value.projected_action(),
+        }
+    }
+    pub(in crate::eval::machine) fn capture(
+        &self,
+        context: &mut super::snapshot::CaptureContext,
+    ) -> Result<crate::orchestration::SuspendedExecutionSnapshot, String> {
+        use crate::orchestration::SuspendedExecutionSnapshot as Snapshot;
+        match self {
+            Self::Program(value) => value.capture(context).map(Snapshot::Program),
+            Self::Task(value) => value.capture(context).map(Snapshot::Task),
+        }
+    }
+}
+
 impl ProgramContinuation {
     pub(in crate::eval::machine) fn projected_action(
         &self,
@@ -68,6 +101,7 @@ struct SuspendedProgram {
     handlers: Vec<crate::orchestration::ActiveHandlerRecord>,
     retries: Vec<crate::orchestration::RetryAttemptRecord>,
     model_policy: crate::api::ModelExecutionPolicy,
+    agent_context: Option<Box<crate::control::AgentRequestContext>>,
     projection: ActionProjection,
     resuming_program: crate::value::CheckedExecutionProgram,
     depth: CallDepthLease,
@@ -88,12 +122,21 @@ impl Drop for CallDepthLease {
     }
 }
 
+/// An await transfer owns its eventual result projections while its lexical
+/// frames are installed on the parked caller and accessible to child actions.
+#[derive(Debug)]
+pub(crate) struct ParkedContinuation {
+    pub(crate) continuation: Continuation,
+    pub(crate) projections: Option<Vec<(crate::value::CheckedExecutionProgram, ActionProjection)>>,
+}
+
 impl EvalMachine {
     pub(super) fn has_action_handler_in(
         &self,
         ctx: &EvalContext<'_>,
         pending: &PendingPerform,
         range: std::ops::Range<usize>,
+        memory_target: Option<&crate::control::handler_activation::SourceMemoryPlace>,
     ) -> Result<bool, ExecutionFault> {
         let fail = |reason| {
             ExecutionFault::new(
@@ -102,6 +145,10 @@ impl EvalMachine {
                 reason,
             )
         };
+        if range.end <= ctx.task.inherited_handlers {
+            return Ok(false);
+        }
+        let range = range.start.max(ctx.task.inherited_handlers)..range.end;
         let scopes = ctx.task.handler_stack.get(range).ok_or_else(|| {
             fail("action handler search has an invalid dynamic scope range".into())
         })?;
@@ -125,7 +172,7 @@ impl EvalMachine {
                 let frame = frames.get(&scope.id).copied().ok_or_else(|| {
                     fail("active handler scope has no owning lexical frame".into())
                 })?;
-                if ctx.handler_matches_perform(pending, handler, Some(frame))? {
+                if ctx.handler_matches_perform(pending, handler, Some(frame), memory_target)? {
                     return Ok(true);
                 }
             }
@@ -148,36 +195,62 @@ impl EvalMachine {
                 reason,
             )
         };
-        let mut proof = pending
+        let proof = pending
             .checked_action
-            .clone()
+            .as_ref()
             .ok_or_else(|| fail("resumable action has no checked invocation ABI".into()))?;
+        let mut identity = action_identity(&proof.effect)
+            .ok_or_else(|| fail("resumable action has no checked action identity".into()))?
+            .clone();
+        let memory_target = ctx.source_memory_handler_target(pending);
+        let mut edges = Vec::new();
         let mut end = ctx.handler_floor;
         for frame in self.frames().iter().rev() {
             let EvalFrame::ProgramReturn(boundary) = frame else {
                 continue;
             };
-            let projection = ActionProjection::new(
-                proof,
-                boundary.call.action_projections().map_err(fail)?,
-                &boundary.parent_program,
-            )
-            .map_err(fail)?;
-            proof = projection.target().clone();
-            let start = boundary
-                .parent
-                .as_ref()
-                .map_or(0, |scope| scope.handler_floor);
-            let relocated = relocated_perform(
-                proof.clone(),
-                boundary.span,
-                Vec::new(),
-                Continuation::BlockValue,
-            )
-            .map_err(fail)?;
+            for edge in boundary.call.action_projections().map_err(fail)? {
+                let Some(action) = edge.corresponding_action(&identity) else {
+                    return Ok(false);
+                };
+                identity = action;
+                edges.push(edge);
+            }
+            let start = boundary.parent_handler_floor;
             let parent = ctx.scoped_context(&boundary.parent_program, start);
-            if self.has_action_handler_in(&parent, &relocated, start..end)? {
-                return Ok(true);
+            let range = start.max(parent.task.inherited_handlers)..end;
+            if !range.is_empty() {
+                let scopes = parent.task.handler_stack.get(range).ok_or_else(|| {
+                    fail("action handler search has an invalid dynamic scope range".into())
+                })?;
+                // Relocate the payload ABI only if an arm can handle this action.
+                if has_action_family(
+                    &parent,
+                    scopes.iter().rev().flat_map(|scope| &scope.handlers),
+                    &identity,
+                )? {
+                    let projection = ActionProjection::new(
+                        proof.clone(),
+                        edges.clone(),
+                        &boundary.parent_program,
+                    )
+                    .map_err(fail)?;
+                    let relocated = relocated_perform(
+                        projection.target().clone(),
+                        boundary.span,
+                        Vec::new(),
+                        Continuation::BlockValue,
+                    )
+                    .map_err(fail)?;
+                    if self.has_action_handler_in(
+                        &parent,
+                        &relocated,
+                        start..end,
+                        memory_target.as_ref(),
+                    )? {
+                        return Ok(true);
+                    }
+                }
             }
             end = start;
         }
@@ -207,10 +280,7 @@ impl EvalMachine {
                 EvalFrame::Call(frame) => work.push(&frame.continuation),
                 EvalFrame::Expr(frame) => work.push(&frame.continuation),
                 EvalFrame::Continuation(frame) => work.push(&frame.continuation),
-                EvalFrame::ModelLoop(frame) => work.push(&frame.outer_continuation),
-                EvalFrame::SourceToolReturn(frame) => {
-                    work.push(&frame.model_loop.outer_continuation)
-                }
+                EvalFrame::ModelRequest(frame) => work.push(&frame.outer_continuation),
                 EvalFrame::Retry(_) => {}
             }
         }
@@ -231,6 +301,7 @@ impl EvalMachine {
                 | Continuation::HandlerDispatch { outer, .. }
                 | Continuation::ReenterHandler { boundary: outer } => work.push(outer),
                 Continuation::RestoreModelPolicy { inner, .. }
+                | Continuation::AgentExecutionScope { inner, .. }
                 | Continuation::ScopedModelPolicy { inner, .. } => work.push(inner),
                 Continuation::Chain { inner, outer } => {
                     work.push(outer);
@@ -293,6 +364,7 @@ impl EvalMachine {
         let retry_depth = boundary.retry_depth;
         let parent = boundary.parent.clone();
         let parent_policy = boundary.parent_model_policy.clone();
+        let parent_agent_context = boundary.parent_agent_context.clone();
         let parent_span = boundary.span;
         let resuming_program = boundary.parent_program.clone();
         let mut frames = self.stack.split_off(index);
@@ -312,6 +384,7 @@ impl EvalMachine {
             handlers: ctx.task.handler_stack.split_off(scope.handler_floor),
             retries: ctx.task.retry_stack.split_off(retry_depth),
             model_policy: std::mem::replace(&mut ctx.task.model_policy, parent_policy),
+            agent_context: std::mem::replace(&mut ctx.task.agent_context, parent_agent_context),
             projection: projection.clone(),
             resuming_program,
             depth: CallDepthLease {
@@ -332,6 +405,7 @@ impl EvalMachine {
         // The relocated request is the same semantic attempt: it keeps the
         // permit committed by every scope that observed it.
         relocated.residual = pending.residual.take();
+        relocated.inference = pending.inference.take();
         self.push_continuation_frames(outer);
         self.program_scope = parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_perform(
@@ -346,74 +420,261 @@ impl EvalMachine {
         continuation: ProgramContinuation,
         value: InterpValue,
     ) -> MachinePoll {
-        let Some(state) = &continuation.0 else {
-            return MachinePoll::Fault(ExecutionFault::new(
+        let responder = ctx.checked_execution_program();
+        let (next, projection) = match self.attach_program_continuation(
+            ctx.task,
+            &responder,
+            continuation,
+            crate::diagnostics::item_span(ctx.checked, ctx.entry_item),
+        ) {
+            Ok(saved) => saved,
+            Err(fault) => return MachinePoll::Fault(fault),
+        };
+        match projection.resume(value, &responder) {
+            Ok(value) => {
+                self.resume(ControlSignal::pending_continuation(PendingContinuation {
+                    continuation: next,
+                    input: ContinuationInput::Value(value),
+                }));
+                MachinePoll::ProgramChanged
+            }
+            Err(message) => MachinePoll::Fault(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 crate::diagnostics::item_span(ctx.checked, ctx.entry_item),
-                "program continuation has no owned execution segment",
-            ));
+                message,
+            )),
+        }
+    }
+
+    fn attach_program_continuation(
+        &mut self,
+        task: &mut crate::eval::TaskLocalState,
+        responder: &crate::value::CheckedExecutionProgram,
+        continuation: ProgramContinuation,
+        span: Span,
+    ) -> Result<(Continuation, ActionProjection), ExecutionFault> {
+        let fail = |message| {
+            ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
         };
-        let borrowed = state.try_borrow_mut();
-        let Ok(mut slot) = borrowed else {
-            return MachinePoll::Fault(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                crate::diagnostics::item_span(ctx.checked, ctx.entry_item),
-                "program continuation is already being resumed",
-            ));
-        };
-        let Some(mut saved) = slot.take() else {
-            return MachinePoll::Fault(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                crate::diagnostics::item_span(ctx.checked, ctx.entry_item),
-                "program continuation was already consumed",
-            ));
-        };
-        let fail = |reason| {
-            MachinePoll::Fault(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                saved.span,
-                reason,
-            ))
-        };
+        let state = continuation
+            .0
+            .as_ref()
+            .ok_or_else(|| fail("program continuation has no owned execution segment"))?;
+        let mut slot = state
+            .try_borrow_mut()
+            .map_err(|_| fail("program continuation is already being resumed"))?;
+        let mut saved = slot
+            .take()
+            .ok_or_else(|| fail("program continuation was already consumed"))?;
         if !Rc::ptr_eq(&saved.depth.total, &self.active_call_depth) {
-            return fail("program continuation belongs to a different invocation".into());
+            return Err(fail(
+                "program continuation belongs to a different invocation",
+            ));
         }
-        if !Arc::ptr_eq(ctx.checked, &saved.resuming_program.checked) {
-            return fail(
-                "program continuation resumed in a different parent checked program".into(),
-            );
+        if !Arc::ptr_eq(&responder.checked, &saved.resuming_program.checked) {
+            return Err(fail(
+                "program continuation resumed in a different parent checked program",
+            ));
         }
-        let resuming_program = ctx.checked_execution_program();
-        let value = match saved.projection.resume(value, &resuming_program) {
-            Ok(value) => value,
-            Err(reason) => return fail(reason),
-        };
         let Some(EvalFrame::ProgramReturn(boundary)) = saved.frames.first_mut() else {
-            return fail("program continuation has no owning call boundary".into());
+            return Err(fail("program continuation has no owning call boundary"));
         };
-        boundary.retry_depth = ctx.task.retry_stack.len();
-        boundary.parent_model_policy = ctx.task.model_policy.clone();
+        boundary.retry_depth = task.retry_stack.len();
+        boundary.parent_model_policy = task.model_policy.clone();
+        boundary.parent_agent_context = task.agent_context.clone();
         boundary.parent = self.program_scope.clone();
-        boundary.parent_program = resuming_program;
-        saved.scope.handler_floor = ctx.task.handler_stack.len();
-        ctx.task.handler_stack.append(&mut saved.handlers);
-        ctx.task.retry_stack.append(&mut saved.retries);
-        ctx.task.model_policy = saved.model_policy;
+        boundary.parent_program = responder.clone();
+        saved.scope.handler_floor = task.handler_stack.len();
+        task.handler_stack.append(&mut saved.handlers);
+        task.retry_stack.append(&mut saved.retries);
+        task.model_policy = saved.model_policy;
+        task.agent_context = saved.agent_context;
         self.stack.append(&mut saved.frames);
         self.resync_residual_mirror();
         saved.depth.calls = 0;
         self.program_scope = Some(saved.scope);
-        self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
-            PendingContinuation {
-                continuation: saved.continuation,
-                input: ContinuationInput::Value(value),
-            },
-        )));
-        MachinePoll::ProgramChanged
+        Ok((saved.continuation, saved.projection))
+    }
+
+    pub(crate) fn park_transfer(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+        token: crate::value::ContinuationTokenValue,
+        mut continuation: Continuation,
+        span: Span,
+    ) -> Result<ParkedContinuation, ExecutionFault> {
+        self.begin_transfer(ctx.task, token);
+        let mut responder = self
+            .program_scope
+            .as_ref()
+            .map(|scope| scope.program.clone())
+            .or_else(|| {
+                self.checkpoint_root
+                    .as_ref()
+                    .map(|root| root.program.clone())
+            })
+            .unwrap_or_else(|| ctx.checked_execution_program());
+        let mut projections = Vec::new();
+        loop {
+            match continuation {
+                Continuation::Chain { inner, outer } => {
+                    self.push_continuation_frames(outer.into_value());
+                    continuation = inner.into_value();
+                }
+                Continuation::ProgramResume(saved) => {
+                    let (next, projection) =
+                        self.attach_program_continuation(ctx.task, &responder, saved, span)?;
+                    projections.push((responder, projection));
+                    responder = self
+                        .program_scope
+                        .as_ref()
+                        .expect("attached program scope")
+                        .program
+                        .clone();
+                    continuation = next;
+                }
+                Continuation::ReenterHandler { boundary } => {
+                    ctx.enter_saved_handler(&boundary)?;
+                    continuation = boundary.into_value();
+                }
+                Continuation::HandleBoundary {
+                    scope_id,
+                    handlers,
+                    span,
+                    frame,
+                    inner,
+                } => {
+                    self.push_continuation_frames(Continuation::HandleBoundary {
+                        scope_id,
+                        handlers,
+                        span,
+                        frame,
+                        inner: Continuation::BlockValue.into(),
+                    });
+                    continuation = inner.into_value();
+                }
+                Continuation::AgentExecutionScope { state, inner } => {
+                    continuation = ctx.agent_scope_continuation(*state, inner.into_value());
+                }
+                Continuation::ScopedModelPolicy { policy, inner } => {
+                    let previous = std::mem::replace(&mut ctx.task.model_policy, *policy);
+                    self.push_continuation_frames(Continuation::RestoreModelPolicy {
+                        previous: Box::new(previous),
+                        inner: Continuation::BlockValue.into(),
+                    });
+                    continuation = inner.into_value();
+                }
+                Continuation::RestoreModelPolicy { previous, inner } => {
+                    ctx.task.model_policy = *previous;
+                    continuation = inner.into_value();
+                }
+                Continuation::CallBoundary { outer, .. }
+                | Continuation::HandlerDispatch {
+                    outer,
+                    deferred: None,
+                } => {
+                    continuation = outer.into_value();
+                }
+                _ => {
+                    return Ok(ParkedContinuation {
+                        continuation,
+                        projections: Some(projections),
+                    });
+                }
+            }
+        }
     }
 }
 
-fn action_identity(effect: &etas_effects::Effect) -> Option<&etas_effects::ActionRef> {
+pub(super) fn collect_park_handlers(
+    owner: &crate::value::CheckedExecutionProgram,
+    continuation: &Continuation,
+    sites: &mut Vec<(
+        crate::value::CheckedExecutionProgram,
+        super::frame::HandlerFrame,
+        bool,
+    )>,
+    edges: &mut Vec<crate::plan::code::RevisionProjection>,
+) -> Result<(), String> {
+    let mut work = vec![(owner.clone(), continuation.clone())];
+    while let Some((owner, continuation)) = work.pop() {
+        match continuation {
+            Continuation::ProgramResume(program) => {
+                let state = program
+                    .0
+                    .as_ref()
+                    .ok_or("program continuation has no owned segment")?
+                    .try_borrow()
+                    .map_err(|_| "program continuation is already being resumed")?;
+                let saved = state
+                    .as_ref()
+                    .ok_or("program continuation has already been consumed")?;
+                let owner = &saved.scope.program;
+                for frame in &saved.frames {
+                    match frame {
+                        EvalFrame::ProgramReturn(boundary) => {
+                            edges.extend(boundary.call.action_projections()?)
+                        }
+                        EvalFrame::Handler(handler) => {
+                            sites.push((owner.clone(), handler.clone(), true))
+                        }
+                        _ => {}
+                    }
+                }
+                work.push((owner.clone(), saved.continuation.clone()));
+            }
+            Continuation::HandleBoundary {
+                scope_id,
+                handlers,
+                span,
+                frame,
+                inner,
+            } => {
+                sites.push((
+                    owner.clone(),
+                    super::frame::HandlerFrame {
+                        scope_id,
+                        handlers,
+                        span,
+                        frame,
+                        inner: Continuation::BlockValue.into(),
+                    },
+                    true,
+                ));
+                work.push((owner, inner.into_value()));
+            }
+            Continuation::Chain { inner, outer } => {
+                work.push((owner.clone(), outer.into_value()));
+                work.push((owner, inner.into_value()));
+            }
+            Continuation::ReenterHandler { boundary: inner }
+            | Continuation::HandlerDispatch { outer: inner, .. }
+            | Continuation::CallBoundary { outer: inner, .. }
+            | Continuation::RestoreModelPolicy { inner, .. }
+            | Continuation::ScopedModelPolicy { inner, .. }
+            | Continuation::AgentExecutionScope { inner, .. } => {
+                work.push((owner, inner.into_value()))
+            }
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+pub(super) fn has_action_family<'a>(
+    ctx: &EvalContext<'_>,
+    handlers: impl IntoIterator<Item = &'a crate::orchestration::ActiveHandlerArmRecord>,
+    identity: &etas_effects::ActionRef,
+) -> Result<bool, ExecutionFault> {
+    for handler in handlers {
+        if action_identity(ctx.checked_handler_action(handler)?) == Some(identity) {
+            return Ok(true);
+        }
+    }
+    Ok(false)
+}
+
+pub(super) fn action_identity(effect: &etas_effects::Effect) -> Option<&etas_effects::ActionRef> {
     match effect {
         etas_effects::Effect::Action(action) => Some(action),
         etas_effects::Effect::AppliedAction(instance) => Some(&instance.action),

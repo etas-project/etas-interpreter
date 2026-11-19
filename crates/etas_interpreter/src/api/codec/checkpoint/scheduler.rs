@@ -14,6 +14,8 @@ pub(in crate::api::codec) fn scheduler_metadata_json(
         "next_task": scheduler.next_task,
         "groups": scheduler.groups,
         "ready": scheduler.ready,
+        "enqueue_orders": scheduler.enqueue_orders,
+        "next_enqueue_order": scheduler.next_enqueue_order,
         "wakeups": scheduler.wakeups,
         "resources": scheduler.resources,
         "continuations": null,
@@ -34,6 +36,13 @@ pub(in crate::api::codec) fn scheduler_metadata_json(
         };
         budget.metadata(1, bytes)?;
     }
+    let policies = scheduler.policies.iter().map(|(scope, policy)| {
+        let mut value = json!({"scope":scope,"program":policy.program,"entry":policy.entry,"span":span_json(policy.span)});
+        budget.json_metadata(&value)?;
+        value["instance"] = snapshot::value_json_with_budget(&policy.instance, budget)?;
+        Ok(value)
+    }).collect::<Result<Vec<_>, InterpreterCodecError>>()?;
+    value["policies"] = policies.into();
     value["continuations"] = continuation_arena_json(&scheduler.continuations, budget)?;
     Ok(value)
 }
@@ -51,12 +60,33 @@ pub(in crate::api::codec) fn scheduler_metadata_from_json(
             InterpreterCodecError::new(format!("invalid checkpoint scheduler {field}: {error}"))
         })
     }
+    let mut policies = std::collections::BTreeMap::new();
+    for policy in required_array(value, "policies")? {
+        let scope = field(policy, "scope")?;
+        let saved = crate::driver::scheduler::SourcePolicySnapshot {
+            program: field(policy, "program")?,
+            entry: field(policy, "entry")?,
+            span: span_from_json(required_obj(policy, "span")?)?,
+            instance: super::super::value::snapshot_from_json_with_limits(
+                limits,
+                required_obj(policy, "instance")?,
+            )?,
+        };
+        if policies.insert(scope, saved).is_some() {
+            return Err(InterpreterCodecError::new(
+                "duplicate source scheduling policy scope",
+            ));
+        }
+    }
     Ok(TaskSchedulerMetadataSnapshot {
         task_types: field(value, "task_types")?,
         next_scope: required_u64(value, "next_scope")?,
         next_task: required_u64(value, "next_task")?,
         groups: field(value, "groups")?,
         ready: field(value, "ready")?,
+        enqueue_orders: field(value, "enqueue_orders")?,
+        next_enqueue_order: field(value, "next_enqueue_order")?,
+        policies,
         wakeups: field(value, "wakeups")?,
         resources: field(value, "resources")?,
         continuations: continuation_arena_from_json(

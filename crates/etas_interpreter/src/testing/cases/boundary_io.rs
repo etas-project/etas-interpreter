@@ -1155,12 +1155,31 @@ flow main() -> Result<string, IOError> ![Console]
         source_parameter: None,
         name: "ConvertedIOError".to_owned(),
     }));
+    let original_result = checked
+        .effects
+        .try_captures
+        .values()
+        .next()
+        .unwrap()
+        .result_type;
+    let Some(Type::Result { ok, .. }) = checked.type_store.get(original_result) else {
+        panic!("checked legacy Result ABI");
+    };
+    let ok = *ok;
+    let converted_result = std::sync::Arc::make_mut(
+        &mut std::sync::Arc::make_mut(&mut checked).type_store,
+    )
+    .intern(Type::Result {
+        ok,
+        err: converted_error,
+    });
     let capture = std::sync::Arc::make_mut(&mut std::sync::Arc::make_mut(&mut checked).effects)
         .try_captures
         .values_mut()
         .next()
         .expect("read_line()? should have a checked capture fact");
     capture.captured_error = converted_error;
+    capture.result_type = converted_result;
     capture.conversions = vec![ErrorConversionFact {
         source_error: io_error,
         target_error: converted_error,

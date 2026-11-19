@@ -20,6 +20,58 @@ impl ContinuationSnapshot {
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(match continuation {
+            Continuation::DefaultArguments(state) => {
+                Self::DefaultArguments(Box::new(crate::orchestration::DefaultArgumentsSnapshot {
+                    expr: state.expr,
+                    parameter_count: state.parameter_count,
+                    slots: state.slots.clone(),
+                    values: capture_values(&state.values, context)?,
+                    defaults: state.defaults.clone(),
+                    next_default: state.next_default,
+                    destination: match &state.destination {
+                        crate::eval::arguments::ArgumentDestination::Call { target } => {
+                            crate::orchestration::ArgumentDestinationSnapshot::Call {
+                                target: target
+                                    .as_ref()
+                                    .map(|target| context.call_target(target))
+                                    .transpose()?,
+                            }
+                        }
+                        crate::eval::arguments::ArgumentDestination::Perform {
+                            action,
+                            type_args,
+                            source_args,
+                        } => crate::orchestration::ArgumentDestinationSnapshot::Perform {
+                            action: action.clone(),
+                            type_args: type_args.clone(),
+                            source_args: source_args.clone(),
+                        },
+                    },
+                    span: state.span,
+                    frame: context.frame(&state.frame)?,
+                }))
+            }
+            Continuation::FinishReceiver { .. } | Continuation::CommitReceiver { .. } => {
+                return Err("cannot checkpoint while an updating receiver is held".into());
+            }
+            Continuation::TaskResume(pending) => Self::TaskResume {
+                id: context.task_suspension(pending)?,
+            },
+            Continuation::AgentControllerStep(state) => Self::AgentControllerStep(
+                crate::orchestration::AgentControllerSnapshot::capture(state, context)?,
+            ),
+            Continuation::AgentControllerTool(state) => Self::AgentControllerTool(
+                crate::orchestration::AgentControllerSnapshot::capture(state, context)?,
+            ),
+            Continuation::ToolInvocationStart(invocation) => Self::ToolInvocationStart(
+                crate::orchestration::ToolInvocationSnapshot::capture(invocation, context)?,
+            ),
+            Continuation::ToolInvocationResult(invocation) => Self::ToolInvocationResult(
+                crate::orchestration::ToolInvocationSnapshot::capture(invocation, context)?,
+            ),
+            Continuation::AgentExecutionState(state) => {
+                Self::AgentExecutionState(Box::new(context.agent_state(state)))
+            }
             Continuation::PackExistential { expr, frame } => Self::PackExistential {
                 expr: *expr,
                 frame: context.frame(frame)?,
@@ -74,9 +126,17 @@ impl ContinuationSnapshot {
             Continuation::ResidualOutcome(tag) => Self::ResidualOutcome {
                 attempt: context.residual_attempt(tag)?,
             },
-            Continuation::SourceToolReturn(saved) => Self::SourceToolReturn(Box::new(
-                crate::orchestration::SourceToolReturnFrameSnapshot::capture(&saved.0, context)?,
-            )),
+            Continuation::ScopeExit {
+                block, keep, frame, ..
+            } => {
+                let mut keep = keep.iter().copied().collect::<Vec<_>>();
+                keep.sort_by_key(|symbol| symbol.0);
+                Self::ScopeExit {
+                    block: *block,
+                    keep,
+                    frame: context.frame(frame)?,
+                }
+            }
             Continuation::ContinueBlock {
                 block,
                 next_stmt_index,
@@ -345,7 +405,10 @@ impl ContinuationSnapshot {
                 frame,
             } => Self::CallArgs {
                 call: *call,
-                target: context.call_target(target)?,
+                target: target
+                    .as_ref()
+                    .map(|target| context.call_target(target))
+                    .transpose()?,
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
                 evaluated_args: capture_values(evaluated_args, context)?,
@@ -477,6 +540,10 @@ impl ContinuationSnapshot {
                     .collect::<Result<Vec<_>, _>>()?,
                 span: *span,
             },
+            Continuation::LoopLimit { stmt, frame } => Self::LoopLimit {
+                stmt: *stmt,
+                frame: context.frame(frame)?,
+            },
             Continuation::ForLoop {
                 pat,
                 source,
@@ -500,6 +567,36 @@ impl ContinuationSnapshot {
                         .map(|source| source.text_cursor(*next_index))
                         .transpose()?
                         .flatten(),
+                    next_index: *next_index,
+                    body: *body,
+                    iterations: *iterations,
+                    loop_scope,
+                    span: *span,
+                    frame: context.frame(frame)?,
+                }
+            }
+            Continuation::SourceForLoop {
+                iter,
+                pat,
+                source,
+                awaiting_step,
+                next_index,
+                body,
+                iterations,
+                loop_scope,
+                span,
+                frame,
+            } => {
+                let mut loop_scope = loop_scope.iter().copied().collect::<Vec<_>>();
+                loop_scope.sort_by_key(|symbol| symbol.0);
+                Self::SourceForLoop {
+                    iter: *iter,
+                    pat: *pat,
+                    source: source
+                        .as_deref()
+                        .map(|value| context.value(value))
+                        .transpose()?,
+                    awaiting_step: *awaiting_step,
                     next_index: *next_index,
                     body: *body,
                     iterations: *iterations,
@@ -542,8 +639,13 @@ impl ContinuationSnapshot {
                 next_stmt_index: *next_stmt_index,
                 frame: context.frame(frame)?,
             },
-            Continuation::TryExpr { expr, span } => Self::TryExpr {
+            Continuation::TryExpr {
+                expr,
+                result_type,
+                span,
+            } => Self::TryExpr {
                 expr: *expr,
+                result_type: *result_type,
                 span: *span,
             },
             Continuation::MemoryClearDeleteAll {
@@ -582,6 +684,7 @@ impl ContinuationSnapshot {
             | Continuation::HandlerDispatch { .. }
             | Continuation::ReenterHandler { .. }
             | Continuation::HandleBoundary { .. }
+            | Continuation::AgentExecutionScope { .. }
             | Continuation::ScopedModelPolicy { .. }
             | Continuation::Chain { .. } => {
                 return Err("continuation capture expected a leaf, not an owned edge".into());
@@ -595,25 +698,59 @@ impl ContinuationSnapshot {
 
     fn restore_leaf(self, context: &mut RestoreContext) -> Result<Continuation, String> {
         Ok(match self {
+            Self::DefaultArguments(state) => {
+                let state = *state;
+                Continuation::DefaultArguments(Box::new(crate::eval::arguments::DefaultArguments {
+                    expr: state.expr,
+                    parameter_count: state.parameter_count,
+                    slots: state.slots,
+                    values: restore_values(state.values, context)?,
+                    defaults: state.defaults,
+                    next_default: state.next_default,
+                    destination: match state.destination {
+                        crate::orchestration::ArgumentDestinationSnapshot::Call { target } => {
+                            crate::eval::arguments::ArgumentDestination::Call {
+                                target: target
+                                    .map(|target| {
+                                        super::call_target::restore_call_target(target, context)
+                                    })
+                                    .transpose()?,
+                            }
+                        }
+                        crate::orchestration::ArgumentDestinationSnapshot::Perform {
+                            action,
+                            type_args,
+                            source_args,
+                        } => crate::eval::arguments::ArgumentDestination::Perform {
+                            action,
+                            type_args,
+                            source_args,
+                        },
+                    },
+                    span: state.span,
+                    frame: super::frame::restore_frame(state.frame, context)?,
+                }))
+            }
+            Self::ToolInvocationStart(invocation) => {
+                Continuation::ToolInvocationStart(invocation.restore(context)?)
+            }
+            Self::ToolInvocationResult(invocation) => {
+                Continuation::ToolInvocationResult(invocation.restore(context)?)
+            }
+            Self::AgentExecutionState(state) => {
+                Continuation::AgentExecutionState(Box::new(context.agent_state(*state)?))
+            }
             Self::PackExistential { expr, frame } => Continuation::PackExistential {
                 expr,
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::ProgramResume { id } => Continuation::ProgramResume(context.suspension(id)?),
+            Self::TaskResume { id } => Continuation::TaskResume(context.task_suspension(id)?),
             Self::ResidualScope { scope } => {
                 Continuation::ResidualScope(context.residual_scope(scope)?)
             }
             Self::ResidualOutcome { attempt } => {
                 Continuation::ResidualOutcome(context.residual_attempt(attempt)?)
-            }
-            Self::SourceToolReturn(saved) => {
-                let current = context
-                    .current_host
-                    .clone()
-                    .ok_or("source tool continuation has no restore Host context")?;
-                Continuation::SourceToolReturn(crate::eval::machine::SourceToolContinuation(
-                    Box::new(saved.restore(&current, context)?),
-                ))
             }
             Self::DirectoryListReduction {
                 call,
@@ -679,6 +816,18 @@ impl ContinuationSnapshot {
                     body,
                     span,
                 }))
+            }
+            Self::ScopeExit { block, keep, frame } => {
+                let frame = super::frame::restore_frame(frame, context)?;
+                let keep =
+                    std::rc::Rc::new(keep.into_iter().collect::<std::collections::HashSet<_>>());
+                let guard = context.scope_exit_guard(block, &frame, keep.clone())?;
+                Continuation::ScopeExit {
+                    block,
+                    keep,
+                    frame,
+                    guard: Some(guard),
+                }
             }
             Self::ContinueBlock {
                 block,
@@ -948,7 +1097,9 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::CallArgs {
                 call,
-                target: super::call_target::restore_call_target(target, context)?,
+                target: target
+                    .map(|target| super::call_target::restore_call_target(target, context))
+                    .transpose()?,
                 args,
                 next_arg_index,
                 evaluated_args: restore_values(evaluated_args, context)?,
@@ -1076,6 +1227,10 @@ impl ContinuationSnapshot {
                     .into(),
                 span,
             },
+            Self::LoopLimit { stmt, frame } => Continuation::LoopLimit {
+                stmt,
+                frame: super::frame::restore_frame(frame, context)?,
+            },
             Self::ForLoop {
                 pat,
                 source,
@@ -1113,6 +1268,31 @@ impl ContinuationSnapshot {
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
+            Self::SourceForLoop {
+                iter,
+                pat,
+                source,
+                awaiting_step,
+                next_index,
+                body,
+                iterations,
+                loop_scope,
+                span,
+                frame,
+            } => Continuation::SourceForLoop {
+                iter,
+                pat,
+                source: source
+                    .map(|value| value.restore_with(context).map(Box::new))
+                    .transpose()?,
+                awaiting_step,
+                next_index,
+                body,
+                iterations,
+                loop_scope: loop_scope.into_iter().collect(),
+                span,
+                frame: super::frame::restore_frame(frame, context)?,
+            },
             Self::WhileLoop {
                 cond,
                 body,
@@ -1147,7 +1327,15 @@ impl ContinuationSnapshot {
                 next_stmt_index,
                 frame: super::frame::restore_frame(frame, context)?,
             },
-            Self::TryExpr { expr, span } => Continuation::TryExpr { expr, span },
+            Self::TryExpr {
+                expr,
+                result_type,
+                span,
+            } => Continuation::TryExpr {
+                expr,
+                result_type,
+                span,
+            },
             Self::MemoryClearDeleteAll {
                 region_stable_id,
                 path,
@@ -1170,6 +1358,12 @@ impl ContinuationSnapshot {
                 next_index,
                 span,
             },
+            Self::AgentControllerStep(state) => {
+                Continuation::AgentControllerStep(state.restore(context)?)
+            }
+            Self::AgentControllerTool(state) => {
+                Continuation::AgentControllerTool(state.restore(context)?)
+            }
             Self::AgentInference {
                 expr,
                 span,
@@ -1184,6 +1378,7 @@ impl ContinuationSnapshot {
             | Self::HandlerDispatch { .. }
             | Self::ReenterHandler { .. }
             | Self::HandleBoundary { .. }
+            | Self::AgentExecutionScope { .. }
             | Self::ScopedModelPolicy { .. }
             | Self::Chain { .. } => {
                 return Err("continuation restore expected a leaf, not an owned edge".into());

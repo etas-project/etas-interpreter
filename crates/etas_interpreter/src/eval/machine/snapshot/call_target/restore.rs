@@ -160,9 +160,28 @@ pub(in crate::eval::machine::snapshot) fn restore_call_target(
                         metadata,
                         parent,
                         parent_execution,
-                        native,
+                        mut native,
                         projections,
                     } = *state;
+                    if native.checked.foreign_methods().next().is_some()
+                        && let Some(owner) = &parent_execution
+                    {
+                        for projection in &projections {
+                            if let Some(edge) = projection.action_projection()? {
+                                if std::sync::Arc::ptr_eq(edge.source(), &native.checked)
+                                    && std::sync::Arc::ptr_eq(edge.target(), &owner.checked)
+                                {
+                                    native.foreign = Some(std::sync::Arc::new(
+                                        crate::value::ForeignExecutionLink {
+                                            owner: owner.clone(),
+                                            projection: edge,
+                                        },
+                                    ));
+                                    break;
+                                }
+                            }
+                        }
+                    }
                     context.select_program(parent);
                     context.execution_program = parent_execution;
                     value =

@@ -91,12 +91,17 @@ impl EncodingBudget {
             _ => {}
         }
         let (children, inline_nodes) = match node {
-            Node::CallSite(Some(site)) => (1 + usize::from(site.composition.is_some()), 3),
+            Node::CallSite(Some(site)) => (
+                1 + usize::from(site.composition.is_some())
+                    + usize::from(site.task_callback.is_some()),
+                4,
+            ),
             Node::CallSite(None) => (0, 0),
             Node::Composition(composition) => (1, composition.path.len() + 2),
-            Node::Continuation(crate::orchestration::ContinuationSnapshot::ProgramResume {
-                id,
-            }) => {
+            Node::Continuation(
+                crate::orchestration::ContinuationSnapshot::ProgramResume { id }
+                | crate::orchestration::ContinuationSnapshot::TaskResume { id },
+            ) => {
                 if *id == 0
                     || self
                         .suspended_programs
@@ -144,7 +149,10 @@ impl EncodingBudget {
                     (values.len().checked_mul(2).ok_or_else(exhausted)?, 0)
                 }
                 ValueSnapshot::Record(fields) => (fields.len(), 0),
-                ValueSnapshot::Conversation(value) => (value.messages.len(), 0),
+                ValueSnapshot::Conversation(value) => (
+                    value.messages.len() + usize::from(value.protocol.is_some()),
+                    0,
+                ),
                 ValueSnapshot::Bytes(bytes) => (0, bytes.len()),
                 ValueSnapshot::Prompt(messages) => (0, messages.len()),
                 ValueSnapshot::Json(_) => (1, 0),
@@ -171,7 +179,11 @@ impl EncodingBudget {
             },
             Node::Model(part) => model_work(part)?,
             Node::Frame(frame) => (
-                frame.locals.len(),
+                frame
+                    .locals
+                    .len()
+                    .checked_add(usize::from(frame.parent.is_some()))
+                    .ok_or_else(exhausted)?,
                 frame
                     .type_bindings
                     .len()

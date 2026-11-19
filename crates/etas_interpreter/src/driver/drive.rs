@@ -43,7 +43,7 @@ pub(super) fn evaluation_failure(eval: &mut EvalContext<'_>) -> EvaluationOutcom
 
 #[derive(Debug)]
 pub(crate) enum EvaluationOutcome {
-    Completed(InterpValue),
+    Completed(Box<InterpValue>),
     Failed(crate::api::RunFailure),
     Cancelled(etas_host::execution::CancellationCause),
 }
@@ -51,7 +51,7 @@ pub(crate) enum EvaluationOutcome {
 impl EvaluationOutcome {
     pub(crate) fn into_outcome(self) -> crate::api::RunOutcome {
         match self {
-            Self::Completed(value) => crate::api::RunOutcome::Completed(value),
+            Self::Completed(value) => crate::api::RunOutcome::Completed(*value),
             Self::Failed(failure) => crate::api::RunOutcome::Failed(failure),
             Self::Cancelled(cause) => crate::api::RunOutcome::Cancelled(cause),
         }
@@ -87,7 +87,7 @@ pub async fn execute_entry_from_snapshot(
         ));
         return evaluation_failure(eval);
     }
-    let signal = eval.execute_from_checkpoint_signal(checkpoint);
+    let signal = eval.execute_from_checkpoint_signal(checkpoint, revisions.as_deref());
     if let ControlSignal::Fault(fault) = signal {
         eval.diagnostics.push(fault.clone().into_diagnostic());
         return EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(*fault));
@@ -161,10 +161,10 @@ pub async fn execute_entry_from_snapshot(
     Box::pin(drive_eval_signal(eval, signal, host, machine)).await
 }
 
-async fn drive_eval_signal<'host>(
+async fn drive_eval_signal(
     eval: &mut EvalContext<'_>,
     mut signal: ControlSignal,
-    host: &'host dyn HostServices,
+    host: &dyn HostServices,
     mut machine: EvalMachine,
 ) -> EvaluationOutcome {
     let mut machine_has_input = machine.has_input();
@@ -237,6 +237,7 @@ async fn drive_scope<'host>(
             return ScopeOutcome::Finished(outcome);
         }
         *machine_has_input = true;
+        return ScopeOutcome::ProgramChanged;
     }
     loop {
         if !*machine_has_input {
@@ -252,7 +253,7 @@ async fn drive_scope<'host>(
                 return ScopeOutcome::ProgramChanged;
             }
             MachinePoll::Complete(value) => {
-                return ScopeOutcome::Finished(EvaluationOutcome::Completed(*value));
+                return ScopeOutcome::Finished(EvaluationOutcome::Completed(value));
             }
             MachinePoll::Cancelled(cause) => {
                 return ScopeOutcome::Finished(EvaluationOutcome::Cancelled(cause));
@@ -299,9 +300,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_model(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -325,9 +328,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_tool(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -347,7 +352,14 @@ async fn drive_scope<'host>(
                         crate::api::RunFailure::ExecutionFault(fault),
                     ));
                 }
-                if let Some(target) = super::task::awaited_task(&perform) {
+                if let Some(signal) = eval.source_host_action(&perform) {
+                    signal
+                } else if eval
+                    .source_compiler_default(&perform, etas_std::CompilerActionRole::TaskYield)
+                {
+                    tokio::task::yield_now().await;
+                    eval.resume_perform_signal(*perform, InterpValue::Unit)
+                } else if let Some(target) = super::task::awaited_task(eval, &perform) {
                     match super::task::await_from_root(
                         eval,
                         host,
@@ -382,9 +394,12 @@ async fn drive_scope<'host>(
                                     let registered =
                                         task_hosts.start_approval(HostOwner::Root, pending);
                                     assert_eq!(
-                                        registered, operation,
+                                        registered.operation_id(),
+                                        operation,
                                         "registered host operation changed id"
                                     );
+                                    machine.root_wait =
+                                        Some(super::scheduler::RootTaskWait::Host(registered));
                                     if let Err(outcome) = super::task::await_root_host(
                                         eval, host, task_hosts, machine,
                                     )
@@ -401,9 +416,12 @@ async fn drive_scope<'host>(
                             let operation = pending.operation_id();
                             let registered = task_hosts.start_compiler(HostOwner::Root, pending);
                             assert_eq!(
-                                registered, operation,
+                                registered.operation_id(),
+                                operation,
                                 "registered host operation changed id"
                             );
+                            machine.root_wait =
+                                Some(super::scheduler::RootTaskWait::Host(registered));
                             if let Err(outcome) =
                                 super::task::await_root_host(eval, host, task_hosts, machine).await
                             {
@@ -416,11 +434,23 @@ async fn drive_scope<'host>(
                 }
             }
             PendingBoundary::Memory(memory) => {
-                let Some(signal) = dispatch::memory::dispatch(eval, host, *memory, machine).await
-                else {
-                    return ScopeOutcome::Finished(evaluation_failure(eval));
-                };
-                signal
+                match dispatch::memory::begin(eval, host, *memory, machine).await {
+                    dispatch::memory::MemoryDispatchStart::Complete(Some(signal)) => signal,
+                    dispatch::memory::MemoryDispatchStart::Complete(None) => {
+                        return ScopeOutcome::Finished(evaluation_failure(eval));
+                    }
+                    dispatch::memory::MemoryDispatchStart::Pending(pending) => {
+                        let wait = task_hosts.start_memory(HostOwner::Root, pending);
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(wait));
+                        if let Err(outcome) =
+                            super::task::await_root_host(eval, host, task_hosts, machine).await
+                        {
+                            return ScopeOutcome::Finished(outcome);
+                        }
+                        *machine_has_input = true;
+                        continue;
+                    }
+                }
             }
             PendingBoundary::Session(session) => {
                 dispatch::session::dispatch(eval, host, *session).await
@@ -435,9 +465,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_console(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -458,9 +490,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_command(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -481,9 +515,11 @@ async fn drive_scope<'host>(
                         let operation = pending.operation_id();
                         let registered = task_hosts.start_host(HostOwner::Root, pending);
                         assert_eq!(
-                            registered, operation,
+                            registered.operation_id(),
+                            operation,
                             "registered host operation changed id"
                         );
+                        machine.root_wait = Some(super::scheduler::RootTaskWait::Host(registered));
                         if let Err(outcome) =
                             super::task::await_root_host(eval, host, task_hosts, machine).await
                         {
@@ -500,7 +536,7 @@ async fn drive_scope<'host>(
                 {
                     Ok(()) => {
                         *machine_has_input = true;
-                        continue;
+                        return ScopeOutcome::ProgramChanged;
                     }
                     Err(outcome) => return ScopeOutcome::Finished(outcome),
                 }

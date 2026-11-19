@@ -36,6 +36,7 @@ pub enum ConsoleCallable {
     ReadLine,
     Print,
     PrintLn,
+    EPrint,
     EPrintLn,
 }
 
@@ -157,6 +158,9 @@ pub enum CodeSyntaxCallable {
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub enum AgentSupportCallable {
+    ConversationFromPrompt,
+    ConversationAppendStep,
+    ConversationAppendResults,
     PromptNew,
     PromptSystem,
     PromptUser,
@@ -172,6 +176,9 @@ pub enum AgentSupportCallable {
 
 #[derive(Clone, Debug, PartialEq, Eq)]
 pub enum StdCallable {
+    ToolInvoke,
+    AgentStep,
+    ToolReference,
     AgentSupport(AgentSupportCallable),
     Collection(etas_std::StdCollectionIntrinsic),
     Task(etas_std::StdTaskIntrinsic),
@@ -218,6 +225,18 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         return Some(StdCallable::ForwardAction);
     }
     let callable = match descriptor.id.0 {
+        intrinsic::runtime::AGENT_STEP => StdCallable::AgentStep,
+        intrinsic::runtime::CONVERSATION_FROM_PROMPT => {
+            StdCallable::AgentSupport(AgentSupportCallable::ConversationFromPrompt)
+        }
+        intrinsic::runtime::CONVERSATION_APPEND_STEP => {
+            StdCallable::AgentSupport(AgentSupportCallable::ConversationAppendStep)
+        }
+        intrinsic::runtime::CONVERSATION_APPEND_RESULTS => {
+            StdCallable::AgentSupport(AgentSupportCallable::ConversationAppendResults)
+        }
+        intrinsic::runtime::TOOL_REFERENCE => StdCallable::ToolReference,
+        intrinsic::runtime::TOOL_INVOKE => StdCallable::ToolInvoke,
         intrinsic::runtime::PROMPT_NEW => {
             StdCallable::AgentSupport(AgentSupportCallable::PromptNew)
         }
@@ -305,6 +324,7 @@ pub(crate) fn std_callable_for_descriptor(descriptor: &IntrinsicDescriptor) -> O
         intrinsic::runtime::IO_READ_LINE => StdCallable::Console(ConsoleCallable::ReadLine),
         intrinsic::runtime::IO_PRINT => StdCallable::Console(ConsoleCallable::Print),
         intrinsic::runtime::IO_PRINTLN => StdCallable::Console(ConsoleCallable::PrintLn),
+        intrinsic::runtime::IO_EPRINT => StdCallable::Console(ConsoleCallable::EPrint),
         intrinsic::runtime::IO_EPRINTLN => StdCallable::Console(ConsoleCallable::EPrintLn),
         intrinsic::runtime::MEMORY_REGION => StdCallable::MemoryRegion,
         intrinsic::runtime::MEMORY_PREPARE_PUT => {

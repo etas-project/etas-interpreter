@@ -44,6 +44,27 @@ impl<'a> EvalContext<'a> {
             Ok(error_type) => error_type,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
+        let value = if self
+            .checked
+            .types
+            .known_std_types
+            .opaque_values
+            .contains(&error_type)
+        {
+            console_error_value(error)
+        } else {
+            match super::host_value::decode_checked_host_value(
+                HostValue::Record(vec![
+                    ("code".into(), HostValue::String(error.code.as_str().into())),
+                    ("message".into(), HostValue::String(error.message)),
+                ]),
+                error_type,
+                self.checked,
+            ) {
+                Ok(value) => value,
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, console.span),
+            }
+        };
         let perform = PendingPerform {
             checked_action: None,
             default_boundary: None,
@@ -52,7 +73,7 @@ impl<'a> EvalContext<'a> {
             expr: None,
             action: error_raise_action(console.span),
             error_type: Some(error_type),
-            args: vec![console_error_value(error)],
+            args: vec![value],
             span: console.span,
             continuation: console.continuation,
             residual: None,

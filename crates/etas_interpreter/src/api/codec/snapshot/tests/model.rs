@@ -244,9 +244,10 @@ fn model_response_snapshot_preserves_nested_host_payloads_without_reserializing(
                 tool: "inspect".into(),
                 args: HostSupportValue::List(vec![HostSupportValue::Json(payload)].into()),
             }],
-            usage: Some(ModelUsageValue {
-                input_tokens: 3,
-                output_tokens: 5,
+            usage: Some(etas_host::ModelUsage {
+                cost: None,
+                input_tokens: Some(3),
+                output_tokens: Some(5),
             }),
         });
         let saved = ValueSnapshot::capture(&value).unwrap();

@@ -19,7 +19,7 @@ use super::{
 
 pub(in crate::driver) enum MemoryDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingMemoryDispatch<'host>),
+    Pending(Box<PendingMemoryDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingMemoryDispatch<'host> {
@@ -50,6 +50,14 @@ pub(in crate::driver) struct CompletedMemoryDispatch {
 }
 
 impl PendingMemoryDispatch<'_> {
+    pub(in crate::driver) fn operation_state(
+        &self,
+    ) -> std::rc::Rc<crate::driver::scheduler::HostOperation> {
+        match &self.io {
+            MemoryIo::Read(pending) => pending.operation_state(),
+            MemoryIo::Write(pending) => pending.operation_state(),
+        }
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
         match &self.io {
             MemoryIo::Read(pending) => pending.operation_id(),
@@ -66,18 +74,6 @@ impl PendingMemoryDispatch<'_> {
             key: self.key,
             completion,
         }
-    }
-}
-
-pub(in crate::driver) async fn dispatch(
-    eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    memory: PendingMemory,
-    machine: &mut EvalMachine,
-) -> Option<ControlSignal> {
-    match begin(eval, host, memory, machine).await {
-        MemoryDispatchStart::Complete(signal) => signal,
-        MemoryDispatchStart::Pending(pending) => finish(eval, machine, pending.poll().await),
     }
 }
 
@@ -130,7 +126,7 @@ pub(in crate::driver) async fn begin<'host>(
             ));
         }
     };
-    MemoryDispatchStart::Pending(PendingMemoryDispatch { memory, key, io })
+    MemoryDispatchStart::Pending(Box::new(PendingMemoryDispatch { memory, key, io }))
 }
 
 async fn prepare(
@@ -339,8 +335,9 @@ pub(in crate::driver) async fn validate_replayed_memory_version(
     replayed: &InterpValue,
 ) -> bool {
     match (&memory.request.operation, memory.decode) {
-        (MemoryOperation::Scan { .. }, crate::eval::MemoryDecode::Page { .. }) => {
-            validate_replayed_memory_page(eval, host, memory, replayed).await
+        (_, crate::eval::MemoryDecode::SourceRead { .. })
+        | (MemoryOperation::Scan { .. }, crate::eval::MemoryDecode::Page { .. }) => {
+            validate_replayed_memory_result(eval, host, memory, replayed).await
         }
         (MemoryOperation::Get { .. }, _) => {
             validate_replayed_memory_get_version(eval, host, memory, replayed).await
@@ -356,7 +353,7 @@ pub(in crate::driver) async fn validate_replayed_memory_version(
     }
 }
 
-async fn validate_replayed_memory_page(
+async fn validate_replayed_memory_result(
     eval: &mut EvalContext<'_>,
     host: &dyn HostServices,
     memory: &PendingMemory,
@@ -372,14 +369,14 @@ async fn validate_replayed_memory_page(
     let message = match result {
         Ok(result) => match eval.memory_result_value(memory, result) {
             Ok(actual) if &actual == replayed => return true,
-            Ok(_) => "checkpoint memory page no longer matches the recorded page".to_owned(),
+            Ok(_) => "checkpoint memory result no longer matches the recorded value".to_owned(),
             Err(fault) => {
                 eval.diagnostics.push(fault.into_diagnostic());
                 return false;
             }
         },
         Err(error) => format!(
-            "checkpoint memory page validation failed: {}",
+            "checkpoint memory result validation failed: {}",
             error.message
         ),
     };

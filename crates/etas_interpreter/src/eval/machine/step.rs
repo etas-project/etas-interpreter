@@ -99,6 +99,30 @@ impl EvalMachine {
         None
     }
     pub(crate) fn run_until_yield(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
+        loop {
+            let poll = self.run_until_boundary(ctx);
+            match &poll {
+                MachinePoll::Fault(_) | MachinePoll::Cancelled(_) => {
+                    ctx.task.receiver_updates.abort_all()
+                }
+                MachinePoll::CooperativeYield if ctx.task.receiver_updates.is_held() => continue,
+                MachinePoll::Yield(boundary) if ctx.task.receiver_updates.is_held() => {
+                    ctx.task.receiver_updates.abort_all();
+                    if !matches!(boundary, PendingBoundary::Perform(pending) if pending.error_type.is_some())
+                    {
+                        return machine_fault(
+                            "updating method attempted to suspend",
+                            ctx.limit_span,
+                        );
+                    }
+                }
+                _ => {}
+            }
+            return poll;
+        }
+    }
+
+    fn run_until_boundary(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
         let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
         if let Some(scope) = &self.program_scope
             && (!std::sync::Arc::ptr_eq(ctx.checked, scope.program())
@@ -139,11 +163,11 @@ impl EvalMachine {
                 Ok(signal) => signal,
                 Err(poll) => return poll,
             },
-            MachineInput::ToolResult(result) => match self.resume_tool_host_result(ctx, result) {
+            MachineInput::ToolResult(result) => match self.resume_native_tool_result(ctx, result) {
                 Ok(signal) => signal,
                 Err(poll) => return poll,
             },
-            MachineInput::SourceToolApproved => match self.resume_source_tool_approved_input(ctx) {
+            MachineInput::SourceToolApproved => match self.resume_native_tool_approved(ctx) {
                 Ok(signal) => signal,
                 Err(poll) => return poll,
             },
@@ -159,6 +183,9 @@ impl EvalMachine {
                 }
             }
             if let Some(span) = signal.requested_operation_span(step_span)
+                // Typed errors may be caught by a local `?` or handler. The
+                // PureBoundary frame rejects them if they escape that scope.
+                && !matches!(&signal, ControlSignal::Perform(pending) if pending.error_type.is_some())
                 && self
                     .stack
                     .iter()
@@ -185,27 +212,30 @@ impl EvalMachine {
                     };
                     match pending.input {
                         ContinuationInput::Value(value) => {
+                            if let Continuation::TaskResume(continuation) = first {
+                                return self.resume_task_handler(ctx, continuation, value);
+                            }
                             if let Continuation::ProgramResume(continuation) = first {
                                 return self.resume_program_continuation(ctx, continuation, value);
                             }
-                            if let Continuation::SourceToolReturn(saved) = first {
-                                match self.resume_source_tool_value(ctx, *saved.0, value) {
+                            if let Continuation::ToolInvocationStart(invocation) = first {
+                                match self.begin_tool_invocation(ctx, invocation) {
                                     Ok(signal) => signal,
                                     Err(poll) => return poll,
                                 }
                             } else {
+                                if let Continuation::ProgramResume(continuation) = first {
+                                    return self.resume_program_continuation(
+                                        ctx,
+                                        continuation,
+                                        value,
+                                    );
+                                }
                                 ctx.apply_continuation_frame(first, value)
                             }
                         }
                         ContinuationInput::Return(value) => {
-                            if let Continuation::SourceToolReturn(saved) = first {
-                                match self.resume_source_tool_value(ctx, *saved.0, value) {
-                                    Ok(signal) => signal,
-                                    Err(poll) => return poll,
-                                }
-                            } else {
-                                ctx.propagate_return_frame(value, first)
-                            }
+                            ctx.propagate_return_frame(value, first)
                         }
                         ContinuationInput::Resume(value) => {
                             ctx.propagate_resume_frame(value, first)
@@ -218,6 +248,12 @@ impl EvalMachine {
                         }
                         ContinuationInput::Continue => {
                             ctx.propagate_loop_control_frame(ControlSignal::Continue, first)
+                        }
+                        ContinuationInput::RetryFailure { span, message } => {
+                            match self.propagate_retry_failure(ctx, first, span, message) {
+                                Ok(signal) => signal,
+                                Err(poll) => return poll,
+                            }
                         }
                     }
                 }
@@ -233,6 +269,12 @@ impl EvalMachine {
                 ControlSignal::Block(pending) => {
                     let mut pending = *pending;
                     self.push_continuation_frames(pending.continuation);
+                    if let Some(context) = pending.agent_context.take() {
+                        let previous = ctx.enter_agent_context(context);
+                        self.push_continuation_frames(Continuation::AgentExecutionState(Box::new(
+                            previous,
+                        )));
+                    }
                     if let Some(activation) = pending.residual.take() {
                         match ctx.activate_residual_scope(*activation, step_span) {
                             Ok(scope) => {
@@ -249,9 +291,50 @@ impl EvalMachine {
                             Err(fault) => return MachinePoll::Fault(fault),
                         }
                     }
-                    self.push_frame(EvalFrame::Block(BlockFrame {
-                        continuation: Continuation::BlockValue,
-                    }));
+                    // ContinueBlock reenters the same activation after a statement.
+                    // Its original scope boundary retains the entry bindings;
+                    // introducing another boundary would treat live locals as outer.
+                    let active_scope = self
+                        .stack
+                        .iter()
+                        .rev()
+                        .take_while(|entry| {
+                            // A different call activation cannot own this block's frame.
+                            !matches!(entry, EvalFrame::Call(_) | EvalFrame::ProgramReturn(_))
+                        })
+                        .any(|entry| {
+                            let continuation = match entry {
+                                EvalFrame::Block(frame) => &frame.continuation,
+                                EvalFrame::Continuation(frame) => &frame.continuation,
+                                _ => return false,
+                            };
+                            matches!(continuation,
+                            Continuation::ScopeExit { block, frame, guard, .. }
+                                if *block == pending.block
+                                    && frame.capture_identity() == pending.frame.capture_identity()
+                                    && guard.as_ref().is_none_or(|guard| !guard.is_closed()))
+                        });
+                    if !active_scope {
+                        let keep = pending.frame.scope_symbols();
+                        let guard =
+                            ctx.plan
+                                .closures
+                                .owns_mutable_captures(pending.block)
+                                .then(|| {
+                                    crate::control::ScopeExitGuard::new(
+                                        pending.frame.clone(),
+                                        keep.clone(),
+                                    )
+                                });
+                        self.push_frame(EvalFrame::Block(BlockFrame {
+                            continuation: Continuation::ScopeExit {
+                                block: pending.block,
+                                keep,
+                                guard,
+                                frame: pending.frame.clone(),
+                            },
+                        }));
+                    }
                     ctx.execute_block_frame(
                         pending.block,
                         pending.next_stmt_index,
@@ -277,6 +360,24 @@ impl EvalMachine {
                         },
                     }));
                     ctx.eval_expr_frame(pending.expr, &mut pending.frame)
+                }
+                ControlSignal::ProgramExpr(pending) => {
+                    let pending = *pending;
+                    let site = pending.call.site.clone();
+                    self.push_continuation_frames(pending.continuation);
+                    if pending.call.is_default() {
+                        self.push_frame(EvalFrame::PureBoundary(pending.span));
+                    }
+                    return self
+                        .enter_program(
+                            ctx,
+                            super::scoped_call::ProgramCall::expression(pending.call),
+                            pending.args,
+                            pending.span,
+                            Continuation::BlockValue,
+                            Some(site),
+                        )
+                        .unwrap_or_else(MachinePoll::Fault);
                 }
                 ControlSignal::Call(pending) => {
                     if let Err(fault) = check_call_budget(ctx, self, pending.span) {
@@ -367,14 +468,8 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
                             ctx.apply_continuation(local_continuation!(frame, step_span), value)
                         }
-                        EvalFrame::SourceToolReturn(frame) => {
-                            match self.resume_source_tool_value(ctx, frame, value) {
-                                Ok(signal) => signal,
-                                Err(poll) => return poll,
-                            }
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault("model loop received an evaluator value without a model/tool response".to_owned(), frame.pending.span);
+                        EvalFrame::ModelRequest(frame) => {
+                            return machine_fault("model request received an evaluator value without a model/tool response".to_owned(), frame.pending.span);
                         }
                     }
                 }
@@ -395,6 +490,13 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                return self.unwind_program_control(
+                                    ctx,
+                                    *frame,
+                                    ContinuationInput::Return(value),
+                                );
+                            }
                             return self.return_program(ctx, *frame, value);
                         }
                         EvalFrame::Block(frame) => ctx.continue_chain_signal(
@@ -412,14 +514,12 @@ impl EvalMachine {
                                 ControlSignal::Return(value),
                                 local_continuation!(frame, step_span),
                             ),
-                        EvalFrame::SourceToolReturn(frame) => {
-                            match self.resume_source_tool_value(ctx, frame, value) {
-                                Ok(signal) => signal,
-                                Err(poll) => return poll,
-                            }
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault("model loop received a source return without an active source tool frame".to_owned(), frame.pending.span);
+                        EvalFrame::ModelRequest(frame) => {
+                            return machine_fault(
+                                "model request received a source return without a response"
+                                    .to_owned(),
+                                frame.pending.span,
+                            );
                         }
                     }
                 }
@@ -436,6 +536,7 @@ impl EvalMachine {
                             ctx,
                             &pending,
                             ctx.handler_floor..ctx.task.handler_stack.len(),
+                            None,
                         ) {
                             Ok(false) => {
                                 match self.has_outer_action_handler(ctx, &pending) {
@@ -443,7 +544,15 @@ impl EvalMachine {
                                     Ok(false) => {}
                                     Err(fault) => return MachinePoll::Fault(fault),
                                 }
-                                if pending.default_boundary.is_some() {
+                                if self.program_scope.is_some()
+                                    && (ctx.agent_action_uses_caller_context(&pending)
+                                        || ctx.compiler_action_uses_caller_context(&pending))
+                                {
+                                    return self.suspend_program_action(ctx, *pending);
+                                }
+                                if pending.default_boundary.is_some()
+                                    && ctx.task.inherited_handlers == 0
+                                {
                                     signal = ctx.execute_checked_default_action(*pending);
                                     continue;
                                 }
@@ -490,12 +599,9 @@ impl EvalMachine {
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
                             local_continuation!(frame, step_span)
                         }
-                        EvalFrame::SourceToolReturn(frame) => Continuation::SourceToolReturn(
-                            super::SourceToolContinuation(Box::new(frame)),
-                        ),
-                        EvalFrame::ModelLoop(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "perform crossed an incomplete model loop".to_owned(),
+                                "perform crossed an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }
@@ -545,6 +651,13 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                return self.unwind_program_control(
+                                    ctx,
+                                    *frame,
+                                    ContinuationInput::Resume(value),
+                                );
+                            }
                             return machine_fault(
                                 "resume escaped a revision call boundary",
                                 frame.span,
@@ -565,15 +678,9 @@ impl EvalMachine {
                                 ControlSignal::Resume(value),
                                 local_continuation!(frame, step_span),
                             ),
-                        EvalFrame::SourceToolReturn(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "resume escaped a source tool execution frame".to_owned(),
-                                frame.model_loop.pending.span,
-                            );
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault(
-                                "resume escaped into an incomplete model loop".to_owned(),
+                                "resume escaped into an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }
@@ -596,6 +703,13 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                return self.unwind_program_control(
+                                    ctx,
+                                    *frame,
+                                    ContinuationInput::Finish(value),
+                                );
+                            }
                             return machine_fault(
                                 "finish escaped a revision call boundary",
                                 frame.span,
@@ -616,15 +730,9 @@ impl EvalMachine {
                                 ControlSignal::Finish(value),
                                 local_continuation!(frame, step_span),
                             ),
-                        EvalFrame::SourceToolReturn(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "finish escaped a source tool execution frame".to_owned(),
-                                frame.model_loop.pending.span,
-                            );
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault(
-                                "finish escaped into an incomplete model loop".to_owned(),
+                                "finish escaped into an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }
@@ -650,6 +758,14 @@ impl EvalMachine {
                             }
                         }
                         EvalFrame::ProgramReturn(frame) => {
+                            if frame.call.is_handler_expression() {
+                                let input = match signal {
+                                    ControlSignal::Break => ContinuationInput::Break,
+                                    ControlSignal::Continue => ContinuationInput::Continue,
+                                    _ => unreachable!(),
+                                };
+                                return self.unwind_program_control(ctx, *frame, input);
+                            }
                             return machine_fault(
                                 "loop control escaped a revision call boundary",
                                 frame.span,
@@ -675,15 +791,9 @@ impl EvalMachine {
                                 frame.span,
                             );
                         }
-                        EvalFrame::SourceToolReturn(frame) => {
+                        EvalFrame::ModelRequest(frame) => {
                             return machine_fault(
-                                "loop control escaped a source tool execution frame".to_owned(),
-                                frame.model_loop.pending.span,
-                            );
-                        }
-                        EvalFrame::ModelLoop(frame) => {
-                            return machine_fault(
-                                "loop control escaped into an incomplete model loop".to_owned(),
+                                "loop control escaped into an incomplete model request".to_owned(),
                                 frame.pending.span,
                             );
                         }

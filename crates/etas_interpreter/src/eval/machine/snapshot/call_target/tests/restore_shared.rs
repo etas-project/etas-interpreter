@@ -83,6 +83,10 @@ fn callable_restore_cache_crosses_captured_frames_without_merging_distinct_graph
         let lambda = CallTargetSnapshot::Lambda {
             expr: HirExprId(4),
             captured: LocalsSnapshot {
+                reference: false,
+                shared_bindings: Default::default(),
+                parent: None,
+                handler_activations: Default::default(),
                 residual_invocation: None,
                 effect_row_bindings: Vec::new(),
                 id: 1,
@@ -134,6 +138,10 @@ fn callable_restore_cache_does_not_hide_conflicting_frames_and_releases_failed_g
         let lambda = |value| CallTargetSnapshot::Lambda {
             expr: HirExprId(4),
             captured: LocalsSnapshot {
+                reference: false,
+                shared_bindings: Default::default(),
+                parent: None,
+                handler_activations: Default::default(),
                 residual_invocation: None,
                 effect_row_bindings: Vec::new(),
                 id: 1,
@@ -197,12 +205,16 @@ fn checked_machine_restore_shares_callables_between_continuations() {
         }
         let continuation = ContinuationSnapshot::CallArgs {
             call,
-            target,
+            target: Some(target),
             args: std::sync::Arc::clone(&args),
             next_arg_index: 1,
             evaluated_args: vec![],
             span,
             frame: LocalsSnapshot {
+                reference: false,
+                shared_bindings: Default::default(),
+                parent: None,
+                handler_activations: Default::default(),
                 residual_invocation: None,
                 effect_row_bindings: Vec::new(),
                 id: 1,
@@ -249,7 +261,10 @@ fn checked_machine_restore_shares_callables_between_continuations() {
             let Continuation::CallArgs { target, .. } = frame.into_continuation().unwrap() else {
                 panic!("call args")
             };
-            assert!(same_backing(&first, &target));
+            assert!(same_backing(
+                first.as_ref().unwrap(),
+                target.as_ref().unwrap()
+            ));
         }
         let MachineFrameSnapshot::Continuation {
             continuation: ContinuationSnapshot::CallArgs { target, .. },
@@ -257,7 +272,7 @@ fn checked_machine_restore_shares_callables_between_continuations() {
         else {
             panic!("call args")
         };
-        *target = CallTargetSnapshot::FlowItem(HirItemId(u32::MAX));
+        *target = Some(CallTargetSnapshot::FlowItem(HirItemId(u32::MAX)));
         match restore(&saved) {
             Ok(_) => panic!("invalid callable restored after valid shared targets"),
             Err(error) => assert!(error.contains("missing HIR item"), "{error}"),

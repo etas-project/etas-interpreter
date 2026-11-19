@@ -30,6 +30,7 @@ pub struct HandlerScopeId(pub u32);
 
 #[derive(Clone, Debug)]
 pub struct InterpreterCheckpoint {
+    pub(crate) agent_context: Option<Box<AgentRequestContextSnapshot>>,
     pub(crate) tasks: Option<Box<super::TaskSchedulerSnapshot>>,
     pub replay_key_id: etas_host::replay::ReplayKeyId,
     /// Session-local immutable code pins. The codec never serializes these owners.
@@ -197,7 +198,7 @@ pub struct MachineSnapshot {
     pub(crate) input: Option<Box<super::MachineInputSnapshot>>,
     pub(crate) frames: Vec<MachineFrameSnapshot>,
     pub(crate) program_owners: FrameProgramOwners,
-    pub(crate) suspended_programs: Vec<super::SuspendedProgramSnapshot>,
+    pub(crate) suspended_programs: Vec<super::SuspendedExecutionSnapshot>,
     /// Live residual monitor state referenced by frames and continuations.
     pub(crate) residual: super::ResidualMachineSnapshot,
 }
@@ -293,6 +294,7 @@ pub(crate) enum CallTargetSnapshot {
         slot: u32,
     },
     EnumVariant(SymbolId),
+    DerivedResponseDecoder(etas_types::TypeId),
     NominalConstructor(etas_types::TypeId),
     PureIntrinsic {
         intrinsic: etas_std::StdIntrinsicId,
@@ -322,6 +324,10 @@ pub(crate) enum CallTargetSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct LocalsSnapshot {
+    pub(crate) reference: bool,
+    pub(crate) shared_bindings: Vec<crate::control::BindingIdentity>,
+    pub(crate) parent: Option<std::rc::Rc<LocalsSnapshot>>,
+    pub(crate) handler_activations: Vec<super::HandlerActivationSnapshot>,
     pub(crate) id: u64,
     /// Identity of this invocation's scope, not reusable authorization.
     pub(crate) residual_invocation: Option<std::num::NonZeroU64>,
@@ -334,8 +340,60 @@ pub(crate) struct LocalsSnapshot {
 }
 
 impl LocalsSnapshot {
+    pub(crate) fn reference(id: u64) -> Self {
+        Self {
+            reference: true,
+            id,
+            shared_bindings: Vec::new(),
+            parent: None,
+            handler_activations: Vec::new(),
+            residual_invocation: None,
+            locals: std::rc::Rc::new(Vec::new()),
+            type_bindings: Vec::new(),
+            type_parameter_bindings: Vec::new(),
+            effect_row_bindings: Vec::new(),
+        }
+    }
+
+    pub(crate) fn validate_reference(&self) -> Result<(), String> {
+        if self.id == 0
+            || !self.locals.is_empty()
+            || !self.shared_bindings.is_empty()
+            || self.parent.is_some()
+            || !self.handler_activations.is_empty()
+            || self.residual_invocation.is_some()
+            || !self.type_bindings.is_empty()
+            || !self.type_parameter_bindings.is_empty()
+            || !self.effect_row_bindings.is_empty()
+        {
+            return Err(
+                "captured frame reference contains an invalid identity or definition".into(),
+            );
+        }
+        Ok(())
+    }
+
     pub(crate) fn into_unique_values(mut self) -> Option<Vec<(SymbolId, ValueSnapshot)>> {
         std::rc::Rc::get_mut(&mut self.locals).map(std::mem::take)
+    }
+    /// Descriptive bindings; frame validation rechecks their request proof.
+    pub(crate) fn bindings_at(
+        &self,
+        checked: &etas_frontend::CheckedProgram,
+        owner: etas_hir::HirOwner,
+    ) -> crate::control::GenericBindings {
+        let base = self.generic_bindings();
+        if crate::control::handler_activation::parametric_continuation_call(checked, owner) {
+            return base;
+        }
+        let Some(arm) = crate::control::handler_activation::enclosing_handler(checked, owner)
+        else {
+            return base;
+        };
+        self.handler_activations
+            .iter()
+            .find(|activation| activation.arm == arm)
+            .map_or(base, |activation| activation.bindings())
     }
     pub(crate) fn generic_bindings(&self) -> crate::control::GenericBindings {
         crate::control::GenericBindings {
@@ -348,6 +406,10 @@ impl LocalsSnapshot {
 
 impl Drop for LocalsSnapshot {
     fn drop(&mut self) {
+        let mut next = self.parent.take();
+        while let Some(mut parent) = next {
+            next = std::rc::Rc::get_mut(&mut parent).and_then(|frame| frame.parent.take());
+        }
         if let Some(values) = std::rc::Rc::get_mut(&mut self.locals) {
             for (_, value) in std::mem::take(values) {
                 super::snapshot_storage::SnapshotChild::release(value);
@@ -358,6 +420,10 @@ impl Drop for LocalsSnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
+    ScopedHandler {
+        metadata: Box<crate::value::ScopedHandlerMetadata>,
+        value: SnapshotBox,
+    },
     TaskRuntime(TaskValueSnapshot),
     Existential {
         header: crate::value::ExistentialHeader,
@@ -443,6 +509,7 @@ pub(crate) enum ValueSnapshot {
     Handler {
         fact_expr: etas_hir::HirExprId,
         handlers: Vec<ActiveHandlerArmRecord>,
+        captured: Option<LocalsSnapshot>,
     },
     ResourceHandle {
         name: String,
@@ -494,8 +561,9 @@ pub(crate) struct MessageSnapshot {
 
 #[derive(Clone, Debug, PartialEq)]
 pub(crate) struct ConversationSnapshot {
+    pub(crate) protocol: Option<SnapshotBox>,
     pub(crate) selected_context: Option<crate::value::PublishedContextValue>,
-    pub(crate) session: String,
+    pub(crate) session: Option<String>,
     pub(crate) history_fence: Option<etas_host::session::SessionHistoryFence>,
     pub(crate) messages: Vec<MessageSnapshot>,
     pub(crate) cursor: Option<String>,
@@ -559,7 +627,42 @@ pub(crate) enum ModelResponseDecodeSnapshot {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) enum ArgumentDestinationSnapshot {
+    Call {
+        target: Option<CallTargetSnapshot>,
+    },
+    Perform {
+        action: ResolvedActionRef,
+        type_args: Vec<HirTypeId>,
+        source_args: std::sync::Arc<[HirArg]>,
+    },
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct DefaultArgumentsSnapshot {
+    pub expr: HirExprId,
+    pub parameter_count: usize,
+    pub slots: Vec<u32>,
+    pub values: Vec<ValueSnapshot>,
+    pub defaults: Vec<etas_types::DefaultArgument>,
+    pub next_default: usize,
+    pub destination: ArgumentDestinationSnapshot,
+    pub span: Span,
+    pub frame: LocalsSnapshot,
+}
+
+#[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
+    DefaultArguments(Box<DefaultArgumentsSnapshot>),
+    ToolInvocationStart(Box<ToolInvocationSnapshot>),
+    ToolInvocationResult(Box<ToolInvocationSnapshot>),
+    AgentControllerStep(Box<AgentControllerSnapshot>),
+    AgentControllerTool(Box<AgentControllerSnapshot>),
+    AgentExecutionState(Box<AgentExecutionStateSnapshot>),
+    AgentExecutionScope {
+        state: Box<AgentExecutionStateSnapshot>,
+        inner: ContinuationSnapshotLink,
+    },
     PackExistential {
         expr: HirExprId,
         frame: LocalsSnapshot,
@@ -571,7 +674,6 @@ pub(crate) enum ContinuationSnapshot {
         max_bytes: usize,
         span: Span,
     },
-    SourceToolReturn(Box<SourceToolReturnFrameSnapshot>),
     FileReadReduction {
         call: CallTargetSnapshot,
         args: Vec<ValueSnapshot>,
@@ -579,6 +681,9 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
     },
     ProgramResume {
+        id: u32,
+    },
+    TaskResume {
         id: u32,
     },
     /// A captured residual scope; index into the checkpoint's residual scopes.
@@ -596,6 +701,12 @@ pub(crate) enum ContinuationSnapshot {
         deadline_unix_ms: Option<u64>,
         body: ValueSnapshot,
         span: Span,
+    },
+    /// Leave a lexical block after its final expression or suspended work completes.
+    ScopeExit {
+        block: HirBlockId,
+        keep: Vec<SymbolId>,
+        frame: LocalsSnapshot,
     },
     ContinueBlock {
         block: HirBlockId,
@@ -750,7 +861,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     CallArgs {
         call: HirExprId,
-        target: CallTargetSnapshot,
+        target: Option<CallTargetSnapshot>,
         args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,
         evaluated_args: Vec<ValueSnapshot>,
@@ -833,6 +944,10 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
         outer: ContinuationSnapshotLink,
     },
+    LoopLimit {
+        stmt: etas_hir::HirStmtId,
+        frame: LocalsSnapshot,
+    },
     ForLoop {
         pat: HirPatId,
         source: Option<ValueSnapshot>,
@@ -844,11 +959,23 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
         frame: LocalsSnapshot,
     },
+    SourceForLoop {
+        iter: HirExprId,
+        pat: HirPatId,
+        source: Option<ValueSnapshot>,
+        awaiting_step: bool,
+        next_index: usize,
+        body: HirBlockId,
+        iterations: usize,
+        loop_scope: Vec<SymbolId>,
+        span: Span,
+        frame: LocalsSnapshot,
+    },
     WhileLoop {
         cond: HirExprId,
         body: HirBlockId,
-        iteration: u32,
-        max_iterations: u32,
+        iteration: u64,
+        max_iterations: u64,
         resume_after_body: bool,
         span: Span,
         frame: LocalsSnapshot,
@@ -864,6 +991,7 @@ pub(crate) enum ContinuationSnapshot {
     },
     TryExpr {
         expr: HirExprId,
+        result_type: TypeId,
         span: Span,
     },
     MemoryClearDeleteAll {
@@ -912,15 +1040,52 @@ pub(crate) enum ContinuationSnapshot {
 }
 
 #[derive(Clone, Debug)]
-pub(crate) struct ModelLoopFrameSnapshot {
+pub(crate) struct AgentRequestContextSnapshot {
+    pub(crate) program: super::ExecutionProgramSnapshot,
+    pub(crate) method: etas_hir::SymbolId,
+    pub(crate) request: etas_host::HostRequestId,
+    pub(crate) policy: ModelExecutionPolicySnapshot,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentExecutionStateSnapshot {
+    pub(crate) request: Option<Box<AgentRequestContextSnapshot>>,
+    pub(crate) policy: ModelExecutionPolicySnapshot,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ToolInvocationSnapshot {
+    pub call: ToolInvocationOriginSnapshot,
+    pub input: ValueSnapshot,
+    pub context: Box<AgentRequestContextSnapshot>,
+    pub request: etas_host::HostRequestId,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ToolInvocationOriginSnapshot {
+    Standard(CallTargetSnapshot),
+    Controller { inference: etas_hir::HirExprId },
+    Source(super::ActionEvidenceSnapshot),
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct AgentControllerSnapshot {
+    pub inference: etas_hir::HirExprId,
+    pub conversation: ValueSnapshot,
+    pub calls: ValueSnapshot,
+    pub next_call: usize,
+    pub results: Vec<ValueSnapshot>,
+    pub round: usize,
+    pub repairs: usize,
+    pub max_tool_rounds: usize,
+    pub span: Span,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct ModelRequestFrameSnapshot {
     pub(crate) boundary_request_id: etas_host::HostRequestId,
     pub(crate) pending: PendingModelSnapshot,
-    pub(crate) round: usize,
-    pub(crate) repair: ModelRepairSnapshot,
-    pub(crate) last_tool_error: Option<String>,
-    pub(crate) remaining_tool_calls: Vec<etas_host::ModelToolCall>,
-    pub(crate) completed_tool_result: bool,
-    pub(crate) current_host_tool: Option<HostToolProgressSnapshot>,
     pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
     pub(crate) outer_continuation: ContinuationSnapshot,
 }
@@ -929,8 +1094,6 @@ pub(crate) struct ModelLoopFrameSnapshot {
 pub(crate) struct PendingModelSnapshot {
     pub(crate) request: super::ModelRequestSnapshot,
     pub(crate) decode: ModelDecodeSnapshot,
-    pub(crate) max_tool_rounds: usize,
-    pub(crate) source_tools: Vec<SourceToolBindingSnapshot>,
     pub(crate) span: Span,
     pub(crate) continuation: ContinuationSnapshot,
 }
@@ -940,36 +1103,7 @@ pub(crate) enum ModelDecodeSnapshot {
     String,
     ModelResponse,
     Typed(TypeId),
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct SourceToolBindingSnapshot {
-    pub(crate) name: String,
-    pub(crate) qualified_name: Option<String>,
-    pub(crate) item: HirItemId,
-}
-
-#[derive(Clone, Debug, Default)]
-pub(crate) struct ModelRepairSnapshot {
-    pub(crate) attempts: usize,
-    pub(crate) last_kind: Option<String>,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct HostToolProgressSnapshot {
-    pub(crate) call: etas_host::ModelToolCall,
-    pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
-}
-
-#[derive(Clone, Debug)]
-pub(crate) struct SourceToolReturnFrameSnapshot {
-    pub(crate) tool_call_id: String,
-    pub(crate) tool_name: String,
-    pub(crate) binding: SourceToolBindingSnapshot,
-    pub(crate) args: etas_host::HostValue,
-    pub(crate) boundary_key: etas_host::replay::ReplayFingerprint,
-    pub(crate) output_schema: Option<etas_host::HostSchema>,
-    pub(crate) model_loop: Box<ModelLoopFrameSnapshot>,
+    Step { result: TypeId, output: TypeId },
 }
 
 #[derive(Clone, Debug)]
@@ -995,8 +1129,7 @@ pub(crate) enum MachineFrameSnapshot {
     Retry {
         continuation: ContinuationSnapshot,
     },
-    ModelLoop(Box<ModelLoopFrameSnapshot>),
-    SourceToolReturn(SourceToolReturnFrameSnapshot),
+    ModelRequest(Box<ModelRequestFrameSnapshot>),
     /// Index into `MachineSnapshot::residual.scopes`.
     ResidualScope {
         scope: u32,
@@ -1013,13 +1146,9 @@ impl MachineFrameSnapshot {
             | Self::Continuation { continuation }
             | Self::Handler { continuation }
             | Self::Retry { continuation } => [Some(continuation), None],
-            Self::ModelLoop(frame) => [
+            Self::ModelRequest(frame) => [
                 Some(&frame.pending.continuation),
                 Some(&frame.outer_continuation),
-            ],
-            Self::SourceToolReturn(frame) => [
-                Some(&frame.model_loop.pending.continuation),
-                Some(&frame.model_loop.outer_continuation),
             ],
             Self::ResidualScope { .. } => [None, None],
         }
@@ -1027,12 +1156,83 @@ impl MachineFrameSnapshot {
 }
 
 #[derive(Clone, Debug)]
+pub(crate) struct ExpressionCallSnapshot {
+    pub source: super::ExecutionProgramSnapshot,
+    pub unit: ExpressionUnitSnapshot,
+    pub site: CallSiteSnapshot,
+    pub slots: Vec<u32>,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ExpressionUnitSnapshot {
+    Default(etas_code::descriptor::ParameterDefaultInfo),
+    Handler {
+        caller: super::ExecutionProgramSnapshot,
+        site: CallSiteSnapshot,
+        handler: SnapshotBox,
+        body: bool,
+    },
+}
+
+impl ExpressionUnitSnapshot {
+    pub(crate) fn same_entry(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Default(a), Self::Default(b)) => a == b,
+            (
+                Self::Handler {
+                    caller: a,
+                    site: asite,
+                    handler: ah,
+                    body: ab,
+                },
+                Self::Handler {
+                    caller: b,
+                    site: bsite,
+                    handler: bh,
+                    body: bb,
+                },
+            ) => {
+                a == b
+                    && asite.kind == bsite.kind
+                    && asite.frame.id == bsite.frame.id
+                    && ab == bb
+                    && ah == bh
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
+pub(crate) enum ProgramCallSnapshot {
+    Callable(CallTargetSnapshot),
+    Expression(Box<ExpressionCallSnapshot>),
+}
+
+impl ProgramCallSnapshot {
+    pub(crate) fn same_entry(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::Callable(left), Self::Callable(right)) => left == right,
+            (Self::Expression(left), Self::Expression(right)) => {
+                left.source == right.source
+                    && left.unit.same_entry(&right.unit)
+                    && left.slots == right.slots
+                    && left.site.kind == right.site.kind
+                    && left.site.frame.id == right.site.frame.id
+            }
+            _ => false,
+        }
+    }
+}
+
+#[derive(Clone, Debug)]
 pub(crate) struct ProgramReturnSnapshot {
-    pub call: CallTargetSnapshot,
+    pub call: ProgramCallSnapshot,
     pub call_site: CallSiteSnapshot,
     pub handler_floor: usize,
     pub outer: ContinuationSnapshot,
     pub parent_model_policy: ModelExecutionPolicySnapshot,
+    pub parent_agent_context: Option<Box<AgentRequestContextSnapshot>>,
     pub span: Span,
     pub retry_depth: usize,
 }
@@ -1042,6 +1242,7 @@ pub(crate) struct CallSiteSnapshot {
     pub kind: crate::control::CallSiteKind,
     pub frame: LocalsSnapshot,
     pub composition: Option<ComposedInvocationSnapshot>,
+    pub task_callback: Option<Box<CallTargetSnapshot>>,
 }
 
 #[derive(Clone, Debug)]

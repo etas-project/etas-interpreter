@@ -21,6 +21,14 @@ pub(crate) struct TaskSchedulerSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) enum RootTaskWaitSnapshot {
+    Completion {
+        scope: TaskScopeId,
+        continuation: u32,
+        result_type: TypeId,
+        span: Span,
+    },
+    /// The queued input is stored in the root machine's shared capture graph.
+    Ready,
     Await {
         target: crate::driver::scheduler::TaskHandle,
         continuation: u32,
@@ -39,6 +47,28 @@ pub(crate) enum RootTaskWaitSnapshot {
 }
 
 impl TaskSchedulerSnapshot {
+    pub(crate) fn logical_task_owners(&self) -> Result<BTreeMap<TaskId, TaskIdentity>, String> {
+        let mut owners = BTreeMap::new();
+        for (id, task) in &self.tasks {
+            let parent = match task.local.parent {
+                TaskIdentity::Root => TaskIdentity::Root,
+                TaskIdentity::Scheduled(parent) => *owners
+                    .get(&parent)
+                    .ok_or("logical task parent is missing or does not precede its child")?,
+            };
+            let owner = if self.metadata.scope_owner(task.scope) == Some(*id) {
+                if task.start.is_some() {
+                    return Err("scope owner cannot be an independently started task".into());
+                }
+                parent
+            } else {
+                TaskIdentity::Scheduled(*id)
+            };
+            owners.insert(*id, owner);
+        }
+        Ok(owners)
+    }
+
     pub(crate) fn root_continuation<'a>(
         &'a self,
         machine: &'a MachineSnapshot,
@@ -46,6 +76,7 @@ impl TaskSchedulerSnapshot {
         let index = match self.root_wait {
             Some(
                 RootTaskWaitSnapshot::Await { continuation, .. }
+                | RootTaskWaitSnapshot::Completion { continuation, .. }
                 | RootTaskWaitSnapshot::Transfer { continuation, .. },
             ) => Some(continuation),
             _ => None,
@@ -94,6 +125,7 @@ pub(crate) struct ScheduledTaskSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct TaskLocalSnapshot {
+    pub agent_context: Option<Box<super::AgentRequestContextSnapshot>>,
     pub parent: TaskIdentity,
     pub model_policy: ModelExecutionPolicySnapshot,
     pub handlers: HandlerSnapshot,
@@ -105,8 +137,11 @@ pub(crate) struct TaskLocalSnapshot {
 #[serde(rename_all = "snake_case")]
 pub(crate) enum ScheduledTaskStateSnapshot {
     Ready,
+    WaitingHandler(super::HandlerScopeId),
+    WaitingHandlerOwner(TaskId),
     WaitingTask(TaskId),
     WaitingScope(TaskScopeId),
+    WaitingCompletion(TaskScopeId),
     WaitingResource(u64),
     Completed,
     Raised,
@@ -130,8 +165,20 @@ pub(crate) enum TaskOutcomeSnapshot {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskResumeSnapshot {
+    DeferredHandler {
+        handler: super::HandlerScopeId,
+    },
+    Handler {
+        continuation: u32,
+        handler: super::HandlerScopeId,
+    },
     Await(u32),
     Run(u32),
+    Completion {
+        continuation: u32,
+        result_type: TypeId,
+        span: Span,
+    },
     Transfer {
         token: crate::value::ContinuationTokenValue,
         continuation: u32,
@@ -144,6 +191,7 @@ pub(crate) enum TaskResumeSnapshot {
 pub(crate) struct AuxiliaryContinuationSnapshot {
     pub program: ExecutionProgramSnapshot,
     pub continuation: ContinuationSnapshot,
+    pub projections: Option<super::ResultProjectionPathSnapshot>,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]

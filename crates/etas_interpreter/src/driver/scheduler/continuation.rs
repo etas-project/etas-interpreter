@@ -63,12 +63,21 @@ pub(crate) struct ContinuationEntrySnapshot {
 }
 
 impl ContinuationArena {
+    pub(super) fn arm_owned_for(
+        &self,
+        origin: TaskIdentity,
+    ) -> impl Iterator<Item = (&crate::value::CheckedExecutionProgram, &Continuation)> {
+        self.entries.values().filter_map(move |entry| {
+            if entry.origin != origin || entry.state != ContinuationState::ArmOwned {
+                return None;
+            }
+            Some((entry.program.as_ref()?, entry.continuation.as_ref()?))
+        })
+    }
+
     pub(super) fn capture(
         &self,
-        revisions: &mut std::collections::BTreeMap<
-            etas_code::RevisionKey,
-            std::sync::Arc<crate::api::code::PreparedCodeRevision>,
-        >,
+        context: &mut crate::eval::machine::snapshot::CaptureContext,
         mut capture: impl FnMut(
             TaskIdentity,
             Option<&crate::value::CheckedExecutionProgram>,
@@ -86,7 +95,8 @@ impl ContinuationArena {
                         program: entry
                             .program
                             .as_ref()
-                            .map(|program| program.checkpoint_identity(revisions)),
+                            .map(|program| context.execution_identity(program))
+                            .transpose()?,
                         owner: entry.owner,
                         origin: entry.origin,
                         continuation: entry
@@ -239,6 +249,20 @@ impl ContinuationArena {
                 .expect("arm-owned continuation must retain its runtime stack"),
             output: entry.output,
         })
+    }
+
+    pub(super) fn program(
+        &self,
+        token: ContinuationTokenValue,
+    ) -> Result<Option<crate::value::CheckedExecutionProgram>, SchedulerError> {
+        let entry = self
+            .entries
+            .get(&token.continuation)
+            .ok_or(SchedulerError::UnknownContinuation)?;
+        if entry.owner != token.owner {
+            return Err(SchedulerError::WrongOwner);
+        }
+        Ok(entry.program.clone())
     }
 
     pub(super) fn dispose(

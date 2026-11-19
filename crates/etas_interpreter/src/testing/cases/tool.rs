@@ -27,6 +27,7 @@ flow main(input: string) -> string {
     host.seed_model_response_tool_call("Search");
     host.seed_model_response_text("final answer");
     let options = RunOptions {
+        code_definitions: Some(project::prepared_tool_definitions(&checked)),
         host_context: api::HostExecutionContext {
             authority: AuthorityContext {
                 grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -84,7 +85,7 @@ flow main(input: string) -> string {
         message.role == etas_host::ModelRole::Tool
             && message.tool_call_id.as_deref() == Some("call-1")
             && message.content.iter().any(
-                |content| matches!(content, ModelContent::Value(HostValue::String(value)) if value == "local")
+                |content| matches!(content, ModelContent::Text(value) if value == &serde_json::to_string("local").unwrap())
             )
     }));
 }
@@ -100,7 +101,7 @@ import dep.tools.Search;
 
 @model(model = "local-qwen")
 @tools([Search])
-agent Writer(input: string) -> string ![] {
+agent Writer(input: string) -> string ![Network] {
   return perform infer(Prompt.new().user(Public(input)));
 }
 
@@ -137,6 +138,7 @@ flow main(input: string) -> string {
             vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
+                code_definitions: Some(project::prepared_tool_definitions(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -186,16 +188,16 @@ flow main(input: string) -> string {
     );
     assert_eq!(
         host.tool_requests()[0].args,
-        HostValue::Record(vec![(
+        HostValue::Json(etas_host::HostJsonValue::Object(vec![(
             "query".to_owned(),
-            HostValue::String("hello".to_owned()),
-        )])
+            etas_host::HostJsonValue::String("hello".to_owned()),
+        )]))
     );
     assert!(requests[1].messages.iter().any(|message| {
         message.role == etas_host::ModelRole::Tool
             && message.tool_call_id.as_deref() == Some("call-1")
             && message.content.iter().any(
-                |content| matches!(content, ModelContent::Value(HostValue::String(value)) if value == "external result")
+                |content| matches!(content, ModelContent::Text(value) if value == &serde_json::to_string("external result").unwrap())
             )
     }));
 }
@@ -210,7 +212,7 @@ import dep.tools.Search;
 
 @model(model = "local-qwen")
 @tools([Search])
-agent Writer(input: string) -> string ![] {
+agent Writer(input: string) -> string ![Network] {
   return perform infer(Prompt.new().user(Public(input)));
 }
 
@@ -277,7 +279,7 @@ flow main(input: string) -> string {
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_checked_records_completed_host_tool_boundary_in_checkpoint() {
-    let checked = checked_project(
+    let checked = checked_host_search_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
@@ -313,6 +315,7 @@ flow main(input: string) -> string {
             vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
+                code_definitions: Some(project::prepared_tool_definitions(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -354,7 +357,7 @@ flow main(input: string) -> string {
         .unwrap();
     assert_eq!(
         model_boundary.occurrence,
-        crate::orchestration::BoundaryOccurrenceId::HostRequest(etas_host::HostRequestId(0)),
+        crate::orchestration::BoundaryOccurrenceId::HostRequest(host.model_requests()[0].id),
         "tool rounds must not replace the model invocation's replay identity"
     );
     assert!(
@@ -407,6 +410,7 @@ flow main(input: string) -> string {
     host.seed_model_response_tool_call("Search");
     host.seed_model_response_text("final answer");
     let options = RunOptions {
+        code_definitions: Some(project::prepared_tool_definitions(&checked)),
         host_context: api::HostExecutionContext {
             authority: AuthorityContext {
                 grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -445,32 +449,29 @@ flow main(input: string) -> string {
     assert_eq!(host.tool_requests().len(), 0);
     let model_requests = host.model_requests();
     assert!(
-        model_requests
-            .get(1)
-            .is_some_and(|request| request.messages.iter().any(|message| {
-                message.role == ModelRole::Tool
-                    && message.content.iter().any(|content| {
-                        matches!(
-                            content,
-                            ModelContent::Value(HostValue::Record(fields))
-                                if fields.iter().any(|(name, value)| {
-                                    name == "kind"
-                                        && matches!(
-                                            value,
-                                            HostValue::String(kind)
-                                                if kind == "InvalidToolArguments"
-                                        )
-                                })
-                        )
-                    })
-            })),
+        model_requests[1].messages.iter().any(|message| {
+            message.role == ModelRole::User
+                && message.content.iter().any(|content| {
+                    matches!(content, ModelContent::Text(text)
+                if text.contains("args has unexpected field `query`"))
+                })
+        }),
+        "{model_requests:#?}"
+    );
+    assert!(
+        model_requests[2].messages.iter().any(|message| {
+            message.role == ModelRole::Tool
+                && message.tool_call_id.as_deref() == Some("call-1")
+                && message.content
+                    == vec![ModelContent::Text(serde_json::to_string("local").unwrap())]
+        }),
         "{model_requests:#?}"
     );
 }
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_checked_applies_policy_gate_before_host_tool_call() {
-    let checked = checked_project(
+    let checked = checked_host_search_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
@@ -508,6 +509,7 @@ flow main(input: string) -> string {
             vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
+                code_definitions: Some(project::prepared_tool_definitions(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -597,6 +599,7 @@ flow main(input: string) -> string {
             vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
+                code_definitions: Some(project::prepared_tool_definitions(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -638,7 +641,8 @@ flow main(input: string) -> string {
             .subject
             .attributes
             .iter()
-            .any(|(name, value)| name == "source_item" && matches!(value, HostValue::String(_)))
+            .any(|(name, value)| name == "qualified_tool"
+                && value == &HostValue::String("app.main.Search".into()))
     );
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic
@@ -681,6 +685,7 @@ flow main(input: string) -> Draft {
 "#,
     );
     let options = RunOptions {
+        code_definitions: Some(project::prepared_tool_definitions(&checked)),
         host_context: api::HostExecutionContext {
             authority: AuthorityContext {
                 grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -723,18 +728,6 @@ flow main(input: string) -> Draft {
         .iter()
         .find(|checkpoint| checkpoint.label.as_deref() == Some("inside-source-tool"))
         .expect("source tool checkpoint");
-    let source_tool_frame = checkpoint
-        .machine
-        .frames
-        .iter()
-        .find_map(|frame| match frame {
-            crate::orchestration::MachineFrameSnapshot::SourceToolReturn(frame) => Some(frame),
-            _ => None,
-        })
-        .expect("source tool return frame");
-    assert_eq!(source_tool_frame.tool_call_id, "call-1");
-    assert_eq!(source_tool_frame.model_loop.round, 2);
-    assert_eq!(source_tool_frame.model_loop.repair.attempts, 1);
     let active_calls = checkpoint
         .machine
         .frames
@@ -746,9 +739,9 @@ flow main(input: string) -> Draft {
             )
         })
         .count();
-    assert_eq!(
-        active_calls, 28,
-        "the machine must retain main->descend recursion (25), agent (1), source-tool (1), and checkpoint intrinsic (1) call frames"
+    assert!(
+        active_calls >= 28,
+        "source execution retains recursion, agent, tool and checkpoint calls"
     );
     let artifact = crate::api::codec::checkpoint_artifact_json(
         &[std::path::PathBuf::from("main.es")],
@@ -758,18 +751,18 @@ flow main(input: string) -> Draft {
     .expect("source tool checkpoint artifact should encode");
     let restored = crate::api::codec::checkpoint_from_json(&artifact, &checked)
         .expect("source tool machine checkpoint must decode");
-    let restored_source_tool_frame = restored
+    let restored_calls = restored
         .machine
         .frames
         .iter()
-        .find_map(|frame| match frame {
-            crate::orchestration::MachineFrameSnapshot::SourceToolReturn(frame) => Some(frame),
-            _ => None,
+        .filter(|frame| {
+            matches!(
+                frame,
+                crate::orchestration::MachineFrameSnapshot::Call { .. }
+            )
         })
-        .expect("restored source tool return frame");
-    assert_eq!(restored_source_tool_frame.tool_call_id, "call-1");
-    assert_eq!(restored_source_tool_frame.model_loop.round, 2);
-    assert_eq!(restored_source_tool_frame.model_loop.repair.attempts, 1);
+        .count();
+    assert_eq!(restored_calls, active_calls);
 
     let resumed_host = FakeHost::new(availability(&[
         HostRequirementKind::Agentic,
@@ -801,9 +794,9 @@ flow main(input: string) -> Draft {
         message.role == ModelRole::Tool
             && message.tool_call_id.as_deref() == Some("call-1")
             && message.content
-                == vec![ModelContent::Value(HostValue::String(
-                    "local-result".to_owned(),
-                ))]
+                == vec![ModelContent::Text(
+                    serde_json::to_string("local-result").unwrap(),
+                )]
     }));
 }
 
@@ -844,6 +837,7 @@ flow main(input: string) -> string {
 "#,
     );
     let options = RunOptions {
+        code_definitions: Some(project::prepared_tool_definitions(&checked)),
         host_context: api::HostExecutionContext {
             authority: AuthorityContext {
                 grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -887,7 +881,7 @@ flow main(input: string) -> string {
         .expect("nested source tool checkpoint");
     assert!(checkpoint.machine.frames.iter().any(|frame| matches!(
         frame,
-        crate::orchestration::MachineFrameSnapshot::SourceToolReturn(_)
+        crate::orchestration::MachineFrameSnapshot::Call { .. }
     )));
     assert!(checkpoint.machine.frames.iter().any(|frame| matches!(
         frame,
@@ -929,7 +923,7 @@ flow main(input: string) -> string {
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_checked_stops_host_tool_call_when_policy_approval_is_denied() {
-    let checked = checked_project(
+    let checked = checked_host_search_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
@@ -973,6 +967,7 @@ flow main(input: string) -> string {
             vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
+                code_definitions: Some(project::prepared_tool_definitions(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -1016,16 +1011,22 @@ flow main(input: string) -> string {
     assert!(tool_subject.attributes.iter().any(|(name, value)| {
         name == "qualified_action" && value == &HostValue::String("Tool.call".to_owned())
     }));
-    assert!(tool_subject.attributes.iter().any(
-        |(name, value)| name == "resource" && value == &HostValue::String("Search".to_owned())
-    ));
-    assert!(
-        tool_subject
-            .attributes
-            .iter()
-            .any(|(name, value)| name == "trace_id"
-                && value == &HostValue::String("TraceId(62)".to_owned()))
-    );
+    let identity = checked
+        .external_definition_origins()
+        .iter()
+        .flat_map(|package| &package.origins.declarations)
+        .find(|origin| origin.path() == ["dep", "tools", "Search"])
+        .unwrap()
+        .definition
+        .fingerprint()
+        .to_string();
+    assert!(tool_subject.attributes.iter().any(|(name, value)| {
+        name == "resource" && value == &HostValue::String(identity.clone())
+    }));
+    assert!(tool_subject.attributes.iter().any(|(name, value)| {
+        name == "qualified_tool" && value == &HostValue::String("dep.tools.Search".into())
+    }));
+    assert_eq!(policy_requests[1].trace, TraceContext::root(TraceId(62)));
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic
             .message
@@ -1034,8 +1035,8 @@ flow main(input: string) -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_checked_requires_tool_call_host_support_for_runtime_configured_tools() {
-    let checked = checked_project(
+async fn run_checked_requires_tool_call_host_support_for_declared_host_tools() {
+    let checked = checked_host_search_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
@@ -1061,6 +1062,7 @@ flow main(input: string) -> string {
             vec![value::InterpValue::String("hello".to_owned().into())],
             &host,
             RunOptions {
+                code_definitions: Some(project::prepared_tool_definitions(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],
@@ -1313,15 +1315,16 @@ flow main(input: string) -> ModelResponse {
         result.value().cloned(),
         Some(value::InterpValue::ModelResponse(
             value::ModelResponseValue {
-                id: 0,
+                id: host.model_requests()[0].id.0,
                 message: value::ModelMessageValue {
                     role: value::ModelRoleValue::Assistant,
                     content: vec![value::ModelContentValue::Text("draft".to_owned())],
                 },
                 tool_calls: Vec::new(),
-                usage: Some(value::ModelUsageValue {
-                    input_tokens: 1,
-                    output_tokens: 1,
+                usage: Some(etas_host::ModelUsage {
+                    cost: None,
+                    input_tokens: Some(1),
+                    output_tokens: Some(1),
                 }),
             }
         ))

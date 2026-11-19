@@ -1,13 +1,10 @@
 use super::{RestoreContext, capture_context::CaptureContext};
 use crate::api::{ModelExecutionPolicy, ModelResponseDecodePolicy};
-use crate::control::{ModelDecode, PendingModel, SourceToolBinding};
-use crate::eval::machine::frame::{
-    HostToolProgress, ModelLoopFrame, ModelRepairState, SourceToolReturnFrame,
-};
+use crate::control::{ModelDecode, PendingModel};
+use crate::eval::machine::frame::ModelRequestFrame;
 use crate::orchestration::{
-    HostToolProgressSnapshot, ModelDecodeSnapshot, ModelExecutionPolicySnapshot,
-    ModelLoopFrameSnapshot, ModelRepairSnapshot, ModelResponseDecodeSnapshot, PendingModelSnapshot,
-    SourceToolBindingSnapshot, SourceToolReturnFrameSnapshot,
+    ModelDecodeSnapshot, ModelExecutionPolicySnapshot, ModelRequestFrameSnapshot,
+    ModelResponseDecodeSnapshot, PendingModelSnapshot,
 };
 
 pub(crate) fn capture_model_policy(policy: &ModelExecutionPolicy) -> ModelExecutionPolicySnapshot {
@@ -48,28 +45,14 @@ pub(crate) fn restore_model_policy(policy: ModelExecutionPolicySnapshot) -> Mode
     }
 }
 
-impl ModelLoopFrameSnapshot {
+impl ModelRequestFrameSnapshot {
     pub(in crate::eval::machine::snapshot) fn capture(
-        frame: &ModelLoopFrame,
+        frame: &ModelRequestFrame,
         context: &mut CaptureContext,
     ) -> Result<Self, String> {
         Ok(Self {
             boundary_request_id: frame.boundary_request_id,
             pending: PendingModelSnapshot::capture(&frame.pending, context)?,
-            round: frame.round,
-            repair: ModelRepairSnapshot {
-                attempts: frame.repair.attempts,
-                last_kind: frame.repair.last_kind.clone(),
-            },
-            last_tool_error: frame.last_tool_error.clone(),
-            remaining_tool_calls: frame.remaining_tool_calls.clone(),
-            completed_tool_result: frame.completed_tool_result,
-            current_host_tool: frame.current_host_tool.as_ref().map(|progress| {
-                HostToolProgressSnapshot {
-                    call: progress.call.clone(),
-                    boundary_key: progress.boundary_key,
-                }
-            }),
             boundary_key: frame.boundary_key,
             outer_continuation: context.continuation(&frame.outer_continuation)?,
         })
@@ -79,22 +62,10 @@ impl ModelLoopFrameSnapshot {
         self,
         current: &crate::api::HostExecutionContext,
         context: &mut RestoreContext,
-    ) -> Result<ModelLoopFrame, String> {
-        Ok(ModelLoopFrame {
+    ) -> Result<ModelRequestFrame, String> {
+        Ok(ModelRequestFrame {
             boundary_request_id: self.boundary_request_id,
             pending: self.pending.restore(current, context)?,
-            round: self.round,
-            repair: ModelRepairState {
-                attempts: self.repair.attempts,
-                last_kind: self.repair.last_kind,
-            },
-            last_tool_error: self.last_tool_error,
-            remaining_tool_calls: self.remaining_tool_calls,
-            completed_tool_result: self.completed_tool_result,
-            current_host_tool: self.current_host_tool.map(|progress| HostToolProgress {
-                call: progress.call,
-                boundary_key: progress.boundary_key,
-            }),
             boundary_key: self.boundary_key,
             outer_continuation: self.outer_continuation.restore_with(context)?,
         })
@@ -109,13 +80,10 @@ impl PendingModelSnapshot {
                 ModelDecode::String => ModelDecodeSnapshot::String,
                 ModelDecode::ModelResponse => ModelDecodeSnapshot::ModelResponse,
                 ModelDecode::Typed(ty) => ModelDecodeSnapshot::Typed(ty),
+                ModelDecode::Step { result, output } => {
+                    ModelDecodeSnapshot::Step { result, output }
+                }
             },
-            max_tool_rounds: pending.max_tool_rounds,
-            source_tools: pending
-                .source_tools
-                .iter()
-                .map(SourceToolBindingSnapshot::capture)
-                .collect(),
             span: pending.span,
             continuation: context.continuation(&pending.continuation)?,
         })
@@ -135,81 +103,12 @@ impl PendingModelSnapshot {
                 ModelDecodeSnapshot::String => ModelDecode::String,
                 ModelDecodeSnapshot::ModelResponse => ModelDecode::ModelResponse,
                 ModelDecodeSnapshot::Typed(ty) => ModelDecode::Typed(ty),
+                ModelDecodeSnapshot::Step { result, output } => {
+                    ModelDecode::Step { result, output }
+                }
             },
-            max_tool_rounds: self.max_tool_rounds,
-            source_tools: self
-                .source_tools
-                .into_iter()
-                .map(SourceToolBindingSnapshot::restore)
-                .collect(),
             span: self.span,
             continuation: self.continuation.restore_with(context)?,
-        })
-    }
-}
-
-impl SourceToolBindingSnapshot {
-    fn capture(binding: &SourceToolBinding) -> Self {
-        Self {
-            name: binding.name.clone(),
-            qualified_name: binding.qualified_name.clone(),
-            item: binding.item,
-        }
-    }
-
-    fn restore(self) -> SourceToolBinding {
-        SourceToolBinding {
-            name: self.name,
-            qualified_name: self.qualified_name,
-            item: self.item,
-        }
-    }
-}
-
-impl SourceToolReturnFrameSnapshot {
-    pub(crate) fn validate_continuation(&self) -> Result<(), String> {
-        if !matches!(
-            self.model_loop.outer_continuation,
-            crate::orchestration::ContinuationSnapshot::BlockValue
-        ) || !matches!(
-            self.model_loop.pending.continuation,
-            crate::orchestration::ContinuationSnapshot::BlockValue
-        ) {
-            return Err(
-                "source tool continuation contains an unexpected nested execution continuation"
-                    .into(),
-            );
-        }
-        Ok(())
-    }
-    pub(in crate::eval::machine::snapshot) fn capture(
-        frame: &SourceToolReturnFrame,
-        context: &mut CaptureContext,
-    ) -> Result<Self, String> {
-        Ok(Self {
-            tool_call_id: frame.tool_call_id.clone(),
-            tool_name: frame.tool_name.clone(),
-            binding: SourceToolBindingSnapshot::capture(&frame.binding),
-            args: frame.args.clone(),
-            boundary_key: frame.boundary_key,
-            output_schema: frame.output_schema.clone(),
-            model_loop: Box::new(ModelLoopFrameSnapshot::capture(&frame.model_loop, context)?),
-        })
-    }
-
-    pub(crate) fn restore(
-        self,
-        current: &crate::api::HostExecutionContext,
-        context: &mut RestoreContext,
-    ) -> Result<SourceToolReturnFrame, String> {
-        Ok(SourceToolReturnFrame {
-            tool_call_id: self.tool_call_id,
-            tool_name: self.tool_name,
-            binding: self.binding.restore(),
-            args: self.args,
-            boundary_key: self.boundary_key,
-            output_schema: self.output_schema,
-            model_loop: Box::new(self.model_loop.restore(current, context)?),
         })
     }
 }

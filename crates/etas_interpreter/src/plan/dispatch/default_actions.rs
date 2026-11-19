@@ -18,6 +18,7 @@ struct Adapter {
     action: etas_effects::ActionRef,
     payload: Vec<usize>,
     selectors: Vec<etas_std::StdStaticArg>,
+    selector_parameters: Vec<Option<etas_types::TypeId>>,
     action_parameters: Vec<etas_types::TypeId>,
     action_output: etas_types::TypeId,
     reducer: Option<etas_std::StdActionReducer>,
@@ -98,6 +99,22 @@ pub(super) fn lower(
             action,
             payload,
             selectors: requested.args.clone(),
+            selector_parameters: typed
+                .effect_args
+                .iter()
+                .zip(&typed.selector_param_names)
+                .map(|(kind, name)| {
+                    if !matches!(kind, etas_types::EffectActionArgKind::Type) {
+                        return Ok(None);
+                    }
+                    typed
+                        .generic_params
+                        .iter()
+                        .find(|parameter| &parameter.name == name)
+                        .map(|parameter| Some(parameter.subject))
+                        .ok_or("standard action selector has no checked type binder")
+                })
+                .collect::<Result<_, _>>()?,
             action_parameters: typed.params.clone(),
             action_output: typed.output,
             reducer,
@@ -129,6 +146,18 @@ pub(super) fn lower(
             .get(&id)
             .ok_or("checked standard action fact has no registered adapter")?;
         let args = checked_selectors(project, *expr, &adapter.selectors)?;
+        let selector_types = adapter
+            .selector_parameters
+            .iter()
+            .zip(&args)
+            .filter_map(|(parameter, argument)| {
+                let parameter = (*parameter)?;
+                Some(match argument {
+                    etas_types::EffectArgRef::Type(ty) => Ok((parameter, *ty)),
+                    _ => Err("standard action selector is not a checked type argument"),
+                })
+            })
+            .collect::<Result<HashMap<_, _>, _>>()?;
         let expected = if args.is_empty() {
             etas_effects::Effect::Action(adapter.action.clone())
         } else {
@@ -158,8 +187,17 @@ pub(super) fn lower(
             .get(expr)
             .map(|fact| fact.type_bindings.iter().cloned().collect())
             .unwrap_or_default();
+        let rows = project
+            .types
+            .generic_instantiations
+            .get(expr)
+            .map(|fact| fact.effect_row_bindings.iter().cloned().collect())
+            .unwrap_or_default();
         let substitute = |ty| {
-            etas_types::substitute_named_params_in_store(&project.type_store, ty, &bindings)
+            etas_types::TypeSubstitutionEngine::existing(&project.type_store, &bindings)
+                .with_type_parameters(&selector_types)
+                .with_effect_arguments(&rows)
+                .substitute(ty)
                 .map_err(|error| format!("standard action ABI is not materialized: {error}"))
         };
         let action_parameters = adapter
@@ -167,11 +205,21 @@ pub(super) fn lower(
             .iter()
             .map(|ty| substitute(*ty))
             .collect::<Result<Vec<_>, _>>()?;
+        let names = std::collections::HashMap::new();
+        let mut payload_rows =
+            etas_types::TypeSubstitutionEngine::existing(&project.type_store, &names)
+                .with_effect_arguments(&rows);
         let payload_parameters = adapter
             .payload
             .iter()
-            .map(|index| fact.parameters[*index])
-            .collect::<Vec<_>>();
+            .map(|index| {
+                payload_rows
+                    .substitute(fact.parameters[*index])
+                    .map_err(|error| {
+                        format!("standard action payload row is not materialized: {error}")
+                    })
+            })
+            .collect::<Result<Vec<_>, _>>()?;
         if action_parameters != payload_parameters {
             return Err("standard action payload differs from its checked declaration ABI".into());
         }

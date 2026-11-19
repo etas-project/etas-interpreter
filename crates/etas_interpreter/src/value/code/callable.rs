@@ -83,6 +83,17 @@ impl ScopedCallableValue {
         let destination = projection.target().0.clone();
         let (source, ty) = projection.source();
         let mut value = match target {
+            CallTarget::DerivedResponseDecoder(callable) => {
+                if !Arc::ptr_eq(&execution.checked, source) || callable != ty {
+                    return Err(
+                        "derived decoder disagrees with the checked source interface".into(),
+                    );
+                }
+                crate::value::source_schema::decoder_signature(source, callable)?;
+                let (target, ty) = projection.target();
+                crate::value::source_schema::decoder_signature(target, ty)?;
+                return Ok(CallTarget::DerivedResponseDecoder(ty));
+            }
             CallTarget::Scoped(value) => {
                 if !Arc::ptr_eq(value.presented_program(), source) || value.presented_type() != ty {
                     return Err(
@@ -96,8 +107,13 @@ impl ScopedCallableValue {
                     return Err("unscoped callable has no native execution environment in the source program".into());
                 }
                 let root = callable_root(execution, &target)?;
-                let application =
-                    validate_signature(source, root, &target, projection.signature())?;
+                let application = validate_signature_with_projection(
+                    source,
+                    root,
+                    &target,
+                    projection.signature(),
+                    Some(&projection),
+                )?;
                 let plan = execution
                     .plan
                     .select_callable(source, root)
@@ -204,6 +220,9 @@ impl ScopedCallableValue {
                 _ => Err("scoped callable has no checked generic interface".into()),
             },
             CheckedCallableRoot::Lambda(_) | CheckedCallableRoot::StdReference(_) => Ok(&[]),
+            CheckedCallableRoot::ParameterDefault(_) => {
+                Err("a default expression is not a first-class callable".into())
+            }
         }
     }
     pub(crate) fn arguments_to_native(
@@ -242,6 +261,23 @@ impl ScopedCallableValue {
         for projection in &self.projections {
             value = projection
                 .result_to_target(value, program)
+                .map_err(|error| error.to_string())?;
+        }
+        Ok(value)
+    }
+
+    pub(crate) fn receiver_to_presented(
+        &self,
+        program: &CheckedExecutionProgram,
+        index: usize,
+        mut value: InterpValue,
+    ) -> Result<InterpValue, String> {
+        if !Arc::ptr_eq(&program.checked, &self.native.program.checked) {
+            return Err("updated receiver belongs to a different native program".into());
+        }
+        for projection in &self.projections {
+            value = projection
+                .argument_to_target(index, value, program)
                 .map_err(|error| error.to_string())?;
         }
         Ok(value)
@@ -327,6 +363,16 @@ fn validate_signature(
     target: &CallTarget,
     expected: &FlowType,
 ) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
+    validate_signature_with_projection(program, root, target, expected, None)
+}
+
+fn validate_signature_with_projection(
+    program: &CheckedProgram,
+    root: CheckedCallableRoot,
+    target: &CallTarget,
+    expected: &FlowType,
+    projection: Option<&CallableValueProjection>,
+) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
     let mut bindings = crate::control::GenericBindings::new();
     let mut target = target;
     loop {
@@ -368,38 +414,94 @@ fn validate_signature(
         }
     }
     validate_signature_bindings(program, root, expected, &bindings)?;
-    checked_item_application(program, root, &bindings)
+    // A checked implementation dictionary can carry a generic method template.
+    // The scoped call supplies and validates its concrete arguments before entry.
+    if bindings.types.is_empty()
+        && bindings.parameters.is_empty()
+        && bindings.rows.is_empty()
+        && let Some(projection) = projection
+        && projection.is_checked_method_template(root)?
+    {
+        return Ok(None);
+    }
+    ScopedCallableValue::checked_item_application(program, root, &bindings)
 }
 
-fn checked_item_application(
+fn is_standard_template(
     program: &CheckedProgram,
     root: CheckedCallableRoot,
     bindings: &crate::control::GenericBindings,
-) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
-    let Some(item) = native_application_owner(program, root)? else {
-        return Ok(None);
-    };
-    if !matches!(
-        program.items.get(item),
-        Some(etas_hir::HirItem::Flow(_) | etas_hir::HirItem::Tool(_))
-    ) {
-        return Ok(None);
+) -> bool {
+    program.compile_options.standard_library_mode
+        == etas_frontend::StandardLibraryMode::SourceBootstrap
+        && bindings.types.is_empty()
+        && bindings.rows.is_empty()
+        && bindings.parameters.is_empty()
+        && matches!(root, CheckedCallableRoot::Item(item)
+            if matches!(program.types.item_signatures.get(&item), Some(etas_types::ItemSignature::Flow(signature))
+                if !signature.generic_params.is_empty()
+                    || matches!(program.items.get(item), Some(etas_hir::HirItem::Flow(flow))
+                        if program.types.type_impl_methods.get(&flow.symbol)
+                            .is_some_and(|method| !method.owner_params.is_empty()))))
+}
+
+impl ScopedCallableValue {
+    pub(crate) fn checked_item_application(
+        program: &CheckedProgram,
+        root: CheckedCallableRoot,
+        bindings: &crate::control::GenericBindings,
+    ) -> Result<Option<etas_frontend::CheckedCallableApplication>, String> {
+        let Some(item) = native_application_owner(program, root)? else {
+            return Ok(None);
+        };
+        if !matches!(
+            program.items.get(item),
+            Some(etas_hir::HirItem::Flow(_) | etas_hir::HirItem::Tool(_))
+        ) {
+            return Ok(None);
+        }
+        // An installed generic std declaration is a checked template. Its call-site
+        // bindings are supplied when the scoped call is specialized, before entry.
+        if is_standard_template(program, root, bindings) {
+            return Ok(None);
+        }
+        let owner_bindings = match program.items.get(item) {
+            Some(etas_hir::HirItem::Flow(flow)) => {
+                program.types.type_impl_methods.get(&flow.symbol)
+            }
+            _ => None,
+        }
+        .into_iter()
+        .flat_map(|method| &method.owner_params)
+        .map(|parameter| {
+            bindings
+                .parameters
+                .get(&parameter.subject)
+                .copied()
+                .map(|argument| (parameter.subject, argument))
+                .ok_or_else(|| format!(
+                    "native method application {item:?} is missing implementation owner parameter `{}` ({:?})",
+                    parameter.name, parameter.subject,
+                ))
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+        program
+            .checked_callable_application_with_owner_bindings(
+                item,
+                &bindings
+                    .iter()
+                    .map(|(name, ty)| (name.clone(), *ty))
+                    .collect::<Vec<_>>(),
+                &bindings
+                    .rows
+                    .iter()
+                    .map(|(name, row)| (name.clone(), row.clone()))
+                    .collect::<Vec<_>>(),
+                &owner_bindings,
+            )
+            .map(Some)
+            .map_err(|error| error.to_string())
     }
-    program
-        .checked_callable_application(
-            item,
-            &bindings
-                .iter()
-                .map(|(name, ty)| (name.clone(), *ty))
-                .collect::<Vec<_>>(),
-            &bindings
-                .rows
-                .iter()
-                .map(|(name, row)| (name.clone(), row.clone()))
-                .collect::<Vec<_>>(),
-        )
-        .map(Some)
-        .map_err(|error| error.to_string())
 }
 
 fn native_application_owner(
@@ -418,6 +520,9 @@ fn native_application_owner(
             .map(Some)
             .ok_or_else(|| "native closure has no checked lexical body owner".into()),
         CheckedCallableRoot::StdReference(_) => Ok(None),
+        CheckedCallableRoot::ParameterDefault(_) => {
+            Err("a default expression has no callable application owner".into())
+        }
     }
 }
 
@@ -489,6 +594,7 @@ fn validate_signature_bindings(
                 .is_ok_and(|output| output == expected.output)
     };
     let matches = match root {
+        CheckedCallableRoot::ParameterDefault(_) => false,
         CheckedCallableRoot::Lambda(expr) | CheckedCallableRoot::StdReference(expr) => program.types.expr_types.get(&expr).and_then(|ty| program.type_store.get(*ty))
             .is_some_and(|ty| matches!(ty, Type::Function(actual) if signature_matches(&actual.input, actual.output))),
         CheckedCallableRoot::Item(item) => match program.types.item_signatures.get(&item) {

@@ -4,6 +4,10 @@ use super::*;
 use crate::control::ExecutionFault;
 use crate::value::{RangeBounds, RangeValue};
 
+mod failure;
+mod source_literal;
+use failure::ConstantFailure;
+
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_literal(
         &self,
@@ -100,12 +104,18 @@ impl<'a> EvalContext<'a> {
     ) -> ControlSignal {
         match resolution {
             ResolveResult::Resolved(symbol) => {
+                if frame.receiver_is_held(symbol) {
+                    return ControlSignal::invalid_arguments(
+                        "receiver binding is exclusively held by an updating call",
+                        span,
+                    );
+                }
                 if let Some(value) = frame.get(symbol) {
                     return ControlSignal::Value(value);
                 }
                 match self.eval_global_symbol(symbol, span) {
                     Ok(value) => ControlSignal::Value(value),
-                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                    Err(error) => error.into_signal(),
                 }
             }
             ResolveResult::PartiallyResolved(partial)
@@ -122,7 +132,7 @@ impl<'a> EvalContext<'a> {
                 } else {
                     match self.eval_global_symbol(prefix, span) {
                         Ok(value) => value,
-                        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                        Err(error) => return error.into_signal(),
                     }
                 };
                 for (index, field) in partial.remaining.iter().enumerate() {
@@ -146,7 +156,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         symbol: SymbolId,
         span: Span,
-    ) -> Result<InterpValue, ExecutionFault> {
+    ) -> Result<InterpValue, ConstantFailure> {
         let mut visiting = HashSet::new();
         self.eval_global_symbol_with_cycle_check(symbol, span, &mut visiting)
     }
@@ -156,13 +166,14 @@ impl<'a> EvalContext<'a> {
         symbol: SymbolId,
         span: Span,
         visiting: &mut HashSet<SymbolId>,
-    ) -> Result<InterpValue, ExecutionFault> {
+    ) -> Result<InterpValue, ConstantFailure> {
         if !visiting.insert(symbol) {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,
                 span,
                 "cyclic top-level `let` evaluation reached interpreter execution",
-            ));
+            )
+            .into());
         }
         let value = (|| {
             let Some(symbol_data) = self.checked.symbols.get(symbol).cloned() else {
@@ -170,7 +181,8 @@ impl<'a> EvalContext<'a> {
                     AnalysisDiagnosticCode::MissingCheckedFact,
                     span,
                     "resolved global symbol is missing from checked symbol table",
-                ));
+                )
+                .into());
             };
             match &symbol_data.def {
                 SymbolDef::Item { item }
@@ -179,18 +191,21 @@ impl<'a> EvalContext<'a> {
                     match self.checked.hir.items.get(*item) {
                         Some(HirItem::Agent(_)) => self
                             .source_agent_call_target(*item, span)
-                            .map(InterpValue::Callable),
+                            .map(InterpValue::Callable)
+                            .map_err(Into::into),
                         Some(HirItem::Flow(_)) => self
                             .source_flow_call_target(*item, span)
-                            .map(InterpValue::Callable),
+                            .map(InterpValue::Callable)
+                            .map_err(Into::into),
                         Some(HirItem::Tool(_)) => self
                             .source_tool_call_target(*item, span)
-                            .map(InterpValue::Callable),
+                            .map(InterpValue::Callable)
+                            .map_err(Into::into),
                         _ => Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             span,
                             "checked declaration is not a runtime callable value",
-                        )),
+                        ).into()),
                     }
                 }
                 SymbolDef::TopLevelLet {
@@ -203,19 +218,20 @@ impl<'a> EvalContext<'a> {
                     }
                     TopLevelLetClassification::Handler => {
                         self.eval_top_level_handler(*initializer, symbol_data.definition_span)
+                            .map_err(Into::into)
                     }
                     TopLevelLetClassification::ResourceHandle(_) => self.resource_handle_value(
                         symbol,
                         symbol_data.name.clone(),
                         *initializer,
                         span,
-                    ),
+                    ).map_err(Into::into),
                     TopLevelLetClassification::Unknown | TopLevelLetClassification::Invalid => {
                         Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::MissingCheckedFact,
                             span,
                             "top-level `let` is missing a valid constant, handler, or resource-handle classification",
-                        ))
+                        ).into())
                     }
                 },
                 SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. } => self
@@ -224,25 +240,26 @@ impl<'a> EvalContext<'a> {
                         Vec::new(),
                         &crate::control::GenericBindings::new(),
                         span,
-                    ),
+                    ).map_err(Into::into),
                 SymbolDef::ImportAlias { path, .. } => {
-                    if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
+                    if let Some(target) = self.artifact_std_callable(symbol, span)? {
+                        Ok(InterpValue::Callable(target))
+                    } else if let Some(constructor) = self.plan.dispatch.enum_constructor(symbol) {
                         if constructor.arity == 0 {
                             self.eval_variant_constructor(
                                 symbol,
                                 Vec::new(),
                                 &crate::control::GenericBindings::new(),
                                 span,
-                            )
+                            ).map_err(Into::into)
                         } else {
                             Ok(InterpValue::Callable(CallTarget::EnumVariant(symbol)))
                         }
+                    } else if let Some(value) = self.eval_artifact_std_value(path, span)? {
+                        Ok(value)
                     } else if let Some(value) = self.eval_std_value_alias(symbol, path, span)? {
                         Ok(value)
-                    } else if let Some(item) = self
-                        .source_item_for_import_path(path)
-                        .and_then(|ast_item| self.hir_item_for_ast_item(&ast_item))
-                    {
+                    } else if let Some(item) = self.source_item_id_for_import_path(path) {
                         match self.checked.hir.items.get(item) {
                             Some(HirItem::TopLevelLet(item)) => self
                                 .eval_global_symbol_with_cycle_check(item.symbol, span, visiting),
@@ -257,25 +274,62 @@ impl<'a> EvalContext<'a> {
                                 AnalysisDiagnosticCode::InvalidArguments,
                                 span,
                                 "import alias does not name a runtime value",
-                            )),
+                            ).into()),
                         }
                     } else {
                         Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             span,
                             "import alias does not name a runtime value",
-                        ))
+                        ).into())
                     }
                 }
                 _ => Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::InvalidArguments,
                     span,
                     "path does not name a runtime value in the current frame",
-                )),
+                ).into()),
             }
         })();
         visiting.remove(&symbol);
         value
+    }
+
+    fn eval_artifact_std_value(
+        &mut self,
+        path: &[String],
+        span: Span,
+    ) -> Result<Option<InterpValue>, ConstantFailure> {
+        let Some(definition) = self
+            .checked
+            .std_registry
+            .lookup_qualified(path)
+            .filter(|declaration| matches!(declaration.decl, etas_std::StdDecl::Value(_)))
+            .and_then(|declaration| self.checked.std_registry.declaration_key(declaration.id))
+            .cloned()
+        else {
+            return Ok(None);
+        };
+        let missing =
+            |reason| ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason);
+        let library = self
+            .plan
+            .standard_library
+            .as_ref()
+            .cloned()
+            .ok_or_else(|| {
+                missing("source std value has no checked library execution plan".to_owned())
+            })?;
+        let (symbol, ty, program) = library.value_program(&definition).map_err(&missing)?;
+        let value = self
+            .scoped_context(&program, self.handler_floor)
+            .eval_global_symbol(symbol, span)?;
+        let scope = etas_code::descriptor::GenericOwner::Declaration(definition);
+        library
+            .bridge()
+            .value_to_original_scoped(&program.checked, &scope, ty, value, &program)
+            .map(Some)
+            .map_err(|error| missing(error.to_string()).into())
     }
 
     fn eval_std_value_alias(
@@ -356,7 +410,7 @@ impl<'a> EvalContext<'a> {
                 "top-level handler classification points at a non-handler initializer",
             ));
         };
-        match self.eval_handler_value_expr(expr, handlers, *span) {
+        match self.eval_handler_value_expr(expr, handlers, *span, None) {
             ControlSignal::Value(value) => Ok(value),
             ControlSignal::Fault(fault) => Err(*fault),
             _ => Err(ExecutionFault::new(
@@ -372,24 +426,33 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         span: Span,
         visiting: &mut HashSet<SymbolId>,
-    ) -> Result<InterpValue, ExecutionFault> {
+    ) -> Result<InterpValue, ConstantFailure> {
         let Some(expr_data) = self.checked.hir.exprs.get(expr).cloned() else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
                 "constant expression is missing from checked HIR",
-            ));
+            )
+            .into());
         };
         match &expr_data {
-            HirExpr::Literal(literal) => self.eval_literal(expr, literal),
-            HirExpr::Lambda { .. } => self.capture_lambda_value(expr, span, None),
+            HirExpr::MethodCall { .. }
+                if self.checked.hir.source_map.is_collection_literal(expr) =>
+            {
+                self.eval_const_source_literal(expr, span)
+            }
+            HirExpr::Literal(literal) => self.eval_literal(expr, literal).map_err(Into::into),
+            HirExpr::Lambda { .. } => self
+                .capture_lambda_value(expr, span, None)
+                .map_err(Into::into),
             HirExpr::Path(path) => {
                 let ResolveResult::Resolved(symbol) = path.resolution else {
                     return Err(ExecutionFault::new(
                         AnalysisDiagnosticCode::MissingCheckedFact,
                         span,
                         "constant path initializer was not fully resolved",
-                    ));
+                    )
+                    .into());
                 };
                 let frame = Frame::new(std::sync::Arc::default());
                 if let Some(value) = self.eval_enum_reference(expr, symbol, &frame, path.span)? {
@@ -414,7 +477,8 @@ impl<'a> EvalContext<'a> {
                 match value {
                     InterpValue::Callable(target) => self
                         .specialize_call_target_for_call(expr, target, &frame, path.span)
-                        .map(InterpValue::Callable),
+                        .map(InterpValue::Callable)
+                        .map_err(Into::into),
                     value => Ok(value),
                 }
             }
@@ -432,17 +496,21 @@ impl<'a> EvalContext<'a> {
                     .map(|expr| self.eval_const_expr(*expr, span, visiting))
                     .collect::<Result<Vec<_>, _>>()?,
             ))),
-            HirExpr::List { elems, .. } => Ok(InterpValue::List(
-                elems
+            HirExpr::List { elems, .. } => {
+                let values = elems
                     .iter()
                     .map(|expr| self.eval_const_expr(*expr, span, visiting))
                     .collect::<Result<Vec<_>, _>>()?
-                    .into(),
-            )),
+                    .into();
+                self.checked_sequence_value(expr, values, None, span)
+                    .map_err(Into::into)
+            }
             HirExpr::ListCons { head, tail, span } => {
                 self.eval_const_list_cons(*head, *tail, *span, visiting)
             }
-            HirExpr::EmptySequence { span } => self.eval_const_empty_sequence(expr, *span),
+            HirExpr::EmptySequence { span } => self
+                .eval_const_empty_sequence(expr, *span)
+                .map_err(Into::into),
             HirExpr::Set { elems, .. } => Ok(InterpValue::Set(
                 elems
                     .iter()
@@ -470,7 +538,9 @@ impl<'a> EvalContext<'a> {
                     etas_hir::HirRangeBounds::OpenClosed => RangeBounds::OpenClosed,
                 },
             })),
-            HirExpr::EmptyRecordOrMap { span } => self.eval_const_empty_record_or_map(expr, *span),
+            HirExpr::EmptyRecordOrMap { span } => self
+                .eval_const_empty_record_or_map(expr, *span)
+                .map_err(Into::into),
             HirExpr::Record(record) => self.eval_const_record_expr(expr, record, span, visiting),
             HirExpr::Unary {
                 op,
@@ -488,18 +558,20 @@ impl<'a> EvalContext<'a> {
                     field,
                     *span,
                 )
+                .map_err(Into::into)
             }
             HirExpr::Index { base, index, span } => {
                 let base = self.eval_const_expr(*base, *span, visiting)?;
                 let index = self.eval_const_expr(*index, *span, visiting)?;
                 match self.eval_index_value(expr, base, index, *span) {
                     ControlSignal::Value(value) => Ok(value),
-                    ControlSignal::Fault(fault) => Err(*fault),
+                    ControlSignal::Fault(fault) => Err((*fault).into()),
                     _ => Err(ExecutionFault::new(
                         AnalysisDiagnosticCode::InvalidArguments,
                         *span,
                         "fallible checked index cannot be evaluated as a constant expression",
-                    )),
+                    )
+                    .into()),
                 }
             }
             HirExpr::Slice {
@@ -513,12 +585,14 @@ impl<'a> EvalContext<'a> {
                 let start = self.eval_const_expr(*start, *span, visiting)?;
                 let end = self.eval_const_expr(*end, *span, visiting)?;
                 self.eval_slice_value(expr, base, start, end, *bounds, *span)
+                    .map_err(Into::into)
             }
             _ => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
                 "constant evaluation requires a pure local constant expression",
-            )),
+            )
+            .into()),
         }
     }
 
@@ -528,7 +602,7 @@ impl<'a> EvalContext<'a> {
         record: &etas_hir::HirRecordExpr,
         span: Span,
         visiting: &mut HashSet<SymbolId>,
-    ) -> Result<InterpValue, ExecutionFault> {
+    ) -> Result<InterpValue, ConstantFailure> {
         let mut fields = Vec::with_capacity(record.fields.len());
         for field in &record.fields {
             match field {
@@ -546,7 +620,8 @@ impl<'a> EvalContext<'a> {
                                 AnalysisDiagnosticCode::MissingCheckedFact,
                                 *span,
                                 "constant record shorthand field was not fully resolved",
-                            ));
+                            )
+                            .into());
                         }
                     };
                     fields.push((name.clone(), value));
@@ -557,13 +632,23 @@ impl<'a> EvalContext<'a> {
             }
         }
         if let Some(symbol) = self.named_variant_symbol(record.path.as_ref()) {
-            return self.eval_named_variant(
-                expr,
-                symbol,
-                fields,
-                &crate::control::GenericBindings::new(),
-                span,
-            );
+            return self
+                .eval_named_variant(
+                    expr,
+                    symbol,
+                    fields,
+                    &crate::control::GenericBindings::new(),
+                    span,
+                )
+                .map_err(Into::into);
+        }
+        if let Some(kind) =
+            self.primitive_constructor_kind(expr, &crate::control::GenericBindings::new(), span)?
+        {
+            let (_, input) = fields.pop().expect("checked primitive constructor field");
+            return crate::value::representation::construct(kind, input).map_err(|message| {
+                ExecutionFault::new(AnalysisDiagnosticCode::InvalidArguments, span, message).into()
+            });
         }
         let representation = self
             .plan
@@ -572,7 +657,7 @@ impl<'a> EvalContext<'a> {
             .map_err(|message| {
                 ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
             })?;
-        if record.path.is_none() {
+        if record.path.is_none() || self.plan.records.range_constructor(expr) {
             return Ok(representation);
         }
         let Some(ty) = self.checked.types.expr_types.get(&expr).copied() else {
@@ -580,7 +665,8 @@ impl<'a> EvalContext<'a> {
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
                 "constant nominal record constructor is missing its checked result type",
-            ));
+            )
+            .into());
         };
         Ok(InterpValue::Nominal {
             ty,
@@ -619,18 +705,10 @@ impl<'a> EvalContext<'a> {
         tail: HirExprId,
         span: Span,
         visiting: &mut HashSet<SymbolId>,
-    ) -> Result<InterpValue, ExecutionFault> {
+    ) -> Result<InterpValue, ConstantFailure> {
         let head = self.eval_const_expr(head, span, visiting)?;
         let tail = self.eval_const_expr(tail, span, visiting)?;
-        let InterpValue::List(mut values) = tail else {
-            return Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "constant list cons tail must evaluate to a List[T]",
-            ));
-        };
-        values.push_front(head);
-        Ok(InterpValue::List(values))
+        super::aggregate_expr::prepend_sequence_cell(head, tail, span).map_err(Into::into)
     }
 
     fn eval_const_empty_sequence(
@@ -647,12 +725,7 @@ impl<'a> EvalContext<'a> {
         };
         match self.checked.type_store.get(*ty) {
             Some(etas_types::Type::Array(_)) => Ok(InterpValue::Array(ArrayValue::new(Vec::new()))),
-            Some(etas_types::Type::List(_)) => Ok(InterpValue::List(Vec::new().into())),
-            _ => Err(ExecutionFault::new(
-                AnalysisDiagnosticCode::MissingCheckedFact,
-                span,
-                "constant empty sequence must be checked as Array[T] or List[T]",
-            )),
+            _ => self.checked_sequence_value(expr, Vec::new().into(), None, span),
         }
     }
 
@@ -662,9 +735,9 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         span: Span,
         visiting: &mut HashSet<SymbolId>,
-    ) -> Result<InterpValue, ExecutionFault> {
+    ) -> Result<InterpValue, ConstantFailure> {
         let value = self.eval_const_expr(expr, span, visiting)?;
-        self.eval_unary_value(op, value, span)
+        self.eval_unary_value(op, value, span).map_err(Into::into)
     }
 
     fn eval_const_binary_expr(
@@ -674,7 +747,7 @@ impl<'a> EvalContext<'a> {
         rhs: HirExprId,
         span: Span,
         visiting: &mut HashSet<SymbolId>,
-    ) -> Result<InterpValue, ExecutionFault> {
+    ) -> Result<InterpValue, ConstantFailure> {
         let left = self.eval_const_expr(lhs, span, visiting)?;
         match op {
             HirBinaryOp::AndAnd => {
@@ -699,9 +772,10 @@ impl<'a> EvalContext<'a> {
         }
         let right = self.eval_const_expr(rhs, span, visiting)?;
         self.eval_binary_values(op, left, right, span)
+            .map_err(Into::into)
     }
 
-    fn resource_handle_value(
+    pub(super) fn resource_handle_value(
         &self,
         symbol: SymbolId,
         name: String,

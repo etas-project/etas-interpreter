@@ -14,6 +14,7 @@ impl SnapshotValidator<'_> {
                 entry.program.program,
                 crate::orchestration::CheckpointProgramReference::Source
             ) && self.execution_revision.is_none()
+                && self.revisions.is_none()
             {
                 self.continuation(&entry.continuation, "task continuation", &mut scopes)?;
                 continue;
@@ -60,12 +61,9 @@ impl SnapshotValidator<'_> {
                 let parent = boundaries
                     .last()
                     .map_or(self.checked, |b| &b.program.checked);
-                let program = super::super::program::resolve_destination(
-                    frame,
-                    parent,
-                    self.revisions,
-                    self.limits,
-                )?;
+                let program =
+                    super::super::program::resolve_destination(frame, parent, self.revisions)
+                        .map_err(|error| format!("checkpoint program boundary {index}: {error}"))?;
                 if frame.handler_floor < floor {
                     return Err("checkpoint program handler floors are not nested".into());
                 }

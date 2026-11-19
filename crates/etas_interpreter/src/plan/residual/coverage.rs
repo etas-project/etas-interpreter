@@ -60,6 +60,10 @@ impl Pass<PlanContext<'_>> for VerifyResidualCoveragePass {
             CheckedCallableRoot::Item(item) => {
                 items.insert(item);
             }
+            CheckedCallableRoot::ParameterDefault(_) => {
+                // Defaults have no declaration-owned contract scope. Their
+                // transitive checks must be covered by reachable callee scopes.
+            }
             CheckedCallableRoot::Lambda(_) | CheckedCallableRoot::StdReference(_) => {
                 // Only checked callables own residual scopes.
                 if !root_summary.residual_checks.is_empty() {

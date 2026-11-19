@@ -151,6 +151,7 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         (V::Bytes(a), V::Bytes(b)) => a == b,
         (V::Json(a), V::Json(b)) => a == b,
         (V::StdConstant(a), V::StdConstant(b)) => a == b,
+        (V::Schema(a), V::Schema(b)) => a == b,
         (V::Prompt(a), V::Prompt(b)) => a == b,
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
@@ -170,6 +171,19 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         ) => {
             pending.push((x, y));
             a.object_type == b.object_type && a.concrete_type == b.concrete_type
+        }
+        (
+            V::ScopedHandler {
+                metadata: a,
+                value: x,
+            },
+            V::ScopedHandler {
+                metadata: b,
+                value: y,
+            },
+        ) => {
+            pending.push((x, y));
+            a == b
         }
         (V::Nominal { ty: a, value: x }, V::Nominal { ty: b, value: y }) => {
             pending.push((x, y));
@@ -301,6 +315,11 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         }
         (V::Message(a), V::Message(b)) => message(a, b, pending),
         (V::Conversation(a), V::Conversation(b)) => {
+            match (&a.protocol, &b.protocol) {
+                (Some(a), Some(b)) => pending.push((a, b)),
+                (None, None) => {}
+                _ => return false,
+            }
             a.selected_context == b.selected_context
                 && a.session == b.session
                 && a.history_fence == b.history_fence
@@ -345,12 +364,21 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
             V::Handler {
                 fact_expr: a,
                 handlers: c,
+                captured: e,
             },
             V::Handler {
                 fact_expr: b,
                 handlers: d,
+                captured: f,
             },
-        ) => a == b && c == d,
+        ) => {
+            match (e, f) {
+                (Some(e), Some(f)) => pending.0.push(Comparison::Frame(e, f)),
+                (None, None) => {}
+                _ => return false,
+            }
+            a == b && c == d
+        }
         (
             V::ResourceHandle {
                 name: a,

@@ -35,6 +35,7 @@ fn capture_leaf(
             captured: context.frame(captured)?,
         },
         CallTarget::EnumVariant(symbol) => CallTargetSnapshot::EnumVariant(*symbol),
+        CallTarget::DerivedResponseDecoder(ty) => CallTargetSnapshot::DerivedResponseDecoder(*ty),
         CallTarget::NominalConstructor(ty) => CallTargetSnapshot::NominalConstructor(*ty),
         CallTarget::PureIntrinsic(call) => CallTargetSnapshot::PureIntrinsic {
             intrinsic: call.intrinsic,
@@ -74,6 +75,7 @@ fn restore_leaf(
             captured: super::frame::restore_frame(captured, context)?,
         },
         CallTargetSnapshot::EnumVariant(symbol) => CallTarget::EnumVariant(symbol),
+        CallTargetSnapshot::DerivedResponseDecoder(ty) => CallTarget::DerivedResponseDecoder(ty),
         CallTargetSnapshot::NominalConstructor(ty) => CallTarget::NominalConstructor(ty),
         CallTargetSnapshot::PureIntrinsic {
             intrinsic,

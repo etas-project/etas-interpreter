@@ -73,11 +73,27 @@ fn decode_snapshot_frame(
     value: &Value,
     cache: &FrameDecodeCache<LocalsSnapshot>,
 ) -> Result<LocalsSnapshot, String> {
+    if value.get("reference").is_some() {
+        if value.as_object().is_none_or(|object| object.len() != 1) {
+            return Err("captured frame reference also contains a definition".into());
+        }
+        let frame = LocalsSnapshot::reference(required_u64(value, "reference")?);
+        frame.validate_reference()?;
+        return Ok(frame);
+    }
     let decoded = decode_locals(limits, value, |limits, value| {
         crate::api::codec::value::decode::decode_with_frames(limits, value, cache)
             .map_err(|error| error.to_string())
     })?;
     Ok(LocalsSnapshot {
+        reference: false,
+        shared_bindings: decoded.shared_bindings,
+        parent: value
+            .get("parent")
+            .filter(|value| !value.is_null())
+            .map(|parent| cache.get(parent).map(std::rc::Rc::new))
+            .transpose()?,
+        handler_activations: decoded.handler_activations,
         residual_invocation: decoded.residual_invocation,
         id: decoded.id,
         locals: std::rc::Rc::new(decoded.locals),
@@ -92,10 +108,19 @@ fn decode_runtime_frame(
     value: &Value,
     cache: &FrameDecodeCache<crate::control::Frame>,
 ) -> Result<crate::control::Frame, String> {
+    if value.get("reference").is_some() {
+        return Err("captured frame references require a checked restore context".into());
+    }
     let decoded = decode_locals(limits, value, |limits, value| {
         crate::api::codec::value::decode::decode_with_frames(limits, value, cache)
             .map_err(|error| error.to_string())
     })?;
+    if !decoded.handler_activations.is_empty() || !decoded.shared_bindings.is_empty() {
+        return Err(
+            "scoped captured bindings and Handler evidence require a checked restore context"
+                .into(),
+        );
+    }
     let mut frame = crate::control::Frame::from_snapshot_with_generic_bindings(
         decoded.locals,
         crate::control::GenericBindings {
@@ -104,6 +129,9 @@ fn decode_runtime_frame(
             rows: decoded.effect_row_bindings.into_iter().collect(),
         },
     )?;
+    if let Some(parent) = value.get("parent").filter(|value| !value.is_null()) {
+        frame.restore_lexical_parent(cache.get(parent)?);
+    }
     frame.set_snapshot_id(decoded.id)?;
     if let Some(invocation) = decoded.residual_invocation {
         frame.bind_residual_invocation(invocation)?;
@@ -112,6 +140,8 @@ fn decode_runtime_frame(
 }
 
 struct DecodedLocals<T> {
+    shared_bindings: Vec<crate::control::BindingIdentity>,
+    handler_activations: Vec<crate::orchestration::HandlerActivationSnapshot>,
     id: u64,
     residual_invocation: Option<std::num::NonZeroU64>,
     locals: Vec<(SymbolId, T)>,
@@ -168,7 +198,44 @@ fn decode_locals<T>(
             pair[0].0
         ));
     }
+    let activations = match value.get("handler_activations") {
+        Some(Value::Array(activations)) => activations.as_slice(),
+        None => &[],
+        Some(_) => return Err("frame Handler activations must be an array".into()),
+    };
+    let handler_activations = activations
+        .iter()
+        .map(|activation| {
+            Ok(crate::orchestration::HandlerActivationSnapshot {
+                arm: etas_hir::HirHandlerArmId(required_u32(activation, "arm")?),
+                types: serde_json::from_value(required(activation, "types")?.clone())
+                    .map_err(|error| error.to_string())?,
+                parameters: serde_json::from_value(required(activation, "parameters")?.clone())
+                    .map_err(|error| error.to_string())?,
+                rows: serde_json::from_value(required(activation, "rows")?.clone())
+                    .map_err(|error| error.to_string())?,
+                memory_place: activation
+                    .get("memory_place")
+                    .map(|place| serde_json::from_value(place.clone()))
+                    .transpose()
+                    .map_err(|error| error.to_string())?,
+                request: crate::api::codec::checkpoint::suspension::decode_evidence(
+                    limits,
+                    required(activation, "request")?,
+                )
+                .map_err(|error| error.to_string())?,
+            })
+        })
+        .collect::<Result<Vec<_>, String>>()?;
     Ok(DecodedLocals {
+        shared_bindings: value
+            .get("shared_bindings")
+            .map(|bindings| {
+                serde_json::from_value(bindings.clone()).map_err(|error| error.to_string())
+            })
+            .transpose()?
+            .unwrap_or_default(),
+        handler_activations,
         id,
         residual_invocation,
         locals,

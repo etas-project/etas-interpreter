@@ -7,8 +7,10 @@ mod call_target;
 mod callable_types;
 mod comparison;
 mod construction;
+mod default_arguments;
 mod frame;
 mod input;
+mod ownership;
 mod program;
 mod reference_presence;
 mod reference_types;
@@ -40,10 +42,33 @@ use crate::orchestration::{
     ActiveHandlerArmRecord, BoundaryOccurrenceId, CallTargetSnapshot, ContinuationSnapshot,
     HandlerScopeId, HandlerSnapshot, InterpreterCheckpoint, LocalPlaceComponentSnapshot,
     LocalPlaceSegmentSnapshot, LocalsSnapshot, MachineFrameSnapshot, MachineSnapshot,
-    ModelDecodeSnapshot, ModelLoopFrameSnapshot, SliceExprEvalSnapshot,
-    SourceToolReturnFrameSnapshot, ValueSnapshot,
+    ModelDecodeSnapshot, ModelRequestFrameSnapshot, SliceExprEvalSnapshot, ValueSnapshot,
 };
 use crate::plan::{IntrinsicDispatchTable, SlotLayoutTable};
+
+#[derive(Clone, Default)]
+pub(crate) struct SharedFrameValidation {
+    definitions:
+        std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, frame::FrameValidation>>>,
+    ownership: std::rc::Rc<std::cell::RefCell<ownership::FrameOwnership>>,
+}
+
+impl SharedFrameValidation {
+    pub(super) fn for_tasks(
+        logical_tasks: std::collections::BTreeMap<
+            crate::driver::scheduler::TaskId,
+            crate::driver::scheduler::TaskIdentity,
+        >,
+    ) -> Self {
+        let graph = Self::default();
+        graph.ownership.borrow_mut().logical_tasks = logical_tasks;
+        graph.ownership.borrow_mut().deferred = true;
+        graph
+    }
+    pub(super) fn validate(&self) -> Result<(), String> {
+        self.ownership.borrow().validate(&self.definitions.borrow())
+    }
+}
 
 pub(crate) struct SnapshotValidator<'a> {
     inherited_handlers: usize,
@@ -53,7 +78,8 @@ pub(crate) struct SnapshotValidator<'a> {
     revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     frame_definitions:
         std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, frame::FrameValidation>>>,
-    frame_owners: std::rc::Rc<std::cell::RefCell<std::collections::HashMap<u64, usize>>>,
+    frame_depth: std::cell::Cell<usize>,
+    frame_owners: std::rc::Rc<std::cell::RefCell<ownership::FrameOwnership>>,
     suspension_references: std::rc::Rc<std::cell::RefCell<Vec<(u32, CheckedProject)>>>,
     residual_references: std::rc::Rc<std::cell::RefCell<ResidualReferences>>,
     validated_call_targets: std::cell::RefCell<call_target::ValidatedCallTargets>,
@@ -82,6 +108,7 @@ impl<'a> SnapshotValidator<'a> {
             execution_revision: None,
             revisions: None,
             frame_definitions: Default::default(),
+            frame_depth: Default::default(),
             frame_owners: Default::default(),
             suspension_references: Default::default(),
             residual_references: Default::default(),
@@ -95,6 +122,13 @@ impl<'a> SnapshotValidator<'a> {
             closures,
             limits,
         }
+    }
+
+    pub(crate) fn with_shared_frames(mut self, graph: &super::frame::SharedFrameRestore) -> Self {
+        let validation = graph.validation();
+        self.frame_definitions = validation.definitions;
+        self.frame_owners = validation.ownership;
+        self
     }
 
     pub(crate) fn with_revisions(
@@ -144,7 +178,17 @@ impl<'a> SnapshotValidator<'a> {
         &self,
         checkpoint: &InterpreterCheckpoint,
     ) -> Result<(), String> {
+        if checkpoint.tasks.is_some() {
+            // All task roots are checked together before scheduler installation.
+            self.frame_owners.borrow_mut().deferred = true;
+        }
         checkpoint.model_policy.validate()?;
+        if let Some(request) = &checkpoint.agent_context {
+            self.agent_request_context(request)?;
+            if request.request.0 >= checkpoint.trace.next_host_request {
+                return Err("agent context refers to an unallocated request".into());
+            }
+        }
         for (request, operation) in &checkpoint.storage.operations {
             operation.validate().map_err(|error| error.to_string())?;
             if *request >= checkpoint.trace.next_host_request {
@@ -265,7 +309,7 @@ impl<'a> SnapshotValidator<'a> {
                 .machine
                 .suspended_programs
                 .iter()
-                .flat_map(|node| &node.retries.attempts),
+                .flat_map(|node| &node.retries().attempts),
         ) {
             if retry.id.0 == u32::MAX || !retry_ids.insert(retry.id.0) {
                 return Err("checkpoint retry scope identity is exhausted or duplicated".into());
@@ -310,13 +354,6 @@ impl<'a> SnapshotValidator<'a> {
         self.validate_machine_with_handler_scopes(snapshot, &mut boundary_scopes)
     }
 
-    pub(crate) fn validate_callable_target(
-        &self,
-        target: &CallTargetSnapshot,
-    ) -> Result<(), String> {
-        self.call_target(target, "checkpoint native callable")
-    }
-
     fn validate_machine_with_handler_scopes(
         &self,
         snapshot: &MachineSnapshot,
@@ -328,7 +365,8 @@ impl<'a> SnapshotValidator<'a> {
         self.validate_machine_input(snapshot)?;
         self.validate_auxiliary(snapshot)?;
         self.validate_suspensions(snapshot, boundary_scopes)?;
-        self.validate_residual_references(snapshot)
+        self.validate_residual_references(snapshot)?;
+        self.validate_binding_owners()
     }
 
     /// Every residual scope and attempt reference must name an entry of the
@@ -404,7 +442,11 @@ impl<'a> SnapshotValidator<'a> {
             let context = format!("machine frame {index}");
             match frame {
                 MachineFrameSnapshot::ProgramReturn(frame) => {
-                    self.invocation_site(&frame.call_site, frame.span, &context)?;
+                    frame.parent_model_policy.validate()?;
+                    if let Some(request) = &frame.parent_agent_context {
+                        self.agent_request_context(request)?;
+                    }
+                    self.program_boundary_site(frame, &context)?;
                     self.continuation(&frame.outer, &context, boundary_scopes)?;
                 }
                 MachineFrameSnapshot::Block { continuation }
@@ -438,11 +480,8 @@ impl<'a> SnapshotValidator<'a> {
                     }
                     self.continuation(continuation, &context, boundary_scopes)?;
                 }
-                MachineFrameSnapshot::ModelLoop(frame) => {
-                    self.model_loop(frame, &context, boundary_scopes)?
-                }
-                MachineFrameSnapshot::SourceToolReturn(frame) => {
-                    self.source_tool_return(frame, &context, boundary_scopes)?;
+                MachineFrameSnapshot::ModelRequest(frame) => {
+                    self.model_request(frame, &context, boundary_scopes)?
                 }
                 MachineFrameSnapshot::ResidualScope { scope } => {
                     self.residual_references.borrow_mut().scopes.push(*scope);
@@ -452,12 +491,22 @@ impl<'a> SnapshotValidator<'a> {
         Ok(())
     }
 
-    fn model_loop(
+    fn model_request(
         &self,
-        frame: &ModelLoopFrameSnapshot,
+        frame: &ModelRequestFrameSnapshot,
         context: &str,
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
+        let step = matches!(frame.pending.decode, ModelDecodeSnapshot::Step { .. });
+        if step != (frame.pending.request.action == etas_host::ModelAction::Step)
+            || (step
+                && frame.pending.request.options.attempt_policy
+                    != etas_host::ModelAttemptPolicy::Single)
+        {
+            return Err(format!(
+                "{context} model action disagrees with its checked single-generation ABI"
+            ));
+        }
         if frame.boundary_request_id.0 > frame.pending.request.id.0 {
             return Err(format!(
                 "{context} model loop request precedes its original boundary occurrence"
@@ -468,9 +517,10 @@ impl<'a> SnapshotValidator<'a> {
                 self.type_id(ty, &format!("{context} model decode type"))?
             }
             ModelDecodeSnapshot::String | ModelDecodeSnapshot::ModelResponse => {}
-        }
-        for source_tool in &frame.pending.source_tools {
-            self.item(source_tool.item, &format!("{context} source tool binding"))?;
+            ModelDecodeSnapshot::Step { result, output } => {
+                self.type_id(result, &format!("{context} step result type"))?;
+                self.type_id(output, &format!("{context} step output type"))?;
+            }
         }
         self.continuation(
             &frame.pending.continuation,
@@ -480,20 +530,6 @@ impl<'a> SnapshotValidator<'a> {
         self.continuation(
             &frame.outer_continuation,
             &format!("{context} outer model continuation"),
-            boundary_scopes,
-        )
-    }
-
-    fn source_tool_return(
-        &self,
-        frame: &SourceToolReturnFrameSnapshot,
-        context: &str,
-        boundary_scopes: &mut BTreeSet<HandlerScopeId>,
-    ) -> Result<(), String> {
-        self.item(frame.binding.item, &format!("{context} source tool item"))?;
-        self.model_loop(
-            &frame.model_loop,
-            &format!("{context} model loop"),
             boundary_scopes,
         )
     }
@@ -603,6 +639,129 @@ impl<'a> SnapshotValidator<'a> {
         boundary_scopes: &mut BTreeSet<HandlerScopeId>,
     ) -> Result<(), String> {
         match continuation {
+            ContinuationSnapshot::DefaultArguments(state) => self.default_arguments(state, context),
+            ContinuationSnapshot::AgentControllerStep(state)
+            | ContinuationSnapshot::AgentControllerTool(state) => {
+                let operation = crate::control::CheckedAgentOperation::controller(
+                    self.checked,
+                    state.inference,
+                    crate::control::AgentOperationKind::Invoke,
+                )?;
+                let ValueSnapshot::Array(calls) = &state.calls else {
+                    return Err("agent controller has no tool-call array".into());
+                };
+                if state.next_call > calls.len()
+                    || state.round > state.max_tool_rounds
+                    || state.results.len() > state.next_call
+                {
+                    return Err("agent controller has an inconsistent execution cursor".into());
+                }
+                self.snapshot_values(&state.results)?;
+                self.snapshot_values(std::slice::from_ref(&state.conversation))?;
+                self.snapshot_values(std::slice::from_ref(&state.calls))?;
+                crate::value::contract::validate(
+                    self,
+                    calls
+                        .iter()
+                        .map(|value| crate::value::contract::Seed {
+                            value: crate::value::contract::Value::Snapshot(value),
+                            ty: operation.parameter_types[0],
+                        })
+                        .chain(
+                            state
+                                .results
+                                .iter()
+                                .map(|value| crate::value::contract::Seed {
+                                    value: crate::value::contract::Value::Snapshot(value),
+                                    ty: operation.result_type,
+                                }),
+                        ),
+                    &crate::control::GenericBindings::new(),
+                )
+            }
+            ContinuationSnapshot::ToolInvocationStart(invocation)
+            | ContinuationSnapshot::ToolInvocationResult(invocation) => {
+                self.agent_request_context(&invocation.context)?;
+                self.snapshot_values(std::slice::from_ref(&invocation.input))?;
+                use crate::orchestration::ToolInvocationOriginSnapshot as Origin;
+                let parameter_types = match &invocation.call {
+                    Origin::Standard(call) => {
+                        self.call_target(call, context)?;
+                        let CallTargetSnapshot::StdIntrinsic {
+                            intrinsic,
+                            parameter_types,
+                            ..
+                        } = call
+                        else {
+                            return Err("native tool continuation has no checked call".into());
+                        };
+                        if intrinsic.0 != etas_std::intrinsic::runtime::TOOL_INVOKE {
+                            return Err(
+                                "native tool continuation has the wrong checked intrinsic".into()
+                            );
+                        }
+                        parameter_types.clone()
+                    }
+                    Origin::Controller { inference } => {
+                        crate::control::CheckedAgentOperation::controller(
+                            self.checked,
+                            *inference,
+                            crate::control::AgentOperationKind::Invoke,
+                        )?
+                        .parameter_types
+                    }
+                    Origin::Source(evidence) => {
+                        let proof = crate::control::CheckedActionInvocation::restore_evidence(
+                            evidence,
+                            self.revisions
+                                .ok_or("source tool invocation has no checked revisions")?,
+                        )?;
+                        if !std::sync::Arc::ptr_eq(&proof.program, self.checked) {
+                            return Err(
+                                "source tool invocation has a different checked program".into()
+                            );
+                        }
+                        let operation = crate::control::CheckedAgentOperation::source_tool(proof)?;
+                        let ValueSnapshot::Tuple(args) = &invocation.input else {
+                            return Err("source tool checkpoint has no argument tuple".into());
+                        };
+                        if args.len() != operation.parameter_types.len() {
+                            return Err(
+                                "source tool arguments differ from the checked action ABI".into()
+                            );
+                        }
+                        return crate::value::contract::validate(
+                            self,
+                            args.iter()
+                                .zip(operation.parameter_types)
+                                .map(|(value, ty)| crate::value::contract::Seed {
+                                    value: crate::value::contract::Value::Snapshot(value),
+                                    ty,
+                                }),
+                            &crate::control::GenericBindings::new(),
+                        );
+                    }
+                };
+                if parameter_types.len() != 1 {
+                    return Err("native tool invocation has no single checked input".into());
+                }
+                crate::value::contract::validate(
+                    self,
+                    [crate::value::contract::Seed {
+                        value: crate::value::contract::Value::Snapshot(&invocation.input),
+                        ty: parameter_types[0],
+                    }],
+                    &crate::control::GenericBindings::new(),
+                )
+            }
+            ContinuationSnapshot::AgentExecutionState(state)
+            | ContinuationSnapshot::AgentExecutionScope { state, .. } => {
+                state.policy.validate()?;
+                if let Some(request) = &state.request {
+                    self.agent_request_context(request)?;
+                }
+                Ok(())
+            }
             ContinuationSnapshot::PackExistential { expr, frame } => {
                 self.expr(*expr, context)?;
                 if !self.checked.types.existential_packs.contains_key(expr) {
@@ -621,11 +780,8 @@ impl<'a> SnapshotValidator<'a> {
                     .push(*attempt);
                 Ok(())
             }
-            ContinuationSnapshot::SourceToolReturn(frame) => {
-                frame.validate_continuation()?;
-                self.source_tool_return(frame, context, boundary_scopes)
-            }
-            ContinuationSnapshot::ProgramResume { id } => {
+            ContinuationSnapshot::ProgramResume { id }
+            | ContinuationSnapshot::TaskResume { id } => {
                 self.suspension_references
                     .borrow_mut()
                     .push((*id, self.checked.clone()));
@@ -637,6 +793,29 @@ impl<'a> SnapshotValidator<'a> {
             }
             ContinuationSnapshot::StreamReadReduction { .. } => {
                 self.stream_read_reduction(continuation, context)
+            }
+            ContinuationSnapshot::ScopeExit { block, keep, frame } => {
+                self.block(*block, context)?;
+                let scope = self
+                    .checked
+                    .hir
+                    .scopes
+                    .get(self.checked.hir.blocks[*block].scope)
+                    .expect("validated block scope");
+                if keep.windows(2).any(|pair| pair[0].0 >= pair[1].0)
+                    || keep.iter().any(|symbol| {
+                        self.checked.symbols.get(*symbol).is_none()
+                            || (scope.symbols.contains(symbol)
+                                && matches!(
+                                    self.checked.types.symbol_types.get(symbol),
+                                    Some(etas_types::SymbolTypeFact::Local { mutable: true, .. })
+                                ))
+                    })
+                {
+                    return Err(format!("{context} has invalid lexical scope bindings"));
+                }
+                self.frame(frame, context)?;
+                self.declaring_scope(*block, frame)
             }
             ContinuationSnapshot::ContinueBlock {
                 block,
@@ -768,6 +947,7 @@ impl<'a> SnapshotValidator<'a> {
                 if method != expected
                     || !type_args.is_empty()
                     || fact.receiver == etas_types::method::MethodReceiver::Associated
+                    || fact.receiver.is_updating()
                 {
                     return Err(format!(
                         "{context}: receiver continuation differs from its checked method selection"
@@ -919,6 +1099,39 @@ impl<'a> SnapshotValidator<'a> {
             ContinuationSnapshot::RestoreModelPolicy { .. }
             | ContinuationSnapshot::HandlerDispatch { deferred: None, .. }
             | ContinuationSnapshot::ScopedModelPolicy { .. } => Ok(()),
+            ContinuationSnapshot::LoopLimit { stmt, frame } => {
+                let limits = match self.checked.hir.stmts.get(*stmt) {
+                    Some(
+                        etas_hir::HirStmt::For { limits, .. }
+                        | etas_hir::HirStmt::While { limits, .. },
+                    ) => limits,
+                    _ => return Err(format!("{context} has an invalid loop budget statement")),
+                };
+                let has_iterations = limits.iter().any(|expr| {
+                    let Some(etas_hir::HirExpr::Call { callee, args, .. }) =
+                        self.checked.hir.exprs.get(*expr)
+                    else {
+                        return false;
+                    };
+                    let Some(etas_hir::HirExpr::Path(path)) = self.checked.hir.exprs.get(*callee)
+                    else {
+                        return false;
+                    };
+                    let ResolveResult::Resolved(symbol) = path.resolution else {
+                        return false;
+                    };
+                    args.len() == 1
+                        && etas_types::facts::enums::standard_limit_constructor(
+                            &self.checked.hir,
+                            &self.checked.std_registry,
+                            symbol,
+                        ) == Some(etas_std::StdLimitKind::Iterations)
+                });
+                if !has_iterations {
+                    return Err(format!("{context} has no checked Iterations budget"));
+                }
+                self.frame(frame, context)
+            }
             ContinuationSnapshot::ForLoop {
                 pat,
                 source,
@@ -936,7 +1149,7 @@ impl<'a> SnapshotValidator<'a> {
                     self.symbol(*symbol, context)?;
                 }
                 self.index_at_most(*next_index, *iterations, context)?;
-                if *iterations == 0 || *iterations > u32::MAX as usize {
+                if *iterations == 0 {
                     return Err(format!("{context} has an invalid for-loop iteration limit"));
                 }
                 if let Some(source) = source {
@@ -947,6 +1160,47 @@ impl<'a> SnapshotValidator<'a> {
                     ));
                 }
                 self.frame(frame, context)
+            }
+            ContinuationSnapshot::SourceForLoop {
+                iter,
+                pat,
+                source,
+                awaiting_step,
+                next_index,
+                body,
+                iterations,
+                loop_scope,
+                frame,
+                span,
+            } => {
+                self.expr(*iter, context)?;
+                self.pat(*pat, context)?;
+                self.block(*body, context)?;
+                if !self.checked.hir.stmts.iter().any(|(_, statement)| matches!(statement,
+                    etas_hir::HirStmt::For { iter: checked_iter, pat: checked_pat, body: checked_body, span: checked_span, .. }
+                        if checked_iter == iter && checked_pat == pat && checked_body == body && checked_span == span)) {
+                    return Err(format!("{context} has no matching checked source loop"));
+                }
+                let protocol =
+                    crate::plan::iteration::SourceIteratorProtocol::checked(self.checked, *iter)?
+                        .ok_or("checkpoint source loop has no checked iterator protocol")?;
+                self.index_at_most(*next_index, *iterations, context)?;
+                if *iterations == 0 || (*awaiting_step && *next_index >= *iterations) {
+                    return Err(format!("{context} has invalid source iterator progress"));
+                }
+                for symbol in loop_scope {
+                    self.symbol(*symbol, context)?;
+                }
+                self.frame(frame, context)?;
+                if let Some(source) = source {
+                    self.snapshot_value(source)?;
+                    self.reference_value(source, protocol.value_type, &frame.generic_bindings())?;
+                } else if *awaiting_step || *next_index != 0 {
+                    return Err(format!(
+                        "{context} has source loop progress without its cursor"
+                    ));
+                }
+                Ok(())
             }
             ContinuationSnapshot::WhileLoop {
                 cond, body, frame, ..
@@ -969,7 +1223,12 @@ impl<'a> SnapshotValidator<'a> {
                 self.statement_index(*block, *next_stmt_index, context)?;
                 self.frame(frame, context)
             }
-            ContinuationSnapshot::TryExpr { expr, .. } => self.expr(*expr, context),
+            ContinuationSnapshot::TryExpr {
+                expr, result_type, ..
+            } => {
+                self.expr(*expr, context)?;
+                self.type_id(*result_type, context)
+            }
             ContinuationSnapshot::MemoryClearDeleteAll { .. } => Ok(()),
             ContinuationSnapshot::MemoryClearDeleteNext {
                 remaining_keys,
@@ -1029,6 +1288,9 @@ impl<'a> SnapshotValidator<'a> {
         let mut query_seeds = Vec::new();
         for value in root.walk() {
             match value {
+                ValueSnapshot::ScopedHandler { metadata, value } => {
+                    self.scoped_handler(metadata, value)?;
+                }
                 ValueSnapshot::TaskRuntime(value) => self
                     .tasks
                     .ok_or("task value requires its scheduler snapshot")?
@@ -1121,7 +1383,7 @@ impl<'a> SnapshotValidator<'a> {
                     self.type_id(*ty, "checkpoint nominal value type")?
                 }
                 ValueSnapshot::Existential { header, value } => {
-                    let bindings = header.validate(self.checked)?;
+                    let bindings = header.validate_snapshot(self.checked, self.revisions)?;
                     self.reference_value(value, header.concrete_type, &bindings)?;
                 }
                 ValueSnapshot::Conversation(conversation) => {
@@ -1133,8 +1395,10 @@ impl<'a> SnapshotValidator<'a> {
                 ValueSnapshot::Handler {
                     fact_expr,
                     handlers,
+                    captured,
                 } => {
                     self.expr(*fact_expr, "checkpoint handler value fact expression")?;
+                    self.handler_capture(*fact_expr, captured.as_ref())?;
                     for (index, handler) in handlers.iter().enumerate() {
                         self.handler_arm(
                             handler,
@@ -1225,6 +1489,7 @@ impl<'a> SnapshotValidator<'a> {
                     ));
                 }
             }
+            ValueSnapshot::Bytes(values) => self.index_at_most(position, values.len(), context)?,
             ValueSnapshot::Array(values)
             | ValueSnapshot::List(values)
             | ValueSnapshot::Slice(values)
@@ -1481,6 +1746,40 @@ impl<'a> SnapshotValidator<'a> {
             .ok_or_else(|| format!("{context} references missing HIR symbol {}", id.0))
     }
 
+    fn agent_request_context(
+        &self,
+        request: &crate::orchestration::AgentRequestContextSnapshot,
+    ) -> Result<(), String> {
+        request.policy.validate()?;
+        let program;
+        let checked = match &request.program.program {
+            crate::orchestration::CheckpointProgramReference::Source
+                if self.execution_revision.is_none() =>
+            {
+                self.checked
+            }
+            crate::orchestration::CheckpointProgramReference::Revision { revision }
+                if self.execution_revision.is_some_and(|current| {
+                    **revision
+                        == crate::orchestration::CheckpointCodeRevision::for_revision(current)
+                }) =>
+            {
+                self.checked
+            }
+            _ => {
+                program = self
+                    .revisions
+                    .ok_or("agent context has no prepared revision set")?
+                    .execution_snapshot(&request.program)?;
+                &program.checked
+            }
+        };
+        if !checked.types.agent_methods.contains_key(&request.method) {
+            return Err("agent context refers to an unknown checked method".into());
+        }
+        Ok(())
+    }
+
     fn record_construction(
         &self,
         expr: HirExprId,
@@ -1628,6 +1927,10 @@ flow main() -> unit {
 
     fn empty_locals() -> LocalsSnapshot {
         LocalsSnapshot {
+            reference: false,
+            shared_bindings: Default::default(),
+            parent: None,
+            handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id: 1,
@@ -1787,14 +2090,14 @@ flow main() -> unit {
             (
                 ContinuationSnapshot::CallArgs {
                     call: expr,
-                    target: CallTargetSnapshot::ToolItem(HirItemId(u32::MAX)),
+                    target: Some(CallTargetSnapshot::ToolItem(HirItemId(u32::MAX))),
                     args: Vec::new().into(),
                     next_arg_index: 0,
                     evaluated_args: Vec::new(),
                     span: span(),
                     frame: empty_locals(),
                 },
-                "missing HIR item",
+                "does not reference a checked call site",
             ),
         ];
 

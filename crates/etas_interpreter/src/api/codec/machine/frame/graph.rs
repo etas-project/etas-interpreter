@@ -106,7 +106,18 @@ fn prepare_with_budget<F: Clone>(
                     if cache.contains(value) {
                         continue;
                     }
+                    if value.get("reference").is_some() {
+                        let decoded = decode(value, &cache)?;
+                        cache.insert(value, decoded);
+                        continue;
+                    }
                     pending.push(Task::FinishFrame(value));
+                    pending.push(Task::Children(Children::One(
+                        value
+                            .get("parent")
+                            .and_then(optional)
+                            .map(DecodeRoot::Frame),
+                    )));
                     Children::Fields(array(value, "locals")?.iter(), "value")
                 }
                 DecodeRoot::Value(value) => value_children(value)?,
@@ -213,7 +224,8 @@ fn optional(value: &Value) -> Option<&Value> {
 fn value_children(value: &Value) -> Result<Children<'_>, String> {
     Ok(match required_str(value, "kind")? {
         "callable" => Children::One(Some(DecodeRoot::Target(required(value, "target")?))),
-        "nominal" | "trust" | "option_some" => {
+        "handler" => Children::One(value.get("captured").map(DecodeRoot::Frame)),
+        "nominal" | "trust" | "option_some" | "existential" | "scoped_handler" => {
             Children::One(Some(DecodeRoot::Value(required(value, "value")?)))
         }
         "message" => Children::One(Some(DecodeRoot::Value(required(value, "payload")?))),

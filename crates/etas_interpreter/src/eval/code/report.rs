@@ -9,13 +9,18 @@ use etas_types::{TypeId, TypeStore, facts::symbols::KnownCodeTypes};
 pub(in crate::eval) fn check_report(
     store: &TypeStore,
     known: &KnownCodeTypes,
+    enums: &super::project::EnumLayouts,
     ty: TypeId,
     value: &CheckReport,
 ) -> Result<V, String> {
     value
         .validate(DescriptorLimits::default())
         .map_err(|error| error.to_string())?;
-    let p = Projector { store, known };
+    let p = Projector {
+        store,
+        known,
+        enums,
+    };
     let diagnostic = p.array_element(p.field(ty, "diagnostics")?)?;
     let diagnostics = value
         .diagnostics
@@ -71,7 +76,7 @@ pub(in crate::eval) fn check_report(
             ("diagnostics", V::Array(diagnostics.into())),
             (
                 "revision",
-                revision_info(store, known, revision, &value.revision)?,
+                revision_info(store, known, enums, revision, &value.revision)?,
             ),
             (
                 "dependencies",
@@ -107,10 +112,16 @@ pub(in crate::eval) fn check_report(
 pub(in crate::eval) fn revision_info(
     store: &TypeStore,
     known: &KnownCodeTypes,
+    enums: &super::project::EnumLayouts,
     ty: TypeId,
     revision: &etas_code::RevisionInfo,
 ) -> Result<V, String> {
-    Projector { store, known }.record(
+    Projector {
+        store,
+        known,
+        enums,
+    }
+    .record(
         ty,
         vec![
             (

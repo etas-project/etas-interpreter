@@ -20,7 +20,7 @@ pub(crate) struct TaskId(pub(crate) u64);
 )]
 pub(crate) struct ContinuationId(pub(crate) u64);
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Copy, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum TaskIdentity {
     Root,
     Scheduled(TaskId),
@@ -36,9 +36,13 @@ pub(crate) struct TaskHandle {
 pub(crate) enum TaskWait {
     Task(TaskId),
     Scope(TaskScopeId),
+    Completion(TaskScopeId),
     Host(etas_host::execution::OperationId),
+    HostDrain,
     Cpu(crate::driver::cpu::CpuJobId),
     Resource(super::resource::ResourceGuardId),
+    Handler(crate::orchestration::HandlerScopeId),
+    HandlerOwner(TaskId),
 }
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
@@ -85,18 +89,44 @@ pub(crate) enum TaskWaiter {
     Task(TaskId),
 }
 
+#[derive(Clone, Debug)]
+pub(crate) struct CheckedTaskStart {
+    pub(crate) target: crate::control::CallTarget,
+    pub(crate) result_type: etas_types::TypeId,
+}
+
 pub(crate) enum TaskResume {
+    DeferredHandler {
+        handler: crate::orchestration::HandlerScopeId,
+    },
+    Handler {
+        continuation: Continuation,
+        handler: crate::orchestration::HandlerScopeId,
+    },
     Await(Continuation),
     Run(Continuation),
+    Completion {
+        continuation: Continuation,
+        result_type: etas_types::TypeId,
+        span: etas_core::Span,
+    },
     Transfer {
         token: crate::value::ContinuationTokenValue,
-        continuation: Continuation,
+        continuation: crate::eval::machine::ParkedContinuation,
         output: etas_types::TypeId,
         span: etas_core::Span,
     },
 }
 
+#[derive(Debug)]
 pub(crate) enum RootTaskWait {
+    Completion {
+        scope: TaskScopeId,
+        continuation: Continuation,
+        result_type: etas_types::TypeId,
+        span: etas_core::Span,
+    },
+    Ready(Box<crate::eval::machine::MachineInput>),
     Await {
         target: TaskHandle,
         continuation: Continuation,
@@ -107,17 +137,17 @@ pub(crate) enum RootTaskWait {
     Transfer {
         target: TaskHandle,
         token: crate::value::ContinuationTokenValue,
-        continuation: Continuation,
+        continuation: crate::eval::machine::ParkedContinuation,
         output: etas_types::TypeId,
         span: etas_core::Span,
     },
-    Host,
+    Host(super::HostWait),
     Settling(TaskOutcome),
 }
 
 pub(crate) struct ScheduledTask {
     pub(crate) inherited_dynamic: (usize, usize),
-    pub(crate) start: Option<std::sync::Arc<crate::intrinsic::dispatch::CheckedStdIntrinsicCall>>,
+    pub(crate) start: Option<std::sync::Arc<CheckedTaskStart>>,
     pub(crate) scope: TaskScopeId,
     pub(crate) machine: EvalMachine,
     pub(crate) local: TaskLocalState,
@@ -127,6 +157,8 @@ pub(crate) struct ScheduledTask {
     pub(crate) outcome: Option<TaskOutcome>,
     pub(crate) waiters: Vec<TaskWaiter>,
     pub(crate) waiting_continuation: Option<TaskResume>,
+    pub(crate) host_wait: Option<super::HostWait>,
+    pub(crate) pending_outcome: Option<TaskOutcome>,
     pub(crate) source_index: usize,
     pub(crate) cpu_capsule: Option<crate::driver::cpu::CpuTaskCapsule>,
     pub(crate) active_slot: bool,
@@ -134,6 +166,23 @@ pub(crate) struct ScheduledTask {
 }
 
 impl ScheduledTask {
+    pub(super) fn can_relay_handler(&self) -> bool {
+        matches!(
+            self.state,
+            TaskState::Waiting(
+                TaskWait::Task(_)
+                    | TaskWait::Scope(_)
+                    | TaskWait::Completion(_)
+                    | TaskWait::Host(_)
+            )
+        ) || self.state == TaskState::Ready
+            && self.machine.has_input()
+            && !matches!(
+                self.waiting_continuation,
+                Some(TaskResume::DeferredHandler { .. })
+            )
+    }
+
     pub(crate) fn new(
         scope: TaskScopeId,
         machine: EvalMachine,
@@ -155,6 +204,8 @@ impl ScheduledTask {
             outcome: None,
             waiters: Vec::new(),
             waiting_continuation: None,
+            host_wait: None,
+            pending_outcome: None,
             source_index,
             cpu_capsule: None,
             active_slot: false,

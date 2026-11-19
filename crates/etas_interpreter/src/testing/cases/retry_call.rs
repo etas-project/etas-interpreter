@@ -572,7 +572,7 @@ flow main() -> i32 {
 
 #[tokio::test(flavor = "current_thread")]
 async fn run_checked_retries_retryable_host_tool_failure_inside_model_loop() {
-    let checked = checked_project(
+    let checked = checked_host_search_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
@@ -611,6 +611,7 @@ flow main() -> string {
             Vec::new(),
             &host,
             RunOptions {
+                code_definitions: Some(project::prepared_tool_definitions(&checked)),
                 host_context: api::HostExecutionContext {
                     authority: AuthorityContext {
                         grants: vec![HostActionGrant::allow("Agentic", "infer")],

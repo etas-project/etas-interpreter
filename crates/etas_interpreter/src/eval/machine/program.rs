@@ -28,12 +28,30 @@ impl EvalMachine {
     ) -> Result<MachinePoll, ExecutionFault> {
         let missing =
             |reason| ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason);
-        let destination = call.destination().map_err(missing)?;
+        let call =
+            call.with_receiver_update(site.as_ref().and_then(|site| site.receiver_update.clone()));
+        let mut destination = call.destination().map_err(missing)?;
         let source = self.program_scope.as_ref().map_or_else(
             || ctx.checked_execution_program(),
             |scope| scope.program.clone(),
         );
         let args = call.arguments(&source, args).map_err(missing)?;
+        if destination.foreign.is_none()
+            && destination.checked.foreign_methods().next().is_some()
+            && let Some(projection) = call
+                .action_projections()
+                .map_err(missing)?
+                .into_iter()
+                .find(|edge| {
+                    Arc::ptr_eq(edge.source(), &destination.checked)
+                        && Arc::ptr_eq(edge.target(), &source.checked)
+                })
+        {
+            destination.foreign = Some(Arc::new(crate::value::ForeignExecutionLink {
+                owner: source.clone(),
+                projection,
+            }));
+        }
         if self.checkpoint_root.is_none() {
             self.checkpoint_root = Some(super::snapshot::CheckpointRoot {
                 program: source.clone(),
@@ -45,8 +63,10 @@ impl EvalMachine {
         self.push_frame(EvalFrame::ProgramReturn(Box::new(ProgramReturnFrame {
             site,
             parent,
+            parent_handler_floor: ctx.handler_floor,
             parent_program: source,
             parent_model_policy: ctx.task.model_policy.clone(),
+            parent_agent_context: ctx.task.agent_context.clone(),
             call: call.clone(),
             outer,
             span,
@@ -79,8 +99,17 @@ impl EvalMachine {
                 span,
             );
         }
+        if let super::scoped_call::ProgramCallTarget::Expression(expression) = call.target() {
+            return expression.enter(ctx, &args, span);
+        }
         match call.body() {
-            Ok(target) => ctx.execute_call_target_frame(target, args, span, None),
+            Ok(target) => ctx.execute_call_target_frame_with_receiver(
+                target,
+                args,
+                span,
+                None,
+                call.receiver_update(),
+            ),
             Err(reason) => ControlSignal::missing_checked_fact(reason, span),
         }
     }
@@ -106,12 +135,66 @@ impl EvalMachine {
             Ok(value) => value,
             Err(reason) => return fail(reason),
         };
+        if let Err(reason) = frame.call.project_receiver(program) {
+            return fail(reason);
+        }
         ctx.task.model_policy = frame.parent_model_policy;
+        ctx.task.agent_context = frame.parent_agent_context;
         self.program_scope = frame.parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
             PendingContinuation {
                 continuation: frame.outer,
                 input: ContinuationInput::Value(value),
+            },
+        )));
+        MachinePoll::ProgramChanged
+    }
+
+    pub(super) fn unwind_program_control(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+        frame: ProgramReturnFrame,
+        input: ContinuationInput,
+    ) -> MachinePoll {
+        let fail = |reason| {
+            MachinePoll::Fault(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                frame.span,
+                reason,
+            ))
+        };
+        let program = match self.checked_program_exit(ctx, &frame) {
+            Ok(program) => program,
+            Err(reason) => return fail(reason),
+        };
+        let input = match frame.call.control(program, input) {
+            Ok(input) => input,
+            Err(reason) => return fail(reason),
+        };
+        let input = match input {
+            ContinuationInput::Finish(value) if frame.call.is_handled_body_expression() => {
+                // ProgramExpr installs this real Handler frame on the stack.
+                // Close it with a value, then restore the caller arm's finish
+                // before reaching the application's program return boundary.
+                let Some(boundary) = self.pop_frame() else {
+                    return fail("Handler body exit has no native boundary frame".into());
+                };
+                if !matches!(&boundary, EvalFrame::Handler(_)) {
+                    return fail("Handler body exit has a different native boundary frame".into());
+                }
+                self.push_continuation_frames(Continuation::Finish);
+                self.push_frame(boundary);
+                ContinuationInput::Value(value)
+            }
+            input => input,
+        };
+        ctx.task.model_policy = frame.parent_model_policy;
+        ctx.task.agent_context = frame.parent_agent_context;
+        self.program_scope = frame.parent;
+        self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
+            PendingContinuation {
+                continuation: frame.outer,
+                input,
             },
         )));
         MachinePoll::ProgramChanged
@@ -149,8 +232,36 @@ impl EvalMachine {
         let error = PendingPerform::typed_error(ty, payload, frame.span, Continuation::BlockValue);
         self.push_continuation_frames(frame.outer);
         ctx.task.model_policy = frame.parent_model_policy;
+        ctx.task.agent_context = frame.parent_agent_context;
         self.program_scope = frame.parent;
         self.input = Some(MachineInput::Signal(ControlSignal::pending_perform(error)));
+        MachinePoll::ProgramChanged
+    }
+
+    pub(super) fn unwind_program_retry_failure(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+        frame: ProgramReturnFrame,
+        message: String,
+    ) -> MachinePoll {
+        if let Err(reason) = self.checked_program_exit(ctx, &frame) {
+            return MachinePoll::Fault(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                frame.span,
+                reason,
+            ));
+        }
+        ctx.task.model_policy = frame.parent_model_policy;
+        self.program_scope = frame.parent;
+        self.input = Some(MachineInput::Signal(ControlSignal::pending_continuation(
+            PendingContinuation {
+                continuation: frame.outer,
+                input: ContinuationInput::RetryFailure {
+                    span: frame.span,
+                    message,
+                },
+            },
+        )));
         MachinePoll::ProgramChanged
     }
 
@@ -171,9 +282,21 @@ impl EvalMachine {
             || ctx.task.handler_stack.len() != ctx.handler_floor
             || ctx.task.retry_stack.len() != frame.retry_depth
         {
-            return Err(
-                "scoped exit disagrees with its program or dynamic handler/retry scope".into(),
-            );
+            return Err(format!(
+                "scoped exit disagrees with its program or dynamic handler/retry scope: \
+                 active root {:?}, destination root {:?}, program match {}, plan match {}, \
+                 context match {}, handler floor {}/{}, handlers {}, retries {}/{}",
+                scope.program.plan.root,
+                destination.plan.root,
+                Arc::ptr_eq(&scope.program.checked, &destination.checked),
+                Arc::ptr_eq(&scope.program.plan, &destination.plan),
+                Arc::ptr_eq(ctx.checked, &destination.checked),
+                ctx.handler_floor,
+                scope.handler_floor,
+                ctx.task.handler_stack.len(),
+                ctx.task.retry_stack.len(),
+                frame.retry_depth,
+            ));
         }
         Ok(&scope.program)
     }

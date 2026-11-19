@@ -1,6 +1,7 @@
 mod action_reducer;
-mod agent;
+pub(crate) mod agent;
 mod aggregate_expr;
+pub(crate) mod arguments;
 mod assign;
 mod assign_nested;
 mod assign_place;
@@ -23,19 +24,23 @@ mod checked_type;
 mod checkpoint;
 mod code;
 pub(crate) mod task_checkpoint;
+pub(crate) mod tool;
 pub(crate) use code::CompilerInvocation;
 mod const_expr;
 mod continuation;
 pub(crate) mod cpu;
+mod data_capture;
 mod existential;
 mod expr;
 mod field_access;
 mod file_read_limited;
 mod flow;
 mod handler;
+pub(crate) mod host_completion;
 mod host_enum;
 mod host_type_environment;
 mod host_value;
+mod runtime_observation;
 pub(crate) mod workspace_discovery;
 pub(crate) use host_value::{
     decode_checked_host_value, host_to_checked_interp_value, host_to_typed_interp_value,
@@ -44,6 +49,7 @@ pub(crate) mod collection_ordering;
 mod index_access;
 pub(crate) mod limit;
 mod loop_control;
+pub(crate) mod source_iteration;
 pub(crate) use loop_control::ForLoopResume;
 pub(crate) mod machine;
 mod memory_commit;
@@ -51,10 +57,12 @@ mod memory_intent;
 mod memory_page;
 mod memory_selection;
 mod memory_store;
+mod message_context;
 mod method;
 mod operator_expr;
 pub(crate) mod ordered_collection;
 mod pattern;
+mod payload_convert;
 mod perform;
 mod pipeline;
 pub(crate) mod priority_queue;
@@ -62,9 +70,11 @@ mod reflection;
 pub(crate) mod replay;
 pub(crate) mod residual;
 mod run_state;
+mod source_memory;
 pub(crate) use run_state::CpuJobRecord;
 pub(crate) use run_state::{EvalRunState, TaskLocalState};
 mod collection_call;
+mod conversation_assembly;
 mod safe_point;
 mod session_context;
 mod session_history;
@@ -82,7 +92,9 @@ mod storage;
 mod stream;
 mod support_call;
 mod task;
+mod task_events;
 mod task_resource;
+pub(crate) mod task_start;
 mod try_expr;
 mod variant;
 pub(crate) use crate::control::{
@@ -117,7 +129,7 @@ use crate::{
     plan::{BraceLiteralShape, InterpreterPlan},
     value::{ArrayValue, InterpValue, MapValue, RecordValue, SliceValue},
 };
-use etas_core::{AnalysisDiagnosticCode, Diagnostic, Span};
+use etas_core::{AnalysisDiagnosticCode, Span};
 use etas_hir::{
     HirArg, HirBinaryOp, HirBlockId, HirEffectRef, HirElseBranch, HirExpr, HirExprId, HirFlowDecl,
     HirGenericArg, HirHandlerArm, HirItem, HirItemId, HirLiteral, HirPat, HirStmt, HirToolBody,
@@ -138,6 +150,7 @@ use etas_host::{
 pub(crate) struct EvalContext<'a> {
     pub(crate) handler_floor: usize,
     pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
+    foreign: Option<std::sync::Arc<crate::value::ForeignExecutionLink>>,
     code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     syntax_limits: etas_frontend::code::service::NativeSyntaxLimits,
     code_syntax: std::sync::Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
@@ -304,6 +317,7 @@ impl<'a> EvalContext<'a> {
         scoped.handler_floor = handler_floor;
         scoped.current_task = crate::driver::scheduler::TaskIdentity::Scheduled(task_id);
         scoped.revision = program.revision.as_ref();
+        scoped.foreign = program.foreign.clone();
         scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
         scoped
     }
@@ -330,6 +344,7 @@ impl<'a> EvalContext<'a> {
         scoped.handler_floor = handler_floor;
         scoped.current_task = current_task;
         scoped.revision = program.revision.as_ref();
+        scoped.foreign = program.foreign.clone();
         scoped.plan_owner = std::cell::OnceCell::from(program.plan.clone());
         scoped
     }
@@ -343,6 +358,7 @@ impl<'a> EvalContext<'a> {
                 .clone(),
             definitions: self.code_definitions.clone(),
             revision: self.revision.cloned(),
+            foreign: self.foreign.clone(),
         }
     }
     pub(crate) fn scheduling_decision(&mut self, span: Span) -> safe_point::SafePointDecision {
@@ -411,6 +427,7 @@ impl<'a> EvalContext<'a> {
             ),
             handler_floor: 0,
             revision: None,
+            foreign: None,
             code_definitions,
             syntax_limits,
             runtime,
@@ -585,6 +602,7 @@ fn is_pending_host_boundary_signal(signal: &ControlSignal) -> bool {
             | ControlSignal::Checkpoint(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
@@ -611,6 +629,10 @@ fn compose_signal_continuation(signal: ControlSignal, continuation: Continuation
         ControlSignal::Expr(mut pending) => {
             pending.continuation = compose_continuation(pending.continuation, continuation);
             ControlSignal::Expr(pending)
+        }
+        ControlSignal::ProgramExpr(mut pending) => {
+            pending.continuation = compose_continuation(pending.continuation, continuation);
+            ControlSignal::ProgramExpr(pending)
         }
         ControlSignal::Call(mut pending) => {
             pending.continuation = compose_continuation(pending.continuation, continuation);
@@ -659,3 +681,5 @@ pub(crate) fn path_name(action: &ResolvedActionRef) -> String {
         .collect::<Vec<_>>()
         .join(".")
 }
+
+mod scheduling_policy;

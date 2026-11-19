@@ -71,6 +71,26 @@ pub(super) fn lower(
 }
 
 impl IntrinsicDispatchTable {
+    pub(crate) fn task_callback_origin(
+        &self,
+        expr: HirExprId,
+    ) -> Result<&CheckedStdIntrinsicCall, String> {
+        let call = self
+            .program
+            .std_call_origins
+            .get(&expr)
+            .ok_or("task callback has no checked primitive origin")?;
+        if !matches!(
+            self.resolve_std_callable(call.identity)?,
+            crate::intrinsic::dispatch::StdCallable::Task(
+                etas_std::StdTaskIntrinsic::Run | etas_std::StdTaskIntrinsic::Start
+            )
+        ) {
+            return Err("task callback origin is not a checked task entry primitive".into());
+        }
+        Ok(call)
+    }
+
     pub(crate) fn validate_std_call_origin(
         &self,
         origin: HirExprId,
@@ -99,24 +119,74 @@ impl IntrinsicDispatchTable {
             .std_call_origins
             .get(&origin)
             .ok_or("standard intrinsic origin has no checked descriptor binding")?;
-        let input = call
-            .parameter_types
-            .iter()
-            .map(|ty| CheckedStdIntrinsicCall::instantiate_type_with(store, *ty, substitutions))
-            .collect::<Result<Vec<_>, _>>()?;
-        let output =
-            CheckedStdIntrinsicCall::instantiate_type_with(store, call.result_type, substitutions)?;
-        if input.len() != parameters.len()
-            || input
-                .iter()
-                .zip(parameters)
-                .any(|(left, right)| !same_abi_type(store, *left, *right))
-            || !same_abi_type(store, output, result)
-        {
-            return Err("standard intrinsic ABI differs from its checked origin".into());
-        }
-        Ok(())
+        validate_template(call, substitutions, parameters, result, store)
     }
+
+    /// Recheck a saved callback ABI against source facts. This does not select
+    /// an executable entry or grant permission to dispatch the primitive.
+    pub(crate) fn recheck_task_callback(
+        project: &CheckedProject,
+        saved: &CheckedStdIntrinsicCall,
+    ) -> Result<etas_types::TypeId, String> {
+        let table = Self::for_program(project).map_err(|errors| errors.join("; "))?;
+        let expected = table
+            .program
+            .std_call_origins
+            .get(&saved.origin)
+            .ok_or("task callback has no checked primitive origin")?;
+        if expected.identity != saved.identity {
+            return Err("task callback origin resolves to a different descriptor".into());
+        }
+        if !matches!(
+            table
+                .program
+                .handlers
+                .executable(saved.identity.intrinsic, saved.identity.dispatch)?,
+            crate::intrinsic::dispatch::StdCallable::Task(
+                etas_std::StdTaskIntrinsic::Run | etas_std::StdTaskIntrinsic::Start
+            )
+        ) {
+            return Err("task callback origin is not a checked task entry primitive".into());
+        }
+        validate_template(
+            expected,
+            &saved.substitutions,
+            &saved.parameter_types,
+            saved.result_type,
+            &project.type_store,
+        )?;
+        saved
+            .parameter_types
+            .first()
+            .copied()
+            .ok_or_else(|| "task entry has no checked callback parameter".into())
+    }
+}
+
+fn validate_template(
+    call: &CheckedStdIntrinsicCall,
+    substitutions: &[crate::intrinsic::dispatch::IntrinsicSubstitutionStep],
+    parameters: &[etas_types::TypeId],
+    result: etas_types::TypeId,
+    store: &etas_types::TypeStore,
+) -> Result<(), String> {
+    let input = call
+        .parameter_types
+        .iter()
+        .map(|ty| CheckedStdIntrinsicCall::instantiate_type_with(store, *ty, substitutions))
+        .collect::<Result<Vec<_>, _>>()?;
+    let output =
+        CheckedStdIntrinsicCall::instantiate_type_with(store, call.result_type, substitutions)?;
+    if input.len() != parameters.len()
+        || input
+            .iter()
+            .zip(parameters)
+            .any(|(left, right)| !same_abi_type(store, *left, *right))
+        || !same_abi_type(store, output, result)
+    {
+        return Err("standard intrinsic ABI differs from its checked origin".into());
+    }
+    Ok(())
 }
 
 fn same_abi_type(

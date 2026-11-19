@@ -65,6 +65,7 @@ impl ScopedCallableValue {
             plan: prepared.plan().clone(),
             definitions: Some(prepared.definitions.clone()),
             revision: Some(prepared.clone()),
+            foreign: None,
         };
         let mut target = CallTarget::FlowItem(prepared.entry().item);
         if let Some(application) = prepared.frozen_environment().callable_application() {

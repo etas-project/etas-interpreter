@@ -165,6 +165,8 @@ impl FakeHost {
         let gate = Arc::new(ConsoleGate {
             started: tokio::sync::Notify::new(),
             release: tokio::sync::Semaphore::new(0),
+            signals: Mutex::new(Vec::new()),
+            pending_calls: AtomicUsize::new(usize::MAX),
         });
         self.console_gate = Some(gate.clone());
         gate
@@ -219,7 +221,7 @@ impl FakeHost {
             .clone()
     }
 
-    pub(super) fn model_call_count(&self) -> usize {
+    pub(crate) fn model_call_count(&self) -> usize {
         self.model_calls.load(Ordering::SeqCst)
     }
 
@@ -261,12 +263,12 @@ impl FakeHost {
             .clone()
     }
 
-    pub(super) fn seed_model_response_text(&self, text: &str) {
+    pub(crate) fn seed_model_response_text(&self, text: &str) {
         self.seed_model_response_text_with_usage(
             text,
             Some(etas_host::ModelUsage {
-                input_tokens: 1,
-                output_tokens: 1,
+                input_tokens: Some(1),
+                output_tokens: Some(1),
                 cost: None,
             }),
         );
@@ -284,18 +286,20 @@ impl FakeHost {
                 id: etas_host::HostRequestId(0),
                 result: Ok(etas_host::ModelOutput {
                     message: ModelMessage {
+                        provider_data: Vec::new(),
                         role: ModelRole::Assistant,
                         content: vec![ModelContent::Text(text.to_owned())],
                         tool_call_id: None,
                         tool_calls: Vec::new(),
                     },
-                    tool_calls: Vec::new(),
+                    termination: etas_host::ModelTermination::Complete,
+                    provider_request_id: None,
                 }),
                 usage,
             });
     }
 
-    pub(super) fn seed_model_error(&self, code: HostErrorCode, message: &str) {
+    pub(crate) fn seed_model_error(&self, code: HostErrorCode, message: &str) {
         self.model_errors
             .lock()
             .expect("model errors lock")
@@ -325,12 +329,14 @@ impl FakeHost {
                 id: etas_host::HostRequestId(0),
                 result: Ok(etas_host::ModelOutput {
                     message: ModelMessage {
+                        provider_data: Vec::new(),
                         role: ModelRole::Assistant,
                         content: vec![ModelContent::Value(value)],
                         tool_call_id: None,
                         tool_calls: Vec::new(),
                     },
-                    tool_calls: Vec::new(),
+                    termination: etas_host::ModelTermination::Complete,
+                    provider_request_id: None,
                 }),
                 usage: None,
             });
@@ -359,24 +365,22 @@ impl FakeHost {
                 id: etas_host::HostRequestId(0),
                 result: Ok(etas_host::ModelOutput {
                     message: ModelMessage {
+                        provider_data: Vec::new(),
                         role: ModelRole::Assistant,
                         content: Vec::new(),
                         tool_call_id: None,
                         tool_calls: vec![ModelToolCall {
                             id: "call-1".to_owned(),
                             tool: tool.to_owned(),
-                            args: args.clone(),
+                            args,
                         }],
                     },
-                    tool_calls: vec![ModelToolCall {
-                        id: "call-1".to_owned(),
-                        tool: tool.to_owned(),
-                        args,
-                    }],
+                    termination: etas_host::ModelTermination::Complete,
+                    provider_request_id: None,
                 }),
                 usage: Some(etas_host::ModelUsage {
-                    input_tokens: 1,
-                    output_tokens: 1,
+                    input_tokens: Some(1),
+                    output_tokens: Some(1),
                     cost: None,
                 }),
             });
@@ -1338,10 +1342,16 @@ impl HostServices for FakeHost {
 
     fn console<'a>(
         &'a self,
-        _operation: etas_host::execution::OperationContext,
+        operation: etas_host::execution::OperationContext,
         request: ConsoleRequest,
     ) -> HostFuture<'a, Result<ConsoleResponse, HostError>> {
-        self.console_calls.fetch_add(1, Ordering::SeqCst);
+        let call_index = self.console_calls.fetch_add(1, Ordering::SeqCst);
+        if let Some(gate) = &self.console_gate {
+            gate.signals
+                .lock()
+                .unwrap()
+                .push(operation.signal().clone());
+        }
         if let Some(error) = self
             .console_error
             .lock()
@@ -1384,11 +1394,13 @@ impl HostServices for FakeHost {
             };
             if let Some(gate) = gate {
                 gate.started.notify_one();
-                gate.release
-                    .acquire()
-                    .await
-                    .expect("test gate open")
-                    .forget();
+                if call_index < gate.pending_calls.load(Ordering::SeqCst) {
+                    gate.release
+                        .acquire()
+                        .await
+                        .expect("test gate open")
+                        .forget();
+                }
             }
             Ok(ConsoleResponse {
                 id: request.id,
@@ -1468,6 +1480,8 @@ impl HostServices for FakeHost {
 pub(super) struct ConsoleGate {
     pub started: tokio::sync::Notify,
     pub release: tokio::sync::Semaphore,
+    pub signals: Mutex<Vec<etas_host::execution::CancelSignal>>,
+    pub pending_calls: AtomicUsize,
 }
 
 #[derive(Default)]

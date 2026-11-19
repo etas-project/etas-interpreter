@@ -11,7 +11,7 @@ use super::host_dispatch::{ApprovalCall, HostCompletion, HostDispatch, PendingHo
 
 pub(in crate::driver) enum ApprovalDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingApprovalDispatch<'host>),
+    Pending(Box<PendingApprovalDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingApprovalDispatch<'host> {
@@ -50,8 +50,38 @@ pub(in crate::driver) fn begin<'host>(
     let (key, request) = match eval.approval_request_for(&perform) {
         Ok(Some(request)) => request,
         Ok(None) => {
-            eval.diagnostics
-                .push(crate::diagnostics::unhandled_effect_action(&perform));
+            let declared_default = perform.checked_action.as_ref().is_some_and(|proof| {
+                let action = match &proof.effect {
+                    etas_effects::Effect::Action(action) => action,
+                    etas_effects::Effect::AppliedAction(instance) => &instance.action,
+                    _ => return false,
+                };
+                eval.checked
+                    .effect_registry
+                    .action_signature(action)
+                    .is_some_and(|signature| signature.has_default_handler)
+            });
+            let diagnostic = if declared_default {
+                crate::diagnostics::missing_host_handler(
+                    perform.span,
+                    format!(
+                        "no runtime default handler is registered for checked action {}.{}",
+                        perform
+                            .action
+                            .effect
+                            .path
+                            .segments
+                            .iter()
+                            .map(|segment| segment.name.as_str())
+                            .collect::<Vec<_>>()
+                            .join("."),
+                        perform.action.action,
+                    ),
+                )
+            } else {
+                crate::diagnostics::unhandled_effect_action(&perform)
+            };
+            eval.diagnostics.push(diagnostic);
             return ApprovalDispatchStart::Complete(None);
         }
         Err(fault) => {
@@ -87,12 +117,12 @@ pub(in crate::driver) fn begin<'host>(
     match HostDispatch::begin_approval(eval, request.clone(), authority, |operation| {
         host.approval(operation, request)
     }) {
-        Ok(pending) => ApprovalDispatchStart::Pending(PendingApprovalDispatch {
+        Ok(pending) => ApprovalDispatchStart::Pending(Box::new(PendingApprovalDispatch {
             perform,
             key,
             request_id,
             pending,
-        }),
+        })),
         Err(error) => ApprovalDispatchStart::Complete(finish_error(eval, perform, error)),
     }
 }
@@ -149,6 +179,11 @@ fn finish_error(
 }
 
 impl PendingApprovalDispatch<'_> {
+    pub(in crate::driver) fn operation_state(
+        &self,
+    ) -> std::rc::Rc<crate::driver::scheduler::HostOperation> {
+        self.pending.operation_state()
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
         self.pending.operation_id()
     }

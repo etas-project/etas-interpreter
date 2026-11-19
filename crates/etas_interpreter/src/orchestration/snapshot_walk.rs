@@ -68,7 +68,7 @@ enum Children<'a> {
         value: Option<&'a ValueSnapshot>,
     },
     Fields(Iter<'a, (String, ValueSnapshot)>),
-    Messages(Iter<'a, MessageSnapshot>),
+    Messages(Iter<'a, MessageSnapshot>, Option<&'a ValueSnapshot>),
 }
 impl<'a> Iterator for Children<'a> {
     type Item = &'a ValueSnapshot;
@@ -80,7 +80,9 @@ impl<'a> Iterator for Children<'a> {
                 comparator.take().or_else(|| values.next())
             }
             Self::Fields(values) => values.next().map(|(_, value)| value),
-            Self::Messages(values) => values.next().map(|message| message.payload.as_ref()),
+            Self::Messages(values, protocol) => protocol
+                .take()
+                .or_else(|| values.next().map(|message| message.payload.as_ref())),
             Self::Pairs { entries, value } => {
                 if let Some(value) = value.take() {
                     return Some(value);
@@ -136,7 +138,12 @@ fn children(value: &ValueSnapshot) -> Children<'_> {
         V::Record(values) => return Children::Fields(values.iter()),
         V::Range { start, end, .. } => [Some(start.as_ref()), Some(end.as_ref())],
         V::Message(message) => [Some(message.payload.as_ref()), None],
-        V::Conversation(conversation) => return Children::Messages(conversation.messages.iter()),
+        V::Conversation(conversation) => {
+            return Children::Messages(
+                conversation.messages.iter(),
+                conversation.protocol.as_deref(),
+            );
+        }
         V::MemorySelection { predicate, .. } => [predicate.as_deref(), None],
         _ => [None, None],
     };

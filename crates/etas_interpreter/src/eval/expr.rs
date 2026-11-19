@@ -14,6 +14,20 @@ impl<'a> EvalContext<'a> {
         if let Err(fault) = self.consume_execution_step(span) {
             return ControlSignal::Fault(Box::new(fault));
         }
+        if self
+            .checked
+            .types
+            .std_intrinsic_calls
+            .get(&expr)
+            .is_some_and(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
+            || etas_types::source_execution::call_target(
+                &self.checked.hir,
+                &self.checked.types,
+                expr,
+            ) == Some(etas_std::StdExecutionRole::ToolReference)
+        {
+            return self.eval_tool_reference(expr, span);
+        }
         match &self.checked.hir.exprs[expr] {
             HirExpr::Literal(literal) => match self.eval_literal(expr, literal) {
                 Ok(value) => ControlSignal::Value(value),
@@ -32,7 +46,7 @@ impl<'a> EvalContext<'a> {
                         .unwrap_or_else(|| self.eval_global_symbol(*symbol, path.span))
                     {
                         Ok(value) => value,
-                        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                        Err(error) => return error.into_signal(),
                     };
                     let ResolveResult::PartiallyResolved(partial) = &path.resolution else {
                         unreachable!()
@@ -112,7 +126,7 @@ impl<'a> EvalContext<'a> {
             HirExpr::ListCons { head, tail, span } => {
                 self.eval_list_cons_expr(*head, *tail, *span, frame)
             }
-            HirExpr::EmptySequence { span } => self.eval_empty_sequence_expr(expr, *span),
+            HirExpr::EmptySequence { span } => self.eval_empty_sequence_expr(expr, *span, frame),
             HirExpr::Map { .. } => self.eval_map_expr(expr, frame),
             HirExpr::Set { .. } => self.eval_sequence_expr(expr, frame),
             HirExpr::Range {
@@ -152,7 +166,7 @@ impl<'a> EvalContext<'a> {
             }
             HirExpr::Infer { span, .. } => self.eval_agent_inference(expr, frame, *span),
             HirExpr::Handler { handlers, span } => {
-                self.eval_handler_value_expr(expr, handlers, *span)
+                self.eval_handler_value_expr(expr, handlers, *span, Some(frame))
             }
             HirExpr::Call {
                 callee,
@@ -160,6 +174,27 @@ impl<'a> EvalContext<'a> {
                 args,
                 span,
             } => {
+                if self.checked.types.trusted_literals.contains(&expr) {
+                    let [etas_hir::HirArg::Positional(argument)] = args.as_slice() else {
+                        return ControlSignal::missing_checked_fact(
+                            "trusted literal requires one argument",
+                            *span,
+                        );
+                    };
+                    let HirExpr::Literal(HirLiteral::String { value, .. }) =
+                        &self.checked.hir.exprs[*argument]
+                    else {
+                        return ControlSignal::missing_checked_fact(
+                            "trusted literal requires its checked string literal",
+                            *span,
+                        );
+                    };
+                    let ty = self.checked.types.expr_types[&expr];
+                    return ControlSignal::Value(crate::value::source_prompt::trusted_literal(
+                        ty,
+                        value.clone().into(),
+                    ));
+                }
                 let Some(type_args) = self.checked_type_args_from_generic_args(expr, generic_args)
                 else {
                     return ControlSignal::missing_checked_fact(

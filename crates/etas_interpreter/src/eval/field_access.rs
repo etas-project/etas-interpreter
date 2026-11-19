@@ -19,6 +19,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Checkpoint(_)
             | ControlSignal::Block(_)
             | ControlSignal::Expr(_)
+            | ControlSignal::ProgramExpr(_)
             | ControlSignal::Call(_)
             | ControlSignal::Native(_)
             | ControlSignal::Perform(_)
@@ -60,6 +61,18 @@ impl<'a> EvalContext<'a> {
         } else {
             self.eval_field_value_signal(FieldAccessSite::Expr(expr), value, field, span)
         }
+    }
+
+    fn source_store_field_type(
+        &self,
+        site: FieldAccessSite<'_>,
+        region: etas_types::TypeId,
+    ) -> Option<etas_types::TypeId> {
+        let types = &self.checked.type_store;
+        etas_types::value_representation::memory_region_schema(types, region)?;
+        let output = self.plan.records.field_type(self.checked, site)?;
+        etas_types::value_representation::source_memory_store_parameters(types, output)?;
+        Some(output)
     }
 
     fn memory_store_types_for_expr(
@@ -157,7 +170,13 @@ impl<'a> EvalContext<'a> {
             InterpValue::SyntaxBlock(syntax) => {
                 return self.eval_syntax_text_projection(site, syntax, field, span);
             }
-            InterpValue::Nominal { value, .. } => {
+            InterpValue::Nominal { ty, value }
+                if etas_types::value_representation::source_memory_region_parameter(
+                    &self.checked.type_store,
+                    ty,
+                )
+                .is_none() =>
+            {
                 return self.eval_field_value_signal(site, value.into_value(), field, span);
             }
             _ => {}
@@ -187,6 +206,18 @@ impl<'a> EvalContext<'a> {
         field: &str,
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
+        if let Some(projection) = self.plan.records.value_projection(site) {
+            if projection.name() != field {
+                return Err(ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    "value field differs from its checked representation projection",
+                ));
+            }
+            return crate::value::representation::project(projection, base).map_err(|message| {
+                ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+            });
+        }
         match base {
             InterpValue::CommandResult {
                 exit_code,
@@ -224,6 +255,7 @@ impl<'a> EvalContext<'a> {
                 code::agent_field(
                     &self.checked.type_store,
                     &self.checked.types.known_std_types.code,
+                    &self.checked.types.enum_layouts,
                     output,
                     &definition,
                     field,
@@ -260,6 +292,7 @@ impl<'a> EvalContext<'a> {
                 code::callable_field(
                     &self.checked.type_store,
                     &self.checked.types.known_std_types.code,
+                    &self.checked.types.enum_layouts,
                     output,
                     &definition,
                     field,
@@ -284,7 +317,27 @@ impl<'a> EvalContext<'a> {
                 span,
                 "syntax text requires a controlled runtime projection, not constant evaluation",
             )),
-            InterpValue::Nominal { value, .. } => {
+            InterpValue::Nominal { ty, value } => {
+                if let Some(output) = self.source_store_field_type(site, ty) {
+                    let field_value =
+                        crate::value::conversation::protocol::field(&value, "stable_id");
+                    let Ok(InterpValue::String(stable_id)) = field_value else {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "source region has no stable identity",
+                        ));
+                    };
+                    return self
+                        .project_source_memory_store(output, stable_id.as_str(), field)
+                        .map_err(|error| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                error,
+                            )
+                        });
+                }
                 self.try_eval_field_value(site, value.into_value(), field, span)
             }
             InterpValue::Record(fields) => {
@@ -307,6 +360,17 @@ impl<'a> EvalContext<'a> {
                 })
             }
             InterpValue::ResourceHandle { stable_id, ty, .. } => {
+                if let Some(output) = self.source_store_field_type(site, ty) {
+                    return self
+                        .project_source_memory_store(output, &stable_id, field)
+                        .map_err(|error| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                error,
+                            )
+                        });
+                }
                 let (key_type, value_type) =
                     self.memory_store_types_for_resource_field(ty, field, span)?;
                 Ok(InterpValue::MemoryStore {
@@ -362,7 +426,14 @@ impl<'a> EvalContext<'a> {
                 )),
             },
             InterpValue::Conversation(conversation) => match field {
-                "session" => self.session_id_value(conversation.session, span),
+                "session" => conversation
+                    .session
+                    .map(|id| {
+                        self.session_id_value(id, span)
+                            .map(|id| InterpValue::OptionSome(id.into()))
+                    })
+                    .transpose()
+                    .map(|id| id.unwrap_or(InterpValue::OptionNone)),
                 "messages" => Ok(InterpValue::Array(ArrayValue::new(
                     conversation
                         .messages

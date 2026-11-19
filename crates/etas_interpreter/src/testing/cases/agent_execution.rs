@@ -274,17 +274,58 @@ flow main() -> string { return Writer(); }
     assert_eq!(checked.types.agent_inferences.len(), 2);
     let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
     assert!(summary.escaping_effects.effects.is_empty());
-    assert_eq!(summary.requested_actions.effects.iter().count(), 1);
-    assert_eq!(summary.default_actions.effects.iter().count(), 1);
+    let requested_names = summary
+        .requested_actions
+        .effects
+        .iter()
+        .map(|effect| match effect {
+            etas_effects::Effect::AppliedAction(instance) => checked
+                .effect_registry
+                .action_name(instance.action.tag, instance.action.action)
+                .unwrap()
+                .to_owned(),
+            other => format!("{other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(requested_names, ["infer", "step"]);
+    assert_eq!(
+        summary.default_actions.effects.iter().count(),
+        2,
+        "{:?}",
+        summary.default_actions
+    );
     let etas_effects::ActionTraceDomain::Seq(events) = &summary.action_trace else {
         panic!(
             "both explicit inference sites must remain in the trace: {:?}",
             summary.action_trace
         );
     };
-    assert_eq!(events.len(), 2);
-    for event in events {
-        assert!(matches!(event, etas_effects::ActionTraceDomain::Event(_)));
+    assert_eq!(events.len(), 4);
+    for pair in events.chunks_exact(2) {
+        let etas_effects::ActionTraceDomain::Event(request) = &pair[0] else {
+            panic!("inference request: {:?}", pair[0]);
+        };
+        let etas_effects::ActionTraceDomain::DefaultHandler { guards, body } = &pair[1] else {
+            panic!("inference default: {:?}", pair[1]);
+        };
+        assert_eq!(guards.iter().collect::<Vec<_>>(), [&request.action]);
+        let etas_effects::ActionTraceDomain::Repeat(body) = body.as_ref() else {
+            panic!("inference step loop: {body:?}");
+        };
+        let etas_effects::ActionTraceDomain::Event(step) = body.as_ref() else {
+            panic!("inference step: {body:?}");
+        };
+        for (event, expected) in [(request, "infer"), (step, "step")] {
+            let etas_effects::Effect::AppliedAction(instance) = &event.action else {
+                panic!("checked inference action: {:?}", event.action);
+            };
+            assert_eq!(
+                checked
+                    .effect_registry
+                    .action_name(instance.action.tag, instance.action.action),
+                Some(expected)
+            );
+        }
     }
     let requests = host.model_requests();
     assert_eq!(requests.len(), 2);

@@ -22,6 +22,15 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         };
+        let raw = stream_error_value(failure);
+        let value = if self.checked.hir.source_standard_types {
+            InterpValue::Nominal {
+                ty: error_type,
+                value: raw.into(),
+            }
+        } else {
+            raw
+        };
         let perform = PendingPerform {
             checked_action: None,
             default_boundary: None,
@@ -30,7 +39,7 @@ impl<'a> EvalContext<'a> {
             expr: None,
             action: stream_error_raise_action(span),
             error_type: Some(error_type),
-            args: vec![stream_error_value(failure)],
+            args: vec![value],
             span,
             continuation,
             residual: None,

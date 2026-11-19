@@ -51,6 +51,27 @@ impl<'a> EvalContext<'a> {
             }
             HirPat::Wildcard { .. } => Ok(true),
             HirPat::Literal(literal) => self.match_literal_pattern(literal, value, span),
+            HirPat::EmptyList { .. } => Ok(
+                matches!(pattern_projection_value(value), InterpValue::List(list) if list.is_empty()),
+            ),
+            HirPat::ListCons { head, tail, .. } => {
+                let InterpValue::List(list) = pattern_projection_value(value) else {
+                    return Ok(false);
+                };
+                let mut rest = list.clone();
+                let Some(first) = rest.pop_front() else {
+                    return Ok(false);
+                };
+                let rest = match value {
+                    InterpValue::Nominal { ty, .. } => InterpValue::Nominal {
+                        ty: *ty,
+                        value: crate::value::SharedValue::new(InterpValue::List(rest)),
+                    },
+                    _ => InterpValue::List(rest),
+                };
+                Ok(self.match_pattern(*head, &first, frame, span)?
+                    && self.match_pattern(*tail, &rest, frame, span)?)
+            }
             HirPat::Tuple { elems, .. } if elems.is_empty() => {
                 self.match_unit_pattern(pat, value, span)
             }
@@ -144,6 +165,27 @@ impl<'a> EvalContext<'a> {
             }
             HirPat::Variant { path, args, .. } => {
                 let expected_name = self.variant_name_from_path(path, span)?;
+                if let InterpValue::Json(value) = value {
+                    if self.checked.types.pattern_types.get(&pat).copied()
+                        != self.checked.types.known_std_types.json_value
+                    {
+                        return Err(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "JSON pattern has no canonical checked JsonValue identity",
+                        ));
+                    }
+                    let (name, fields) = crate::value::json::project(value, self.checked);
+                    if name != expected_name || args.len() != fields.len() {
+                        return Ok(false);
+                    }
+                    for (pat, field) in args.iter().zip(&fields) {
+                        if !self.match_pattern(*pat, field, frame, span)? {
+                            return Ok(false);
+                        }
+                    }
+                    return Ok(true);
+                }
                 match pattern_projection_value(value) {
                     InterpValue::OptionNone if expected_name == "None" => Ok(args.is_empty()),
                     InterpValue::OptionSome(inner) if expected_name == "Some" => {

@@ -17,6 +17,7 @@ pub(in crate::api::codec) fn encode(
                 "id": id, "scope": task.scope, "program": task.program,
                 "local": { "parent": task.local.parent,
                     "model_policy": machine::model_policy_snapshot(&task.local.model_policy),
+                    "agent_context": machine::agent_context::request_json(task.local.agent_context.as_deref()),
                     "handlers": task.local.handlers, "retries": task.local.retries,
                     "cancellation": task.local.cancellation },
                 "handler_floor": task.handler_floor, "state": task.state,
@@ -130,6 +131,11 @@ pub(in crate::api::codec) fn decode(
             scope: field(entry, "scope")?,
             program,
             local: TaskLocalSnapshot {
+                agent_context: machine::agent_context::request_from_json(required_obj(
+                    local,
+                    "agent_context",
+                )?)
+                .map_err(InterpreterCodecError::new)?,
                 parent: field(local, "parent")?,
                 model_policy: machine::model_policy_from_snapshot(required_obj(
                     local,
@@ -185,6 +191,15 @@ fn root_wait_json(
     budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
     Ok(match wait {
+        RootTaskWaitSnapshot::Completion {
+            scope,
+            continuation,
+            result_type,
+            span,
+        } => {
+            json!({"kind":"completion", "scope":scope, "continuation":continuation, "result_type":result_type, "span":span_json(*span)})
+        }
+        RootTaskWaitSnapshot::Ready => json!({"kind":"ready"}),
         RootTaskWaitSnapshot::Await {
             target,
             continuation,
@@ -209,6 +224,13 @@ fn root_wait_from_json(
     value: &Value,
 ) -> Result<RootTaskWaitSnapshot, InterpreterCodecError> {
     Ok(match required_str(value, "kind")? {
+        "completion" => RootTaskWaitSnapshot::Completion {
+            scope: field(value, "scope")?,
+            continuation: required_u32(value, "continuation")?,
+            result_type: field(value, "result_type")?,
+            span: span_from_json(required_obj(value, "span")?)?,
+        },
+        "ready" => RootTaskWaitSnapshot::Ready,
         "await" => RootTaskWaitSnapshot::Await {
             target: field(value, "target")?,
             continuation: required_u32(value, "continuation")?,

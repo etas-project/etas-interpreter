@@ -61,6 +61,7 @@ impl ValueSnapshot {
             },
             InterpValue::OptionNone => Self::OptionNone,
             InterpValue::Nominal { .. }
+            | InterpValue::ScopedHandler(_)
             | InterpValue::Existential(_)
             | InterpValue::Message(_)
             | InterpValue::Conversation(_)
@@ -88,9 +89,14 @@ impl ValueSnapshot {
             InterpValue::Handler {
                 fact_expr,
                 handlers,
+                captured,
             } => Self::Handler {
                 fact_expr: *fact_expr,
                 handlers: handlers.clone(),
+                captured: captured
+                    .as_ref()
+                    .map(|frame| context.frame(frame))
+                    .transpose()?,
             },
             InterpValue::HostHandle(handle) => {
                 return Err(format!(
@@ -296,15 +302,22 @@ impl ValueSnapshot {
             | Self::PriorityQueue { .. } => {
                 return Err("compound checkpoint value must use its restore builder".into());
             }
+            Self::ScopedHandler { .. } => {
+                return Err("scoped Handler requires its native restore context".into());
+            }
             Self::Callable(target) => {
                 InterpValue::Callable(super::call_target::restore_call_target(target, context)?)
             }
             Self::Handler {
                 fact_expr,
                 handlers,
+                captured,
             } => InterpValue::Handler {
                 fact_expr,
                 handlers,
+                captured: captured
+                    .map(|frame| super::frame::restore_frame(frame, context))
+                    .transpose()?,
             },
             Self::ResourceHandle {
                 name,

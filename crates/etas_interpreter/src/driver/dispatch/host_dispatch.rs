@@ -1,4 +1,5 @@
-use std::{future::Future, time::Instant};
+use crate::driver::scheduler::{HostOperation, HostOperationScope};
+use std::{future::Future, rc::Rc, time::Instant};
 
 use etas_host::{
     ApprovalResponse, BrowserProtocolResponse, CommandResponse, FilesystemResponse, HostError,
@@ -18,6 +19,7 @@ pub(in crate::driver) type ApprovalCall<'host> =
 pub(in crate::driver) struct PendingHostOperation<Response, Call> {
     request_id: HostRequestId,
     operation: etas_host::execution::OperationRegistration,
+    owner: Rc<HostOperation>,
     started: Instant,
     call: Call,
     _response: std::marker::PhantomData<fn() -> Response>,
@@ -26,6 +28,7 @@ pub(in crate::driver) struct PendingHostOperation<Response, Call> {
 pub(in crate::driver) struct HostCompletion<Response> {
     request_id: HostRequestId,
     operation: etas_host::execution::OperationRegistration,
+    owner: Rc<HostOperation>,
     started: Instant,
     result: Result<Response, HostError>,
 }
@@ -49,15 +52,21 @@ impl HostDispatch {
             HostTraceMetadata::from_payload(&trace_payload, eval.host_trace_digest_key()?)?;
         let started_at_unix_micros = unix_timestamp_micros()?;
         let started = Instant::now();
-        let operation = eval
-            .task
-            .execution
+        let scope = HostOperationScope::new(eval.task)?;
+        let operation = scope
+            .execution()
             .register(None, Some(request_id), trace.clone())?;
+        let owner = HostOperation::new(
+            scope,
+            operation.context().operation(),
+            crate::eval::host_completion::HostCompletionContext::capture(eval),
+        );
         if let Err(error) = operation.begin_dispatch() {
             operation.complete(
                 etas_host::execution::ExternalOutcome::NotDispatched,
                 Vec::new(),
             )?;
+            owner.finish_native()?;
             return Err(error);
         }
         eval.events
@@ -73,6 +82,7 @@ impl HostDispatch {
         Ok(PendingHostOperation {
             request_id,
             operation,
+            owner,
             started,
             call,
             _response: std::marker::PhantomData,
@@ -89,6 +99,7 @@ impl HostDispatch {
         let PendingHostOperation {
             request_id,
             operation,
+            owner,
             started,
             call,
             _response: _,
@@ -112,6 +123,7 @@ impl HostDispatch {
         HostCompletion {
             request_id,
             operation,
+            owner,
             started,
             result,
         }
@@ -127,6 +139,7 @@ impl HostDispatch {
         let HostCompletion {
             request_id,
             operation,
+            owner,
             started,
             result,
         } = completion;
@@ -150,6 +163,7 @@ impl HostDispatch {
             });
         }
         operation.complete(external, Vec::new())?;
+        owner.finish_native()?;
         let finished_at_unix_micros = unix_timestamp_micros()?;
         let duration_micros = u64::try_from(started.elapsed().as_micros()).map_err(|_| {
             HostError::new(
@@ -258,6 +272,9 @@ impl HostDispatch {
 }
 
 impl<Response, Call> PendingHostOperation<Response, Call> {
+    pub(in crate::driver) fn operation_state(&self) -> Rc<HostOperation> {
+        self.owner.clone()
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
         self.operation.context().operation()
     }

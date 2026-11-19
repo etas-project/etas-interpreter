@@ -27,6 +27,83 @@ impl Walk<'_> {
             .get(from)
             .ok_or(Failure::MissingType)?;
         let target = self.target.type_store.get(to).ok_or(Failure::MissingType)?;
+        if self
+            .source
+            .types
+            .known_std_types
+            .opaque_values
+            .contains(&from)
+            && self
+                .target
+                .types
+                .known_std_types
+                .opaque_values
+                .contains(&to)
+            && crate::eval::resolve_std_type(self.source, &["std", "io", "IOError"]) == Some(from)
+            && crate::eval::resolve_std_type(self.target, &["std", "io", "IOError"]) == Some(to)
+        {
+            // Legacy Console errors carry an opaque host variant.
+            crate::value::contract::console_error_payload(crate::value::contract::Value::Runtime(
+                &value,
+            ))
+            .map_err(Failure::InvalidField)?;
+            self.values.push(value);
+            return Ok(());
+        }
+        if let InterpValue::Trust {
+            wrapper: etas_types::TrustWrapper::Trusted,
+            value: literal,
+        } = &value
+            && matches!(literal.as_ref(), InterpValue::String(_))
+            && crate::value::source_prompt::evidence_type(self.source, from)
+            && crate::value::source_prompt::evidence_type(self.target, to)
+        {
+            self.values.push(value);
+            return Ok(());
+        }
+        if matches!(&value, InterpValue::Json(_))
+            && self.source.types.known_std_types.json_value == Some(from)
+            && self.target.types.known_std_types.json_value == Some(to)
+        {
+            // The immutable JSON payload carries no program-local type ids.
+            self.values.push(value);
+            return Ok(());
+        }
+        if matches!(
+            (source, target),
+            (Type::Existential { .. }, Type::Existential { .. })
+        ) {
+            let InterpValue::Existential(mut object) = value else {
+                return Err(wrong("Existential", &value));
+            };
+            if object.object_type != from {
+                return Err(Failure::WrongNominalIdentity {
+                    actual: object.object_type,
+                });
+            }
+            let concrete = object.concrete_type;
+            let edge = self
+                .revision
+                .as_ref()
+                .ok_or(Failure::ExecutableScopeRequired)?;
+            object
+                .project(
+                    self.execution.ok_or(Failure::ExecutableScopeRequired)?,
+                    edge,
+                    to,
+                )
+                .map_err(Failure::InvalidField)?;
+            let target_concrete = object.concrete_type;
+            let payload =
+                std::mem::replace(&mut object.value, InterpValue::Unit.into()).into_value();
+            self.children(
+                from,
+                to,
+                Build::Existential(object),
+                vec![(concrete, target_concrete, payload)],
+            );
+            return Ok(());
+        }
         if let InterpValue::StdConstant(value) = value {
             if value.ty() != from {
                 return Err(Failure::WrongNominalIdentity { actual: value.ty() });
@@ -69,6 +146,51 @@ impl Walk<'_> {
                 return Err(Failure::InvalidField("workspace_path.region".into()));
             }
             self.values.push(InterpValue::WorkspacePath(path));
+            return Ok(());
+        }
+        if self.source.types.known_std_types.filesystem_io_error == Some(from)
+            && self.target.types.known_std_types.filesystem_io_error == Some(to)
+        {
+            // The filesystem host boundary constructs this opaque error with
+            // a string payload; its representation is not a public type alias.
+            let InterpValue::Nominal { ty, value } = value else {
+                return Err(wrong("Nominal", &value));
+            };
+            if ty != from {
+                return Err(Failure::WrongNominalIdentity { actual: ty });
+            }
+            if !matches!(value.as_ref(), InterpValue::String(_)) {
+                return Err(wrong("String", value.as_ref()));
+            }
+            self.values.push(InterpValue::Nominal { ty: to, value });
+            return Ok(());
+        }
+        if self
+            .source
+            .types
+            .known_std_types
+            .runtime_type(etas_std::RuntimeTypeRole::Money)
+            == Some(from)
+            && self
+                .target
+                .types
+                .known_std_types
+                .runtime_type(etas_std::RuntimeTypeRole::Money)
+                == Some(to)
+        {
+            // This payload is the runtime's private Money representation, not
+            // a public source record. Both types carry the verified native role.
+            let InterpValue::Nominal { ty, value } = value else {
+                return Err(wrong("Nominal", &value));
+            };
+            if ty != from {
+                return Err(Failure::WrongNominalIdentity { actual: ty });
+            }
+            crate::value::contract::money_payload(crate::value::contract::Value::Runtime(
+                value.as_ref(),
+            ))
+            .map_err(Failure::InvalidField)?;
+            self.values.push(InterpValue::Nominal { ty: to, value });
             return Ok(());
         }
         if let InterpValue::Callable(crate::control::CallTarget::AgentRevision(agent)) = value {
@@ -306,6 +428,48 @@ impl Walk<'_> {
             {
                 self.enum_value(from, to, value)?;
             }
+            (Type::Nominal(_), Type::Nominal(_))
+                if self.source.types.known_std_types.execution.task_handle == Some(from)
+                    && self.target.types.known_std_types.execution.task_handle == Some(to) =>
+            {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Task(handle) = value else {
+                    return Err(wrong("TaskHandle", &value));
+                };
+                self.values.push(InterpValue::Task(handle));
+            }
+            (Type::Nominal(_), Type::Nominal(_))
+                if self.source.types.known_std_types.execution.scheduler_state == Some(from)
+                    && self.target.types.known_std_types.execution.scheduler_state == Some(to) =>
+            {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Scheduler(handle) = value else {
+                    return Err(wrong("SchedulerState", &value));
+                };
+                self.values.push(InterpValue::Scheduler(handle));
+            }
+            (Type::Nominal(_), Type::Nominal(_))
+                if self
+                    .source
+                    .types
+                    .known_std_types
+                    .execution
+                    .continuation_state
+                    == Some(from)
+                    && self
+                        .target
+                        .types
+                        .known_std_types
+                        .execution
+                        .continuation_state
+                        == Some(to) =>
+            {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Continuation(token) = value else {
+                    return Err(wrong("ContinuationState", &value));
+                };
+                self.values.push(InterpValue::Continuation(token));
+            }
             (Type::Nominal(_), Type::Nominal(_)) | (Type::Applied { .. }, Type::Applied { .. }) => {
                 let InterpValue::Nominal { ty, value } = value else {
                     return Err(wrong("Nominal", &value));
@@ -321,6 +485,31 @@ impl Walk<'_> {
                     Build::Nominal(to),
                     vec![(left, right, value.into_value())],
                 );
+            }
+            (Type::Task(_), Type::Task(_)) => {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Task(handle) = value else {
+                    return Err(wrong("Task", &value));
+                };
+                // Only the checked type changes programs. Task ownership and its
+                // result program remain in the shared scheduler's task entry.
+                self.values.push(InterpValue::Task(handle));
+            }
+            (Type::Continuation(_), Type::Continuation(_)) => {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Continuation(token) = value else {
+                    return Err(wrong("Continuation", &value));
+                };
+                self.values.push(InterpValue::Continuation(token));
+            }
+            (Type::SchedulerHandle, Type::SchedulerHandle) => {
+                self.execution.ok_or(Failure::ExecutableScopeRequired)?;
+                let InterpValue::Scheduler(handle) = value else {
+                    return Err(wrong("Scheduler", &value));
+                };
+                // Both checked programs execute in the same scheduler runtime;
+                // the scope owner is retained and enforced by scheduler transfers.
+                self.values.push(InterpValue::Scheduler(handle));
             }
             (Type::Function(left), Type::Function(right)) => {
                 let execution = self.execution.ok_or(Failure::ExecutableScopeRequired)?;
@@ -344,7 +533,19 @@ impl Walk<'_> {
                 self.values.push(InterpValue::Callable(call));
             }
             (Type::Handler(_), Type::Handler(_)) => {
-                return Err(Failure::ExecutableScopeRequired);
+                let handler = crate::value::ScopedHandlerValue::project(
+                    self.execution.ok_or(Failure::ExecutableScopeRequired)?,
+                    self.source,
+                    from,
+                    value,
+                    self.revision
+                        .clone()
+                        .ok_or(Failure::ExecutableScopeRequired)?,
+                    to,
+                )
+                .map_err(Failure::InvalidCallable)?;
+                self.values
+                    .push(InterpValue::ScopedHandler(Box::new(handler)));
             }
             _ => return Err(Failure::UnsupportedType),
         }

@@ -20,6 +20,10 @@ fn effect_row_metadata_is_bounded_before_checkpoint_json_allocation() {
         effect_row_bindings: rows.clone(),
     };
     let frame = LocalsSnapshot {
+        reference: false,
+        shared_bindings: Default::default(),
+        parent: None,
+        handler_activations: Default::default(),
         residual_invocation: None,
         id: 1,
         locals: Rc::new(vec![]),

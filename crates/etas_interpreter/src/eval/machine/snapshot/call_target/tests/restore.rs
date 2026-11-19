@@ -158,6 +158,10 @@ fn lambda(id: u64, value: i32) -> CallTargetSnapshot {
     CallTargetSnapshot::Lambda {
         expr: HirExprId(4),
         captured: LocalsSnapshot {
+            reference: false,
+            shared_bindings: Default::default(),
+            parent: None,
+            handler_activations: Default::default(),
             residual_invocation: None,
             effect_row_bindings: Vec::new(),
             id,
@@ -448,12 +452,16 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                 frames: vec![MachineFrameSnapshot::Continuation {
                     continuation: ContinuationSnapshot::CallArgs {
                         call,
-                        target,
+                        target: Some(target),
                         args: std::sync::Arc::clone(&args),
                         next_arg_index: 1,
                         evaluated_args: vec![],
                         span,
                         frame: LocalsSnapshot {
+                            reference: false,
+                            shared_bindings: Default::default(),
+                            parent: None,
+                            handler_activations: Default::default(),
                             residual_invocation: None,
                             effect_row_bindings: Vec::new(),
                             id: 1,
@@ -482,7 +490,7 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                     else {
                         panic!("call args frame")
                     };
-                    let runtime = RuntimeTree(Some(target));
+                    let runtime = RuntimeTree(target);
                     assert!(!invalid, "unchecked item was restored");
                     let MachineFrameSnapshot::Continuation {
                         continuation: ContinuationSnapshot::CallArgs { target, .. },
@@ -490,7 +498,10 @@ fn deep_call_targets_restore_through_checked_machine_boundary() {
                     else {
                         panic!("saved call args frame")
                     };
-                    assert!(capture_call_target(runtime.0.as_ref().unwrap()).unwrap() == *target);
+                    assert!(
+                        capture_call_target(runtime.0.as_ref().unwrap()).unwrap()
+                            == *target.as_ref().unwrap()
+                    );
                 }
                 Err(error) => {
                     assert!(invalid, "{error}");

@@ -21,6 +21,35 @@ pub(crate) struct CallableValueProjection {
 }
 
 impl CallableValueProjection {
+    pub(crate) fn is_checked_method_template(
+        &self,
+        root: etas_frontend::CheckedCallableRoot,
+    ) -> Result<bool, String> {
+        let etas_frontend::CheckedCallableRoot::Item(item) = root else {
+            return Ok(false);
+        };
+        for identity in self.target.foreign_methods() {
+            let (origin, owner, _) = self
+                .target
+                .foreign_method(identity)
+                .expect("listed foreign method");
+            if owner != item
+                || !Arc::ptr_eq(
+                    origin.hir.shared_program(),
+                    self.source.hir.shared_program(),
+                )
+            {
+                continue;
+            }
+            let method =
+                crate::plan::code::checked_foreign_method(&self.target, &self.source, identity)?;
+            return Ok(!method.source.signature.generic_params.is_empty()
+                || matches!(self.source.items.get(item), Some(etas_hir::HirItem::Flow(flow))
+                    if self.source.types.type_impl_methods.get(&flow.symbol)
+                        .is_some_and(|method| !method.owner_params.is_empty())));
+        }
+        Ok(false)
+    }
     pub(crate) fn action_projection(&self) -> Result<Option<super::RevisionProjection>, String> {
         match &self.revision {
             Some(edge) => Ok(Some(edge.clone())),
@@ -62,7 +91,7 @@ impl CallableValueProjection {
         from: TypeId,
         to: TypeId,
     ) -> Result<Self, String> {
-        if edge.runtime_type(from)? != to {
+        if edge.callable_type(from)? != to {
             return Err(
                 "checkpoint callable projection differs from its checked type bridge".into(),
             );
@@ -141,6 +170,35 @@ impl CallableValueProjection {
             &self.target,
             self.source_signature.output,
             self.target_signature.output,
+            value,
+            Some(execution),
+            self.revision.clone(),
+        )
+    }
+
+    pub(crate) fn argument_to_target(
+        &self,
+        index: usize,
+        value: InterpValue,
+        execution: &CheckedExecutionProgram,
+    ) -> Result<InterpValue, RevisionValueBridgeError> {
+        let Some((&source, &target)) = self
+            .source_signature
+            .input
+            .get(index)
+            .zip(self.target_signature.input.get(index))
+        else {
+            return Err(super::error(
+                self.from,
+                self.to,
+                super::RevisionValueFailure::InconsistentLayout,
+            ));
+        };
+        convert_scoped(
+            &self.source,
+            &self.target,
+            source,
+            target,
             value,
             Some(execution),
             self.revision.clone(),

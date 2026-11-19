@@ -15,6 +15,27 @@ pub(crate) struct CompilerInvocation {
 }
 
 impl EvalContext<'_> {
+    pub(in crate::eval) fn compiler_action_uses_caller_context(
+        &self,
+        perform: &PendingPerform,
+    ) -> bool {
+        if !matches!(
+            self.source_default_signature(perform),
+            Some(("Code", "compile" | "check"))
+        ) {
+            return false;
+        }
+        let [value] = perform.args.as_slice() else {
+            return false;
+        };
+        crate::value::source_code::Definition::input(value, self.checked).is_ok_and(|definition| {
+            !std::sync::Arc::ptr_eq(
+                definition.backend().catalog().checked_program(),
+                self.checked,
+            )
+        })
+    }
+
     pub(crate) fn compiler_invocation(
         &mut self,
         perform: &PendingPerform,
@@ -31,6 +52,9 @@ impl EvalContext<'_> {
         };
         let action = match effect {
             etas_effects::Effect::Action(action) => action,
+            etas_effects::Effect::AppliedAction(instance) if instance.args.is_empty() => {
+                instance.action
+            }
             _ => return Ok(None),
         };
         let Some(target) = self.plan.dispatch.compiler_action(&action) else {
@@ -63,37 +87,26 @@ impl EvalContext<'_> {
             .ok_or_else(|| missing("compiler action has no checked service error contract"))?;
         let result_type = if let Some(call) = &perform.forwarded_call {
             call.result_type
+        } else if let Some(invocation) = &perform.checked_action {
+            invocation.output
         } else {
             *perform
                 .expr
                 .and_then(|expr| self.checked.types.expr_types.get(&expr))
                 .ok_or_else(|| missing("compiler action has no checked call result ABI"))?
         };
-        let (program, definitions, definition) = match perform.args.as_slice() {
-            [InterpValue::AgentDefinition(definition)] => (
-                definition.program(),
-                definition.backend().clone(),
-                definition.definition().clone(),
-            ),
-            [InterpValue::CallableDefinition(definition)] => (
-                definition.program(),
-                definition.backend().clone(),
-                definition
-                    .definition()
-                    .map_err(|reason| missing(&reason))?
-                    .clone(),
-            ),
-            _ => {
-                return Err(missing(
-                    "compiler action requires its checked AgentDef<A> or CallableDef<F> payload",
-                ));
-            }
-        };
-        if !std::sync::Arc::ptr_eq(program, self.checked) {
+        let [value] = perform.args.as_slice() else {
             return Err(missing(
-                "compiler definition is not bound to this checked program's frozen environment",
+                "compiler action requires one checked definition payload",
             ));
-        }
+        };
+        let retained = crate::value::source_code::Definition::input(value, self.checked)
+            .map_err(|reason| missing(&reason))?;
+        let definitions = retained.backend().clone();
+        let definition = retained
+            .reference()
+            .map_err(|reason| missing(&reason))?
+            .clone();
         Ok(Some(CompilerInvocation {
             definitions,
             request: CompilerRequest {
@@ -120,6 +133,7 @@ impl EvalContext<'_> {
             Ok(CompilerResult::Checked(report)) => match super::report::check_report(
                 &self.checked.type_store,
                 &self.checked.types.known_std_types.code,
+                &self.checked.types.enum_layouts,
                 invocation.result_type,
                 &report,
             ) {
@@ -176,6 +190,7 @@ impl EvalContext<'_> {
                 let project = Projector {
                     store: &self.checked.type_store,
                     known: &self.checked.types.known_std_types.code,
+                    enums: &self.checked.types.enum_layouts,
                 };
                 let value = (|| {
                     let item = project

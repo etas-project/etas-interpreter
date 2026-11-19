@@ -49,7 +49,8 @@ impl Pass<PlanContext<'_>> for ComputeReachableHostRequirementsPass {
         let entry_support = match context.project.checked_callable_effects(root) {
             Ok(summary) => match root {
                 etas_frontend::CheckedCallableRoot::Lambda(_)
-                | etas_frontend::CheckedCallableRoot::StdReference(_) => {
+                | etas_frontend::CheckedCallableRoot::StdReference(_)
+                | etas_frontend::CheckedCallableRoot::ParameterDefault(_) => {
                     Some(summary.support.clone())
                 }
                 etas_frontend::CheckedCallableRoot::Item(item) => {

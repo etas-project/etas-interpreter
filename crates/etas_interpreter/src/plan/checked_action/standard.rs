@@ -36,7 +36,9 @@ pub(crate) fn standard_action(
                     ConsoleCallable::Print | ConsoleCallable::PrintLn => {
                         CONSOLE_STDOUT_WRITE_ACTION
                     }
-                    ConsoleCallable::EPrintLn => CONSOLE_STDERR_WRITE_ACTION,
+                    ConsoleCallable::EPrint | ConsoleCallable::EPrintLn => {
+                        CONSOLE_STDERR_WRITE_ACTION
+                    }
                     ConsoleCallable::ReadAll => CONSOLE_STDIN_READ_ALL_ACTION,
                     ConsoleCallable::ReadLine => CONSOLE_STDIN_READ_LINE_ACTION,
                 },

@@ -119,7 +119,7 @@ impl EvalContext<'_> {
         Ok(value)
     }
 
-    fn intent_write_condition(
+    pub(super) fn intent_write_condition(
         &self,
         value: &InterpValue,
         ty: etas_types::TypeId,

@@ -34,5 +34,6 @@ cargo test -p etas_interpreter
 
 - [Interpreter design](docs/architect/phase1-interpreter-design.md)
 - [Repository boundaries](docs/architect/repository-boundary.md)
+- [Standard library source implementation](https://github.com/etas-project/etas-core/blob/main/docs/std-source-declarations.md)
 
 [MIT](LICENSE-MIT) OR [Apache-2.0](LICENSE-APACHE)

@@ -3,6 +3,9 @@ use etas_types::TypeId;
 
 use crate::control::GenericBindings;
 
+mod origin;
+use origin::{ExistentialOrigin, ExistentialOriginSnapshot};
+
 #[derive(Clone, Debug)]
 pub struct ExistentialValue {
     pub(crate) pack: HirExprId,
@@ -10,6 +13,20 @@ pub struct ExistentialValue {
     pub(crate) concrete_type: TypeId,
     pub(crate) bindings: std::sync::Arc<GenericBindings>,
     pub(crate) value: super::SharedValue,
+    pub(crate) origin: Option<std::sync::Arc<ExistentialOrigin>>,
+}
+
+impl ExistentialValue {
+    pub(crate) fn validate(
+        &self,
+        checked: &etas_frontend::CheckedProject,
+    ) -> Result<GenericBindings, String> {
+        let header = ExistentialHeader::capture(self);
+        match &self.origin {
+            Some(origin) => origin.validate(&header, checked),
+            None => header.validate(checked),
+        }
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -18,6 +35,7 @@ pub(crate) enum ExistentialEvidence<'a> {
     Snapshot {
         header: &'a ExistentialHeader,
         value: &'a crate::orchestration::ValueSnapshot,
+        revisions: Option<&'a crate::api::code::PreparedRevisionSet>,
     },
 }
 
@@ -45,8 +63,21 @@ impl<'a> ExistentialEvidence<'a> {
         checked: &etas_frontend::CheckedProject,
     ) -> Result<std::borrow::Cow<'a, GenericBindings>, String> {
         match self {
-            Self::Runtime(value) => Ok(std::borrow::Cow::Borrowed(&value.bindings)),
-            Self::Snapshot { header, .. } => header.validate(checked).map(std::borrow::Cow::Owned),
+            Self::Runtime(value) => {
+                value.validate(checked)?;
+                Ok(std::borrow::Cow::Borrowed(&value.bindings))
+            }
+            Self::Snapshot {
+                header, revisions, ..
+            } => header
+                .validate_snapshot(checked, revisions)
+                .map(std::borrow::Cow::Owned),
+        }
+    }
+    pub(crate) fn is_scoped(self) -> bool {
+        match self {
+            Self::Runtime(value) => value.origin.is_some(),
+            Self::Snapshot { header, .. } => header.origin.is_some(),
         }
     }
     pub(crate) fn inner(self) -> Option<Self> {
@@ -55,9 +86,15 @@ impl<'a> ExistentialEvidence<'a> {
                 super::InterpValue::Existential(value) => Some(Self::Runtime(value)),
                 _ => None,
             },
-            Self::Snapshot { value, .. } => match value {
+            Self::Snapshot {
+                value, revisions, ..
+            } => match value {
                 crate::orchestration::ValueSnapshot::Existential { header, value } => {
-                    Some(Self::Snapshot { header, value })
+                    Some(Self::Snapshot {
+                        header,
+                        value,
+                        revisions,
+                    })
                 }
                 _ => None,
             },
@@ -74,6 +111,8 @@ pub(crate) struct ExistentialHeader {
     pub type_bindings: Vec<(String, TypeId)>,
     pub type_parameter_bindings: Vec<(TypeId, TypeId)>,
     pub effect_row_bindings: Vec<(String, etas_types::EffectRowRef)>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub origin: Option<Box<ExistentialOriginSnapshot>>,
 }
 
 impl ExistentialHeader {
@@ -81,6 +120,9 @@ impl ExistentialHeader {
         &self,
         checked: &etas_frontend::CheckedProject,
     ) -> Result<GenericBindings, String> {
+        if self.origin.is_some() {
+            return Err("scoped existential evidence requires its checked program origins".into());
+        }
         let fact = checked
             .types
             .existential_packs
@@ -136,11 +178,27 @@ impl ExistentialHeader {
             type_bindings: value.bindings.sorted_types(),
             type_parameter_bindings: value.bindings.sorted_parameters(),
             effect_row_bindings: value.bindings.sorted_rows(),
+            origin: None,
         }
     }
 
-    pub(crate) fn runtime(self, value: super::SharedValue) -> ExistentialValue {
-        ExistentialValue {
+    pub(crate) fn runtime(
+        self,
+        value: super::SharedValue,
+        checked: Option<&etas_frontend::CheckedProgram>,
+        revisions: Option<&crate::api::code::PreparedRevisionSet>,
+    ) -> Result<ExistentialValue, String> {
+        let origin = self
+            .origin
+            .as_ref()
+            .map(|origin| {
+                let checked = checked.ok_or("scoped existential restore has no checked program")?;
+                let origin = origin.restore(revisions)?;
+                origin.validate(&self, checked)?;
+                Ok::<_, String>(std::sync::Arc::new(origin))
+            })
+            .transpose()?;
+        Ok(ExistentialValue {
             pack: self.pack,
             object_type: self.object_type,
             concrete_type: self.concrete_type,
@@ -151,6 +209,7 @@ impl ExistentialHeader {
             }
             .shared(),
             value,
-        }
+            origin,
+        })
     }
 }

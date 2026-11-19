@@ -15,11 +15,13 @@ use crate::{
 pub struct PreparedRevisionSet {
     source: CheckedProgram,
     revisions: BTreeMap<RevisionKey, Arc<PreparedCodeRevision>>,
+    source_prepared: std::sync::OnceLock<Result<Arc<crate::plan::PreparedProgram>, String>>,
+    source_definitions: Option<Arc<super::PreparedCodeDefinitions>>,
 }
 
 struct PreparedRevisionProgram<'a> {
     program: &'a Arc<crate::plan::PreparedProgram>,
-    definitions: Arc<super::PreparedCodeDefinitions>,
+    definitions: Option<Arc<super::PreparedCodeDefinitions>>,
     revision: Option<Arc<PreparedCodeRevision>>,
 }
 
@@ -31,8 +33,9 @@ impl PreparedRevisionProgram<'_> {
         crate::value::CheckedExecutionProgram {
             checked: self.program.checked().clone(),
             plan,
-            definitions: Some(self.definitions),
+            definitions: self.definitions,
             revision: self.revision,
+            foreign: None,
         }
     }
 }
@@ -42,7 +45,17 @@ impl PreparedRevisionSet {
         Self {
             source,
             revisions: BTreeMap::new(),
+            source_prepared: Default::default(),
+            source_definitions: None,
         }
+    }
+
+    pub(crate) fn with_source_definitions(
+        mut self,
+        definitions: Option<Arc<super::PreparedCodeDefinitions>>,
+    ) -> Self {
+        self.source_definitions = definitions;
+        self
     }
 
     pub fn insert(&mut self, revision: Arc<PreparedCodeRevision>) -> Result<(), String> {
@@ -74,10 +87,9 @@ impl PreparedRevisionSet {
         identity: &CheckpointCodeRevision,
     ) -> Result<&Arc<PreparedCodeRevision>, String> {
         identity.validate()?;
-        let revision = self
-            .revisions
-            .get(&identity.revision_key)
-            .ok_or("checkpoint callable has no freshly prepared revision")?;
+        let revision = self.revisions.get(&identity.revision_key).ok_or(
+            "checkpoint callable requires freshly prepared revisions; its revision is missing",
+        )?;
         if CheckpointCodeRevision::for_revision(revision) != *identity {
             return Err(
                 "checkpoint callable identity differs from its freshly prepared revision".into(),
@@ -100,7 +112,120 @@ impl PreparedRevisionSet {
             CheckpointProgramReference::Revision { revision } => {
                 self.checked_revision(revision)?.program().clone()
             }
+            CheckpointProgramReference::StandardLibrary { owner } => self
+                .checked_program(owner)?
+                .standard_library
+                .as_ref()
+                .ok_or("checkpoint requires the selected source std bundle")?
+                .program
+                .clone(),
         })
+    }
+
+    fn reference_for(
+        &self,
+        program: &CheckedProgram,
+    ) -> Result<crate::orchestration::CheckpointProgramReference, String> {
+        use crate::orchestration::CheckpointProgramReference as P;
+        let candidates = std::iter::once((self.source.clone(), P::Source)).chain(
+            self.revisions.values().map(|revision| {
+                (
+                    revision.program().clone(),
+                    P::Revision {
+                        revision: Box::new(CheckpointCodeRevision::for_revision(revision)),
+                    },
+                )
+            }),
+        );
+        for (checked, identity) in candidates {
+            if Arc::ptr_eq(&checked, program) {
+                return Ok(identity);
+            }
+            if checked
+                .standard_library
+                .as_ref()
+                .is_some_and(|library| Arc::ptr_eq(&library.program, program))
+            {
+                return Ok(P::StandardLibrary {
+                    owner: Box::new(identity),
+                });
+            }
+        }
+        Err("checkpoint program is outside the current source/revision/std universe".into())
+    }
+
+    pub(crate) fn project_type(
+        &self,
+        source: &crate::orchestration::CheckpointProgramReference,
+        target: &CheckedProgram,
+        ty: etas_types::TypeId,
+    ) -> Result<etas_types::TypeId, String> {
+        let program = self.checked_program(source)?;
+        if Arc::ptr_eq(&program, target) {
+            return Ok(ty);
+        }
+        let ty = self.type_to_source(source, ty)?;
+        self.type_from_source(&self.reference_for(target)?, ty)
+    }
+
+    fn type_to_source(
+        &self,
+        reference: &crate::orchestration::CheckpointProgramReference,
+        ty: etas_types::TypeId,
+    ) -> Result<etas_types::TypeId, String> {
+        use crate::orchestration::CheckpointProgramReference as P;
+        match reference {
+            P::Source => Ok(ty),
+            P::Revision { revision } => {
+                let revision = self.checked_revision(revision)?;
+                revision
+                    .type_bridge()
+                    .runtime_to_original(revision.program(), ty)
+                    .map_err(|error| error.to_string())
+            }
+            P::StandardLibrary { owner } => {
+                let parent = self.prepared_program(owner)?;
+                let library = parent
+                    .program
+                    .standard_library()
+                    .ok_or("checkpoint type has no checked std bridge")?;
+                let ty = library
+                    .bridge()
+                    .runtime_to_original(library.prepared().checked(), ty)
+                    .map_err(|error| error.to_string())?;
+                self.type_to_source(owner, ty)
+            }
+        }
+    }
+
+    fn type_from_source(
+        &self,
+        reference: &crate::orchestration::CheckpointProgramReference,
+        ty: etas_types::TypeId,
+    ) -> Result<etas_types::TypeId, String> {
+        use crate::orchestration::CheckpointProgramReference as P;
+        match reference {
+            P::Source => Ok(ty),
+            P::Revision { revision } => {
+                let revision = self.checked_revision(revision)?;
+                revision
+                    .type_bridge()
+                    .runtime_to_candidate(&self.source, ty)
+                    .map_err(|error| error.to_string())
+            }
+            P::StandardLibrary { owner } => {
+                let ty = self.type_from_source(owner, ty)?;
+                let parent = self.prepared_program(owner)?;
+                let library = parent
+                    .program
+                    .standard_library()
+                    .ok_or("checkpoint type has no checked std bridge")?;
+                library
+                    .bridge()
+                    .runtime_to_candidate(parent.program.checked(), ty)
+                    .map_err(|error| error.to_string())
+            }
+        }
     }
 
     fn prepared_program(
@@ -110,14 +235,21 @@ impl PreparedRevisionSet {
         use crate::orchestration::CheckpointProgramReference;
         Ok(match reference {
             CheckpointProgramReference::Source => {
-                let owner = self
-                    .revisions
-                    .values()
-                    .next()
-                    .ok_or("checkpoint source callable has no checked revision environment")?;
+                if let Some(owner) = self.revisions.values().next() {
+                    return Ok(PreparedRevisionProgram {
+                        program: owner.source_program(),
+                        definitions: Some(owner.source_definitions.clone()),
+                        revision: None,
+                    });
+                }
+                let prepared = self.source_prepared.get_or_init(|| {
+                    crate::plan::prepare_program(&self.source).map_err(|errors| {
+                        format!("checkpoint source preparation failed: {errors:?}")
+                    })
+                });
                 PreparedRevisionProgram {
-                    program: owner.source_program(),
-                    definitions: owner.source_definitions.clone(),
+                    program: prepared.as_ref().map_err(Clone::clone)?,
+                    definitions: self.source_definitions.clone(),
                     revision: None,
                 }
             }
@@ -125,8 +257,20 @@ impl PreparedRevisionSet {
                 let owner = self.checked_revision(revision)?;
                 PreparedRevisionProgram {
                     program: owner.plan().prepared_program(),
-                    definitions: owner.definitions.clone(),
+                    definitions: Some(owner.definitions.clone()),
                     revision: Some(owner.clone()),
+                }
+            }
+            CheckpointProgramReference::StandardLibrary { owner } => {
+                let parent = self.prepared_program(owner)?;
+                let library = parent
+                    .program
+                    .standard_library()
+                    .ok_or("checkpoint parent has no checked std execution owner")?;
+                PreparedRevisionProgram {
+                    program: library.prepared(),
+                    definitions: None,
+                    revision: None,
                 }
             }
         })
@@ -149,16 +293,53 @@ impl PreparedRevisionSet {
         snapshot: &crate::orchestration::ExecutionProgramSnapshot,
     ) -> Result<crate::value::CheckedExecutionProgram, String> {
         use crate::orchestration::ExecutionRootSnapshot as R;
-        let root = match snapshot.root {
-            R::Item(item) => etas_frontend::CheckedCallableRoot::Item(item),
-            R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(expr),
-            R::StdReference(expr) => etas_frontend::CheckedCallableRoot::StdReference(expr),
-        };
         let prepared = self.prepared_program(&snapshot.program)?;
+        let root = match &snapshot.root {
+            R::Item(item) => etas_frontend::CheckedCallableRoot::Item(*item),
+            R::Lambda(expr) => etas_frontend::CheckedCallableRoot::Lambda(*expr),
+            R::StdReference(expr) => etas_frontend::CheckedCallableRoot::StdReference(*expr),
+            R::ParameterDefault(reference) => etas_frontend::CheckedCallableRoot::ParameterDefault(
+                prepared
+                    .program
+                    .parameter_default(reference)
+                    .ok_or("checkpoint default root has no matching expression revision")?
+                    .parameter,
+            ),
+        };
         let plan = Arc::new(prepared.program.select_callable(root).map_err(|errors| {
             format!("checkpoint execution root has no current checked plan: {errors:?}")
         })?);
         Ok(prepared.execution(plan))
+    }
+
+    pub(crate) fn checked_projection(
+        &self,
+        saved: &crate::orchestration::CheckedProjectionSnapshot,
+    ) -> Result<crate::plan::code::RevisionProjection, String> {
+        use crate::plan::code::RevisionProjection;
+        let bridge = match &saved.origin {
+            crate::orchestration::CallableProjectionOrigin::Revision { revision, external } => {
+                let revision = self.checked_revision(revision)?;
+                if *external {
+                    revision
+                        .saved_external_type_bridge()
+                        .ok_or("checkpoint requires missing external type bridge")?
+                } else {
+                    revision.type_bridge()
+                }
+            }
+            crate::orchestration::CallableProjectionOrigin::StandardLibrary { owner } => self
+                .prepared_program(owner)?
+                .program
+                .standard_library()
+                .ok_or("checkpoint projection has no current checked std owner")?
+                .bridge(),
+        };
+        Ok(if saved.to_candidate {
+            RevisionProjection::Candidate(bridge.clone())
+        } else {
+            RevisionProjection::Original(bridge.clone())
+        })
     }
 
     pub(crate) fn callable_projections(
@@ -179,13 +360,23 @@ impl PreparedRevisionSet {
         }
         let mut result = Vec::with_capacity(metadata.projections.len());
         for saved in &metadata.projections {
-            let revision = self.checked_revision(&saved.revision)?;
-            let bridge = if saved.external {
-                revision
-                    .saved_external_type_bridge()
-                    .ok_or("checkpoint requires missing external type bridge")?
-            } else {
-                revision.type_bridge()
+            let bridge = match &saved.origin {
+                crate::orchestration::CallableProjectionOrigin::Revision { revision, external } => {
+                    let revision = self.checked_revision(revision)?;
+                    if *external {
+                        revision
+                            .saved_external_type_bridge()
+                            .ok_or("checkpoint requires missing external type bridge")?
+                    } else {
+                        revision.type_bridge()
+                    }
+                }
+                crate::orchestration::CallableProjectionOrigin::StandardLibrary { owner } => self
+                    .prepared_program(owner)?
+                    .program
+                    .standard_library()
+                    .ok_or("checkpoint projection has no current checked std owner")?
+                    .bridge(),
             };
             let edge = if saved.to_candidate {
                 RevisionProjection::Candidate(bridge.clone())
@@ -216,7 +407,7 @@ impl PreparedRevisionSet {
         let revision = self
             .revisions
             .get(&reference.revision.revision_key)
-            .ok_or("checkpoint agent reference has no freshly prepared revision")?;
+            .ok_or("checkpoint agent reference requires freshly prepared revisions; its revision is missing")?;
         if CheckpointCodeRevision::for_revision(revision) != reference.revision {
             return Err(
                 "checkpoint agent reference differs from its freshly prepared revision".into(),

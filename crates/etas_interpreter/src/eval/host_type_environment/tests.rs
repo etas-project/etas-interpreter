@@ -18,10 +18,7 @@ fn json_host_decode_requires_the_checked_std_identity_and_preserves_it_in_generi
     };
     let json = checked.types.known_std_types.json_value.unwrap();
     assert_eq!(signature.params[0], json);
-    assert!(matches!(
-        checked.type_store.get(json),
-        Some(Type::Nominal(_))
-    ));
+    assert!(matches!(checked.type_store.get(json), Some(Type::Enum(_))));
     let value = || {
         HostValue::Record(
             [("answer".into(), HostValue::Int(42))]

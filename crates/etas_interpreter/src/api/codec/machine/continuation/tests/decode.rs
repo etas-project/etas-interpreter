@@ -230,6 +230,10 @@ fn mixed_continuation_decode_preserves_all_wrapper_metadata() {
                 handlers: vec![],
                 span,
                 frame: LocalsSnapshot {
+                    reference: false,
+                    shared_bindings: Default::default(),
+                    parent: None,
+                    handler_activations: Default::default(),
                     residual_invocation: None,
                     effect_row_bindings: Vec::new(),
                     id: i as u64 + 1,
@@ -272,6 +276,10 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
                 block: HirBlockId(u32::MAX),
                 next_stmt_index: 0,
                 frame: LocalsSnapshot {
+                    reference: false,
+                    shared_bindings: Default::default(),
+                    parent: None,
+                    handler_activations: Default::default(),
                     residual_invocation: None,
                     effect_row_bindings: Vec::new(),
                     id: 1,
@@ -291,6 +299,7 @@ fn deep_checkpoint_file_decodes_through_checked_boundary_and_enforces_file_limit
             };
         }
         let saved = InterpreterCheckpoint {
+            agent_context: None,
             tasks: None,
             replay_key_id: etas_host::replay::ReplayKeyId::from_bytes([1; 32]),
             retained_code: None,

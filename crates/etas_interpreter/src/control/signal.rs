@@ -22,6 +22,7 @@ pub enum ControlSignal {
     Checkpoint(Box<PendingCheckpoint>),
     Block(Box<PendingBlock>),
     Expr(Box<PendingExpr>),
+    ProgramExpr(Box<PendingProgramExpr>),
     Call(Box<PendingCall>),
     Native(Box<crate::intrinsic::pure::PendingNativeWork>),
     Perform(Box<PendingPerform>),
@@ -147,6 +148,7 @@ pub enum ContinuationInput {
     Finish(InterpValue),
     Break,
     Continue,
+    RetryFailure { span: Span, message: String },
 }
 
 #[derive(Clone, Debug)]
@@ -157,6 +159,7 @@ pub struct PendingCheckpoint {
 
 #[derive(Clone, Debug)]
 pub struct PendingBlock {
+    pub(crate) agent_context: Option<Box<super::AgentRequestContext>>,
     pub block: HirBlockId,
     pub next_stmt_index: usize,
     pub frame: crate::control::Frame,
@@ -170,6 +173,14 @@ pub struct PendingExpr {
     pub expr: HirExprId,
     pub frame: crate::control::Frame,
     pub continuation: Continuation,
+}
+
+#[derive(Clone, Debug)]
+pub struct PendingProgramExpr {
+    pub(crate) call: crate::eval::machine::expression_call::ExpressionCall,
+    pub(crate) args: Vec<InterpValue>,
+    pub(crate) span: Span,
+    pub(crate) continuation: Continuation,
 }
 
 #[derive(Clone, Debug)]
@@ -207,6 +218,17 @@ impl ControlSignal {
 
 #[derive(Clone, Debug)]
 pub enum PendingTaskControl {
+    NextCompletion {
+        scope: crate::driver::scheduler::TaskScopeId,
+        result_type: etas_types::TypeId,
+        span: Span,
+    },
+    ResumeHandled {
+        task: crate::driver::scheduler::TaskHandle,
+        handler: crate::orchestration::HandlerScopeId,
+        value: InterpValue,
+        span: Span,
+    },
     Run {
         scope: crate::driver::scheduler::TaskScopeId,
         span: Span,
@@ -226,7 +248,11 @@ pub enum PendingTaskControl {
 impl PendingTaskControl {
     pub(crate) fn span(&self) -> Span {
         match self {
-            Self::Run { span, .. } | Self::Requeue { span, .. } | Self::Park { span, .. } => *span,
+            Self::NextCompletion { span, .. } => *span,
+            Self::Run { span, .. }
+            | Self::Requeue { span, .. }
+            | Self::Park { span, .. }
+            | Self::ResumeHandled { span, .. } => *span,
         }
     }
 }
@@ -239,7 +265,7 @@ pub struct PendingPerform {
     pub expr: Option<HirExprId>,
     pub action: ResolvedActionRef,
     pub error_type: Option<etas_types::TypeId>,
-    pub inference: Option<Box<crate::api::ModelExecutionPolicy>>,
+    pub inference: Option<Box<super::AgentRequestContext>>,
     pub args: Vec<InterpValue>,
     pub span: Span,
     pub continuation: Continuation,
@@ -316,8 +342,6 @@ pub struct PendingCommand {
 pub struct PendingModel {
     pub request: ModelRequest,
     pub decode: ModelDecode,
-    pub max_tool_rounds: usize,
-    pub source_tools: Vec<SourceToolBinding>,
     pub span: Span,
     pub continuation: Continuation,
 }
@@ -363,18 +387,28 @@ impl HostBoundaryRequest {
 
 #[derive(Clone, Debug)]
 pub struct SourceToolBinding {
-    pub name: String,
-    pub qualified_name: Option<String>,
     pub item: HirItemId,
 }
 
 #[derive(Clone, Copy, Debug)]
 pub enum MemoryDecode {
-    Page { result_type: etas_types::TypeId },
-    Entry { result_type: etas_types::TypeId },
-    OptionValue { value_type: etas_types::TypeId },
+    SourceRead {
+        result_type: etas_types::TypeId,
+        selection: bool,
+    },
+    Page {
+        result_type: etas_types::TypeId,
+    },
+    Entry {
+        result_type: etas_types::TypeId,
+    },
+    OptionValue {
+        value_type: etas_types::TypeId,
+    },
     BoolContains,
-    KeyList { key_type: etas_types::TypeId },
+    KeyList {
+        key_type: etas_types::TypeId,
+    },
     JsonEntries,
     Unit,
 }
@@ -394,6 +428,9 @@ pub enum SessionDecode {
     ReturnConversation {
         payload_type: etas_types::TypeId,
     },
+    SourceValue {
+        result_type: etas_types::TypeId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -405,6 +442,7 @@ pub enum ConsoleDecode {
 #[derive(Clone, Copy, Debug)]
 pub enum CommandDecode {
     CommandResult,
+    SourceResult { result_type: etas_types::TypeId },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -421,7 +459,20 @@ pub enum HostBoundaryDecode {
     Bytes,
     Unit,
     PathList,
-    FilesystemStat,
+    FilesystemStat {
+        nominal: Option<etas_types::TypeId>,
+    },
+    SourceFileRead {
+        result_type: etas_types::TypeId,
+        max_bytes: Option<usize>,
+    },
+    SourceDirectoryList {
+        result_type: etas_types::TypeId,
+        limits: Option<(usize, usize)>,
+    },
+    SourceFilesystemStat {
+        result_type: etas_types::TypeId,
+    },
     FileReadLimited {
         max_bytes: usize,
     },
@@ -432,10 +483,16 @@ pub enum HostBoundaryDecode {
     CommandProcessHandle {
         result_type: etas_types::TypeId,
     },
+    SourceCommandHandle {
+        result_type: etas_types::TypeId,
+    },
     CommandProcessEvent {
         result_type: etas_types::TypeId,
     },
     TcpStream,
+    SourceConnection {
+        result_type: etas_types::TypeId,
+    },
     StreamRead {
         result_type: etas_types::TypeId,
     },
@@ -443,10 +500,16 @@ pub enum HostBoundaryDecode {
     SecretValue {
         result_type: etas_types::TypeId,
     },
+    SourceSecret {
+        result_type: etas_types::TypeId,
+    },
     SecretBytes {
         result_type: etas_types::TypeId,
     },
     BrowserPayload,
+    SourceBrowser {
+        result_type: etas_types::TypeId,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -454,6 +517,10 @@ pub enum ModelDecode {
     String,
     ModelResponse,
     Typed(etas_types::TypeId),
+    Step {
+        result: etas_types::TypeId,
+        output: etas_types::TypeId,
+    },
 }
 
 #[cfg(test)]

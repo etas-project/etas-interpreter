@@ -44,6 +44,8 @@ enum Frame {
         remaining: std::vec::IntoIter<crate::orchestration::MessageSnapshot>,
         pending: Option<MessageHeader>,
         values: Vec<MessageValue>,
+        remaining_protocol: Option<crate::orchestration::SnapshotBox>,
+        protocol: Option<SharedValue>,
     },
     Unary {
         kind: UnaryKind,
@@ -99,17 +101,34 @@ pub(super) fn restore(
 
 fn start(value: ValueSnapshot, context: &mut RestoreContext) -> Result<Started, String> {
     let frame = match value {
+        ValueSnapshot::ScopedHandler { metadata, value } => {
+            let revisions = context
+                .revisions
+                .clone()
+                .ok_or("scoped Handler restore requires checked revisions")?;
+            let current = context
+                .revision_program
+                .clone()
+                .ok_or("scoped Handler restore has no current program")?;
+            let (native, _) = metadata.resolve(&revisions)?;
+            let value = restore(value.into_value(), &mut context.related_program(native))?;
+            return Ok(Started::Value(InterpValue::ScopedHandler(Box::new(
+                metadata.restore(value, &current, &revisions)?,
+            ))));
+        }
         ValueSnapshot::Message(message) => {
             let (header, payload) = MessageHeader::split(message);
             unary(UnaryKind::Message(Box::new(header)), payload)
         }
         ValueSnapshot::Conversation(conversation) => {
-            let (header, messages) = ConversationHeader::split(conversation);
+            let (header, messages, protocol) = ConversationHeader::split(conversation);
             Frame::Conversation {
                 header: Box::new(header),
                 values: Vec::with_capacity(messages.len()),
                 remaining: messages.into_iter(),
                 pending: None,
+                remaining_protocol: protocol,
+                protocol: None,
             }
         }
         ValueSnapshot::Existential { header, value } => {
@@ -202,11 +221,20 @@ impl Frame {
     fn next(&mut self) -> Option<ValueSnapshot> {
         match self {
             Self::Conversation {
-                remaining, pending, ..
+                remaining,
+                pending,
+                remaining_protocol,
+                ..
             } => {
-                let (header, payload) = MessageHeader::split(remaining.next()?);
-                *pending = Some(header);
-                Some(payload)
+                if let Some(message) = remaining.next() {
+                    let (header, payload) = MessageHeader::split(message);
+                    *pending = Some(header);
+                    Some(payload)
+                } else {
+                    remaining_protocol
+                        .take()
+                        .map(crate::orchestration::SnapshotBox::into_value)
+                }
             }
             Self::Unary { state, .. } => match std::mem::replace(state, UnaryState::Waiting) {
                 UnaryState::Child(child) => Some(child),
@@ -240,12 +268,16 @@ impl Frame {
     fn accept(&mut self, value: InterpValue) -> Result<(), String> {
         match self {
             Self::Conversation {
-                pending, values, ..
+                pending,
+                values,
+                protocol,
+                ..
             } => {
-                let header = pending
-                    .take()
-                    .ok_or("restored conversation message has no header")?;
-                values.push(header.runtime(value.into()));
+                if let Some(header) = pending.take() {
+                    values.push(header.runtime(value.into()));
+                } else {
+                    *protocol = Some(value.into());
+                }
             }
             Self::Unary { state, .. } => {
                 if !matches!(state, UnaryState::Waiting) {
@@ -281,11 +313,13 @@ impl Frame {
                 pending,
                 remaining,
                 values,
+                remaining_protocol,
+                protocol,
             } => {
-                if pending.is_some() || remaining.len() != 0 {
+                if pending.is_some() || remaining.len() != 0 || remaining_protocol.is_some() {
                     return Err("restored conversation has unfinished messages".into());
                 }
-                header.runtime(values.into())
+                header.runtime(values.into(), protocol)
             }
             Self::Unary { kind, state } => {
                 let UnaryState::Complete(value) = state else {
@@ -295,7 +329,11 @@ impl Frame {
                 match kind {
                     UnaryKind::Nominal(ty) => InterpValue::Nominal { ty, value },
                     UnaryKind::Existential(header) => {
-                        InterpValue::Existential(Box::new(header.runtime(value)))
+                        InterpValue::Existential(Box::new(header.runtime(
+                            value,
+                            context.revision_program.as_ref(),
+                            context.revisions.as_deref(),
+                        )?))
                     }
                     UnaryKind::Trust(wrapper) => InterpValue::Trust { wrapper, value },
                     UnaryKind::Some => InterpValue::OptionSome(value),

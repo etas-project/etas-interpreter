@@ -37,6 +37,9 @@ impl FrameGraph {
             let borrowed = frame.borrow_locals().map_err(InterpreterCodecError::new)?;
             let mut discovery = FrameDiscovery::default();
             let mut children = Vec::new();
+            if let Some(parent) = frame.lexical_parent() {
+                children.push(graph.insert(parent.clone()));
+            }
             for (_, value) in borrowed.sorted() {
                 for frame in discovery.frames_filtered(
                     GraphNode::Value(value),

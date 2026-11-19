@@ -92,7 +92,7 @@ impl EvalContext<'_> {
         };
         let calls = match job_calls(jobs, "join", span) {
             Ok(calls) => calls,
-            Err(signal) => return signal,
+            Err(signal) => return *signal,
         };
         self.start_task_group(checked_call, calls, policy, span)
     }
@@ -128,7 +128,7 @@ impl EvalContext<'_> {
         }
         let calls = match job_calls(jobs.into_values(), name, span) {
             Ok(calls) => calls,
-            Err(signal) => return signal,
+            Err(signal) => return *signal,
         };
         self.start_task_group(checked_call, calls, policy, span)
     }
@@ -180,6 +180,17 @@ impl EvalContext<'_> {
         policy: crate::driver::scheduler::TaskGroupPolicy,
         span: Span,
     ) -> ControlSignal {
+        if calls.iter().any(|(target, args)| {
+            crate::value::graph::has_scoped_bindings(crate::value::graph::Node::Target(target))
+                || args.iter().any(|arg| {
+                    crate::value::graph::has_scoped_bindings(crate::value::graph::Node::Value(arg))
+                })
+        }) {
+            return ControlSignal::invalid_arguments(
+                "task input captures a local var; capture an immutable snapshot instead",
+                span,
+            );
+        }
         let concurrency_plan = match checked_concurrency(self.checked, checked_call) {
             Ok(plan) => plan,
             Err(message) => return ControlSignal::missing_checked_fact(message, span),
@@ -271,6 +282,47 @@ impl EvalContext<'_> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        let Some(expected) = checked_call.parameter_types.get(2).copied() else {
+            return ControlSignal::missing_checked_fact(
+                "requeue is missing its checked value type",
+                span,
+            );
+        };
+        self.transfer_requeue(call_args, expected, span)
+    }
+
+    pub(super) fn execute_runtime_transfer(
+        &mut self,
+        item: etas_hir::HirItemId,
+        role: etas_std::StdExecutionRole,
+        args: Vec<InterpValue>,
+        bindings: &crate::control::GenericBindings,
+        span: Span,
+    ) -> ControlSignal {
+        match role {
+            etas_std::StdExecutionRole::Requeue => {
+                let etas_types::ItemSignature::Flow(signature) =
+                    &self.checked.types.item_signatures[&item]
+                else {
+                    unreachable!()
+                };
+                let expected = match self.materialized_type(signature.params[2], bindings, span) {
+                    Ok(ty) => ty,
+                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                };
+                self.transfer_requeue(args, expected, span)
+            }
+            etas_std::StdExecutionRole::Park => self.execute_task_park(args, span),
+            _ => unreachable!("checked scheduler transfer role"),
+        }
+    }
+
+    fn transfer_requeue(
+        &mut self,
+        call_args: Vec<InterpValue>,
+        expected: etas_types::TypeId,
+        span: Span,
+    ) -> ControlSignal {
         let [scheduler, continuation, value]: [InterpValue; 3] = match call_args.try_into() {
             Ok(args) => args,
             Err(args) => {
@@ -283,10 +335,12 @@ impl EvalContext<'_> {
                 );
             }
         };
-        let InterpValue::Scheduler(scheduler) = scheduler else {
+        let Some(scheduler) = crate::value::task::source::scheduler(&scheduler, self.checked)
+        else {
             return ControlSignal::invalid_arguments("requeue requires a Scheduler", span);
         };
-        let InterpValue::Continuation(token) = continuation else {
+        let Some(token) = crate::value::task::source::continuation(&continuation, self.checked)
+        else {
             return ControlSignal::invalid_arguments("requeue requires a continuation", span);
         };
         if scheduler.owner != self.task.task_scope || token.owner != scheduler.owner {
@@ -295,12 +349,6 @@ impl EvalContext<'_> {
                 span,
             );
         }
-        let Some(expected) = checked_call.parameter_types.get(2).copied() else {
-            return ControlSignal::missing_checked_fact(
-                "requeue is missing its checked value type",
-                span,
-            );
-        };
         if let Err(reason) = crate::value::contract::runtime::validate_value(
             self.checked,
             self.plan,
@@ -333,13 +381,15 @@ impl EvalContext<'_> {
                 );
             }
         };
-        let InterpValue::Scheduler(scheduler) = scheduler else {
+        let Some(scheduler) = crate::value::task::source::scheduler(&scheduler, self.checked)
+        else {
             return ControlSignal::invalid_arguments("park requires a Scheduler", span);
         };
-        let InterpValue::Task(task) = task else {
+        let Some(task) = crate::value::task::source::task(&task, self.checked) else {
             return ControlSignal::invalid_arguments("park requires a Task", span);
         };
-        let InterpValue::Continuation(token) = continuation else {
+        let Some(token) = crate::value::task::source::continuation(&continuation, self.checked)
+        else {
             return ControlSignal::invalid_arguments("park requires a continuation", span);
         };
         if scheduler.owner != self.task.task_scope
@@ -379,17 +429,43 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = body else {
             return ControlSignal::invalid_arguments("std.task.run callback is not callable", span);
         };
-        let concurrency_plan = match checked_concurrency(self.checked, checked_call) {
+        let plan = match checked_concurrency(self.checked, checked_call) {
             Ok(plan) => plan,
             Err(message) => return ControlSignal::missing_checked_fact(message, span),
         };
+        self.enter_task_scope(
+            target,
+            plan,
+            Some(crate::control::CallSite::task_callback(checked_call)),
+            None,
+            span,
+        )
+    }
+
+    pub(super) fn enter_task_scope(
+        &mut self,
+        target: crate::control::CallTarget,
+        concurrency_plan: CheckedConcurrencyPlan,
+        callback_site: Option<crate::control::CallSite>,
+        policy: Option<crate::driver::scheduler::SourceSchedulingPolicy>,
+        span: Span,
+    ) -> ControlSignal {
         let concurrency = concurrency_plan.effective_limit;
         let parent_scope = self.task.task_scope;
         let scope = self.scheduler.create_scope(parent_scope, concurrency);
         if concurrency_plan.resource_guards {
             self.scheduler.guard_scope(scope);
         }
-        let scheduler = InterpValue::Scheduler(crate::value::SchedulerHandleValue::new(scope));
+        if let Some(policy) = policy {
+            self.scheduler.install_source_policy(scope, policy);
+        }
+        let scheduler = match crate::value::task::source::scheduler_value(
+            self.checked,
+            crate::value::SchedulerHandleValue::new(scope),
+        ) {
+            Ok(value) => value,
+            Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+        };
         let resources = if self.scheduler.requires_resource_guards(scope) {
             match self.task_resource_keys(&target, std::slice::from_ref(&scheduler)) {
                 Some(keys) => keys,
@@ -412,7 +488,7 @@ impl EvalContext<'_> {
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
-            site: None,
+            site: callback_site,
             target,
             args: vec![scheduler],
             span,
@@ -430,7 +506,10 @@ impl EvalContext<'_> {
             Ok(owner) => owner,
             Err(error) => return ControlSignal::runtime_fault(error.to_string(), span),
         };
-        if let Err(error) = self.scheduler.set_scope_owner(scope, owner) {
+        if let Err(error) = self
+            .scheduler
+            .set_scope_owner(scope, owner, self.task.logical_identity)
+        {
             return ControlSignal::runtime_fault(error.to_string(), span);
         }
         if let Err(error) = self.scheduler.attach_resources(owner, resources) {
@@ -465,6 +544,24 @@ impl EvalContext<'_> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        self.start_checked_task(
+            crate::driver::scheduler::CheckedTaskStart {
+                target: crate::control::CallTarget::StdIntrinsic(checked_call.clone()),
+                result_type: checked_call.result_type,
+            },
+            crate::control::CallSite::task_callback(checked_call),
+            call_args,
+            span,
+        )
+    }
+
+    pub(super) fn start_checked_task(
+        &mut self,
+        start: crate::driver::scheduler::CheckedTaskStart,
+        site: crate::control::CallSite,
+        call_args: Vec<InterpValue>,
+        span: Span,
+    ) -> ControlSignal {
         let [job]: [InterpValue; 1] = match call_args.try_into() {
             Ok(args) => args,
             Err(args) => {
@@ -477,6 +574,12 @@ impl EvalContext<'_> {
         let InterpValue::Callable(target) = job else {
             return ControlSignal::invalid_arguments("std.task.start job is not callable", span);
         };
+        if crate::value::graph::has_scoped_bindings(crate::value::graph::Node::Target(&target)) {
+            return ControlSignal::invalid_arguments(
+                "task input captures a local var; capture an immutable snapshot instead",
+                span,
+            );
+        }
         let resources = if self
             .scheduler
             .requires_resource_guards(self.task.task_scope)
@@ -495,7 +598,7 @@ impl EvalContext<'_> {
         let mut machine = crate::eval::machine::EvalMachine::new();
         machine.resume(ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
-            site: None,
+            site: Some(site),
             target,
             args: Vec::new(),
             span,
@@ -510,7 +613,7 @@ impl EvalContext<'_> {
             span.range.start.0 as usize,
         ) {
             Ok(handle) => {
-                if let Err(error) = self.scheduler.attach_start(handle, checked_call.clone()) {
+                if let Err(error) = self.scheduler.attach_start(handle, start.clone()) {
                     return ControlSignal::runtime_fault(error.to_string(), span);
                 }
                 if let Err(error) = self.scheduler.attach_resources(handle, resources) {
@@ -527,9 +630,14 @@ impl EvalContext<'_> {
                         task: handle.task.0,
                         source_index: span.range.start.0 as usize,
                     });
-                ControlSignal::Value(InterpValue::Task(crate::value::TaskHandleValue::new(
-                    handle,
-                )))
+                match crate::value::task::source::task_value(
+                    self.checked,
+                    start.result_type,
+                    crate::value::TaskHandleValue::new(handle),
+                ) {
+                    Ok(value) => ControlSignal::Value(value),
+                    Err(reason) => ControlSignal::missing_checked_fact(reason, span),
+                }
             }
             Err(error) => ControlSignal::runtime_fault(error.to_string(), span),
         }
@@ -550,7 +658,7 @@ impl EvalContext<'_> {
                 );
             }
         };
-        if !matches!(task, InterpValue::Task(_)) {
+        if crate::value::task::source::task(&task, self.checked).is_none() {
             return ControlSignal::invalid_arguments("std.task.await requires a Task", span);
         }
         let checked_action = match crate::control::CheckedActionInvocation::standard(
@@ -661,14 +769,14 @@ fn job_calls(
     jobs: Vec<InterpValue>,
     name: &str,
     span: Span,
-) -> Result<Vec<(crate::control::CallTarget, Vec<InterpValue>)>, ControlSignal> {
+) -> Result<Vec<(crate::control::CallTarget, Vec<InterpValue>)>, Box<ControlSignal>> {
     jobs.into_iter()
         .map(|job| match job {
             InterpValue::Callable(target) => Ok((target, Vec::new())),
-            _ => Err(ControlSignal::invalid_arguments(
+            _ => Err(Box::new(ControlSignal::invalid_arguments(
                 format!("std.task.{name} requires callable jobs"),
                 span,
-            )),
+            ))),
         })
         .collect()
 }
@@ -685,10 +793,17 @@ fn checked_concurrency(
     checked: &etas_frontend::CheckedProject,
     checked_call: &crate::intrinsic::dispatch::CheckedStdIntrinsicCall,
 ) -> Result<CheckedConcurrencyPlan, &'static str> {
+    checked_concurrency_origin(checked, checked_call.origin)
+}
+
+pub(super) fn checked_concurrency_origin(
+    checked: &etas_frontend::CheckedProject,
+    origin: etas_hir::HirExprId,
+) -> Result<CheckedConcurrencyPlan, &'static str> {
     let site = checked
         .concurrency
         .sites
-        .get(&checked_call.origin)
+        .get(&origin)
         .ok_or("structured task call is missing its checked scheduling decision")?;
     let requested_limit = site.concurrency_limit.map(|limit| {
         let limit = usize::try_from(limit).expect("u32 concurrency limit fits usize");

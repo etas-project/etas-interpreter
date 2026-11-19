@@ -46,6 +46,16 @@ fn write<'a>(
             return Ok(());
         }
         Node::Frame(frame) => {
+            if matches!(purpose, ValuePurpose::Lossless) && frame.has_shared_bindings() {
+                return Err(InterpreterCodecError::new(
+                    "scoped mutable captures require checked checkpoint persistence",
+                ));
+            }
+            if matches!(purpose, ValuePurpose::Lossless) && frame.has_handler_activations() {
+                return Err(InterpreterCodecError::new(
+                    "Handler request evidence requires checked checkpoint persistence",
+                ));
+            }
             let locals = frames.get(frame)?.sorted();
             let count = locals.len();
             *slot = json!({"id":frame.snapshot_id(),"locals":null,
@@ -53,6 +63,20 @@ fn write<'a>(
                 "effect_row_bindings":frame.generic_bindings().sorted_rows(),
                 "type_parameter_bindings":frame.generic_bindings().sorted_parameters(),
                 "type_bindings":frame.sorted_type_bindings().iter().map(|(name, ty)| json!({"name":name,"type":ty.0})).collect::<Vec<_>>()});
+            if let Some(parent) = frame.lexical_parent() {
+                slot["parent"] = Value::Null;
+                for (name, slot) in slot.as_object_mut().expect("frame object").iter_mut() {
+                    if name == "parent" {
+                        child(Node::Frame(parent), slot);
+                    } else if name == "locals" {
+                        for ((symbol, value), slot) in locals.iter().zip(array(slot, count)) {
+                            *slot = json!({"symbol":symbol.0,"value":null});
+                            child(Node::Value(value), &mut slot["value"]);
+                        }
+                    }
+                }
+                return Ok(());
+            }
             for ((symbol, value), slot) in locals.into_iter().zip(array(&mut slot["locals"], count))
             {
                 *slot = json!({"symbol":symbol.0,"value":null});
@@ -66,6 +90,14 @@ fn write<'a>(
         return Ok(());
     }
     match value {
+        InterpValue::ScopedHandler(_) => {
+            if matches!(purpose, ValuePurpose::Lossless) {
+                return Err(InterpreterCodecError::new(
+                    "scoped Handler requires checked checkpoint persistence",
+                ));
+            }
+            *slot = json!({"kind":"handler", "persistence":"source-required"});
+        }
         InterpValue::Existential(value) => {
             if matches!(purpose, ValuePurpose::Lossless) {
                 return Err(InterpreterCodecError::new(
@@ -134,16 +166,28 @@ fn write<'a>(
         }
         InterpValue::Message(message) => write_message(message, slot, child),
         InterpValue::Conversation(conversation) => {
-            *slot = json!({"kind":"conversation","selected_context":null,"history_fence":conversation.history_fence.as_ref().map(|fence|fence.as_token()),"session":conversation.session,"messages":null,"cursor":conversation.cursor});
+            *slot = json!({"kind":"conversation","protocol":null,"selected_context":null,"history_fence":conversation.history_fence.as_ref().map(|fence|fence.as_token()),"session":conversation.session,"messages":null,"cursor":conversation.cursor});
             if let Some(context) = conversation.selected_context.as_deref() {
                 slot["selected_context"] = session::selected_context_json(context);
             }
-            for (message, slot) in conversation
-                .messages
-                .iter()
-                .zip(array(&mut slot["messages"], conversation.messages.len()))
-            {
-                child(Node::Message(message), slot);
+            for (name, slot) in slot.as_object_mut().unwrap() {
+                match name.as_str() {
+                    "protocol" => {
+                        if let Some(protocol) = &conversation.protocol {
+                            child(Node::Value(protocol), slot);
+                        }
+                    }
+                    "messages" => {
+                        for (message, slot) in conversation
+                            .messages
+                            .iter()
+                            .zip(array(slot, conversation.messages.len()))
+                        {
+                            child(Node::Message(message), slot);
+                        }
+                    }
+                    _ => {}
+                }
             }
         }
         InterpValue::Provenance(value) => {
@@ -265,6 +309,7 @@ fn write<'a>(
         InterpValue::Handler {
             fact_expr,
             handlers,
+            captured,
         } => {
             *slot = json!({"kind":"handler","fact_expr":fact_expr.0,"handlers":null});
             for (handler, slot) in handlers
@@ -272,6 +317,10 @@ fn write<'a>(
                 .zip(array(&mut slot["handlers"], handlers.len()))
             {
                 *slot = handler_arm_json(handler);
+            }
+            if let Some(captured) = captured {
+                slot["captured"] = Value::Null;
+                child(Node::Frame(captured), &mut slot["captured"]);
             }
         }
         InterpValue::HostHandle(handle) => {

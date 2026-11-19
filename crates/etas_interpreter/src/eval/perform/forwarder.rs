@@ -9,7 +9,7 @@ use crate::{
 };
 
 impl EvalContext<'_> {
-    pub(in crate::eval) fn execute_checked_default_action(
+    pub(crate) fn execute_checked_default_action(
         &mut self,
         mut perform: PendingPerform,
     ) -> ControlSignal {
@@ -49,7 +49,25 @@ impl EvalContext<'_> {
         if let Err(fault) = self.consume_residual_permit(&perform) {
             return ControlSignal::Fault(Box::new(fault));
         }
+        let previous = perform
+            .inference
+            .clone()
+            .map(|context| self.enter_agent_context(context));
         let signal = match *boundary {
+            crate::control::DefaultActionBoundary::AgentControllerStep { inference } => {
+                match crate::control::CheckedAgentOperation::controller(
+                    self.checked,
+                    inference,
+                    crate::control::AgentOperationKind::Step,
+                ) {
+                    Ok(operation) => self.execute_checked_agent_step(
+                        &operation,
+                        std::mem::take(&mut perform.args),
+                        perform.span,
+                    ),
+                    Err(error) => ControlSignal::missing_checked_fact(error, perform.span),
+                }
+            }
             crate::control::DefaultActionBoundary::Console(pending) => {
                 ControlSignal::Console(pending)
             }
@@ -80,6 +98,9 @@ impl EvalContext<'_> {
                 span,
             } => self.execute_directory_list_default(path, max_entries, max_bytes, span),
         };
+        if let Some(previous) = previous {
+            self.restore_agent_context(previous);
+        }
         self.continue_chain_signal(signal, perform.continuation)
     }
 

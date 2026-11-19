@@ -10,13 +10,19 @@ pub(super) struct HostTypeEnvironment<'a> {
     bindings: HashMap<String, TypeId>,
     enum_layouts: Option<&'a HashMap<TypeId, etas_types::EnumLayoutFact>>,
     json_value: Option<TypeId>,
+    pub(super) source_map: Option<TypeId>,
 }
 
 impl<'a> HostTypeEnvironment<'a> {
-    pub(super) fn with_checked_types(facts: &'a etas_types::TypeFacts) -> Self {
+    pub(super) fn with_checked_types(checked: &'a etas_frontend::CheckedProject) -> Self {
         Self {
-            enum_layouts: Some(&facts.enum_layouts),
-            json_value: facts.known_std_types.json_value,
+            enum_layouts: Some(&checked.types.enum_layouts),
+            json_value: checked.types.known_std_types.json_value,
+            source_map: checked
+                .hir
+                .source_standard_types
+                .then(|| super::resolve_std_type(checked, &["std", "collections", "Map"]))
+                .flatten(),
             ..Self::default()
         }
     }
@@ -52,6 +58,7 @@ impl<'a> HostTypeEnvironment<'a> {
             bindings: names.iter().cloned().zip(args.iter().copied()).collect(),
             enum_layouts: parent.enum_layouts,
             json_value: parent.json_value,
+            source_map: parent.source_map,
         }
     }
 

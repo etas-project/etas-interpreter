@@ -20,6 +20,7 @@ fn execution(source: &str) -> CheckedExecutionProgram {
         plan,
         definitions: None,
         revision: None,
+        foreign: None,
     }
 }
 
@@ -154,10 +155,14 @@ fn inference_action_origin_cannot_change_the_checked_schema_or_output() {
         })
         .unwrap();
     let signature = &execution.checked.types.action_signatures[&inference.action_symbol];
-    let [parameter] = signature.generic_params.as_slice() else {
-        panic!("single inference output parameter")
+    let [context, parameter] = signature.generic_params.as_slice() else {
+        panic!("inference context and output parameters")
     };
-    let bindings = GenericBindings::from([(parameter.name.clone(), inference.output)]);
+    let context_type = execution.checked.types.agent_methods[&inference.method].context_type;
+    let bindings = GenericBindings::from([
+        (context.name.clone(), context_type),
+        (parameter.name.clone(), inference.output),
+    ]);
     CheckedActionInvocation::source(execution.clone(), *expr, &bindings)
         .unwrap()
         .validate_origin()
@@ -170,7 +175,10 @@ fn inference_action_origin_cannot_change_the_checked_schema_or_output() {
             (*ty == etas_types::Type::Primitive(etas_types::PrimitiveType::String)).then_some(id)
         })
         .unwrap();
-    let bindings = GenericBindings::from([(parameter.name.clone(), string)]);
+    let bindings = GenericBindings::from([
+        (context.name.clone(), context_type),
+        (parameter.name.clone(), string),
+    ]);
     let error = CheckedActionInvocation::source(execution.clone(), *expr, &bindings).unwrap_err();
     assert!(error.contains("payload/output facts"), "{error}");
 }

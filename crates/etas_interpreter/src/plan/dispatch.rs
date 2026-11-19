@@ -87,6 +87,59 @@ impl IntrinsicDispatchTable {
     }
 
     fn for_program(project: &CheckedProject) -> Result<Self, Vec<String>> {
+        for (expr, node) in project.hir.exprs.iter() {
+            if let HirExpr::Call { callee, .. } = node
+                && project.types.expr_types.contains_key(&expr)
+                && let Some(HirExpr::Path(path)) = project.hir.exprs.get(*callee)
+                && let ResolveResult::Resolved(symbol) = path.resolution
+                && project.hir.flow_overload_group(symbol).is_some()
+                && !project.types.source_flow_calls.contains_key(&expr)
+            {
+                return Err(vec![
+                    "source overload call is missing its checked selection".into(),
+                ]);
+            }
+        }
+        for (call, symbol) in &project.types.source_flow_calls {
+            let Some(HirExpr::Call { callee, .. }) = project.hir.exprs.get(*call) else {
+                return Err(vec![
+                    "source overload selection has no call expression".into(),
+                ]);
+            };
+            let Some(HirExpr::Path(path)) = project.hir.exprs.get(*callee) else {
+                return Err(vec![
+                    "source overload selection has no declaration path".into(),
+                ]);
+            };
+            let ResolveResult::Resolved(root) = path.resolution else {
+                return Err(vec![
+                    "source overload selection has no resolved declaration".into(),
+                ]);
+            };
+            if !project
+                .hir
+                .flow_overload_group(root)
+                .is_some_and(|group| group.contains(symbol))
+                || !matches!(project.symbols.get(*symbol).map(|symbol| &symbol.def),
+                    Some(SymbolDef::Item { item }) if matches!(project.hir.items.get(*item), Some(etas_hir::HirItem::Flow(_))))
+            {
+                return Err(vec![
+                    "source overload selection differs from its declaration group".into(),
+                ]);
+            }
+        }
+        for (call, selected) in &project.types.library_flow_calls {
+            if !matches!(project.hir.exprs.get(*call), Some(HirExpr::Call { .. }))
+                || !project
+                    .std_registry
+                    .flow_body_binding(selected.symbol, selected.overload)
+                    .is_some_and(|body| body.callable == selected.callable)
+            {
+                return Err(vec![
+                    "library overload selection differs from its checked body binding".into(),
+                ]);
+            }
+        }
         let methods = methods::MethodDispatchPlan::prepare(project).map_err(|error| vec![error])?;
         checked_actions::validate(project).map_err(|error| vec![error])?;
         checked_definition_ops::validate(project).map_err(|error| vec![error])?;
@@ -99,31 +152,60 @@ impl IntrinsicDispatchTable {
             let SymbolDef::ImportAlias { path, .. } = &symbol.def else {
                 continue;
             };
-            if let Some(std_symbol) = project.std_registry.lookup_qualified(path)
-                && std_symbol.enum_owner.is_some()
+            if let Some(source) = project.hir.canonical_source_symbol(symbol.id)
+                && source != symbol.id
+                && matches!(project.symbols.get(source).map(|symbol| &symbol.def), Some(SymbolDef::Item { item }) if matches!(project.hir.items.get(*item), Some(etas_hir::HirItem::Flow(_))))
             {
-                let etas_std::StdDecl::Flow(declaration) = &std_symbol.decl else {
-                    errors.push(format!(
-                        "standard enum constructor {} has no signature",
-                        path.join(".")
-                    ));
-                    continue;
-                };
-                if !matches!(
-                    project.types.symbol_types.get(&symbol.id),
-                    Some(etas_types::SymbolTypeFact::Flow { .. })
-                ) {
+                continue;
+            }
+            if let Some(target) = project.hir.canonical_source_symbol(symbol.id)
+                && let Some(source) = project.symbols.get(target)
+                && matches!(
+                    source.def,
+                    SymbolDef::EnumVariant { .. } | SymbolDef::ExternalEnumVariant { .. }
+                )
+            {
+                let (_, _, variant) = project
+                    .types
+                    .enum_constructor(&project.type_store, source)
+                    .ok_or_else(|| {
+                        vec![format!(
+                            "source enum alias {} has no checked constructor layout",
+                            path.join(".")
+                        )]
+                    })?;
+                enum_constructors.insert(
+                    symbol.id,
+                    StdEnumConstructor {
+                        name: variant.name.clone(),
+                        arity: variant.fields.len(),
+                    },
+                );
+                continue;
+            }
+            if let Some(std_symbol) = project.std_registry.lookup_qualified(path)
+                && (std_symbol.enum_owner.is_some()
+                    || (std_symbol.kind == etas_std::StdSymbolKind::Constructor
+                        && (project.std_registry.body_binding(std_symbol.id).is_some()
+                            || (project.hir.source_import_targets.contains_key(&symbol.id)
+                                && matches!(project.types.symbol_types.get(&symbol.id),
+                                    Some(etas_types::SymbolTypeFact::Flow { signature })
+                                        if signature.params.is_empty())))))
+            {
+                let Some(etas_types::SymbolTypeFact::Flow { signature }) =
+                    project.types.symbol_types.get(&symbol.id)
+                else {
                     errors.push(format!(
                         "standard enum constructor {} has no checked signature",
                         path.join(".")
                     ));
                     continue;
-                }
+                };
                 enum_constructors.insert(
                     symbol.id,
                     StdEnumConstructor {
                         name: std_symbol.name.clone(),
-                        arity: declaration.params.len(),
+                        arity: signature.params.len(),
                     },
                 );
                 continue;
@@ -273,6 +355,21 @@ impl IntrinsicDispatchTable {
         expr: HirExprId,
     ) -> Option<&etas_types::facts::CheckedMethodCallFact> {
         self.program.methods.call(expr)
+    }
+
+    pub(crate) fn policy_witness(
+        &self,
+        project: &CheckedProject,
+        object: crate::value::ExistentialEvidence<'_>,
+        member: &etas_types::SpecMethodIdentity,
+    ) -> Result<
+        (
+            etas_types::method::MethodTarget,
+            crate::control::GenericBindings,
+        ),
+        String,
+    > {
+        self.program.methods.policy_witness(project, object, member)
     }
 
     pub(crate) fn resolve_method(
@@ -432,12 +529,19 @@ fn collect_reachable_intrinsics(
     };
     let root = root.ok_or("intrinsic dispatch has no selected checked execution entry")?;
     let reachable = project
-        .checked_callable_reachability(root)
+        .checked_execution_reachability(root)
         .map_err(|error| error.to_string())?;
-    if let CheckedCallableRoot::Lambda(expr) | CheckedCallableRoot::StdReference(expr) = root {
+    let mut expressions = reachable.default_expressions;
+    if let Some(expr) = project
+        .checked_callable_expression(root)
+        .map_err(|error| error.to_string())?
+    {
+        expressions.insert(expr);
+    }
+    for expr in expressions {
         walk_expr_tree(&view, expr, &mut visitor);
     }
-    for item in &reachable {
+    for item in &reachable.items {
         if view.item(*item).is_none() {
             return Err(format!(
                 "entry reachability references missing HIR item {}",

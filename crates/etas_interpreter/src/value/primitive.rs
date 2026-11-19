@@ -14,6 +14,7 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub enum InterpValue {
+    ScopedHandler(Box<super::ScopedHandlerValue>),
     Existential(Box<super::ExistentialValue>),
     Unit,
     Bool(bool),
@@ -76,6 +77,7 @@ pub enum InterpValue {
     Handler {
         fact_expr: etas_hir::HirExprId,
         handlers: Vec<crate::orchestration::ActiveHandlerArmRecord>,
+        captured: Option<crate::control::Frame>,
     },
     Task(super::TaskHandleValue),
     Scheduler(super::SchedulerHandleValue),
@@ -116,6 +118,7 @@ impl Eq for InterpValue {}
 impl InterpValue {
     pub(crate) fn kind_name(&self) -> &'static str {
         match self {
+            Self::ScopedHandler(_) => "Handler",
             Self::Existential(_) => "Existential",
             Self::Unit => "Unit",
             Self::Bool(_) => "Bool",
@@ -184,6 +187,10 @@ impl InterpValue {
 
     pub fn u16(value: u16) -> Self {
         Self::Number(super::NumericValue::U16(value))
+    }
+
+    pub fn u64(value: u64) -> Self {
+        Self::Number(super::NumericValue::U64(value))
     }
 
     pub fn usize(value: usize) -> Self {

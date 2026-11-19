@@ -88,6 +88,9 @@ pub(super) fn interface(
             for (name, ty) in captured.generic_bindings().iter() {
                 bindings.entry(name.clone()).or_insert(*ty);
             }
+            for (parameter, ty) in &captured.generic_bindings().parameters {
+                bindings.parameters.entry(*parameter).or_insert(*ty);
+            }
             for (name, row) in &captured.generic_bindings().rows {
                 bindings
                     .rows
@@ -164,6 +167,13 @@ pub(super) fn interface(
             crate::value::validate_snapshot_bounds(checked, signature, span, bindings, specs)?;
             return Ok(Interface {
                 signature: Some(substitute(checked, flow(signature), bindings)?),
+                component: None,
+            });
+        }
+        Target::DerivedResponseDecoder(callable) => {
+            let layout = crate::value::source_schema::decoder_signature(checked, *callable)?;
+            return Ok(Interface {
+                signature: Some(layout.signature.clone()),
                 component: None,
             });
         }

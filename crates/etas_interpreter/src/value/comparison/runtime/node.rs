@@ -19,10 +19,15 @@ pub(super) fn message_headers_equal(
 pub(super) fn compare_node<'c>(
     mut a: &V,
     mut b: &V,
-    context: &'c Context,
+    context: &'c Context<'_>,
 ) -> Comparison<Cursor<'c>> {
     context.visit();
     loop {
+        // Language equality rejects live capabilities before accepting a
+        // previously visited pair or unwrapping a source nominal value.
+        if !context.comparable(a, b) {
+            return Comparison::Ready(false);
+        }
         let pair = ValueIdentity::of(a)
             .zip(ValueIdentity::of(b))
             .map(|(a, b)| Pair::Values(a, b));
@@ -30,6 +35,22 @@ pub(super) fn compare_node<'c>(
             return Comparison::Ready(true);
         }
         let children = match (a, b) {
+            (V::ScopedHandler(av), V::ScopedHandler(bv)) => {
+                if !std::sync::Arc::ptr_eq(&av.program.checked, &bv.program.checked)
+                    || av.native_type != bv.native_type
+                    || av.projections.len() != bv.projections.len()
+                    || av
+                        .projections
+                        .iter()
+                        .zip(&bv.projections)
+                        .any(|(a, b)| !std::sync::Arc::ptr_eq(a.target(), b.target()))
+                {
+                    return Comparison::Ready(false);
+                }
+                a = &av.value;
+                b = &bv.value;
+                continue;
+            }
             (V::Existential(av), V::Existential(bv)) => {
                 if av.object_type != bv.object_type || av.concrete_type != bv.concrete_type {
                     return Comparison::Ready(false);
@@ -85,10 +106,18 @@ pub(super) fn compare_node<'c>(
                 {
                     return Comparison::Ready(false);
                 }
-                if std::ptr::eq(av.messages.as_ptr(), bv.messages.as_ptr()) {
+                if av.protocol.is_none()
+                    && bv.protocol.is_none()
+                    && std::ptr::eq(av.messages.as_ptr(), bv.messages.as_ptr())
+                {
                     return Comparison::Ready(true);
                 }
-                Children::Messages(av.messages.clone(), bv.messages.clone())
+                Children::Conversation {
+                    a: av.messages.clone(),
+                    b: bv.messages.clone(),
+                    protocol_a: av.protocol.clone(),
+                    protocol_b: bv.protocol.clone(),
+                }
             }
             (V::Tuple(av), V::Tuple(bv)) => {
                 if av.len() != bv.len() {
@@ -174,6 +203,28 @@ pub(super) fn compare_node<'c>(
                 Children::Ordered(Box::new(OrderedComparison::set(av, bv)))
             }
             (V::Callable(a), V::Callable(b)) => return target::target(a, b, context),
+            (
+                V::Handler {
+                    fact_expr: a,
+                    handlers: ah,
+                    captured: ac,
+                },
+                V::Handler {
+                    fact_expr: b,
+                    handlers: bh,
+                    captured: bc,
+                },
+            ) => {
+                return if a != b || ah != bh {
+                    Comparison::Ready(false)
+                } else {
+                    match (ac, bc) {
+                        (Some(a), Some(b)) => target::frames(a, b, context),
+                        (None, None) => Comparison::Ready(true),
+                        _ => Comparison::Ready(false),
+                    }
+                };
+            }
             (
                 V::MemorySelection {
                     region_stable_id: ar,
@@ -266,16 +317,6 @@ fn leaf_equal(a: &V, b: &V) -> bool {
                 stderr: f,
             },
         ) => a == b && c == d && e == f,
-        (
-            V::Handler {
-                fact_expr: a,
-                handlers: c,
-            },
-            V::Handler {
-                fact_expr: b,
-                handlers: d,
-            },
-        ) => a == b && c == d,
         (
             V::ResourceHandle {
                 name: a,

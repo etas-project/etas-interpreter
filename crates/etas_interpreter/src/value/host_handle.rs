@@ -1,6 +1,9 @@
 use std::fmt;
 
 use etas_host::{ByteStreamRef, SecretRef, SecretValue, TcpStreamRef, TlsStreamRef};
+use etas_types::TypeId;
+
+use super::InterpValue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HostHandleKind {
@@ -152,4 +155,57 @@ impl fmt::Debug for HostHandleValue {
             .field("nominal_type", &self.nominal_type)
             .finish_non_exhaustive()
     }
+}
+
+pub(crate) fn source_handle_type(
+    checked: &etas_frontend::CheckedProject,
+    wrapper: TypeId,
+    field: &str,
+) -> Result<TypeId, String> {
+    etas_types::record_fields_with_applied_params(&checked.type_store, wrapper)
+        .map_err(|error| error.to_string())?
+        .and_then(|record| record.fields.into_iter().find(|item| item.name == field))
+        .filter(|item| {
+            checked
+                .types
+                .known_std_types
+                .opaque_values
+                .contains(&item.ty)
+        })
+        .map(|item| item.ty)
+        .ok_or_else(|| format!("source capability has no checked opaque `{field}` field"))
+}
+
+pub(crate) fn source_handle(
+    checked: &etas_frontend::CheckedProject,
+    wrapper: TypeId,
+    field: &str,
+    create: impl FnOnce(TypeId) -> HostHandleValue,
+) -> Result<InterpValue, String> {
+    let handle = create(source_handle_type(checked, wrapper, field)?);
+    Ok(InterpValue::Nominal {
+        ty: wrapper,
+        value: InterpValue::Record(vec![(field.into(), InterpValue::HostHandle(handle))].into())
+            .into(),
+    })
+}
+
+pub(crate) fn open_source_handle<'a>(
+    checked: &etas_frontend::CheckedProject,
+    wrapper: TypeId,
+    field: &str,
+    value: &'a InterpValue,
+) -> Result<&'a InterpValue, String> {
+    let slot = source_handle_type(checked, wrapper, field)?;
+    if let InterpValue::Nominal { ty, value } = value
+        && *ty == wrapper
+        && let InterpValue::Record(record) = value.as_ref()
+        && let Some(value @ InterpValue::HostHandle(handle)) = record.get_ref(field)
+        && handle.nominal_type() == slot
+    {
+        return Ok(value);
+    }
+    Err(format!(
+        "source capability requires a sealed `{field}` handle"
+    ))
 }

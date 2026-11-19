@@ -6,6 +6,7 @@ use etas_host::{
 /// Durable request data, never a saved grant or opened workspace binding.
 #[derive(Clone, Debug)]
 pub(crate) struct ModelRequestSnapshot {
+    pub action: etas_host::ModelAction,
     pub id: HostRequestId,
     pub provider: Option<ModelProviderId>,
     pub model: ModelName,
@@ -21,6 +22,7 @@ pub(crate) struct ModelRequestSnapshot {
 impl ModelRequestSnapshot {
     pub(crate) fn capture(request: &ModelRequest) -> Self {
         Self {
+            action: request.action,
             id: request.id,
             provider: request.provider.clone(),
             model: request.model.clone(),
@@ -41,6 +43,7 @@ impl ModelRequestSnapshot {
     ) -> Result<ModelRequest, etas_host::HostError> {
         let budget = current.budget.with_limits(self.budget_limits)?;
         Ok(ModelRequest {
+            action: self.action,
             id: self.id,
             provider: self.provider,
             model: locked_model.cloned().unwrap_or(self.model),
@@ -86,6 +89,7 @@ mod tests {
             ..Default::default()
         };
         let saved = ModelRequestSnapshot {
+            action: etas_host::ModelAction::Infer,
             id: HostRequestId(17),
             provider: None,
             model: ModelName("old-model".into()),

@@ -2,6 +2,26 @@ use super::*;
 use crate::control::ExecutionFault;
 
 impl EvalContext<'_> {
+    pub(super) fn primitive_constructor_kind(
+        &self,
+        expr: HirExprId,
+        bindings: &crate::control::GenericBindings,
+        span: Span,
+    ) -> Result<Option<etas_types::PrimitiveType>, ExecutionFault> {
+        let Some(target) = self.plan.records.primitive_constructor(expr) else {
+            return Ok(None);
+        };
+        let target = self.materialized_type(target, bindings, span)?;
+        match self.checked.type_store.get(target) {
+            Some(etas_types::Type::Primitive(kind)) => Ok(Some(*kind)),
+            _ => Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "primitive representation constructor has no concrete primitive type argument",
+            )),
+        }
+    }
+
     pub(super) fn materialized_expression_type(
         &self,
         expr: HirExprId,

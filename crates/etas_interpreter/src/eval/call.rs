@@ -6,7 +6,7 @@ mod tests;
 
 pub(super) struct CallArgsState {
     pub call: HirExprId,
-    pub target: CallTarget,
+    pub target: Option<CallTarget>,
     pub args: std::sync::Arc<[HirArg]>,
     pub start_arg_index: usize,
     pub evaluated_args: Vec<InterpValue>,
@@ -69,6 +69,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
@@ -105,7 +106,7 @@ impl<'a> EvalContext<'a> {
         self.resume_call_args(
             CallArgsState {
                 call,
-                target,
+                target: Some(target),
                 args: descriptors,
                 start_arg_index: 0,
                 evaluated_args: Vec::new(),
@@ -139,6 +140,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
@@ -171,46 +173,126 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }
-        if let Some(method) = self.plan.dispatch.method(call) {
-            let mut source = evaluated_args.into_iter();
-            let mut ordered = vec![None; method.signature.params.len()];
-            if let etas_types::method::MethodReceiver::Value { slot } = method.receiver {
-                ordered[slot as usize] = source.next();
-            }
-            for slot in &method.argument_slots {
-                ordered[*slot as usize] = source.next();
-            }
-            evaluated_args = match ordered.into_iter().collect::<Option<Vec<_>>>() {
-                Some(values) if source.next().is_none() => values,
-                _ => {
-                    return ControlSignal::missing_checked_fact(
-                        "method argument progress differs from its checked ABI",
-                        span,
-                    );
+        let (parameter_count, slots, defaults) =
+            if let Some(method) = self.plan.dispatch.method(call) {
+                let mut slots = Vec::new();
+                if let etas_types::method::MethodReceiver::Value { slot } = method.receiver {
+                    slots.push(slot);
                 }
+                slots.extend(&method.argument_slots);
+                (
+                    method.signature.params.len(),
+                    slots,
+                    method.defaults.clone(),
+                )
+            } else if let Some(binding) = self.checked.types.declared_call_arguments.get(&call) {
+                (
+                    binding.argument_slots.len() + binding.defaults.len(),
+                    binding.argument_slots.clone(),
+                    binding.defaults.clone(),
+                )
+            } else {
+                (
+                    evaluated_args.len(),
+                    (0..evaluated_args.len() as u32).collect(),
+                    Vec::new(),
+                )
             };
-            if matches!(
+        self.prepare_default_arguments(super::arguments::DefaultArguments {
+            expr: call,
+            parameter_count,
+            slots,
+            values: evaluated_args,
+            defaults,
+            next_default: 0,
+            destination: super::arguments::ArgumentDestination::Call { target },
+            span,
+            frame: frame.clone(),
+        })
+    }
+
+    pub(super) fn finish_call_arguments(
+        &mut self,
+        call: HirExprId,
+        mut target: Option<CallTarget>,
+        parameter_count: usize,
+        mut slots: Vec<u32>,
+        mut values: Vec<InterpValue>,
+        span: Span,
+        frame: &mut Frame,
+    ) -> ControlSignal {
+        let mut update = None;
+        if let Some(method) = self.plan.dispatch.method(call)
+            && let etas_types::method::MethodReceiver::Updating { slot } = method.receiver
+        {
+            let symbol = match etas_types::method::updating_receiver_symbol(
+                &self.checked.hir,
+                &self.checked.types,
+                call,
+            ) {
+                Ok(symbol) => symbol,
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+            };
+            let (lease, receiver) = match frame.acquire_receiver(symbol) {
+                Ok(access) => access,
+                Err(reason) => return ControlSignal::invalid_arguments(reason, span),
+            };
+            self.task.receiver_updates.track(&lease);
+            target = match self.prepared_method_target(call, Some(&receiver), frame, span) {
+                Ok(target) => Some(target),
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            };
+            slots.push(slot);
+            values.push(receiver);
+            update = Some((lease, crate::control::ReceiverOutcome::new(slot)));
+        }
+        let mut evaluated_args =
+            match super::arguments::dense_arguments(parameter_count, slots, values) {
+                Ok(values) => values,
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+            };
+        if let Some(method) = self.plan.dispatch.method(call)
+            && matches!(
                 method.target,
                 etas_types::method::MethodTarget::BoundSpec { .. }
-            ) && let etas_types::method::MethodReceiver::Value { slot } = method.receiver
-            {
-                let receiver = &mut evaluated_args[slot as usize];
-                while let InterpValue::Existential(_) = receiver {
-                    let InterpValue::Existential(object) =
-                        std::mem::replace(receiver, InterpValue::Unit)
-                    else {
-                        unreachable!()
-                    };
-                    *receiver = object.value.into_value();
-                }
+            )
+            && let Some(slot) = method.receiver.value_slot()
+        {
+            let receiver = &mut evaluated_args[slot as usize];
+            while let InterpValue::Existential(_) = receiver {
+                let InterpValue::Existential(object) =
+                    std::mem::replace(receiver, InterpValue::Unit)
+                else {
+                    unreachable!()
+                };
+                *receiver = object.value.into_value();
             }
         }
         let site = Some(crate::control::CallSite {
+            receiver_update: update.as_ref().map(|(_, outcome)| outcome.clone()),
             kind: crate::control::CallSiteKind::Expr { expr: call },
             frame: frame.clone(),
             composition: None,
+            task_callback: None,
         });
-        self.execute_call_target_at(target, evaluated_args, span, site)
+        let Some(target) = target else {
+            return ControlSignal::missing_checked_fact(
+                "call target was not resolved after arguments",
+                span,
+            );
+        };
+        let signal = self.execute_call_target_at(target, evaluated_args, span, site);
+        match update {
+            Some((lease, outcome)) => compose_signal_continuation(
+                signal,
+                Continuation::CommitReceiver {
+                    lease,
+                    outcome,
+                    span,
+                },
+            ),
+            None => signal,
+        }
     }
 
     pub(super) fn execute_flow_call(
@@ -218,9 +300,29 @@ impl<'a> EvalContext<'a> {
         item: HirItemId,
         call_args: Vec<InterpValue>,
         span: Span,
+        update: Option<crate::control::ReceiverOutcome>,
+        site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
+        if matches!(
+            self.checked.hir.items.get(item),
+            Some(HirItem::Flow(etas_hir::HirFlowDecl {
+                body: etas_hir::HirFlowBody::Runtime {
+                    role: etas_std::StdExecutionRole::ScopeEnter,
+                    ..
+                },
+                ..
+            }))
+        ) {
+            return self.execute_runtime_scope(item, call_args, &Default::default(), site, span);
+        }
         match self.checked.hir.items.get(item) {
-            Some(HirItem::Flow(flow)) => match self.execute_flow(item, flow, &call_args) {
+            Some(HirItem::Flow(flow)) => match self.execute_flow_with_receiver(
+                item,
+                flow,
+                &call_args,
+                Default::default(),
+                update,
+            ) {
                 ControlSignal::Value(value) | ControlSignal::Return(value) => {
                     ControlSignal::Value(value)
                 }
@@ -228,6 +330,7 @@ impl<'a> EvalContext<'a> {
                 | ControlSignal::Checkpoint(_)
                 | ControlSignal::Block(_)
                 | ControlSignal::Expr(_)
+                | ControlSignal::ProgramExpr(_)
                 | ControlSignal::Call(_)
                 | ControlSignal::Native(_)
                 | ControlSignal::Perform(_)
@@ -351,16 +454,36 @@ impl<'a> EvalContext<'a> {
         span: Span,
         site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
+        let update = site.as_ref().and_then(|site| site.receiver_update.clone());
+        self.execute_call_target_frame_with_receiver(target, call_args, span, site, update)
+    }
+
+    pub(crate) fn execute_call_target_frame_with_receiver(
+        &mut self,
+        target: CallTarget,
+        call_args: Vec<InterpValue>,
+        span: Span,
+        site: Option<crate::control::CallSite>,
+        update: Option<crate::control::ReceiverOutcome>,
+    ) -> ControlSignal {
         match target {
             target @ (CallTarget::AgentRevision(_) | CallTarget::Scoped(_)) => {
                 self.execute_call_target_at(target, call_args, span, site)
             }
-            CallTarget::FlowItem(item) => self.execute_flow_call(item, call_args, span),
+            CallTarget::FlowItem(item) => {
+                self.execute_flow_call(item, call_args, span, update, site)
+            }
             CallTarget::AgentItem(item) => {
                 self.execute_agent_call(item, call_args, span, Default::default())
             }
             CallTarget::ToolItem(item) => self.execute_source_tool_call(item, call_args, span),
             CallTarget::Lambda { expr, captured } => {
+                if crate::value::graph::has_expired_captures(&captured) {
+                    return ControlSignal::invalid_arguments(
+                        "lambda retaining a local var cannot run after its owning scope ends",
+                        span,
+                    );
+                }
                 self.execute_lambda_call(expr, captured, call_args, span)
             }
             CallTarget::BoundMethod {
@@ -388,6 +511,9 @@ impl<'a> EvalContext<'a> {
                     Ok(value) => ControlSignal::Value(value),
                     Err(fault) => ControlSignal::Fault(Box::new(fault)),
                 }
+            }
+            CallTarget::DerivedResponseDecoder(schema) => {
+                self.decode_source_model_response(schema, call_args, span)
             }
             CallTarget::NominalConstructor(ty) => {
                 match <Vec<InterpValue> as TryInto<[InterpValue; 1]>>::try_into(call_args) {
@@ -443,6 +569,7 @@ impl<'a> EvalContext<'a> {
                 call_args,
                 span,
                 site,
+                update,
             ),
             CallTarget::Limited { target, limits } => {
                 self.execute_limited_call_target(target.into_value(), limits, call_args, span, site)
@@ -510,6 +637,7 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
         site: Option<crate::control::CallSite>,
+        update: Option<crate::control::ReceiverOutcome>,
     ) -> ControlSignal {
         match target {
             CallTarget::EnumVariant(symbol) => {
@@ -532,8 +660,17 @@ impl<'a> EvalContext<'a> {
             }
             CallTarget::FlowItem(item) => match self.checked.hir.items.get(item) {
                 Some(HirItem::Flow(flow)) => {
+                    if matches!(
+                        flow.body,
+                        etas_hir::HirFlowBody::Runtime {
+                            role: etas_std::StdExecutionRole::ScopeEnter,
+                            ..
+                        }
+                    ) {
+                        return self.execute_runtime_scope(item, call_args, &bindings, site, span);
+                    }
                     let signal =
-                        self.execute_flow_with_generic_bindings(item, flow, &call_args, bindings);
+                        self.execute_flow_with_receiver(item, flow, &call_args, bindings, update);
                     match signal {
                         ControlSignal::Value(value) | ControlSignal::Return(value) => {
                             ControlSignal::Value(value)

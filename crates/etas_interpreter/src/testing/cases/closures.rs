@@ -4,6 +4,119 @@ use crate::{
     control::CallTarget,
 };
 
+#[tokio::test(flavor = "current_thread")]
+async fn scoped_lambdas_and_handler_share_the_original_var_and_keep_let_snapshots() {
+    let source = r#"
+module app.main;
+effect Counter { action tick() -> unit; }
+flow twice(increment: () -> i32 ![]) -> i32 ![] {
+    let first = increment();
+    let second = increment();
+    return first + second;
+}
+flow main() -> (i32, i32, i32) ![] {
+    var n = 0;
+    let snapshot = n;
+    let current = () => n;
+    let saved = () => snapshot;
+    let increment = () => { n = n + 1; return n; };
+    let same = increment;
+    n = 7;
+    let before = current();
+    same();
+    let sum = twice(same);
+    if sum != 19 { return (0, 0, 0); }
+    handle { perform Counter.tick(); } with {
+        Counter.tick() => { n = n + 1; resume (); }
+    };
+    return (before, current(), saved());
+}
+"#;
+    for level in [
+        etas_frontend::OptimizationLevel::O0,
+        etas_frontend::OptimizationLevel::O2,
+    ] {
+        let checked = project::checked_project_with_options(
+            source,
+            etas_frontend::ProjectCompileOptions {
+                optimization_level: level,
+                ..Default::default()
+            },
+        );
+        let host = FakeHost::new(availability(&[]));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &host,
+                RunOptions::default(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            result.diagnostics.is_empty(),
+            "{level:?}: {:?}",
+            result.diagnostics
+        );
+        assert_eq!(
+            result.value(),
+            Some(&InterpValue::Tuple(
+                vec![
+                    InterpValue::i32(7),
+                    InterpValue::i32(11),
+                    InterpValue::i32(0)
+                ]
+                .into()
+            )),
+            "{level:?}"
+        );
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn finishing_a_handler_ends_the_abandoned_lambda_capture_scope() {
+    let checked = checked_project(
+        r#"
+module app.main;
+effect Capture { action save(callback: () -> i32 ![]) -> unit; }
+flow main() -> i32 ![] {
+    var escaped: () -> i32 ![] = () => 0;
+    handle {
+        var n = 0;
+        let inner = () => { n = n + 1; return n; };
+        perform Capture.save(() => { let retained = inner; return 1; });
+    } with {
+        Capture.save(callback) => { escaped = callback; finish (); }
+    };
+    return escaped();
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(
+        result.diagnostics.iter().any(|diagnostic| diagnostic
+            .message
+            .contains("lambda retaining a local var cannot run after its owning scope ends")),
+        "{:?}",
+        result.diagnostics
+    );
+}
+
 #[test]
 fn nested_closure_checkpoint_lifecycle_does_not_recurse_through_rust_frames() {
     const WORKER: &str = "ETAS_TEST_NESTED_CLOSURE_CHECKPOINT_WORKER";
@@ -86,6 +199,7 @@ flow main() -> i32 {
             let mut invalid = wire.clone();
             let mut pending: Vec<&mut serde_json::Value> = vec![&mut invalid];
             let mut closures = 0;
+            let mut captured_frame = None;
             while let Some(value) = pending.pop() {
                 match value {
                     serde_json::Value::Object(fields) => {
@@ -93,7 +207,7 @@ flow main() -> i32 {
                         {
                             closures += 1;
                             if closures == 700 {
-                                fields.insert("expr".into(), serde_json::json!(u32::MAX));
+                                captured_frame = Some(fields["captured"]["id"].clone());
                                 break;
                             }
                         }
@@ -105,6 +219,22 @@ flow main() -> i32 {
             }
             assert_eq!(closures, 700);
             drop(pending);
+            let captured_frame = captured_frame.unwrap();
+            let mut pending: Vec<&mut serde_json::Value> = vec![&mut invalid];
+            while let Some(value) = pending.pop() {
+                match value {
+                    serde_json::Value::Object(fields) => {
+                        if fields.get("kind").and_then(serde_json::Value::as_str) == Some("lambda")
+                            && fields["captured"]["id"] == captured_frame
+                        {
+                            fields.insert("expr".into(), serde_json::json!(u32::MAX));
+                        }
+                        pending.extend(fields.values_mut());
+                    }
+                    serde_json::Value::Array(values) => pending.extend(values.iter_mut()),
+                    _ => (),
+                }
+            }
             let error = checkpoint_from_json(&invalid, &checked).unwrap_err();
             assert!(
                 error.message().contains("missing HIR expression"),
@@ -290,6 +420,59 @@ flow main() -> i32 { let f = make(99); return f(4); }
             assert!(plan.closures.get(expr).unwrap().captures.is_empty());
         }
     }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cyclic_mutable_capture_graph_survives_independent_checkpoint_restores() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.runtime.checkpoint;
+flow keep(callback: () -> i32 ![]) -> i32 ![] { return 1; }
+flow main() -> i32 ![] {
+    var n = 0;
+    var current: () -> i32 ![] = () => 0;
+    var next: () -> i32 ![] = () => 0;
+    current = () => { n = n + keep(next); return n; };
+    next = () => { n = n + keep(current); return n; };
+    let same = next;
+    checkpoint("cyclic binding graph");
+    let first = same();
+    return first + current();
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(3)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let wire =
+        checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0]).unwrap();
+    let restored = checkpoint_from_json(&wire, &checked).unwrap();
+    let first = Interpreter
+        .resume_checkpoint(&checked, &restored, &host, RunOptions::default())
+        .await
+        .unwrap();
+    let second = Interpreter
+        .resume_checkpoint(&checked, &restored, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
+    assert!(second.diagnostics.is_empty(), "{:?}", second.diagnostics);
+    assert_eq!(first.value(), Some(&InterpValue::i32(3)));
+    assert_eq!(second.value(), first.value());
 }
 
 #[tokio::test(flavor = "current_thread")]

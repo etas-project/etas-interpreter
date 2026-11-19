@@ -5,7 +5,7 @@ use crate::{
 
 use super::{Children, Comparison, Context, Cursor, context::Pair};
 
-pub(super) fn frames<'c>(a: &Frame, b: &Frame, context: &'c Context) -> Comparison<Cursor<'c>> {
+pub(super) fn frames<'c>(a: &Frame, b: &Frame, context: &'c Context<'_>) -> Comparison<Cursor<'c>> {
     use crate::control::FrameComparison;
     context.visit();
     context.memoized(
@@ -17,7 +17,7 @@ pub(super) fn frames<'c>(a: &Frame, b: &Frame, context: &'c Context) -> Comparis
 pub(super) fn scoped<'c>(
     a: &ScopedCallableValue,
     b: &ScopedCallableValue,
-    context: &'c Context,
+    context: &'c Context<'_>,
 ) -> Comparison<Cursor<'c>> {
     if !a.equality_header_matches(b) {
         return Comparison::Ready(false);
@@ -34,7 +34,7 @@ pub(super) fn scoped<'c>(
 pub(super) fn lists<'c>(
     a: &CallTargetChildren,
     b: &CallTargetChildren,
-    context: &'c Context,
+    context: &'c Context<'_>,
 ) -> Comparison<Cursor<'c>> {
     if a.len() != b.len() {
         return Comparison::Ready(false);
@@ -48,7 +48,7 @@ pub(super) fn lists<'c>(
 pub(super) fn optional<'c>(
     a: Option<&T>,
     b: Option<&T>,
-    context: &'c Context,
+    context: &'c Context<'_>,
 ) -> Comparison<Cursor<'c>> {
     match (a, b) {
         (Some(a), Some(b)) => target(a, b, context),
@@ -57,7 +57,7 @@ pub(super) fn optional<'c>(
     }
 }
 
-pub(super) fn target<'c>(a: &T, b: &T, context: &'c Context) -> Comparison<Cursor<'c>> {
+pub(super) fn target<'c>(a: &T, b: &T, context: &'c Context<'_>) -> Comparison<Cursor<'c>> {
     context.visit();
     let links = match (a, b) {
         (
@@ -142,6 +142,9 @@ pub(super) fn target<'c>(a: &T, b: &T, context: &'c Context) -> Comparison<Curso
             return Comparison::Ready(a == b);
         }
         (T::AgentRevision(a), T::AgentRevision(b)) => return Comparison::Ready(a == b),
+        (T::DerivedResponseDecoder(a), T::DerivedResponseDecoder(b)) => {
+            return Comparison::Ready(a == b);
+        }
         (T::NominalConstructor(a), T::NominalConstructor(b)) => return Comparison::Ready(a == b),
         (T::PureIntrinsic(a), T::PureIntrinsic(b)) => return Comparison::Ready(a == b),
         (T::StdIntrinsic(a), T::StdIntrinsic(b)) => return Comparison::Ready(a == b),

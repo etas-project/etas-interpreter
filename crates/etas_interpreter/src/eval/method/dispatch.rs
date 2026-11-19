@@ -49,6 +49,19 @@ impl EvalContext<'_> {
                 frame,
             );
         }
+        if fact.receiver.is_updating() {
+            return self.resume_call_args(
+                CallArgsState {
+                    call: dispatch.expr,
+                    target: None,
+                    args: dispatch.args.into(),
+                    start_arg_index: 0,
+                    evaluated_args: Vec::new(),
+                    span: dispatch.span,
+                },
+                frame,
+            );
+        }
         match self.eval_expr(receiver, frame) {
             ControlSignal::Value(value) => self.eval_method_on_receiver(dispatch, value, frame),
             signal if is_pending_host_boundary_signal(&signal) => {
@@ -115,7 +128,7 @@ impl EvalContext<'_> {
         self.resume_call_args(
             CallArgsState {
                 call,
-                target,
+                target: Some(target),
                 args: args.into(),
                 start_arg_index: 0,
                 evaluated_args,
@@ -125,7 +138,7 @@ impl EvalContext<'_> {
         )
     }
 
-    fn prepared_method_target(
+    pub(in crate::eval) fn prepared_method_target(
         &self,
         call: HirExprId,
         receiver: Option<&InterpValue>,
@@ -135,13 +148,14 @@ impl EvalContext<'_> {
         let missing = |message: &str| {
             ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
         };
+        let request_bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(call));
         let selection = self
             .plan
             .dispatch
             .resolve_method(
                 self.checked,
                 call,
-                frame.generic_bindings(),
+                &request_bindings,
                 receiver.and_then(|value| match value {
                     InterpValue::Existential(value) => {
                         Some(crate::value::ExistentialEvidence::Runtime(value))
@@ -166,13 +180,13 @@ impl EvalContext<'_> {
                             parameter_types: checked.parameter_types.clone(),
                             result_type: checked.result_type,
                         }
-                        .specialize(&self.checked.type_store, frame.generic_bindings())
+                        .specialize(&self.checked.type_store, &request_bindings)
                         .map_err(|reason| missing(&reason))?,
                     )
                 } else {
                     CallTarget::StdIntrinsic(
                         checked
-                            .specialize_generic(&self.checked.type_store, frame.generic_bindings())
+                            .specialize_generic(&self.checked.type_store, &request_bindings)
                             .map_err(|reason| missing(&reason))?,
                     )
                 }
@@ -187,10 +201,23 @@ impl EvalContext<'_> {
             MethodTarget::BoundSpec { .. } => {
                 unreachable!("prepared witness resolves the generic target")
             }
-            MethodTarget::External { .. } => {
-                return Err(missing(
-                    "external method has no materialized executable body",
-                ));
+            MethodTarget::External { identity } => {
+                if self.checked.foreign_method(identity).is_some() {
+                    self.foreign
+                        .as_ref()
+                        .ok_or_else(|| missing("foreign method has no live caller code owner"))?
+                        .method(self.checked, identity)
+                        .map_err(|reason| missing(&reason))?
+                } else {
+                    self.plan
+                        .standard_library
+                        .as_ref()
+                        .ok_or_else(|| {
+                            missing("external method has no materialized executable body")
+                        })?
+                        .method(identity)
+                        .map_err(|reason| missing(&reason))?
+                }
             }
         };
         if bindings.types.is_empty() && bindings.parameters.is_empty() && bindings.rows.is_empty() {

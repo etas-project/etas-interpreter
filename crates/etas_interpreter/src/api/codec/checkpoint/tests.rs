@@ -55,10 +55,11 @@ fn model_pending_and_outer_continuations_share_the_machine_encoding_budget() {
         "module app.main; flow main() -> unit { return; }",
     );
     let span = checked.hir.blocks.iter().next().unwrap().1.span;
-    let frame = ModelLoopFrameSnapshot {
+    let frame = ModelRequestFrameSnapshot {
         boundary_request_id: etas_host::HostRequestId(0),
         pending: PendingModelSnapshot {
             request: ModelRequestSnapshot {
+                action: etas_host::ModelAction::Infer,
                 id: HostRequestId(1),
                 provider: None,
                 model: ModelName("test".into()),
@@ -71,29 +72,23 @@ fn model_pending_and_outer_continuations_share_the_machine_encoding_budget() {
                 budget_limits: Budget::default(),
             },
             decode: ModelDecodeSnapshot::String,
-            max_tool_rounds: 1,
-            source_tools: vec![],
             span,
             continuation: deep_continuation(30_000),
         },
-        round: 0,
-        repair: Default::default(),
-        last_tool_error: None,
-        remaining_tool_calls: vec![],
-        completed_tool_result: false,
-        current_host_tool: None,
         boundary_key: etas_host::replay::ReplayFingerprint::from_bytes([1; 32]),
         outer_continuation: ContinuationSnapshot::Return,
     };
     let (_, cost) = measure(|| {
-        assert!(model_loop_frame_json(&frame, &mut snapshot::EncodingBudget::new(30_001)).is_err());
+        assert!(
+            model_request_frame_json(&frame, &mut snapshot::EncodingBudget::new(30_001)).is_err()
+        );
     });
     assert_eq!(
         cost.bytes, cost.released_bytes,
         "pending continuation leaked: {cost:?}"
     );
     let wire = CheckpointDocument::from_value(
-        model_loop_frame_json(&frame, &mut snapshot::EncodingBudget::default()).unwrap(),
+        model_request_frame_json(&frame, &mut snapshot::EncodingBudget::default()).unwrap(),
     );
     assert_eq!(wire["outer_continuation"]["kind"], "return");
 }

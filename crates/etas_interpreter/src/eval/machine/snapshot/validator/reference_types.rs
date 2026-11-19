@@ -47,7 +47,11 @@ impl SnapshotValidator<'_> {
                     bindings,
                     receiver.and_then(|value| match value {
                         ValueSnapshot::Existential { header, value } => {
-                            Some(crate::value::ExistentialEvidence::Snapshot { header, value })
+                            Some(crate::value::ExistentialEvidence::Snapshot {
+                                header,
+                                value,
+                                revisions: self.revisions,
+                            })
                         }
                         _ => None,
                     }),
@@ -219,23 +223,64 @@ impl SnapshotValidator<'_> {
     ) -> Result<(), String> {
         // Task effect rows may stay abstract in Handler arms; the output
         // type still comes from the checked start invocation and its bindings.
-        if let ValueSnapshot::TaskRuntime(crate::orchestration::TaskValueSnapshot::Task {
-            task,
-            ..
-        }) = value
-            && let Some(etas_types::Type::Task(ty)) = self.checked.type_store.get(expected)
+        let source_task = match value {
+            ValueSnapshot::Nominal { ty, value }
+                if etas_types::source_execution::task(
+                    &self.checked.type_store,
+                    &self.checked.types.known_std_types,
+                    *ty,
+                )
+                .is_some() =>
+            {
+                match value.as_ref() {
+                    ValueSnapshot::Record(fields) => fields
+                        .iter()
+                        .find(|(name, _)| name == "handle")
+                        .map(|(_, value)| (*ty, value)),
+                    _ => None,
+                }
+            }
+            _ => None,
+        };
+        let task_value = source_task
+            .map(|(_, payload)| payload)
+            .or_else(|| (!self.checked.hir.source_standard_types).then_some(value));
+        if let Some(ValueSnapshot::TaskRuntime(
+            task_value @ crate::orchestration::TaskValueSnapshot::Task { task, .. },
+        )) = task_value
+            && let Some(ty) = etas_types::source_execution::task(
+                &self.checked.type_store,
+                &self.checked.types.known_std_types,
+                expected,
+            )
         {
             self.tasks
                 .ok_or("Task value has no scheduler snapshot")?
-                .validate_value(match value {
-                    ValueSnapshot::TaskRuntime(value) => *value,
-                    _ => unreachable!(),
-                })?;
+                .validate_value(*task_value)?;
             let output = bindings
                 .substitution(&self.checked.type_store)
                 .substitute(ty.output)
                 .map_err(|error| format!("Task output type is not materialized: {error}"))?;
             let actual = self.task_output_type(crate::driver::scheduler::TaskId(*task))?;
+            if let Some((actual_type, _)) = source_task {
+                let declared = etas_types::source_execution::task(
+                    &self.checked.type_store,
+                    &self.checked.types.known_std_types,
+                    actual_type,
+                )
+                .expect("selected source task envelope");
+                if declared.output != actual {
+                    return Err("Task record result type differs from its live task".into());
+                }
+                crate::value::contract::validate(
+                    self,
+                    [crate::value::contract::Seed {
+                        value: crate::value::contract::Value::Snapshot(value),
+                        ty: actual_type,
+                    }],
+                    bindings,
+                )?;
+            }
             return if actual == output {
                 Ok(())
             } else {

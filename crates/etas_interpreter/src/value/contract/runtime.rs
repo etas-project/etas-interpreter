@@ -86,12 +86,12 @@ fn validate_values(
             discovery
                 .captures(crate::value::graph::Node::Value(value))
                 .into_iter()
-                .map(|(expr, frame)| (expr, frame, false)),
+                .map(|(expr, frame)| (expr, frame, false, 0)),
         );
     }
-    let mut active = std::collections::HashSet::new();
+    let mut active = std::collections::HashMap::new();
     let mut completed = std::collections::HashSet::new();
-    while let Some((expr, frame, complete)) = frames.pop() {
+    while let Some((expr, frame, complete, depth)) = frames.pop() {
         let key = (expr, frame.capture_identity());
         if complete {
             active.remove(&key);
@@ -101,15 +101,20 @@ fn validate_values(
         if completed.contains(&key) {
             continue;
         }
-        if !active.insert(key) {
+        if let Some(previous) = active.get(&key) {
+            if depth > *previous {
+                continue;
+            }
             return Err("input closure has cyclic captured frames".into());
         }
-        frames.push((expr, frame.clone(), true));
+        active.insert(key, depth);
+        frames.push((expr, frame.clone(), true, depth));
         let mut discovery = crate::value::graph::FrameDiscovery::default();
         let layout = plan
             .closures
             .get(expr)
             .ok_or("input closure has no checked capture layout")?;
+        let shared = frame.shared_bindings();
         let locals = frame.borrow_locals()?;
         let locals = locals
             .sorted()
@@ -138,7 +143,17 @@ fn validate_values(
                 discovery
                     .captures(crate::value::graph::Node::Value(value))
                     .into_iter()
-                    .map(|(expr, frame)| (expr, frame, false)),
+                    .map(|(expr, frame)| {
+                        (
+                            expr,
+                            frame,
+                            false,
+                            depth
+                                + usize::from(
+                                    shared.iter().any(|binding| binding.symbol == *symbol),
+                                ),
+                        )
+                    }),
             );
         }
         super::validate(&context, seeds, frame.generic_bindings())?;
@@ -166,6 +181,36 @@ impl Context for RuntimeContext<'_> {
             _ => expected,
         };
         match value {
+            Value::Runtime(InterpValue::ScopedHandler(handler)) => {
+                handler.validate(self.checked, expected, self.limits)
+            }
+            Value::Runtime(InterpValue::Task(_))
+                if known.execution.task_handle == Some(expected)
+                    || matches!(
+                        self.checked.type_store.get(expected),
+                        Some(etas_types::Type::Task(_))
+                    ) =>
+            {
+                Ok(())
+            }
+            Value::Runtime(InterpValue::Scheduler(_))
+                if known.execution.scheduler_state == Some(expected)
+                    || matches!(
+                        self.checked.type_store.get(expected),
+                        Some(etas_types::Type::SchedulerHandle)
+                    ) =>
+            {
+                Ok(())
+            }
+            Value::Runtime(InterpValue::Continuation(_))
+                if known.execution.continuation_state == Some(expected)
+                    || matches!(
+                        self.checked.type_store.get(expected),
+                        Some(etas_types::Type::Continuation(_))
+                    ) =>
+            {
+                Ok(())
+            }
             Value::Runtime(InterpValue::HostHandle(handle))
                 if handle.nominal_type() == expected
                     && !known.runtime_values.values().any(|ty| *ty == expected)
@@ -177,20 +222,30 @@ impl Context for RuntimeContext<'_> {
                 value.validate_role(&known.code)
             }
             Value::Runtime(InterpValue::SyntaxBlock(value))
-                if value.ty() == expected && known.code.syntax_block == Some(expected) =>
+                if value.ty() == expected
+                    && (known.code.syntax_block == Some(expected)
+                        || (self.checked.hir.source_standard_types
+                            && crate::value::source_code::retained_syntax_type(self.checked)
+                                == Some(expected))) =>
             {
                 Ok(())
             }
             Value::Runtime(InterpValue::AgentDefinition(value))
                 if value.ty() == expected
-                    && known.code.agent_definition == Some(constructor)
+                    && (known.code.agent_definition == Some(constructor)
+                        || (self.checked.hir.source_standard_types
+                            && crate::value::source_code::retained_type(self.checked)
+                                == Some(expected)))
                     && std::sync::Arc::ptr_eq(value.program(), self.checked) =>
             {
                 Ok(())
             }
             Value::Runtime(InterpValue::CallableDefinition(value))
                 if value.ty() == expected
-                    && known.code.callable_definition == Some(constructor)
+                    && (known.code.callable_definition == Some(constructor)
+                        || (self.checked.hir.source_standard_types
+                            && crate::value::source_code::retained_type(self.checked)
+                                == Some(expected)))
                     && std::sync::Arc::ptr_eq(value.program(), self.checked) =>
             {
                 Ok(())
@@ -198,6 +253,7 @@ impl Context for RuntimeContext<'_> {
             Value::Runtime(InterpValue::Handler {
                 fact_expr,
                 handlers,
+                ..
             }) => self
                 .snapshot
                 .handler_value_contract(*fact_expr, handlers, expected),

@@ -1,5 +1,3 @@
-use std::collections::HashSet;
-
 use super::*;
 
 impl<'a> EvalContext<'a> {
@@ -14,6 +12,7 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         ControlSignal::pending_block(PendingBlock {
+            agent_context: None,
             block,
             next_stmt_index: start_stmt_index,
             frame: frame.clone(),
@@ -28,11 +27,10 @@ impl<'a> EvalContext<'a> {
         start_stmt_index: usize,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let scope_snapshot = frame.scope_symbols();
         let block_data = &self.checked.hir.blocks[block];
         for (index, stmt) in block_data.stmts.iter().enumerate().skip(start_stmt_index) {
             if let Some(signal) = self.execute_stmt(block, index, *stmt, frame) {
-                return self.finish_block_signal(signal, frame, &scope_snapshot);
+                return signal;
             }
         }
         if let Some(expr) = block_data.final_expr {
@@ -44,24 +42,59 @@ impl<'a> EvalContext<'a> {
                 }
                 other => other,
             };
-            self.finish_block_signal(signal, frame, &scope_snapshot)
+            signal
         } else {
-            self.finish_block_signal(
-                ControlSignal::Value(InterpValue::Unit),
-                frame,
-                &scope_snapshot,
-            )
+            ControlSignal::Value(InterpValue::Unit)
         }
     }
 
-    fn finish_block_signal(
+    pub(crate) fn finish_scope_signal(
         &mut self,
-        signal: ControlSignal,
+        block: HirBlockId,
         frame: &mut Frame,
-        scope_snapshot: &HashSet<SymbolId>,
+        mut scope_snapshot: std::rc::Rc<std::collections::HashSet<SymbolId>>,
+        guard: Option<std::rc::Rc<crate::control::ScopeExitGuard>>,
+        signal: ControlSignal,
     ) -> ControlSignal {
-        if !is_pending_host_boundary_signal(&signal) {
-            frame.cleanup_to(scope_snapshot);
+        if let Some(guard) = &guard {
+            guard.close();
+        }
+        let block_data = &self.checked.hir.blocks[block];
+        // Keep the actual entry baseline, including optimizer-hoisted lets.
+        // A captured var still ends at its declaring block after suspension.
+        for symbol in &self
+            .checked
+            .hir
+            .scopes
+            .get(block_data.scope)
+            .expect("checked block scope")
+            .symbols
+        {
+            if matches!(
+                self.checked.types.symbol_types.get(symbol),
+                Some(etas_types::SymbolTypeFact::Local { mutable: true, .. })
+            ) && scope_snapshot.contains(symbol)
+            {
+                std::rc::Rc::make_mut(&mut scope_snapshot).remove(symbol);
+            }
+        }
+        let escapes = match &signal {
+            ControlSignal::Value(value)
+            | ControlSignal::Return(value)
+            | ControlSignal::Resume(value)
+            | ControlSignal::Finish(value) => frame.scoped_value_escapes(value, &scope_snapshot),
+            ControlSignal::Perform(pending) => pending
+                .args
+                .iter()
+                .any(|value| frame.scoped_value_escapes(value, &scope_snapshot)),
+            _ => false,
+        } || frame.scoped_local_escapes(&scope_snapshot);
+        frame.cleanup_to(&scope_snapshot);
+        if escapes {
+            return ControlSignal::invalid_arguments(
+                "lambda or Handler retaining a local var cannot leave its owning scope",
+                block_data.span,
+            );
         }
         signal
     }

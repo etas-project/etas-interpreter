@@ -75,7 +75,17 @@ pub(crate) fn source_action(
         return Err("perform invocation disagrees with its checked action fact".into());
     }
     if let Some(args) = args {
-        if args.len() != parameters.len()
+        let (supplied, arity) = checked.types.declared_call_arguments.get(&expr).map_or(
+            (args.len(), args.len()),
+            |binding| {
+                (
+                    binding.argument_slots.len(),
+                    binding.argument_slots.len() + binding.defaults.len(),
+                )
+            },
+        );
+        if supplied != args.len()
+            || arity != parameters.len()
             || args.len() != fact.args.len()
             || args.iter().zip(&fact.args).any(|(arg, expected)| {
                 let (etas_hir::HirArg::Positional(value) | etas_hir::HirArg::Named { value, .. }) =
@@ -91,10 +101,7 @@ pub(crate) fn source_action(
             .agent_inferences
             .get(&expr)
             .ok_or("inference origin has no checked schema/output fact")?;
-        if inference.action_symbol != symbol
-            || checked.type_store.get(inference.schema)
-                != Some(&etas_types::Type::Schema(inference.output))
-        {
+        if inference.action_symbol != symbol {
             return Err("inference origin disagrees with its checked schema or action".into());
         }
     }
@@ -123,6 +130,22 @@ pub(crate) fn source_action(
                     .ok_or("action origin references an undeclared type parameter")?;
                 action_bindings.types.insert(name.clone(), actual);
                 action_bindings.parameters.insert(parameter.subject, actual);
+            }
+            for (name, row) in &instantiation.effect_row_bindings {
+                if !generic_params.iter().any(|parameter| {
+                    parameter.name == *name
+                        && parameter.kind == etas_types::CallableGenericParamKind::Effect
+                }) {
+                    return Err("action origin references an undeclared effect parameter".into());
+                }
+                let actual = bindings
+                    .substitution(&checked.type_store)
+                    .substitute_effect_row(row.clone())
+                    .map_err(|error| error.to_string())?;
+                etas_types::TypeSubstitutionEngine::existing(&checked.type_store, &HashMap::new())
+                    .validate_closed_effect_argument(&actual)
+                    .map_err(|error| error.to_string())?;
+                action_bindings.rows.insert(name.clone(), actual);
             }
         }
     }
@@ -194,7 +217,18 @@ pub(crate) fn source_action(
         let [prompt, schema] = abi.parameters.as_slice() else {
             return Err("inference action has no checked Prompt/Schema payload contract".into());
         };
-        if checked.type_store.get(*prompt) != Some(&etas_types::Type::Prompt)
+        let method = checked
+            .types
+            .agent_methods
+            .get(&inference.method)
+            .ok_or("inference origin has no checked method context")?;
+        let [context, _] = generic_params.as_slice() else {
+            return Err("inference origin has no checked context/output parameters".into());
+        };
+        if substitute(context.subject)? != method.context_type {
+            return Err("inference origin disagrees with its checked method context".into());
+        }
+        if checked.types.expr_types.get(&inference.prompt) != Some(prompt)
             || *schema != inference.schema
             || abi.output != inference.output
         {

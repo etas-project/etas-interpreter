@@ -10,14 +10,14 @@ pub struct SyntaxBlockValue(Arc<SyntaxBlockData>);
 struct SyntaxBlockData {
     ty: etas_types::TypeId,
     syntax: SyntaxBlockRef,
-    backend: Arc<dyn CodeSyntaxOperations>,
+    backend: Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
 }
 
 impl SyntaxBlockValue {
     pub(crate) fn new(
         ty: etas_types::TypeId,
         syntax: SyntaxBlockRef,
-        backend: Arc<dyn CodeSyntaxOperations>,
+        backend: Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
     ) -> Self {
         Self(Arc::new(SyntaxBlockData {
             ty,
@@ -32,6 +32,22 @@ impl SyntaxBlockValue {
 
     pub(crate) fn syntax(&self) -> &SyntaxBlockRef {
         &self.0.syntax
+    }
+    pub(crate) fn backend(&self) -> &Arc<etas_frontend::code::service::NativeCodeSyntaxOperations> {
+        &self.0.backend
+    }
+    pub(crate) fn for_definition(
+        &self,
+        callable: &etas_code::CallableId,
+        backend: &Arc<etas_frontend::code::service::NativeCodeSyntaxOperations>,
+        limits: etas_frontend::code::service::NativeSyntaxLimits,
+        control: &dyn etas_utils::PipelineExecutionControl,
+    ) -> Result<SyntaxBlockRef, SyntaxOperationError> {
+        let source = self
+            .0
+            .backend
+            .export_body_source_bounded(&self.0.syntax, limits.parse.max_source_bytes)?;
+        backend.import_retained_body_bounded_controlled(callable, &source, limits, control)
     }
     pub(crate) fn in_revision(&self, ty: etas_types::TypeId) -> Self {
         Self::new(ty, self.0.syntax.clone(), self.0.backend.clone())

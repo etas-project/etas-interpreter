@@ -75,29 +75,77 @@ impl TaskCapture {
         program: &CheckedExecutionProgram,
         continuation: &Continuation,
     ) -> Result<u32, String> {
+        self.continuation_entry(program, continuation, None)
+    }
+
+    fn continuation_entry(
+        &mut self,
+        program: &CheckedExecutionProgram,
+        continuation: &Continuation,
+        projections: Option<crate::orchestration::ResultProjectionPathSnapshot>,
+    ) -> Result<u32, String> {
         let index =
             u32::try_from(self.auxiliary.len()).map_err(|_| "too many task continuations")?;
-        let program = program.checkpoint_identity(&mut self.context.revisions);
+        let program = self.context.execution_identity(program)?;
         let continuation = self.context.continuation(continuation)?;
         self.auxiliary.push(AuxiliaryContinuationSnapshot {
             program,
             continuation,
+            projections,
         });
         Ok(index)
     }
 
+    fn transferred_continuation(
+        &mut self,
+        scheduler: &crate::driver::scheduler::TaskScheduler,
+        token: crate::value::ContinuationTokenValue,
+        active: &CheckedExecutionProgram,
+        parked: &crate::eval::machine::ParkedContinuation,
+    ) -> Result<u32, String> {
+        if parked.projections.is_some() {
+            let projections = parked.checkpoint_projections(&mut self.context)?;
+            return self.continuation_entry(active, &parked.continuation, projections);
+        }
+        let owner = scheduler
+            .continuation_program(token)
+            .map_err(|error| error.to_string())?
+            .ok_or("transferred continuation has no checked execution program")?;
+        self.continuation(&owner, &parked.continuation)
+    }
+
     fn resume(
         &mut self,
+        scheduler: &crate::driver::scheduler::TaskScheduler,
         program: &CheckedExecutionProgram,
         resume: &TaskResume,
     ) -> Result<TaskResumeSnapshot, String> {
         Ok(match resume {
+            TaskResume::DeferredHandler { handler } => {
+                TaskResumeSnapshot::DeferredHandler { handler: *handler }
+            }
+            TaskResume::Handler {
+                continuation,
+                handler,
+            } => TaskResumeSnapshot::Handler {
+                continuation: self.continuation(program, continuation)?,
+                handler: *handler,
+            },
             TaskResume::Await(continuation) => {
                 TaskResumeSnapshot::Await(self.continuation(program, continuation)?)
             }
             TaskResume::Run(continuation) => {
                 TaskResumeSnapshot::Run(self.continuation(program, continuation)?)
             }
+            TaskResume::Completion {
+                continuation,
+                result_type,
+                span,
+            } => TaskResumeSnapshot::Completion {
+                continuation: self.continuation(program, continuation)?,
+                result_type: *result_type,
+                span: *span,
+            },
             TaskResume::Transfer {
                 token,
                 continuation,
@@ -105,7 +153,12 @@ impl TaskCapture {
                 span,
             } => TaskResumeSnapshot::Transfer {
                 token: *token,
-                continuation: self.continuation(program, continuation)?,
+                continuation: self.transferred_continuation(
+                    scheduler,
+                    *token,
+                    program,
+                    continuation,
+                )?,
                 output: *output,
                 span: *span,
             },
@@ -149,9 +202,20 @@ impl super::EvalContext<'_> {
                 )
             })
             .collect::<BTreeMap<_, _>>();
+        root_capture.context.bind_program(&root.program);
+        for capture in captures.values_mut() {
+            capture.context.bind_program(&root.program);
+        }
         let mut revisions = BTreeMap::new();
+        let mut identity_context = CaptureContext::default();
+        identity_context.bind_program(&root.program);
+        for task in tasks.values() {
+            if let Some(program) = &task.program {
+                identity_context.bind_program(program);
+            }
+        }
         let continuations = self.scheduler.capture_continuations(
-            &mut revisions,
+            &mut identity_context,
             |origin, program, continuation| {
                 let program =
                     program.ok_or("task continuation has no checked execution program")?;
@@ -164,6 +228,7 @@ impl super::EvalContext<'_> {
                 }
             },
         )?;
+        revisions.extend(identity_context.revisions);
         let mut scope_owners = BTreeMap::new();
         scope_owners.insert(self.task.execution.id().as_u64(), TaskIdentity::Root);
         for (id, task) in tasks {
@@ -196,7 +261,7 @@ impl super::EvalContext<'_> {
             let waiting_continuation = task
                 .waiting_continuation
                 .as_ref()
-                .map(|resume| capture.resume(&active, resume))
+                .map(|resume| capture.resume(&self.scheduler, &active, resume))
                 .transpose()?;
             let outcome = task
                 .outcome
@@ -221,11 +286,20 @@ impl super::EvalContext<'_> {
             };
             let state = match task.state {
                 TaskState::Ready => ScheduledTaskStateSnapshot::Ready,
+                TaskState::Waiting(TaskWait::HandlerOwner(owner)) => {
+                    ScheduledTaskStateSnapshot::WaitingHandlerOwner(owner)
+                }
+                TaskState::Waiting(TaskWait::Handler(handler)) => {
+                    ScheduledTaskStateSnapshot::WaitingHandler(handler)
+                }
                 TaskState::Waiting(TaskWait::Task(id)) => {
                     ScheduledTaskStateSnapshot::WaitingTask(id)
                 }
                 TaskState::Waiting(TaskWait::Scope(scope)) => {
                     ScheduledTaskStateSnapshot::WaitingScope(scope)
+                }
+                TaskState::Waiting(TaskWait::Completion(scope)) => {
+                    ScheduledTaskStateSnapshot::WaitingCompletion(scope)
                 }
                 TaskState::Waiting(TaskWait::Resource(id)) => {
                     ScheduledTaskStateSnapshot::WaitingResource(id.0)
@@ -234,7 +308,8 @@ impl super::EvalContext<'_> {
                 TaskState::Raised => ScheduledTaskStateSnapshot::Raised,
                 TaskState::Failed => ScheduledTaskStateSnapshot::Failed,
                 TaskState::Cancelled => ScheduledTaskStateSnapshot::Cancelled,
-                TaskState::Running | TaskState::Waiting(TaskWait::Host(_) | TaskWait::Cpu(_)) => {
+                TaskState::Running
+                | TaskState::Waiting(TaskWait::Host(_) | TaskWait::Cpu(_) | TaskWait::HostDrain) => {
                     return Err("task has not reached the coordinator checkpoint barrier".into());
                 }
             };
@@ -252,17 +327,17 @@ impl super::EvalContext<'_> {
                     start: task
                         .start
                         .as_ref()
-                        .map(|call| {
-                            capture
-                                .context
-                                .call_target(&crate::control::CallTarget::StdIntrinsic(
-                                    (**call).clone(),
-                                ))
-                        })
+                        .map(|call| capture.context.call_target(&call.target))
                         .transpose()?,
                     scope: task.scope,
-                    program: program.checkpoint_identity(&mut capture.context.revisions),
+                    program: capture.context.execution_identity(program)?,
                     local: TaskLocalSnapshot {
+                        agent_context: task.local.agent_context.as_ref().map(|request| {
+                            Box::new(super::machine::snapshot::capture_agent_context(
+                                request,
+                                &mut capture.context.revisions,
+                            ))
+                        }),
                         parent: task
                             .local
                             .parent
@@ -304,6 +379,17 @@ impl super::EvalContext<'_> {
             .as_ref()
             .map(|wait| {
                 Ok::<_, String>(match wait {
+                    RootTaskWait::Completion {
+                        scope,
+                        continuation,
+                        result_type,
+                        span,
+                    } => RootTaskWaitSnapshot::Completion {
+                        scope: *scope,
+                        continuation: root_capture.continuation(&active, continuation)?,
+                        result_type: *result_type,
+                        span: *span,
+                    },
                     RootTaskWait::Await {
                         target,
                         continuation,
@@ -311,6 +397,7 @@ impl super::EvalContext<'_> {
                         target: *target,
                         continuation: root_capture.continuation(&active, continuation)?,
                     },
+                    RootTaskWait::Ready(_) => RootTaskWaitSnapshot::Ready,
                     RootTaskWait::Run { scope } => RootTaskWaitSnapshot::Run { scope: *scope },
                     RootTaskWait::Transfer {
                         target,
@@ -321,14 +408,19 @@ impl super::EvalContext<'_> {
                     } => RootTaskWaitSnapshot::Transfer {
                         target: *target,
                         token: *token,
-                        continuation: root_capture.continuation(&active, continuation)?,
+                        continuation: root_capture.transferred_continuation(
+                            &self.scheduler,
+                            *token,
+                            &active,
+                            continuation,
+                        )?,
                         output: *output,
                         span: *span,
                     },
                     RootTaskWait::Settling(outcome) => RootTaskWaitSnapshot::Settling(
                         root_capture.outcome(outcome, &cancellation)?,
                     ),
-                    RootTaskWait::Host => {
+                    RootTaskWait::Host(_) => {
                         return Err("root Host work has not reached the checkpoint barrier".into());
                     }
                 })
@@ -348,11 +440,28 @@ impl super::EvalContext<'_> {
             .iter()
             .map(|arg| root_capture.context.value(arg))
             .collect::<Result<_, _>>()?;
+        let ready_input = match machine.root_wait.as_ref() {
+            Some(RootTaskWait::Ready(input)) => {
+                if machine.has_input() {
+                    return Err("ready root wait also has an active machine input".into());
+                }
+                Some(machine.capture_pending_input(
+                    input,
+                    &mut root_capture.context,
+                    Some(&active),
+                )?)
+            }
+            _ => None,
+        };
+        let policies = self.scheduler.capture_policies(&mut root_capture.context)?;
         let mut saved = machine.capture_machine_in_program(
             &mut root_capture.context,
             self.task.residual.counters(),
             Some(&root.program),
         )?;
+        if let Some(input) = ready_input {
+            saved.input = Some(Box::new(input));
+        }
         saved.auxiliary = root_capture.auxiliary;
         saved.residual.exits = self
             .task
@@ -361,6 +470,9 @@ impl super::EvalContext<'_> {
             .snapshot(&root.program.plan.residual)?;
         saved.residual.validate_counters()?;
         root.program.checkpoint_identity(&mut revisions);
+        let metadata =
+            self.scheduler
+                .capture_metadata(continuations, policies, &mut root_capture.context)?;
         revisions.extend(root_capture.context.revisions);
         Ok(CapturedTaskCheckpoint {
             root: CapturedMachineSnapshot {
@@ -370,7 +482,7 @@ impl super::EvalContext<'_> {
                 revisions,
             },
             scheduler: TaskSchedulerSnapshot {
-                metadata: self.scheduler.capture_metadata(continuations)?,
+                metadata,
                 tasks: saved_tasks,
                 counters: crate::orchestration::TaskRunCountersSnapshot {
                     step: self.next_step,
@@ -397,10 +509,12 @@ impl super::EvalContext<'_> {
         ordering: Option<super::machine::snapshot::ordering::OrderedRestoreChecks>,
     ) -> Result<EvalMachine, String> {
         use super::machine::snapshot::{
-            RestoreContext, RestoredMachineSnapshot, SharedFrameRestore,
+            RestoreContext, RestoredMachineSnapshot, SharedFrameRestore, SnapshotRestoreResources,
+            TaskSnapshotRestoreResources,
         };
         use crate::driver::scheduler::{ResourceGuardId, ScheduledTask, TaskScheduler};
 
+        let logical_owners = saved.logical_task_owners()?;
         // Parents always precede their children in the monotonic task ID space.
         // Build the entire execution tree before finishing any terminal body.
         let mut locals = BTreeMap::new();
@@ -415,6 +529,7 @@ impl super::EvalContext<'_> {
             let mut local = parent
                 .child_in_scope(task.scope, *id)
                 .map_err(|error| error.to_string())?;
+            local.logical_identity = logical_owners[id];
             bodies
                 .0
                 .as_mut()
@@ -422,7 +537,20 @@ impl super::EvalContext<'_> {
                 .push(local.execution.clone());
             local.model_policy =
                 super::machine::snapshot::restore_model_policy(task.local.model_policy.clone());
+            local.agent_context = task
+                .local
+                .agent_context
+                .as_ref()
+                .map(|request| {
+                    super::machine::snapshot::restore_agent_context(
+                        request,
+                        &root.program,
+                        revisions.as_deref(),
+                    )
+                })
+                .transpose()?;
             local.handler_stack = task.local.handlers.handlers.clone();
+            local.inherited_handlers = task.inherited_dynamic.0;
             local.retry_stack = task.local.retries.attempts.clone();
             locals.insert(*id, local);
         }
@@ -464,24 +592,28 @@ impl super::EvalContext<'_> {
                     .map_err(|error| error.to_string())?;
             }
         }
-        let frames = SharedFrameRestore::default();
+        let frames = SharedFrameRestore::for_tasks(logical_owners);
         let current = self.host_context.clone();
         let locked_model = self.locked_model.clone();
         let limits = self.storage_limits.clone();
         let mut root_restored = restore_machine(
             root_snapshot,
-            &root.program,
-            root.args.clone(),
             self.task,
-            TaskIdentity::Root,
-            0,
-            &saved.metadata,
             &current,
-            locked_model.clone(),
-            &limits,
-            revisions.clone(),
-            ordering.clone(),
-            frames.clone(),
+            SnapshotRestoreResources {
+                root: Some(root.clone()),
+                task: Some(TaskSnapshotRestoreResources {
+                    identity: TaskIdentity::Root,
+                    inherited_handlers: 0,
+                    scheduler: &saved.metadata,
+                    frames: frames.clone(),
+                }),
+                locked_model: locked_model.clone(),
+                limits: &limits,
+                revisions: revisions.clone(),
+                ordering: ordering.clone(),
+                residual: None,
+            },
         )?;
         let mut restored = BTreeMap::new();
         let mut tasks = BTreeMap::new();
@@ -503,23 +635,31 @@ impl super::EvalContext<'_> {
             )
             .with_execution_revision(program.revision.as_deref())
             .with_revisions(revisions.as_deref())
-            .with_tasks(Some(&saved.metadata), Some(TaskIdentity::Scheduled(*id)));
+            .with_tasks(Some(&saved.metadata), Some(TaskIdentity::Scheduled(*id)))
+            .with_shared_frames(&frames);
             validator.validate_task_local(task)?;
             let mut machine = match &task.machine {
                 Some(snapshot) => restore_machine(
                     snapshot,
-                    &program,
-                    Vec::new(),
                     &mut local,
-                    TaskIdentity::Scheduled(*id),
-                    task.inherited_dynamic.0,
-                    &saved.metadata,
                     &self.host_context,
-                    self.locked_model.clone(),
-                    &self.storage_limits,
-                    revisions.clone(),
-                    ordering.clone(),
-                    frames.clone(),
+                    SnapshotRestoreResources {
+                        root: Some(CheckpointRoot {
+                            program: program.clone(),
+                            args: Vec::new(),
+                        }),
+                        task: Some(TaskSnapshotRestoreResources {
+                            identity: TaskIdentity::Scheduled(*id),
+                            inherited_handlers: task.inherited_dynamic.0,
+                            scheduler: &saved.metadata,
+                            frames: frames.clone(),
+                        }),
+                        locked_model: self.locked_model.clone(),
+                        limits: &self.storage_limits,
+                        revisions: revisions.clone(),
+                        ordering: ordering.clone(),
+                        residual: None,
+                    },
                 )?,
                 None => {
                     let context = RestoreContext::for_task(
@@ -539,33 +679,30 @@ impl super::EvalContext<'_> {
             let start = task
                 .start
                 .as_ref()
-                .map(|call| {
-                    validator.validate_task_start(call)?;
+                .map(|call| -> Result<_, String> {
+                    let result_type = validator.validate_task_start(call)?;
                     let context = machine
                         .contexts
                         .get_mut(&(Arc::as_ptr(&program.checked) as usize))
                         .expect("task root program has a restore context");
-                    let crate::control::CallTarget::StdIntrinsic(call) =
-                        context.restore_call_target(call.clone())?
-                    else {
-                        return Err("task start origin is not a checked standard call".to_owned());
-                    };
+                    let target = context.restore_call_target(call.clone())?;
                     let saved_type = saved
                         .metadata
                         .task_types
                         .get(id)
                         .ok_or("started task has no output type snapshot")?;
-                    if call.result_type != saved_type.ty
-                        || saved_type.program != task.program.program
-                    {
+                    if result_type != saved_type.ty || saved_type.program != task.program.program {
                         return Err(
                             "task start origin differs from its scheduler output type".into()
                         );
                     }
                     if let Some(outcome) = &task.outcome {
-                        validator.validate_task_outcome(outcome, call.result_type)?;
+                        validator.validate_task_outcome(outcome, result_type)?;
                     }
-                    Ok(Arc::new(call))
+                    Ok(Arc::new(crate::driver::scheduler::CheckedTaskStart {
+                        target,
+                        result_type,
+                    }))
                 })
                 .transpose()?;
             let waiting_continuation = task
@@ -585,10 +722,29 @@ impl super::EvalContext<'_> {
                         )
                     };
                     Ok::<_, String>(match resume {
+                        TaskResumeSnapshot::DeferredHandler { handler } => {
+                            TaskResume::DeferredHandler { handler: *handler }
+                        }
+                        TaskResumeSnapshot::Handler {
+                            continuation: index,
+                            handler,
+                        } => TaskResume::Handler {
+                            continuation: continuation(*index)?,
+                            handler: *handler,
+                        },
                         TaskResumeSnapshot::Await(index) => {
                             TaskResume::Await(continuation(*index)?)
                         }
                         TaskResumeSnapshot::Run(index) => TaskResume::Run(continuation(*index)?),
+                        TaskResumeSnapshot::Completion {
+                            continuation: index,
+                            result_type,
+                            span,
+                        } => TaskResume::Completion {
+                            continuation: continuation(*index)?,
+                            result_type: *result_type,
+                            span: *span,
+                        },
                         TaskResumeSnapshot::Transfer {
                             token,
                             continuation: index,
@@ -596,7 +752,12 @@ impl super::EvalContext<'_> {
                             span,
                         } => TaskResume::Transfer {
                             token: *token,
-                            continuation: continuation(*index)?,
+                            continuation: machine.restore_parked_auxiliary(
+                                snapshot,
+                                *index,
+                                &root.program,
+                                revisions.as_deref(),
+                            )?,
                             output: *output,
                             span: *span,
                         },
@@ -639,12 +800,21 @@ impl super::EvalContext<'_> {
                 })
                 .transpose()?;
             let state = match task.state {
+                ScheduledTaskStateSnapshot::WaitingHandlerOwner(owner) => {
+                    TaskState::Waiting(TaskWait::HandlerOwner(owner))
+                }
+                ScheduledTaskStateSnapshot::WaitingHandler(handler) => {
+                    TaskState::Waiting(TaskWait::Handler(handler))
+                }
                 ScheduledTaskStateSnapshot::Ready => TaskState::Ready,
                 ScheduledTaskStateSnapshot::WaitingTask(id) => {
                     TaskState::Waiting(TaskWait::Task(id))
                 }
                 ScheduledTaskStateSnapshot::WaitingScope(scope) => {
                     TaskState::Waiting(TaskWait::Scope(scope))
+                }
+                ScheduledTaskStateSnapshot::WaitingCompletion(scope) => {
+                    TaskState::Waiting(TaskWait::Completion(scope))
                 }
                 ScheduledTaskStateSnapshot::WaitingResource(id) => {
                     TaskState::Waiting(TaskWait::Resource(ResourceGuardId(id)))
@@ -682,6 +852,8 @@ impl super::EvalContext<'_> {
                     outcome,
                     waiters: task.waiters.iter().copied().map(TaskWaiter::Task).collect(),
                     waiting_continuation,
+                    host_wait: None,
+                    pending_outcome: None,
                     source_index: task.source_index,
                     cpu_capsule,
                     active_slot: task.active_slot,
@@ -690,7 +862,7 @@ impl super::EvalContext<'_> {
             );
             restored.insert(*id, machine);
         }
-        let scheduler = TaskScheduler::restore_metadata(
+        let mut scheduler = TaskScheduler::restore_metadata(
             saved.metadata.clone(),
             tasks,
             |origin, program, index| {
@@ -732,11 +904,73 @@ impl super::EvalContext<'_> {
                 Ok((continuation, program))
             },
         )?;
+        for (scope, policy) in &saved.metadata.policies {
+            let program = CheckedExecutionProgram::restore_identity(
+                &policy.program,
+                &root.program,
+                revisions.as_deref(),
+            )?;
+            let validator = super::machine::snapshot::SnapshotValidator::new(
+                &program.checked,
+                &program.plan.slots,
+                &program.plan.dispatch,
+                &program.plan.closures,
+                &limits,
+            )
+            .with_execution_revision(program.revision.as_deref())
+            .with_revisions(revisions.as_deref());
+            let policy_owner = saved
+                .metadata
+                .scope_owner(*scope)
+                .map(TaskIdentity::Scheduled)
+                .unwrap_or(TaskIdentity::Root);
+            let validator = validator
+                .with_tasks(Some(&saved.metadata), Some(policy_owner))
+                .with_shared_frames(&frames);
+            validator.validate_policy_value(policy.entry, &policy.instance)?;
+            let mut context = RestoreContext::for_task(
+                program.clone(),
+                &self.host_context,
+                self.locked_model.clone(),
+                revisions.clone(),
+                ordering.clone(),
+                frames.clone(),
+            );
+            let crate::value::InterpValue::Existential(instance) =
+                policy.instance.clone().restore_with(&mut context)?
+            else {
+                return Err("checkpoint source policy is not an existential implementation".into());
+            };
+            let policy = crate::driver::scheduler::SourceSchedulingPolicy {
+                program,
+                instance,
+                entry: policy.entry,
+                span: policy.span,
+            };
+            policy.validate(&limits)?;
+            scheduler.install_source_policy(*scope, policy);
+        }
         root_restored.machine.root_wait = saved
             .root_wait
             .as_ref()
             .map(|wait| {
                 Ok::<_, String>(match wait {
+                    RootTaskWaitSnapshot::Completion {
+                        scope,
+                        continuation,
+                        result_type,
+                        span,
+                    } => RootTaskWait::Completion {
+                        scope: *scope,
+                        continuation: root_restored.restore_auxiliary(
+                            root_snapshot,
+                            *continuation,
+                            &root.program,
+                            revisions.as_deref(),
+                        )?,
+                        result_type: *result_type,
+                        span: *span,
+                    },
                     RootTaskWaitSnapshot::Await {
                         target,
                         continuation,
@@ -749,6 +983,12 @@ impl super::EvalContext<'_> {
                             revisions.as_deref(),
                         )?,
                     },
+                    RootTaskWaitSnapshot::Ready => RootTaskWait::Ready(Box::new(
+                        root_restored
+                            .machine
+                            .take_task_input()
+                            .ok_or("ready root wait has no queued input")?,
+                    )),
                     RootTaskWaitSnapshot::Run { scope } => RootTaskWait::Run { scope: *scope },
                     RootTaskWaitSnapshot::Transfer {
                         target,
@@ -761,7 +1001,7 @@ impl super::EvalContext<'_> {
                         token: *token,
                         output: *output,
                         span: *span,
-                        continuation: root_restored.restore_auxiliary(
+                        continuation: root_restored.restore_parked_auxiliary(
                             root_snapshot,
                             *continuation,
                             &root.program,
@@ -770,9 +1010,23 @@ impl super::EvalContext<'_> {
                     },
                     RootTaskWaitSnapshot::Settling(outcome) => {
                         RootTaskWait::Settling(match outcome {
-                            TaskOutcomeSnapshot::Completed(value) => TaskOutcome::Completed(
-                                value.clone().restore_with(root_restored.active_context())?,
-                            ),
+                            TaskOutcomeSnapshot::Completed(value) => {
+                                super::machine::snapshot::SnapshotValidator::new(
+                                    &root.program.checked,
+                                    &root.program.plan.slots,
+                                    &root.program.plan.dispatch,
+                                    &root.program.plan.closures,
+                                    &self.storage_limits,
+                                )
+                                .with_revisions(revisions.as_deref())
+                                .with_execution_revision(root.program.revision.as_deref())
+                                .with_tasks(Some(&saved.metadata), Some(TaskIdentity::Root))
+                                .with_shared_frames(&frames)
+                                .validate_retained_value(value)?;
+                                TaskOutcome::Completed(
+                                    value.clone().restore_with(root_restored.active_context())?,
+                                )
+                            }
                             TaskOutcomeSnapshot::Failed(failure) => {
                                 TaskOutcome::Failed(failure.clone())
                             }
@@ -795,6 +1049,7 @@ impl super::EvalContext<'_> {
                 })
             })
             .transpose()?;
+        frames.validate_bindings()?;
         *self.scheduler = scheduler;
         bodies.0 = None;
         // The scheduler owns machines only after its continuation arena and all
@@ -817,22 +1072,21 @@ impl super::EvalContext<'_> {
 
 fn restore_machine(
     snapshot: &crate::orchestration::MachineSnapshot,
-    program: &CheckedExecutionProgram,
-    args: Vec<crate::value::InterpValue>,
     local: &mut super::TaskLocalState,
-    identity: TaskIdentity,
-    inherited_handlers: usize,
-    scheduler: &crate::driver::scheduler::TaskSchedulerMetadataSnapshot,
     current: &crate::api::HostExecutionContext,
-    locked_model: Option<etas_host::ModelName>,
-    limits: &etas_host::StorageLimits,
-    revisions: Option<Arc<crate::api::code::PreparedRevisionSet>>,
-    ordering: Option<super::machine::snapshot::ordering::OrderedRestoreChecks>,
-    frames: super::machine::snapshot::SharedFrameRestore,
+    mut resources: super::machine::snapshot::SnapshotRestoreResources<'_>,
 ) -> Result<super::machine::snapshot::RestoredMachineSnapshot, String> {
-    use super::machine::snapshot::{
-        ResidualRestoreInput, SnapshotRestoreResources, TaskSnapshotRestoreResources,
-    };
+    let program = resources
+        .root
+        .as_ref()
+        .ok_or("restored task machine has no checked root")?
+        .program
+        .clone();
+    resources.residual = Some(super::machine::snapshot::ResidualRestoreInput {
+        prepared: program.plan.residual.clone(),
+        log: local.residual.log.clone(),
+        limits: local.residual.limits,
+    });
     let restored = EvalMachine::from_snapshot_with_contexts(
         snapshot,
         &program.checked,
@@ -840,27 +1094,7 @@ fn restore_machine(
         &program.plan.dispatch,
         &program.plan.closures,
         current,
-        SnapshotRestoreResources {
-            task: Some(TaskSnapshotRestoreResources {
-                inherited_handlers,
-                scheduler,
-                identity,
-                frames,
-            }),
-            locked_model,
-            limits,
-            revisions,
-            ordering,
-            root: Some(CheckpointRoot {
-                program: program.clone(),
-                args,
-            }),
-            residual: Some(ResidualRestoreInput {
-                prepared: program.plan.residual.clone(),
-                log: local.residual.log.clone(),
-                limits: local.residual.limits,
-            }),
-        },
+        resources,
     )?;
     local.residual.restore_counters((
         snapshot.residual.next_cursor,

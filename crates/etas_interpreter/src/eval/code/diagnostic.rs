@@ -9,10 +9,15 @@ use etas_types::{TypeId, TypeStore, facts::symbols::KnownCodeTypes};
 pub(super) fn parse_error(
     store: &TypeStore,
     known: &KnownCodeTypes,
+    enums: &super::project::EnumLayouts,
     ty: TypeId,
     error: ParseError,
 ) -> Result<V, String> {
-    let project = Projector { store, known };
+    let project = Projector {
+        store,
+        known,
+        enums,
+    };
     let item = project.array_element(project.field(ty, "diagnostics")?)?;
     let diagnostics = error
         .diagnostics

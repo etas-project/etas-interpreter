@@ -5,7 +5,7 @@ use std::num::{NonZeroU32, NonZeroU64};
 pub(crate) mod input;
 pub(crate) mod scheduler;
 mod source;
-mod suspension;
+pub(crate) mod suspension;
 pub(crate) mod task;
 pub(crate) use source::ResumeHeader;
 pub use source::SourceCheckpoint;
@@ -25,6 +25,19 @@ pub fn checkpoint_artifact_json(
     }));
     artifact.value_mut()["checkpoint"] = checkpoint_json(checkpoint)?;
     Ok(artifact)
+}
+
+pub(super) fn readable_schema(value: &Value) -> Result<&str, InterpreterCodecError> {
+    let schema = required_str(value, "schema")?;
+    match schema {
+        crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
+        | "etas.cli.interpreter-checkpoint.v101"
+        | "etas.cli.interpreter-checkpoint.v100" => Ok(schema),
+        _ => Err(InterpreterCodecError::new(format!(
+            "unsupported checkpoint artifact schema `{schema}`; expected `{}`",
+            crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
+        ))),
+    }
 }
 
 pub fn checkpoint_id(checkpoint: &InterpreterCheckpoint) -> u32 {
@@ -47,16 +60,18 @@ pub fn checkpoint_from_json_with_revisions(
     checked: &etas_frontend::CheckedProject,
     revisions: Option<&std::sync::Arc<crate::api::code::PreparedRevisionSet>>,
 ) -> Result<InterpreterCheckpoint, InterpreterCodecError> {
+    let standard_revisions;
+    let revisions = if revisions.is_none() {
+        standard_revisions =
+            std::sync::Arc::new(crate::api::code::PreparedRevisionSet::new(checked.clone()));
+        Some(&standard_revisions)
+    } else {
+        revisions
+    };
     limits
         .validate()
         .map_err(|e| InterpreterCodecError::new(e.message))?;
-    let schema = required_str(value, "schema")?;
-    if schema != crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA {
-        return Err(InterpreterCodecError::new(format!(
-            "unsupported checkpoint artifact schema `{schema}`; expected `{}`",
-            crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
-        )));
-    }
+    let schema = readable_schema(value)?;
     let checkpoint = value
         .get("checkpoint")
         .ok_or_else(|| InterpreterCodecError::new("checkpoint artifact is missing `checkpoint`"))?;
@@ -67,7 +82,8 @@ pub fn checkpoint_from_json_with_revisions(
             entry_item.0
         )));
     }
-    let compilation = compilation_identity_from_json(required_obj(checkpoint, "compilation")?)?;
+    let compilation =
+        compilation_identity_from_json(schema, required_obj(checkpoint, "compilation")?)?;
     compilation
         .validate_for_project(checked, entry_item)
         .map_err(InterpreterCodecError::new)?;
@@ -108,6 +124,11 @@ pub fn checkpoint_from_json_with_revisions(
         .validate_arguments(entry_item, &arguments)
         .map_err(InterpreterCodecError::new)?;
     let checkpoint = InterpreterCheckpoint {
+        agent_context: machine::agent_context::request_from_json(required_obj(
+            checkpoint,
+            "agent_context",
+        )?)
+        .map_err(InterpreterCodecError::new)?,
         tasks,
         replay_key_id: required_str(checkpoint, "replay_key_id")?.parse().map_err(
             |error: etas_host::replay::ReplayKeyError| {
@@ -715,6 +736,7 @@ pub(super) fn checkpoint_json(
         "args": null,
         "machine": null,
         "model_policy": machine::model_policy_snapshot(&checkpoint.model_policy),
+        "agent_context": machine::agent_context::request_json(checkpoint.agent_context.as_deref()),
         "handlers": checkpoint.handlers.handlers.iter().map(|handler| {
             json!({
                 "id": handler.id.0,
@@ -881,10 +903,17 @@ pub(super) fn compilation_identity_json(identity: &CheckpointCompilationIdentity
 }
 
 pub(super) fn compilation_identity_from_json(
+    artifact_schema: &str,
     value: &Value,
 ) -> Result<CheckpointCompilationIdentity, InterpreterCodecError> {
+    let schema = required_str(value, "schema_version")?;
+    if schema != artifact_schema {
+        return Err(InterpreterCodecError::new(format!(
+            "checkpoint schema identity `{schema}` does not match artifact schema `{artifact_schema}`"
+        )));
+    }
     Ok(CheckpointCompilationIdentity {
-        schema_version: required_str(value, "schema_version")?.to_owned(),
+        schema_version: crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA.to_owned(),
         compiler_version: required_str(value, "compiler_version")?.to_owned(),
         project_fingerprint: required_str(value, "project_fingerprint")?.to_owned(),
         checked_hir_fingerprint: required_str(value, "checked_hir_fingerprint")?.to_owned(),
@@ -937,7 +966,7 @@ fn machine_json_with_budget(
             .push(frame);
     }
     for suspended in &machine.suspended_programs {
-        let node = suspension::encode(suspended, budget)?;
+        let node = suspension::encode_execution(suspended, budget)?;
         object.value_mut()["suspended_programs"]
             .as_array_mut()
             .ok_or_else(|| InterpreterCodecError::new("suspended program array is missing"))?
@@ -951,10 +980,14 @@ fn machine_json_with_budget(
         .unwrap_or(Value::Null);
     object.value_mut()["auxiliary"] = machine.auxiliary.iter().map(|entry| {
         budget.metadata(2, 0)?;
-        Ok(json!({
+        let mut value = json!({
             "program": entry.program,
             "continuation": snapshot::continuation_json_with_budget(&entry.continuation, budget)?,
-        }))
+        });
+        if let Some(path) = &entry.projections {
+            value["result_projections"] = suspension::task_handler::encode_result_path(path, budget)?;
+        }
+        Ok(value)
     }).collect::<Result<Vec<_>, InterpreterCodecError>>()?.into();
     Ok(object.into_value())
 }
@@ -992,14 +1025,9 @@ fn machine_frame_json(
         MachineFrameSnapshot::Retry { continuation } => {
             (json!({"kind":"retry","continuation":null}), continuation)
         }
-        MachineFrameSnapshot::ModelLoop(frame) => {
-            let mut object = json!({"kind":"model_loop","model":null});
-            object["model"] = model_loop_frame_json(frame, budget)?;
-            return Ok(object);
-        }
-        MachineFrameSnapshot::SourceToolReturn(frame) => {
-            let mut object = json!({"kind":"source_tool_return","source_tool":null});
-            object["source_tool"] = source_tool_return_frame_json(frame, budget)?;
+        MachineFrameSnapshot::ModelRequest(frame) => {
+            let mut object = json!({"kind":"model_request","model":null});
+            object["model"] = model_request_frame_json(frame, budget)?;
             return Ok(object);
         }
         MachineFrameSnapshot::ResidualScope { scope } => {
@@ -1025,7 +1053,7 @@ fn machine_from_json_with_revisions(
     }
     machine.suspended_programs = nodes
         .iter()
-        .map(|node| suspension::decode(limits, node, revisions))
+        .map(|node| suspension::decode_execution(limits, node, revisions))
         .collect::<Result<_, _>>()?;
     machine.residual = residual_snapshot_from_json(limits, value)?;
     machine.input = match required_obj(value, "input")? {
@@ -1071,6 +1099,7 @@ fn machine_from_json_with_revisions(
             Ok(crate::orchestration::AuxiliaryContinuationSnapshot {
                 program,
                 continuation,
+                projections: suspension::task_handler::decode_result_path(limits, entry)?,
             })
         })
         .collect::<Result<_, InterpreterCodecError>>()?;
@@ -1148,7 +1177,7 @@ fn machine_frames_from_json(
                     let frame = machine::program_return_from_json(limits, frame, checked)
                         .map_err(InterpreterCodecError::new)?;
                     let destination = crate::eval::machine::snapshot::program::resolve_destination(
-                        &frame, checked, revisions, limits,
+                        &frame, checked, revisions,
                     )
                     .map_err(InterpreterCodecError::new)?;
                     active = destination.checked;
@@ -1158,18 +1187,13 @@ fn machine_frames_from_json(
                     owner += 1;
                     return Ok(MachineFrameSnapshot::ProgramReturn(Box::new(frame)));
                 }
-                "model_loop" => {
-                    let frame =
-                        model_loop_frame_from_json(limits, required_obj(frame, "model")?, checked)?;
-                    return Ok(MachineFrameSnapshot::ModelLoop(Box::new(frame)));
-                }
-                "source_tool_return" => {
-                    let frame = source_tool_return_frame_from_json(
+                "model_request" => {
+                    let frame = model_request_frame_from_json(
                         limits,
-                        required_obj(frame, "source_tool")?,
+                        required_obj(frame, "model")?,
                         checked,
                     )?;
-                    return Ok(MachineFrameSnapshot::SourceToolReturn(frame));
+                    return Ok(MachineFrameSnapshot::ModelRequest(Box::new(frame)));
                 }
                 "residual_scope" => {
                     return Ok(MachineFrameSnapshot::ResidualScope {
@@ -1231,23 +1255,13 @@ fn machine_frames_from_json(
     })
 }
 
-pub(super) fn model_loop_frame_json(
-    frame: &crate::orchestration::ModelLoopFrameSnapshot,
+pub(super) fn model_request_frame_json(
+    frame: &crate::orchestration::ModelRequestFrameSnapshot,
     budget: &mut snapshot::EncodingBudget,
 ) -> Result<Value, InterpreterCodecError> {
     let mut object = CheckpointDocument::from_value(json!({
         "boundary_request_id": frame.boundary_request_id.0,
         "pending": null,
-        "round": frame.round,
-        "repair_attempts": frame.repair.attempts,
-        "repair_kind": frame.repair.last_kind,
-        "last_tool_error": frame.last_tool_error,
-        "remaining_tool_calls": frame.remaining_tool_calls.iter().map(model_host_tool_call_json).collect::<Vec<_>>(),
-        "completed_tool_result": frame.completed_tool_result,
-        "current_host_tool": frame.current_host_tool.as_ref().map(|tool| json!({
-            "call": model_host_tool_call_json(&tool.call),
-            "boundary_key": tool.boundary_key.to_hex(),
-        })),
         "boundary_key": frame.boundary_key.to_hex(),
         "outer_continuation": null,
     }));
@@ -1257,37 +1271,14 @@ pub(super) fn model_loop_frame_json(
     Ok(object.into_value())
 }
 
-pub(super) fn model_loop_frame_from_json(
+pub(super) fn model_request_frame_from_json(
     limits: &etas_host::StorageLimits,
     value: &Value,
     checked: &etas_frontend::CheckedProject,
-) -> Result<crate::orchestration::ModelLoopFrameSnapshot, InterpreterCodecError> {
-    let current_host_tool = match value.get("current_host_tool") {
-        None | Some(Value::Null) => None,
-        Some(tool) => Some(crate::orchestration::HostToolProgressSnapshot {
-            call: model_host_tool_call_from_json(required_obj(tool, "call")?)?,
-            boundary_key: required_str(tool, "boundary_key")?.parse().map_err(
-                |error: etas_host::replay::ReplayKeyError| {
-                    InterpreterCodecError::new(error.to_string())
-                },
-            )?,
-        }),
-    };
-    Ok(crate::orchestration::ModelLoopFrameSnapshot {
+) -> Result<crate::orchestration::ModelRequestFrameSnapshot, InterpreterCodecError> {
+    Ok(crate::orchestration::ModelRequestFrameSnapshot {
         boundary_request_id: etas_host::HostRequestId(required_u32(value, "boundary_request_id")?),
         pending: pending_model_from_json(limits, required_obj(value, "pending")?, checked)?,
-        round: required_usize(value, "round")?,
-        repair: crate::orchestration::ModelRepairSnapshot {
-            attempts: required_usize(value, "repair_attempts")?,
-            last_kind: required_optional_string(value, "repair_kind")?,
-        },
-        last_tool_error: required_optional_string(value, "last_tool_error")?,
-        remaining_tool_calls: required_array(value, "remaining_tool_calls")?
-            .iter()
-            .map(model_host_tool_call_from_json)
-            .collect::<Result<Vec<_>, _>>()?,
-        completed_tool_result: required_bool(value, "completed_tool_result")?,
-        current_host_tool,
         boundary_key: required_str(value, "boundary_key")?.parse().map_err(
             |error: etas_host::replay::ReplayKeyError| {
                 InterpreterCodecError::new(error.to_string())
@@ -1302,53 +1293,6 @@ pub(super) fn model_loop_frame_from_json(
     })
 }
 
-pub(super) fn source_tool_return_frame_json(
-    frame: &crate::orchestration::SourceToolReturnFrameSnapshot,
-    budget: &mut snapshot::EncodingBudget,
-) -> Result<Value, InterpreterCodecError> {
-    let mut object = CheckpointDocument::from_value(json!({
-        "tool_call_id": frame.tool_call_id,
-        "tool_name": frame.tool_name,
-        "binding": source_tool_binding_json(&frame.binding),
-        "args": host_value_json(&frame.args),
-        "boundary_key": frame.boundary_key.to_hex(),
-        "output_schema": frame.output_schema.as_ref().map(machine::host_schema_snapshot),
-        "model_loop": null,
-    }));
-    object.value_mut()["model_loop"] = model_loop_frame_json(&frame.model_loop, budget)?;
-    Ok(object.into_value())
-}
-
-pub(super) fn source_tool_return_frame_from_json(
-    limits: &etas_host::StorageLimits,
-    value: &Value,
-    checked: &etas_frontend::CheckedProject,
-) -> Result<crate::orchestration::SourceToolReturnFrameSnapshot, InterpreterCodecError> {
-    Ok(crate::orchestration::SourceToolReturnFrameSnapshot {
-        tool_call_id: required_str(value, "tool_call_id")?.to_owned(),
-        tool_name: required_str(value, "tool_name")?.to_owned(),
-        binding: source_tool_binding_from_json(required_obj(value, "binding")?)?,
-        args: host_value_from_json(required_obj(value, "args")?)?,
-        boundary_key: required_str(value, "boundary_key")?.parse().map_err(
-            |error: etas_host::replay::ReplayKeyError| {
-                InterpreterCodecError::new(error.to_string())
-            },
-        )?,
-        output_schema: value
-            .get("output_schema")
-            .filter(|value| !value.is_null())
-            .map(|value| {
-                machine::host_schema_from_snapshot(value).map_err(InterpreterCodecError::new)
-            })
-            .transpose()?,
-        model_loop: Box::new(model_loop_frame_from_json(
-            limits,
-            required_obj(value, "model_loop")?,
-            checked,
-        )?),
-    })
-}
-
 pub(super) fn pending_model_json(
     pending: &crate::orchestration::PendingModelSnapshot,
     budget: &mut snapshot::EncodingBudget,
@@ -1359,9 +1303,8 @@ pub(super) fn pending_model_json(
             crate::orchestration::ModelDecodeSnapshot::String => json!({"kind": "string"}),
             crate::orchestration::ModelDecodeSnapshot::ModelResponse => json!({"kind": "model_response"}),
             crate::orchestration::ModelDecodeSnapshot::Typed(ty) => json!({"kind": "typed", "type": ty.0}),
+            crate::orchestration::ModelDecodeSnapshot::Step { result, output } => json!({"kind": "step", "result": result.0, "output": output.0}),
         },
-        "max_tool_rounds": pending.max_tool_rounds,
-        "source_tools": pending.source_tools.iter().map(source_tool_binding_json).collect::<Vec<_>>(),
         "span": span_json(pending.span),
         "continuation": null,
     }));
@@ -1379,6 +1322,10 @@ pub(super) fn pending_model_from_json(
     let decode = match required_str(decode, "kind")? {
         "string" => crate::orchestration::ModelDecodeSnapshot::String,
         "model_response" => crate::orchestration::ModelDecodeSnapshot::ModelResponse,
+        "step" => crate::orchestration::ModelDecodeSnapshot::Step {
+            result: TypeId(required_u32(decode, "result")?),
+            output: TypeId(required_u32(decode, "output")?),
+        },
         "typed" => {
             crate::orchestration::ModelDecodeSnapshot::Typed(TypeId(required_u32(decode, "type")?))
         }
@@ -1391,11 +1338,6 @@ pub(super) fn pending_model_from_json(
     Ok(crate::orchestration::PendingModelSnapshot {
         request: model_request_from_json(required_obj(value, "request")?)?,
         decode,
-        max_tool_rounds: required_usize(value, "max_tool_rounds")?,
-        source_tools: required_array(value, "source_tools")?
-            .iter()
-            .map(source_tool_binding_from_json)
-            .collect::<Result<Vec<_>, _>>()?,
         span: span_from_json(required_obj(value, "span")?)?,
         continuation: machine::continuation_from_snapshot(
             limits,
@@ -1406,30 +1348,11 @@ pub(super) fn pending_model_from_json(
     })
 }
 
-pub(super) fn source_tool_binding_json(
-    binding: &crate::orchestration::SourceToolBindingSnapshot,
-) -> Value {
-    json!({
-        "name": binding.name,
-        "qualified_name": binding.qualified_name,
-        "item": binding.item.0,
-    })
-}
-
-pub(super) fn source_tool_binding_from_json(
-    value: &Value,
-) -> Result<crate::orchestration::SourceToolBindingSnapshot, InterpreterCodecError> {
-    Ok(crate::orchestration::SourceToolBindingSnapshot {
-        name: required_str(value, "name")?.to_owned(),
-        qualified_name: required_optional_string(value, "qualified_name")?,
-        item: HirItemId(required_u32(value, "item")?),
-    })
-}
-
 pub(super) fn model_request_json(
     request: &crate::orchestration::ModelRequestSnapshot,
 ) -> Result<Value, InterpreterCodecError> {
     Ok(json!({
+        "action": request.action.qualified_name(),
         "id": request.id.0,
         "provider": request.provider.as_ref().map(|provider| provider.0.as_str()),
         "model": request.model.0,
@@ -1454,6 +1377,11 @@ pub(super) fn model_request_from_json(
         }
     }
     Ok(crate::orchestration::ModelRequestSnapshot {
+        action: match required_str(value, "action")? {
+            "Agentic.infer" => etas_host::ModelAction::Infer,
+            "Agentic.step" => etas_host::ModelAction::Step,
+            _ => return Err(InterpreterCodecError::new("invalid model request action")),
+        },
         id: HostRequestId(required_u32(value, "id")?),
         provider: required_optional_string(value, "provider")?.map(ModelProviderId),
         model: ModelName(required_str(value, "model")?.to_owned()),
@@ -1489,6 +1417,7 @@ pub(super) fn model_request_from_json(
 
 pub(super) fn model_host_message_json(message: &ModelMessage) -> Value {
     json!({
+        "provider_data": host_value_json(&HostValue::Record(message.provider_data.clone())),
         "role": match message.role {
             ModelRole::System => "system",
             ModelRole::User => "user",
@@ -1518,7 +1447,15 @@ pub(super) fn model_host_message_from_json(
             )));
         }
     };
+    let HostValue::Record(provider_data) =
+        host_value_from_json(required_obj(value, "provider_data")?)?
+    else {
+        return Err(InterpreterCodecError::new(
+            "model provider data must be a record",
+        ));
+    };
     Ok(ModelMessage {
+        provider_data,
         role,
         content: required_array(value, "content")?
             .iter()

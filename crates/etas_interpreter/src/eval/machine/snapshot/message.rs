@@ -73,7 +73,7 @@ impl MessageHeader {
 
 pub(super) struct ConversationHeader {
     selected_context: Option<crate::value::PublishedContextValue>,
-    session: String,
+    session: Option<String>,
     history_fence: Option<etas_host::session::SessionHistoryFence>,
     cursor: Option<String>,
 }
@@ -88,7 +88,9 @@ impl ConversationHeader {
         }
     }
 
-    pub(super) fn split(value: ConversationSnapshot) -> (Self, Vec<MessageSnapshot>) {
+    pub(super) fn split(
+        value: ConversationSnapshot,
+    ) -> (Self, Vec<MessageSnapshot>, Option<SnapshotBox>) {
         (
             Self {
                 selected_context: value.selected_context,
@@ -97,11 +99,17 @@ impl ConversationHeader {
                 cursor: value.cursor,
             },
             value.messages,
+            value.protocol,
         )
     }
 
-    pub(super) fn snapshot(self, messages: Vec<MessageSnapshot>) -> ValueSnapshot {
+    pub(super) fn snapshot(
+        self,
+        messages: Vec<MessageSnapshot>,
+        protocol: Option<ValueSnapshot>,
+    ) -> ValueSnapshot {
         ValueSnapshot::Conversation(ConversationSnapshot {
+            protocol: protocol.map(SnapshotBox::new),
             selected_context: self.selected_context,
             session: self.session,
             history_fence: self.history_fence,
@@ -110,8 +118,13 @@ impl ConversationHeader {
         })
     }
 
-    pub(super) fn runtime(self, messages: MessageList) -> InterpValue {
+    pub(super) fn runtime(
+        self,
+        messages: MessageList,
+        protocol: Option<crate::value::SharedValue>,
+    ) -> InterpValue {
         InterpValue::Conversation(ConversationValue {
+            protocol,
             selected_context: self.selected_context,
             session: self.session,
             history_fence: self.history_fence,

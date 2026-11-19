@@ -54,14 +54,9 @@ impl ProgramContinuation {
         let continuation = context.continuation(&saved.continuation)?;
         let action = context.action_origin(&saved.projection, &continuation)?;
         Ok(SuspendedProgramSnapshot {
-            parent: saved
-                .resuming_program
-                .checkpoint_identity(&mut context.revisions),
+            parent: context.execution_identity(&saved.resuming_program)?,
             parent_scoped: boundary.parent.is_some(),
-            parent_handler_floor: boundary
-                .parent
-                .as_ref()
-                .map_or(0, |scope| scope.handler_floor),
+            parent_handler_floor: boundary.parent_handler_floor,
             boundary: Box::new(boundary_snapshot),
             frames,
             continuation,
@@ -74,13 +69,19 @@ impl ProgramContinuation {
             model_policy: crate::eval::machine::snapshot::program::capture_model_policy(
                 &saved.model_policy,
             ),
+            agent_context: saved.agent_context.as_ref().map(|request| {
+                Box::new(crate::eval::machine::snapshot::capture_agent_context(
+                    request,
+                    &mut context.revisions,
+                ))
+            }),
             action,
             span: saved.span,
         })
     }
 }
 
-fn context<'a>(
+pub(in crate::eval::machine) fn context<'a>(
     contexts: &'a mut std::collections::HashMap<
         usize,
         crate::eval::machine::snapshot::RestoreContext,
@@ -129,6 +130,7 @@ pub(in crate::eval::machine) fn restore_graph(
     table: &crate::eval::machine::snapshot::SuspensionRestoreTable,
     depth: &Rc<Cell<u32>>,
     current: &crate::api::HostExecutionContext,
+    owner_task: Option<crate::driver::scheduler::TaskIdentity>,
     options: RestoreOptions<'_>,
 ) -> Result<(), String> {
     let RestoreOptions {
@@ -136,21 +138,47 @@ pub(in crate::eval::machine) fn restore_graph(
         ordering,
         residual,
     } = options;
-    use crate::eval::machine::{frame::ProgramReturnFrame, scoped_call::ProgramCall};
+    use crate::eval::machine::frame::ProgramReturnFrame;
     for index in snapshot.suspension_order()? {
-        let saved = &snapshot.suspended_programs[index];
+        use crate::orchestration::SuspendedExecutionSnapshot as Snapshot;
+        let saved = match &snapshot.suspended_programs[index] {
+            Snapshot::Program(saved) => saved,
+            Snapshot::Task(saved) => {
+                let restored = super::super::task_handler::checkpoint::restore(
+                    saved,
+                    owner_task.ok_or("task suspension has no owning coordinator task")?,
+                    revisions,
+                    contexts,
+                    table,
+                    depth,
+                    current,
+                    RestoreOptions {
+                        locked_model,
+                        ordering,
+                        residual,
+                    },
+                )?;
+                table.borrow_mut().insert(
+                    u32::try_from(index + 1).map_err(|_| "suspended graph identity overflow")?,
+                    SuspendedExecution::Task(restored),
+                );
+                continue;
+            }
+        };
         let parent = revisions.execution_snapshot(&saved.parent)?;
-        let call = context(
-            contexts,
+        let call = crate::eval::machine::snapshot::program::restore_call(
+            saved.boundary.call.clone(),
+            context(
+                contexts,
+                &parent,
+                revisions,
+                table,
+                locked_model,
+                ordering,
+                residual,
+            ),
             &parent,
-            revisions,
-            table,
-            locked_model,
-            ordering,
-            residual,
-        )
-        .restore_call_target(saved.boundary.call.clone())?;
-        let call = ProgramCall::restore_target(call, &parent.checked)?;
+        )?;
         let program = call.destination()?;
         let proof = match &saved.action {
             crate::orchestration::ActionInvocationSnapshot::Native { .. } => {
@@ -183,7 +211,20 @@ pub(in crate::eval::machine) fn restore_graph(
                 program: parent.clone(),
                 handler_floor: saved.parent_handler_floor,
             }),
+            parent_handler_floor: saved.parent_handler_floor,
             parent_program: parent.clone(),
+            parent_agent_context: saved
+                .boundary
+                .parent_agent_context
+                .as_ref()
+                .map(|request| {
+                    crate::eval::machine::snapshot::restore_agent_context(
+                        request,
+                        &parent,
+                        Some(revisions),
+                    )
+                })
+                .transpose()?,
             parent_model_policy: crate::eval::machine::snapshot::program::restore_model_policy(
                 saved.boundary.parent_model_policy.clone(),
             ),
@@ -229,6 +270,17 @@ pub(in crate::eval::machine) fn restore_graph(
             model_policy: crate::eval::machine::snapshot::program::restore_model_policy(
                 saved.model_policy.clone(),
             ),
+            agent_context: saved
+                .agent_context
+                .as_ref()
+                .map(|request| {
+                    crate::eval::machine::snapshot::restore_agent_context(
+                        request,
+                        &parent,
+                        Some(revisions),
+                    )
+                })
+                .transpose()?,
             projection,
             resuming_program: parent,
             depth: CallDepthLease {
@@ -241,7 +293,7 @@ pub(in crate::eval::machine) fn restore_graph(
             .borrow_mut()
             .insert(
                 u32::try_from(index + 1).map_err(|_| "suspended graph identity overflow")?,
-                restored,
+                SuspendedExecution::Program(restored),
             )
             .is_some()
         {

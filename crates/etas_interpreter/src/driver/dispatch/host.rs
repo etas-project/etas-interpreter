@@ -35,13 +35,13 @@ enum HostBoundaryFailure {
 
 pub(in crate::driver) enum HostBoundaryDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingHostBoundaryDispatch<'host>),
+    Pending(Box<PendingHostBoundaryDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingHostBoundaryDispatch<'host> {
     boundary: PendingHostBoundary,
     key: Option<etas_host::replay::ReplayFingerprint>,
-    operation: etas_host::execution::OperationId,
+    operation: std::rc::Rc<crate::driver::scheduler::HostOperation>,
     future: Pin<Box<dyn Future<Output = HostBoundaryCompletion> + 'host>>,
 }
 
@@ -211,7 +211,10 @@ pub(in crate::driver) async fn begin<'host>(
             request.trace_payload(),
             request.authority.clone(),
             request.trace.clone(),
-            |operation| host.tcp(operation, request),
+            |operation| async move {
+                host.tcp(operation.retain_resources_in_parent_scope()?, request)
+                    .await
+            },
         ) {
             Ok(pending) => pending_boundary(boundary, key, pending, HostBoundaryCompletion::Tcp),
             Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
@@ -340,6 +343,35 @@ pub(in crate::driver) fn finish(
                     ) if max_bytes == expected => {
                         Err(HostBoundaryFailure::FileReadLimit { max_bytes })
                     }
+                    (
+                        Ok(entry),
+                        HostBoundaryDecode::SourceFileRead {
+                            result_type,
+                            max_bytes,
+                        },
+                    ) => Ok(eval.decode_source_file_read(result_type, max_bytes, entry)),
+                    (
+                        Ok(entry),
+                        HostBoundaryDecode::SourceDirectoryList {
+                            result_type,
+                            limits,
+                        },
+                    ) => {
+                        let HostBoundaryRequest::Filesystem(request) = &boundary.request else {
+                            unreachable!("filesystem completion has a filesystem request");
+                        };
+                        let path = match &request.operation {
+                            FilesystemOperation::ReadDir { path }
+                            | FilesystemOperation::ReadDirLimited { path, .. } => path,
+                            _ => {
+                                unreachable!("source directory decode requires a directory request")
+                            }
+                        };
+                        Ok(eval.decode_source_directory_list(result_type, limits, path, entry))
+                    }
+                    (Ok(entry), HostBoundaryDecode::SourceFilesystemStat { result_type }) => {
+                        Ok(eval.decode_source_filesystem_stat(result_type, entry))
+                    }
                     (Ok(entry), decode) => {
                         Ok(host_boundary_value_from_filesystem_entry(decode, entry))
                     }
@@ -368,6 +400,14 @@ pub(in crate::driver) fn finish(
             Ok(response) => response
                 .result
                 .map(|stream| {
+                    if let HostBoundaryDecode::SourceConnection { result_type } = boundary.decode {
+                        return crate::value::host_handle::source_handle(
+                            eval.checked,
+                            result_type,
+                            "connection",
+                            |inner| HostHandleValue::tcp_stream(inner, stream),
+                        );
+                    }
                     let nominal_type = eval.known_std_types.tcp_stream.ok_or_else(|| {
                         "TCP response requires checked std.net.tcp.TcpStream type".to_owned()
                     })?;
@@ -396,6 +436,14 @@ pub(in crate::driver) fn finish(
             Ok(response) => response
                 .result
                 .map(|stream| {
+                    if let HostBoundaryDecode::SourceConnection { result_type } = boundary.decode {
+                        return crate::value::host_handle::source_handle(
+                            eval.checked,
+                            result_type,
+                            "connection",
+                            |inner| HostHandleValue::tls_stream(inner, stream),
+                        );
+                    }
                     let nominal_type = eval.known_std_types.tls_stream.ok_or_else(|| {
                         "TLS response requires checked std.tls.TlsStream type".to_owned()
                     })?;
@@ -409,6 +457,18 @@ pub(in crate::driver) fn finish(
                 Ok(response) => response
                     .result
                     .map(|secret| {
+                        if let (
+                            HostBoundaryDecode::SourceSecret { result_type },
+                            SecretPayload::Value(secret),
+                        ) = (boundary.decode, &secret)
+                        {
+                            return crate::value::host_handle::source_handle(
+                                eval.checked,
+                                result_type,
+                                "handle",
+                                |inner| HostHandleValue::secret_value(inner, secret.clone()),
+                            );
+                        }
                         host_boundary_value_from_secret(
                             boundary.decode,
                             secret,
@@ -423,12 +483,22 @@ pub(in crate::driver) fn finish(
             match HostDispatch::finish(eval, completion) {
                 Ok(response) => response
                     .result
-                    .map(|payload| {
-                        host_boundary_value_from_browser_payload(
+                    .and_then(|payload| {
+                        if let HostBoundaryDecode::SourceBrowser { result_type } = boundary.decode {
+                            return host_boundary_source_browser(eval, result_type, payload)
+                                .map(Ok)
+                                .map_err(|message| {
+                                    HostError::new(
+                                        etas_host::HostErrorCode::SchemaMismatch,
+                                        message,
+                                    )
+                                });
+                        }
+                        Ok(host_boundary_value_from_browser_payload(
                             boundary.decode,
                             eval.known_std_types.browser_session,
                             payload,
-                        )
+                        ))
                     })
                     .map_err(HostBoundaryFailure::Host),
                 Err(error) => Err(HostBoundaryFailure::Host(error)),
@@ -546,18 +616,23 @@ where
     Call: Future<Output = Result<Response, HostError>> + 'host,
     Wrap: FnOnce(HostCompletion<Response>) -> HostBoundaryCompletion + 'host,
 {
-    let operation = pending.operation_id();
-    HostBoundaryDispatchStart::Pending(PendingHostBoundaryDispatch {
+    let operation = pending.operation_state();
+    HostBoundaryDispatchStart::Pending(Box::new(PendingHostBoundaryDispatch {
         boundary,
         key,
         operation,
         future: Box::pin(async move { wrap(HostDispatch::poll(pending).await) }),
-    })
+    }))
 }
 
 impl PendingHostBoundaryDispatch<'_> {
+    pub(in crate::driver) fn operation_state(
+        &self,
+    ) -> std::rc::Rc<crate::driver::scheduler::HostOperation> {
+        self.operation.clone()
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
-        self.operation
+        self.operation.id()
     }
 
     pub(in crate::driver) async fn poll(self) -> CompletedHostBoundaryDispatch {
@@ -685,15 +760,22 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
             )))
         }
         (HostBoundaryDecode::Unit, FilesystemEntry::Unit) => Ok(InterpValue::Unit),
-        (HostBoundaryDecode::FilesystemStat, FilesystemEntry::Stat(stat)) => {
-            Ok(InterpValue::Record(RecordValue::new(vec![
+        (HostBoundaryDecode::FilesystemStat { nominal }, FilesystemEntry::Stat(stat)) => {
+            let record = InterpValue::Record(RecordValue::new(vec![
                 ("is_file".to_owned(), InterpValue::Bool(stat.is_file)),
                 ("is_dir".to_owned(), InterpValue::Bool(stat.is_dir)),
                 (
                     "len".to_owned(),
                     InterpValue::Number(crate::value::NumericValue::U64(stat.len)),
                 ),
-            ])))
+            ]));
+            Ok(match nominal {
+                Some(ty) => InterpValue::Nominal {
+                    ty,
+                    value: record.into(),
+                },
+                None => record,
+            })
         }
         (decode, _) => Err(format!(
             "filesystem response payload does not match checked decode {:?}",
@@ -720,6 +802,30 @@ pub(in crate::driver) fn host_boundary_value_from_command_process(
                 result_type,
                 id,
             )))
+        }
+        (
+            HostBoundaryDecode::SourceCommandHandle { result_type },
+            CommandProcessPayload::Handle { id },
+        ) => {
+            let state =
+                crate::value::host_handle::source_handle_type(checked, result_type, "process")?;
+            Ok(InterpValue::Nominal {
+                ty: result_type,
+                value: InterpValue::Record(
+                    vec![
+                        (
+                            "process".into(),
+                            InterpValue::HostHandle(HostHandleValue::command_process(
+                                state,
+                                id.clone(),
+                            )),
+                        ),
+                        ("reconnect_id".into(), InterpValue::String(id.into())),
+                    ]
+                    .into(),
+                )
+                .into(),
+            })
         }
         (
             HostBoundaryDecode::CommandProcessEvent { result_type },
@@ -902,6 +1008,55 @@ pub(in crate::driver) fn host_boundary_value_from_browser_payload(
             payload, decode
         )),
     }
+}
+
+fn host_boundary_source_browser(
+    eval: &EvalContext<'_>,
+    result_type: etas_types::TypeId,
+    payload: BrowserProtocolPayload,
+) -> Result<InterpValue, String> {
+    let value = match payload {
+        BrowserProtocolPayload::Session { id } => {
+            return crate::value::host_handle::source_handle(
+                eval.checked,
+                result_type,
+                "connection",
+                |inner| HostHandleValue::browser_session(inner, id),
+            );
+        }
+        BrowserProtocolPayload::Message(bytes) => {
+            let json = serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+            etas_host::value::json::host_json_to_value(json).map_err(|error| error.message)?
+        }
+        BrowserProtocolPayload::Screenshot(bytes) => {
+            let mime_type = if bytes.starts_with(b"\x89PNG\r\n\x1a\n") {
+                "image/png"
+            } else if bytes.starts_with(b"\xff\xd8\xff") {
+                "image/jpeg"
+            } else {
+                "application/octet-stream"
+            };
+            let absent = || HostValue::Variant {
+                name: "None".into(),
+                fields: Vec::new(),
+            };
+            HostValue::Record(vec![
+                ("content".into(), HostValue::Bytes(bytes)),
+                ("mime_type".into(), HostValue::String(mime_type.into())),
+                ("width".into(), absent()),
+                ("height".into(), absent()),
+            ])
+        }
+        BrowserProtocolPayload::Unit => {
+            return Err("browser action received an unexpected unit response".into());
+        }
+    };
+    crate::eval::host_to_checked_interp_value(
+        value,
+        result_type,
+        eval.checked,
+        &eval.storage_limits,
+    )
 }
 
 pub(in crate::driver) fn host_boundary_policy_subject(

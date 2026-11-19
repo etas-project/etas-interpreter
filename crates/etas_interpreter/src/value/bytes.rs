@@ -8,6 +8,19 @@ impl BytesValue {
     pub fn into_vec(self) -> Vec<u8> {
         Rc::unwrap_or_clone(self.0)
     }
+
+    pub(crate) fn concat(self, suffix: Self) -> Result<Self, std::collections::TryReserveError> {
+        if self.is_empty() {
+            return Ok(suffix);
+        }
+        if suffix.is_empty() {
+            return Ok(self);
+        }
+        let mut bytes = self.into_vec();
+        bytes.try_reserve(suffix.len())?;
+        bytes.extend_from_slice(&suffix);
+        Ok(bytes.into())
+    }
 }
 
 impl Deref for BytesValue {

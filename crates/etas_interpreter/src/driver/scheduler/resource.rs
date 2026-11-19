@@ -75,6 +75,16 @@ impl ResourceGuards {
 }
 
 impl ResourceGuards {
+    pub(super) fn available(&self, task: TaskId, keys: &[RuntimeResourceKey]) -> bool {
+        self.holders.contains_key(&task)
+            || !keys.iter().any(|key| {
+                self.holders
+                    .values()
+                    .flatten()
+                    .any(|held| key.conflicts(held))
+            })
+    }
+
     pub(super) fn acquire(&mut self, task: TaskId, keys: &[RuntimeResourceKey]) -> bool {
         if self.holders.contains_key(&task) {
             return true;

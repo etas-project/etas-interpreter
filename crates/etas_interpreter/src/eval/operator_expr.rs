@@ -208,8 +208,26 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<InterpValue, ExecutionFault> {
         match op {
-            HirBinaryOp::EqEq => Ok(InterpValue::Bool(left == right)),
-            HirBinaryOp::BangEq => Ok(InterpValue::Bool(left != right)),
+            HirBinaryOp::EqEq | HirBinaryOp::BangEq => {
+                let equal = crate::value::comparison::checked_value_equal(
+                    &left,
+                    &right,
+                    &self.checked.type_store,
+                    &self.checked.types.known_std_types,
+                )
+                .map_err(|()| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::InvalidArguments,
+                        span,
+                        "live Task, SchedulerHandle, and Continuation values cannot be compared",
+                    )
+                })?;
+                Ok(InterpValue::Bool(if op == HirBinaryOp::EqEq {
+                    equal
+                } else {
+                    !equal
+                }))
+            }
             HirBinaryOp::Lt => {
                 self.eval_ordering_value(left, right, span, |ordering| ordering.is_lt())
             }
@@ -346,6 +364,15 @@ impl<'a> EvalContext<'a> {
             (InterpValue::Array(lhs), InterpValue::Array(rhs)) => {
                 Ok(InterpValue::Array(lhs.concat(rhs)))
             }
+            (InterpValue::Bytes(lhs), InterpValue::Bytes(rhs)) => {
+                lhs.concat(rhs).map(InterpValue::Bytes).map_err(|_| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::InvalidArguments,
+                        span,
+                        "concatenated bytes exceed representable capacity",
+                    )
+                })
+            }
             (InterpValue::List(mut lhs), InterpValue::List(rhs)) => {
                 lhs.append(rhs);
                 Ok(InterpValue::List(lhs))
@@ -354,7 +381,7 @@ impl<'a> EvalContext<'a> {
                 AnalysisDiagnosticCode::InvalidArguments,
                 span,
                 format!(
-                    "addition expects ints, strings, arrays, or lists, got {:?} and {:?}",
+                    "addition expects numbers, strings, bytes, arrays, or lists, got {:?} and {:?}",
                     lhs, rhs
                 ),
             )),
@@ -362,7 +389,7 @@ impl<'a> EvalContext<'a> {
     }
 }
 
-fn numeric_fault(error: NumericError, span: Span, operation: &str) -> ExecutionFault {
+pub(super) fn numeric_fault(error: NumericError, span: Span, operation: &str) -> ExecutionFault {
     let detail = match error {
         NumericError::TypeMismatch => "operands have different numeric types",
         NumericError::Overflow => "result overflows the checked numeric type",

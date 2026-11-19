@@ -126,6 +126,13 @@ pub(crate) fn prepare_program_with_residual_binding(
         )]);
     };
     Ok(Arc::new(PreparedProgram {
+        standard_library: super::standard_library::StandardLibraryProgram::prepare(project)
+            .map_err(|reason| {
+                vec![diagnostics::missing_checked_fact(
+                    diagnostics::primary_span(project),
+                    reason,
+                )]
+            })?,
         program: project.clone(),
         known_std_types: crate::eval::KnownStdTypes::from_checked(project),
         spec_facts: Arc::new(std::sync::OnceLock::new()),
@@ -144,6 +151,30 @@ pub(crate) fn prepare_program_with_residual_binding(
 }
 
 impl PreparedProgram {
+    pub(crate) fn parameter_default(
+        &self,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Option<&etas_frontend::code::parameter_defaults::ParameterDefaultUnit> {
+        self.arguments.default_unit(reference)
+    }
+
+    pub(crate) fn select_parameter_default(
+        self: &Arc<Self>,
+        reference: &etas_code::descriptor::ParameterDefaultInfo,
+    ) -> Result<InterpreterPlan, Vec<Diagnostic>> {
+        let unit = self.parameter_default(reference).ok_or_else(|| {
+            vec![diagnostics::missing_checked_fact(
+                diagnostics::primary_span(&self.program),
+                "parameter default has no matching authored expression revision",
+            )]
+        })?;
+        self.select_callable(CheckedCallableRoot::ParameterDefault(unit.parameter))
+    }
+    pub(crate) fn standard_library(
+        &self,
+    ) -> Option<&Arc<super::standard_library::StandardLibraryProgram>> {
+        self.standard_library.as_ref()
+    }
     pub(crate) fn checked(&self) -> &CheckedProject {
         &self.program
     }
@@ -163,6 +194,7 @@ impl PreparedProgram {
                 plan: plan.clone(),
                 definitions: None,
                 revision: None,
+                foreign: None,
             },
             ty,
             target,
@@ -220,6 +252,7 @@ impl PreparedProgram {
             )]);
         };
         Ok(InterpreterPlan {
+            standard_library: self.standard_library.clone(),
             prepared: self.clone(),
             program: self.program.clone(),
             root,

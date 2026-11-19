@@ -39,7 +39,8 @@ pub(crate) enum PendingToolDispatch {
     Source,
 }
 
-pub(super) enum MachineInput {
+#[derive(Clone, Debug)]
+pub(crate) enum MachineInput {
     EnterProgram {
         call: super::scoped_call::ProgramCall,
         args: Vec<InterpValue>,
@@ -95,6 +96,13 @@ impl EvalMachine {
     }
     pub(crate) fn new() -> Self {
         Self::default()
+    }
+
+    pub(crate) fn pure_signal(signal: ControlSignal, span: Span) -> Self {
+        let mut machine = Self::new();
+        machine.push_frame(EvalFrame::PureBoundary(span));
+        machine.resume(signal);
+        machine
     }
 
     pub(crate) fn for_entry(
@@ -161,7 +169,13 @@ impl EvalMachine {
         resources: super::snapshot::SnapshotRestoreResources<'_>,
     ) -> Result<super::snapshot::RestoredMachineSnapshot, String> {
         let limits = resources.limits;
-        super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, closures, limits)
+        let validator =
+            super::snapshot::SnapshotValidator::new(checked, &slots, dispatch, closures, limits);
+        let validator = match &resources.task {
+            Some(task) => validator.with_shared_frames(&task.frames),
+            None => validator,
+        };
+        validator
             .with_inherited_handlers(
                 resources
                     .task
@@ -194,7 +208,9 @@ impl EvalMachine {
         root_context.residual = residual.clone();
         root_context.execution_program = resources.root.as_ref().map(|root| root.program.clone());
         root_context.task_handles = resources.task.is_some();
-        root_context.shared_frames = resources.task.as_ref().map(|task| task.frames.clone());
+        if let Some(task) = &resources.task {
+            root_context.share_frames(task.frames.clone());
+        }
         contexts.insert(std::sync::Arc::as_ptr(checked) as usize, root_context);
         let suspensions = if snapshot.suspended_programs.is_empty() {
             None
@@ -210,6 +226,7 @@ impl EvalMachine {
                 &table,
                 &machine.active_call_depth,
                 current,
+                resources.task.as_ref().map(|task| task.identity),
                 super::suspension::checkpoint::RestoreOptions {
                     locked_model: &resources.locked_model,
                     ordering: resources.ordering.as_ref(),
@@ -248,22 +265,39 @@ impl EvalMachine {
                     &frame,
                     parent_checked,
                     resources.revisions.as_deref(),
-                    limits,
                 )?;
-                let call = super::scoped_call::ProgramCall::restore_target(
-                    context.restore_call_target(frame.call)?,
-                    parent_checked,
-                )?;
-                let destination = call.destination()?;
                 let parent_program = scope
                     .as_ref()
                     .map(|scope| scope.program.clone())
                     .or_else(|| resources.root.as_ref().map(|root| root.program.clone()))
                     .ok_or("active checkpoint has no checked root execution program")?;
+                let call =
+                    super::snapshot::program::restore_call(frame.call, context, &parent_program)?;
+                let destination = call.destination()?;
                 stack.push(EvalFrame::ProgramReturn(Box::new(
                     super::frame::ProgramReturnFrame {
                         site: Some(frame.call_site.restore(context)?),
                         parent: scope.clone(),
+                        parent_handler_floor: scope.as_ref().map_or_else(
+                            || {
+                                resources
+                                    .task
+                                    .as_ref()
+                                    .map_or(0, |task| task.inherited_handlers)
+                            },
+                            |scope| scope.handler_floor,
+                        ),
+                        parent_agent_context: frame
+                            .parent_agent_context
+                            .as_ref()
+                            .map(|request| {
+                                super::snapshot::restore_agent_context(
+                                    request,
+                                    &parent_program,
+                                    resources.revisions.as_deref(),
+                                )
+                            })
+                            .transpose()?,
                         parent_program,
                         parent_model_policy: super::snapshot::program::restore_model_policy(
                             frame.parent_model_policy,
@@ -283,6 +317,7 @@ impl EvalMachine {
             stack.push(frame.restore_local(current, context)?);
         }
         machine.program_scope = scope;
+        machine.restore_frames(stack);
         let active_program = machine
             .program_scope
             .as_ref()
@@ -313,7 +348,6 @@ impl EvalMachine {
             active_program.as_ref(),
         )?;
         machine.checkpoint_root = resources.root;
-        machine.restore_frames(stack);
         Ok(super::snapshot::RestoredMachineSnapshot { machine, contexts })
     }
 
@@ -323,12 +357,16 @@ impl EvalMachine {
             .map(|snapshot| snapshot.machine)
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_snapshot(
         &self,
         args: &[InterpValue],
         residual_counters: (u64, u64, u64),
     ) -> Result<super::snapshot::CapturedMachineSnapshot, String> {
         let mut context = super::snapshot::CaptureContext::default();
+        if let Some(root) = &self.checkpoint_root {
+            context.bind_program(&root.program);
+        }
         let args = self
             .checkpoint_root
             .as_ref()
@@ -365,6 +403,7 @@ impl EvalMachine {
         }
     }
 
+    #[cfg(test)]
     pub(crate) fn capture_machine(
         &self,
         context: &mut super::snapshot::CaptureContext,
@@ -379,6 +418,18 @@ impl EvalMachine {
         residual_counters: (u64, u64, u64),
         program: Option<&crate::value::CheckedExecutionProgram>,
     ) -> Result<MachineSnapshot, String> {
+        if let Some(root) = &self.checkpoint_root {
+            context.bind_program(&root.program);
+        }
+        if let Some(program) = program {
+            context.bind_program(program);
+        }
+        for frame in &self.stack {
+            if let EvalFrame::ProgramReturn(frame) = frame {
+                context.bind_program(&frame.parent_program);
+                context.bind_program(&frame.call.destination()?);
+            }
+        }
         let input = self.capture_input(
             context,
             self.checkpoint_root

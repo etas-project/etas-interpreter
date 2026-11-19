@@ -20,7 +20,7 @@ pub(super) fn validate<'a>(
             if expected != object.object_type {
                 return Err("existential value has a different checked interface".into());
             }
-            crate::value::ExistentialHeader::capture(object).validate(checked)?;
+            object.validate(checked)?;
             pending.push(Task::Visit(
                 Seed::new(Value::Runtime(&object.value), object.concrete_type),
                 false,
@@ -31,7 +31,7 @@ pub(super) fn validate<'a>(
             if expected != header.object_type {
                 return Err("existential snapshot has a different checked interface".into());
             }
-            header.validate(checked)?;
+            context.existential_header(header)?;
             pending.push(Task::Visit(
                 Seed::new(Value::Snapshot(value), header.concrete_type),
                 false,
@@ -60,7 +60,8 @@ pub(super) fn validate<'a>(
             Ok(())
         }
         Value::Runtime(R::Json(value)) | Value::Snapshot(S::Json(value))
-            if role == Some(Role::JsonValue) =>
+            if checked.types.known_std_types.json_value == Some(expected)
+                || role == Some(Role::JsonValue) =>
         {
             crate::value::json::validate(value)
         }
@@ -263,15 +264,22 @@ pub(super) fn validate<'a>(
         }
         Value::Runtime(
             R::HostHandle(_)
+            | R::Task(_)
+            | R::Scheduler(_)
+            | R::Continuation(_)
             | R::Handler { .. }
+            | R::ScopedHandler(_)
             | R::CodeMetadata(_)
             | R::SyntaxBlock(_)
             | R::AgentDefinition(_)
             | R::CallableDefinition(_),
         )
-        | Value::Snapshot(S::CodeIdentity { .. } | S::Handler { .. } | S::TaskRuntime(_)) => {
-            context.native(value, expected)
-        }
+        | Value::Snapshot(
+            S::CodeIdentity { .. }
+            | S::Handler { .. }
+            | S::ScopedHandler { .. }
+            | S::TaskRuntime(_),
+        ) => context.native(value, expected),
         _ => Err("native input does not match its checked type identity".into()),
     }
 }
@@ -366,5 +374,27 @@ pub(crate) fn selection_query<'a>(
         }
         (_, Some(ty), Some(value)) => Ok(Some(Seed::new(value, ty))),
         _ => Err("memory query is missing its checked argument type or value".into()),
+    }
+}
+
+/// Private ABI used by the runtime Money constructor. Public source cannot
+/// inspect or construct this payload without its checked native role.
+pub(crate) fn money_payload(value: Value<'_>) -> Result<(), String> {
+    use super::view::Node;
+    let Node::Record(2, fields) = value.node() else {
+        return Err("Money requires its private amount/currency payload".into());
+    };
+    let (mut amount, mut currency) = (false, false);
+    for (name, value) in fields {
+        match (name, value.node()) {
+            ("amount", Node::Number(_)) if !amount => amount = true,
+            ("currency", Node::String(_)) if !currency => currency = true,
+            _ => return Err("Money has an invalid private payload field".into()),
+        }
+    }
+    if amount && currency {
+        Ok(())
+    } else {
+        Err("Money private payload is incomplete".into())
     }
 }

@@ -3,11 +3,12 @@ mod definition;
 mod identity;
 mod metadata;
 mod program;
+pub(crate) mod source;
 mod syntax;
 pub use callable::ScopedCallableValue;
 pub(crate) use callable::validate_snapshot_bounds;
 pub(crate) use callable::validate_snapshot_signature;
-pub(crate) use program::CheckedExecutionProgram;
+pub(crate) use program::{CheckedExecutionProgram, ForeignExecutionLink};
 
 pub use definition::{AgentDefinitionValue, CallableDefinitionValue};
 pub(crate) use identity::CodeIdentitySnapshot;

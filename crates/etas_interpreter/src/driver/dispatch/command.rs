@@ -19,7 +19,7 @@ type CommandCall<'host> =
 
 pub(in crate::driver) enum CommandDispatchStart<'host> {
     Complete(Option<ControlSignal>),
-    Pending(PendingCommandDispatch<'host>),
+    Pending(Box<PendingCommandDispatch<'host>>),
 }
 
 pub(in crate::driver) struct PendingCommandDispatch<'host> {
@@ -98,11 +98,11 @@ pub(in crate::driver) async fn begin<'host>(
         command.request.trace.clone(),
         |operation| host.command(operation, command.request.clone()),
     ) {
-        Ok(pending) => CommandDispatchStart::Pending(PendingCommandDispatch {
+        Ok(pending) => CommandDispatchStart::Pending(Box::new(PendingCommandDispatch {
             command,
             key,
             pending,
-        }),
+        })),
         Err(error) => CommandDispatchStart::Complete(retry_or_report(
             eval,
             machine,
@@ -127,7 +127,12 @@ pub(in crate::driver) fn finish(
     match HostDispatch::finish(eval, completion) {
         Ok(response) => match response.result {
             Ok(output) => {
-                let value = eval.command_result_value(&command, output)?;
+                let value = match eval.command_result_value(&command, output) {
+                    Ok(value) => value,
+                    Err(reason) => {
+                        return Some(ControlSignal::missing_checked_fact(reason, command.span));
+                    }
+                };
                 if let Err(fault) = eval.record_completed_host_boundary(
                     crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                     "command",
@@ -158,6 +163,11 @@ pub(in crate::driver) fn finish(
 }
 
 impl PendingCommandDispatch<'_> {
+    pub(in crate::driver) fn operation_state(
+        &self,
+    ) -> std::rc::Rc<crate::driver::scheduler::HostOperation> {
+        self.pending.operation_state()
+    }
     pub(in crate::driver) fn operation_id(&self) -> etas_host::execution::OperationId {
         self.pending.operation_id()
     }

@@ -7,7 +7,7 @@ mod view;
 
 use etas_frontend::CheckedProject;
 use etas_types::{PrimitiveType as P, Type, TypeId};
-pub(crate) use native::selection_query;
+pub(crate) use native::{money_payload, selection_query};
 use std::collections::{HashMap, HashSet};
 use view::{Identity, MapKind, Node, SequenceKind};
 pub(crate) use view::{Target, Value};
@@ -18,6 +18,12 @@ pub(crate) trait Context {
     fn callable(&self, value: Target<'_>, expected: TypeId) -> Result<(), String>;
     fn comparator(&self, value: Target<'_>, key: TypeId) -> Result<(), String>;
     fn native(&self, value: Value<'_>, expected: TypeId) -> Result<(), String>;
+    fn existential_header(
+        &self,
+        header: &crate::value::ExistentialHeader,
+    ) -> Result<crate::control::GenericBindings, String> {
+        header.validate(self.checked())
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -129,6 +135,12 @@ pub(crate) fn validate<'a>(
                 if text.chunks().flat_map(str::chars).take(2).count() == 1 => {}
             (Type::Primitive(primitive), Node::Number(number))
                 if *primitive == number.primitive() => {}
+            (_, Node::Nominal(actual, inner))
+                if actual == expected
+                    && known.runtime_type(etas_std::RuntimeTypeRole::Money) == Some(expected) =>
+            {
+                money_payload(inner)?;
+            }
             (_, Node::Nominal(actual, inner)) if actual == expected => {
                 if is_enum(store, expected) {
                     pending.push(Task::Visit(Seed::new(inner, expected), true));
@@ -140,6 +152,9 @@ pub(crate) fn validate<'a>(
                     pending.push(Task::Visit(Seed::new(inner, representation), false));
                 }
             }
+            (_, Node::Trust(etas_types::TrustWrapper::Trusted, literal))
+                if crate::value::source_prompt::evidence_type(checked, expected)
+                    && matches!(literal.node(), Node::String(_)) => {}
             (Type::Trust { wrapper, inner }, Node::Trust(actual, value)) if wrapper == &actual => {
                 pending.push(Task::Visit(Seed::new(value, *inner), false))
             }
@@ -220,6 +235,13 @@ pub(crate) fn validate<'a>(
                     fields.zip(types).map(|(value, ty)| Seed::new(value, ty)),
                 )));
             }
+            (_, Node::Variant("IndexError", 1, mut fields))
+                if !checked.hir.source_standard_types && known.index_error == Some(expected) =>
+            {
+                if !matches!(fields.next().unwrap().node(), Node::String(_)) {
+                    return Err("IndexError requires its runtime message payload".into());
+                }
+            }
             (Type::Applied { args, .. }, Node::Sequence(SequenceKind::Native(role), _, values))
                 if checked.types.known_std_types.runtime_role(store, expected) == Some(role)
                     && args.len() == 1 =>
@@ -242,17 +264,13 @@ pub(crate) fn validate<'a>(
                     values.flat_map(move |(a, b)| [Seed::new(a, key), Seed::new(b, value)]),
                 )));
             }
-            // Console errors are a standard support type with runtime-owned
-            // constructors, rather than a source enum with a nominal envelope.
-            (_, Node::Variant(name, len, mut fields))
-                if crate::eval::resolve_std_type(checked, &["std", "io", "IOError"])
-                    == Some(expected) =>
+            // Legacy Console errors carry an opaque host variant.
+            (_, Node::Variant(..))
+                if known.opaque_values.contains(&expected)
+                    && crate::eval::resolve_std_type(checked, &["std", "io", "IOError"])
+                        == Some(expected) =>
             {
-                match (name, len) {
-                    ("PermissionDenied", 0) => {}
-                    ("Host", 1) if matches!(fields.next().unwrap().node(), Node::String(_)) => {}
-                    _ => return Err("console error has a different runtime constructor".into()),
-                }
+                console_error_payload(value)?;
             }
             (_, Node::Native) => native::validate(context, value, expected, &mut pending)?,
             _ => {
@@ -264,6 +282,19 @@ pub(crate) fn validate<'a>(
         }
     }
     Ok(())
+}
+
+pub(crate) fn console_error_payload(value: Value<'_>) -> Result<(), String> {
+    if let Node::Variant(name, len, mut fields) = value.node() {
+        match (name, len) {
+            ("PermissionDenied", 0) => return Ok(()),
+            ("Host", 1) if matches!(fields.next().unwrap().node(), Node::String(_)) => {
+                return Ok(());
+            }
+            _ => {}
+        }
+    }
+    Err("console error has a different runtime constructor".into())
 }
 
 fn is_enum(store: &etas_types::TypeStore, ty: TypeId) -> bool {
