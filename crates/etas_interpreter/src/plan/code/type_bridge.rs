@@ -195,8 +195,10 @@ impl RevisionTypeBridge {
         original: &DefinitionCatalog,
         compiled: &DefinitionCatalog,
     ) -> Result<Self, RevisionTypeBridgeError> {
-        let forward = correspond(original, compiled)?;
-        let backward = correspond(compiled, original)?;
+        let original_keys = fingerprints(original)?;
+        let compiled_keys = fingerprints(compiled)?;
+        let forward = correspond(original, &original_keys, compiled, &compiled_keys)?;
+        let backward = correspond(compiled, &compiled_keys, original, &original_keys)?;
         let runtime_types =
             runtime::RuntimeTypeBridge::new(original, compiled, &forward, &backward)?;
         let actions = actions::ActionBridge::new(original, compiled, &runtime_types)?;
@@ -498,13 +500,13 @@ fn fingerprints(
 
 fn correspond(
     from: &DefinitionCatalog,
+    from_keys: &HashMap<TypeInfoRef, CodeFingerprint>,
     to: &DefinitionCatalog,
+    to_keys: &HashMap<TypeInfoRef, CodeFingerprint>,
 ) -> Result<BTreeMap<(GenericOwner, TypeId), Option<TypeId>>, RevisionTypeBridgeError> {
-    let from_keys = fingerprints(from)?;
-    let to_keys = fingerprints(to)?;
     let mut targets = BTreeMap::new();
     for origin in to.native_type_origins() {
-        let key = (origin.scope.clone(), key(&to_keys, origin.descriptor)?);
+        let key = (origin.scope.clone(), key(to_keys, origin.descriptor)?);
         if let Some(previous) = targets.insert(key, origin.local)
             && previous != origin.local
         {
@@ -518,7 +520,7 @@ fn correspond(
         .iter()
         .map(|origin| {
             let target = targets
-                .get(&(origin.scope.clone(), key(&from_keys, origin.descriptor)?))
+                .get(&(origin.scope.clone(), key(from_keys, origin.descriptor)?))
                 .copied();
             Ok(((origin.scope.clone(), origin.local), target))
         })
