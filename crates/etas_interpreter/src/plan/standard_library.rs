@@ -99,14 +99,11 @@ impl StandardLibraryProgram {
         let mut callables = BTreeMap::new();
         let mut aliases = BTreeMap::new();
         let mut identities = BTreeSet::new();
-        for symbol in program.std_registry.symbols() {
-            if !program.symbols.iter().any(|import| matches!(&import.def, etas_hir::SymbolDef::ImportAlias { path, .. } if program.std_registry.lookup_qualified(path).is_some_and(|decl| decl.id == symbol.id))) {
-                continue;
-            }
-            let Some(binding) = program.std_registry.body_binding(symbol.id) else {
+        for symbol in program.referenced_standard_symbols() {
+            let Some(binding) = program.std_registry.body_binding(symbol) else {
                 continue;
             };
-            aliases.insert(symbol.id, binding.callable.clone());
+            aliases.insert(symbol, binding.callable.clone());
             identities.insert(binding.callable.clone());
         }
         for method in program.types.methods.entries() {
