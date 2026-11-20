@@ -355,7 +355,7 @@ dependencies = [
 
 [[package]]
 name = "etas_frontend"
-version = "0.13.0"
+version = "0.14.0"
 source = "git+https://github.com/etas-project/etas-frontend.git?rev=9b25d64a7db15595fa5b51e6812e2c7aed04f0cf#9b25d64a7db15595fa5b51e6812e2c7aed04f0cf"
 dependencies = [
  "bincode",

@@ -33,8 +33,11 @@ impl Pass<PlanContext<'_>> for BuildGlobalTablePass {
             .filter_map(|symbol| match &symbol.def {
                 SymbolDef::TopLevelLet {
                     classification: TopLevelLetClassification::Const,
+                    item,
                     ..
-                } => Some(GlobalConst { symbol: symbol.id }),
+                } if context.project.hir.items.get(*item).is_some() => {
+                    Some(GlobalConst { symbol: symbol.id })
+                }
                 _ => None,
             })
             .collect();
