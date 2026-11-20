@@ -12,7 +12,7 @@ use super::{
     context::{PlanContext, plan_pass},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FrameLayoutTable {
     layouts: HashMap<ScopeId, Arc<SlotLayoutTable>>,
 }

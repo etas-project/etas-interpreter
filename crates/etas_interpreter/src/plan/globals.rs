@@ -3,12 +3,12 @@ use etas_utils::{Pass, PassContext, PassManager, PassResult};
 
 use super::context::{PlanContext, plan_pass};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct GlobalTable {
     pub constants: Vec<GlobalConst>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GlobalConst {
     pub symbol: SymbolId,
 }

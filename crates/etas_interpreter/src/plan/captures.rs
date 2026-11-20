@@ -15,14 +15,14 @@ mod scopes;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ClosureLayout {
     pub(crate) captures: Arc<[SymbolId]>,
     pub(crate) mutable_captures: Arc<[SymbolId]>,
     pub(crate) slots: Arc<SlotLayoutTable>,
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ClosureLayoutTable {
     layouts: HashMap<HirExprId, ClosureLayout>,
     mutable_capture_blocks: std::collections::HashSet<etas_hir::HirBlockId>,

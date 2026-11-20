@@ -5,7 +5,7 @@ use std::collections::HashMap;
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnumAbiLayout {
     variants: HashMap<String, Result<Vec<TypeId>, String>>,
 }

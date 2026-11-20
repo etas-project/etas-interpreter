@@ -8,7 +8,7 @@ use etas_types::{
 use super::record::RecordAbiLayout;
 use super::wrapper_walk::WrapperWalkLimits;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AbiShape {
     Primitive(PrimitiveType),
     Array(TypeId),
@@ -42,7 +42,7 @@ pub enum AbiShape {
     Unsupported(String),
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct PureAbiProjector {
     shapes: HashMap<TypeId, AbiShape>,
     wrapper_walks: WrapperWalkLimits,

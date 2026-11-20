@@ -7,7 +7,7 @@ use super::context::{PlanContext, plan_pass};
 
 /// Immutable HIR argument descriptors shared by repeated calls and suspension.
 /// Evaluated arguments remain invocation-local and preserve source order.
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct CallArgumentTable {
     entries: HashMap<HirExprId, Arc<[HirArg]>>,
     default_units: std::collections::BTreeMap<

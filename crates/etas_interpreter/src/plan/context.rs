@@ -23,6 +23,7 @@ pub(super) struct PlanContext<'a> {
     pub(super) globals: Option<GlobalTable>,
     pub(super) resources: Option<ResourceTable>,
     pub(super) dispatch: Option<IntrinsicDispatchTable>,
+    pub(super) installed_layouts: Option<std::sync::Arc<super::installed::InstalledDispatch>>,
     pub(super) host_requirements: Option<HostRequirementTable>,
     pub(super) action_mediation: Option<ActionMediationTable>,
     /// Final revision binding of the program's residual plans: the ordinary
@@ -50,6 +51,7 @@ impl<'a> PlanContext<'a> {
             globals: None,
             resources: None,
             dispatch: None,
+            installed_layouts: None,
             host_requirements: None,
             action_mediation: None,
             residual_binding: project.residual_plans().binding().cloned(),

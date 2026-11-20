@@ -10,6 +10,7 @@ mod dispatch;
 mod entry;
 mod frames;
 mod globals;
+pub(crate) mod installed;
 pub(crate) mod iteration;
 mod pipeline;
 pub(crate) mod readiness;
@@ -26,6 +27,7 @@ pub use action_mediation::ActionMediationTable;
 pub use captures::ClosureLayoutTable;
 pub use dispatch::{BraceLiteralShape, IntrinsicDispatchTable};
 pub use globals::GlobalTable;
+pub use installed::encode_installed_layouts;
 pub use pipeline::build_plan;
 #[cfg(test)]
 pub(crate) use pipeline::build_plan_for_entry;

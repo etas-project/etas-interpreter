@@ -83,12 +83,33 @@ pub(crate) fn prepare_program_with_residual_binding(
     project: &CheckedProject,
     residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
 ) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
+    prepare_program_with_layouts(project, residual_binding, None)
+}
+
+pub(super) fn prepare_program_with_layouts(
+    project: &CheckedProject,
+    residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
+    installed: Option<super::installed::InstalledLayouts>,
+) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
     let mut context = PlanContext::new(project);
     context.residual_binding = residual_binding.cloned();
     // Layout/ABI preparation must not select main or require analysis of a
     // merely reflected declaration.
     context.requested_root = None;
-    run_pipeline(&mut layout_pipeline(), &mut context);
+    if let Some(installed) = installed {
+        installed.apply(&mut context);
+        run_pipeline(
+            &mut Pipeline::new("interpreter.plan.load_installed_layouts")
+                .pass(ValidateCheckedProjectPass)
+                .pass(BuildRecordLayoutsPass)
+                .pass(BuildIntrinsicDispatchTablePass)
+                .pass(ValidateResidualPlansPass)
+                .pass(BindResidualSitesPass),
+            &mut context,
+        );
+    } else {
+        run_pipeline(&mut layout_pipeline(), &mut context);
+    }
     if context
         .diagnostics
         .iter()

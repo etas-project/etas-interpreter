@@ -10,7 +10,7 @@ use etas_utils::{Pass, PassContext, PassManager, PassResult};
 use super::context::{PlanContext, plan_pass};
 use crate::value::InterpValue;
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NamedVariantLayout {
     symbol: SymbolId,
     source_names: Vec<String>,
@@ -80,13 +80,13 @@ impl NamedVariantLayout {
     }
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct NamedVariantLayoutTable {
     layouts: HashMap<HirExprId, NamedVariantLayout>,
     patterns: HashMap<HirPatId, NamedVariantPatternLayout>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct NamedVariantPatternLayout {
     pub symbol: SymbolId,
     pub name: String,

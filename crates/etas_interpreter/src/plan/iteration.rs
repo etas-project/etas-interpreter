@@ -5,7 +5,7 @@ use etas_types::{Type, TypeId, source_iteration, ty::TypeLookupIndex};
 use crate::{control::CallTarget, value::InterpValue};
 
 /// The source declaration fixes only the one-step value protocol.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct SourceIteratorProtocol {
     pub constructor: TypeId,
     pub value_type: TypeId,

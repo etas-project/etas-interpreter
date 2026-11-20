@@ -9,7 +9,7 @@ use etas_types::{
     ty::TypeLookupIndex,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum RequirementKey {
     Source(SymbolId),
     External { package: u32, path: Vec<String> },
@@ -55,14 +55,14 @@ impl From<&MethodTarget> for TargetKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 struct WitnessKey {
     receiver: TypeId,
     member: RequirementKey,
     args: Vec<TypeId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedWitness {
     pub target: MethodTarget,
     pub parameters: Vec<(String, String)>,
@@ -82,8 +82,8 @@ pub(crate) struct ResolvedMethodCall<'a> {
     pub bindings: crate::control::CheckedCallBindings,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct MethodDispatchPlan {
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct MethodDispatchPlan {
     calls: HashMap<HirExprId, CheckedMethodCallFact>,
     witnesses: HashMap<WitnessKey, PreparedWitness>,
     packs: HashMap<

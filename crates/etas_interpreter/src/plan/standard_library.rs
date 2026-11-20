@@ -85,8 +85,17 @@ impl StandardLibraryProgram {
             RevisionTypeBridge::for_standard_library(&caller, &bodies, standard)
                 .map_err(|e| e.to_string())?,
         );
-        let prepared = super::prepare_program(library)
-            .map_err(|errors| format!("std body preparation failed: {errors:?}"))?;
+        let installed = standard
+            .installed_layouts
+            .as_deref()
+            .map(super::installed::decode)
+            .transpose()?;
+        let prepared = super::pipeline::prepare_program_with_layouts(
+            library,
+            library.residual_plans().binding(),
+            installed,
+        )
+        .map_err(|errors| format!("std body preparation failed: {errors:?}"))?;
         let mut callables = BTreeMap::new();
         let mut aliases = BTreeMap::new();
         let mut identities = BTreeSet::new();

@@ -5,7 +5,7 @@ use etas_types::{FieldType, TypeId};
 use super::AdapterError;
 use crate::value::record::RecordLayout;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RecordAbiLayout {
     fields: Vec<FieldType>,
     slots: HashMap<String, usize>,

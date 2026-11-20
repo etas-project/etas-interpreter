@@ -3,12 +3,12 @@ use etas_utils::{Pass, PassContext, PassManager, PassResult};
 
 use super::context::{PlanContext, plan_pass};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct ResourceTable {
     pub handles: Vec<ResourceHandleDescriptor>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ResourceHandleDescriptor {
     pub symbol: SymbolId,
 }

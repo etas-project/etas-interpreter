@@ -9,7 +9,7 @@ use super::context::{PlanContext, plan_pass};
 
 id_type!(SlotId);
 
-#[derive(Clone, Debug, Default, PartialEq, Eq)]
+#[derive(Clone, Debug, Default, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SlotLayoutTable {
     symbols: Vec<SymbolId>,
     by_symbol: HashMap<SymbolId, SlotId>,
