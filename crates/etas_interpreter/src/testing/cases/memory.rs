@@ -275,7 +275,9 @@ flow main() -> unit {
     else {
         panic!("expected top-level let");
     };
-    let initializer_expr = project_memory_decl.value;
+    let initializer_expr = project_memory_decl
+        .value
+        .expect("ProjectMemory initializer");
     let span = checked.hir.exprs[initializer_expr].span(&checked.hir.blocks);
     let callee_expr = match checked
         .hir
@@ -380,7 +382,9 @@ flow main() -> unit {
     else {
         panic!("expected top-level let");
     };
-    let initializer_expr = project_memory_decl.value;
+    let initializer_expr = project_memory_decl
+        .value
+        .expect("ProjectMemory initializer");
     let span = checked.hir.exprs[initializer_expr].span(&checked.hir.blocks);
     let callee_expr = match checked
         .hir
