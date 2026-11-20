@@ -1,6 +1,6 @@
 use etas_frontend::CheckedProject;
 use etas_hir::HirExprId;
-use etas_types::{Type, TypeId};
+use etas_types::{Type, TypeId, source_iteration, ty::TypeLookupIndex};
 
 use crate::{control::CallTarget, value::InterpValue};
 
@@ -17,17 +17,20 @@ impl SourceIteratorProtocol {
     pub(crate) fn checked(
         project: &CheckedProject,
         expr: HirExprId,
+        lookup: Option<&TypeLookupIndex>,
     ) -> Result<Option<Self>, String> {
         let Some(value_type) = project.types.expression_producer_type(expr) else {
             return Ok(None);
         };
-        let Some(layout) = etas_types::source_iteration::checked_cursor(
-            &project.type_store,
-            project.types.as_ref(),
-            value_type,
-        )
-        .map_err(|error| error.to_string())?
-        else {
+        let store = &project.type_store;
+        let facts = &project.types;
+        let layout = match lookup {
+            Some(lookup) => {
+                source_iteration::checked_cursor_indexed(store, facts, lookup, value_type)
+            }
+            None => source_iteration::checked_cursor(store, facts, value_type),
+        };
+        let Some(layout) = layout.map_err(|error| error.to_string())? else {
             return Ok(None);
         };
         Ok(Some(Self {

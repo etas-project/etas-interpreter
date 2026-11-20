@@ -6,6 +6,7 @@ use etas_types::{
     SpecMethodIdentity, TypeId, TypeSubstitutionEngine,
     facts::CheckedMethodCallFact,
     method::{MethodEvidence, MethodReceiver, MethodSignatureFact, MethodTarget},
+    ty::TypeLookupIndex,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Hash)]
@@ -117,9 +118,11 @@ impl MethodDispatchPlan {
                 .push(entry);
         }
         let specs = etas_types::SpecFacts::from(project.types.as_ref());
+        let lookup = TypeLookupIndex::new(&project.type_store);
         for (receiver, _) in project.type_store.iter() {
-            for resolved in project.types.methods.witnesses_for_receiver(
+            for resolved in project.types.methods.witnesses_for_receiver_indexed(
                 &project.type_store,
+                &lookup,
                 &specs,
                 receiver,
             )? {

@@ -2,7 +2,7 @@ use std::collections::{HashMap, HashSet};
 
 use etas_types::{
     PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner, TypeStore, applied_representation,
-    facts::symbols::StdIterableItemFact,
+    facts::symbols::StdIterableItemFact, ty::TypeLookupIndex,
 };
 
 use super::record::RecordAbiLayout;
@@ -63,6 +63,7 @@ impl PureAbiProjector {
         known: &etas_types::KnownStdTypes,
     ) -> Result<Self, String> {
         let mut interner = TypeInterner::from_store(store.clone());
+        let mut lookup = TypeLookupIndex::new(store);
         let mut representations = HashMap::new();
         let mut enums = HashMap::new();
         let mut cursor = 0_u32;
@@ -103,12 +104,14 @@ impl PureAbiProjector {
                         AbiShape::Unsupported("unapplied generic enum constructor".into()),
                     );
                 } else {
+                    lookup.include_appended_types(interner.store());
                     enums.insert(
                         TypeId(cursor),
                         AbiShape::Enum(super::enum_layout::EnumAbiLayout::build(
                             layout,
                             &args,
                             interner.store(),
+                            &lookup,
                         )?),
                     );
                 }

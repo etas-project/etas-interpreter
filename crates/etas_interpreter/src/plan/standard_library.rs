@@ -12,7 +12,7 @@ use etas_frontend::{
 };
 use etas_hir::HirItemId;
 use etas_std::StdSymbolId;
-use etas_types::{FlowType, ItemSignature, Type, TypeId};
+use etas_types::{FlowType, ItemSignature, Type, TypeId, ty::TypeLookupIndex};
 
 use super::{PreparedProgram, code::RevisionTypeBridge};
 use crate::{
@@ -115,6 +115,7 @@ impl StandardLibraryProgram {
                 .values()
                 .map(|call| call.callable.clone()),
         );
+        let library_lookup = TypeLookupIndex::new(&library.type_store);
         for identity in identities {
             let id = &identity;
             let item = bodies.item_owner(id).ok_or_else(|| {
@@ -188,12 +189,8 @@ impl StandardLibraryProgram {
                 output: signature.output,
                 effects: Some(row),
             };
-            let ty = library
-                .type_store
-                .iter()
-                .find_map(|(id, ty)| {
-                    matches!(ty, Type::Function(candidate) if candidate == &flow).then_some(id)
-                })
+            let ty = library_lookup
+                .get(&library.type_store, &Type::Function(flow))
                 .ok_or_else(|| format!("std artifact {id:?} has no checked function type"))?;
             callables.insert(identity, LibraryCallable { item, ty });
         }
