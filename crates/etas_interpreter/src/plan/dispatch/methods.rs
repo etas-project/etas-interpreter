@@ -94,6 +94,14 @@ pub(crate) struct MethodDispatchPlan {
 
 impl MethodDispatchPlan {
     pub(super) fn prepare(project: &CheckedProject) -> Result<Self, String> {
+        // Each executable revision owns its dispatch table. Imported method
+        // declarations alone do not create a call or an existential witness.
+        if project.types.checked_method_calls.is_empty()
+            && project.types.bound_method_values.is_empty()
+            && project.types.existential_packs.is_empty()
+        {
+            return Ok(Self::default());
+        }
         let mut result = Self::default();
         let mut declarations = HashMap::<TargetKey, Vec<&MethodSignatureFact>>::new();
         let requirements = project
