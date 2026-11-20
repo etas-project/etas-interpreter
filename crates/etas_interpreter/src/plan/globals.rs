@@ -35,7 +35,7 @@ impl Pass<PlanContext<'_>> for BuildGlobalTablePass {
                     classification: TopLevelLetClassification::Const,
                     item,
                     ..
-                } if context.project.hir.items.get(*item).is_some() => {
+                } if matches!(context.project.hir.items.get(*item), Some(etas_hir::HirItem::TopLevelLet(value)) if value.value.is_some()) => {
                     Some(GlobalConst { symbol: symbol.id })
                 }
                 _ => None,
