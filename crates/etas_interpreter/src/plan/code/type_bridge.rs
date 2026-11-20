@@ -71,6 +71,7 @@ impl RevisionTypeBridge {
         original: &DefinitionCatalog,
         library: &DefinitionCatalog,
         owner: &std::sync::Arc<etas_frontend::StandardLibrary>,
+        installed_fingerprints: Option<&BTreeMap<(GenericOwner, TypeId), CodeFingerprint>>,
     ) -> Result<Self, RevisionTypeBridgeError> {
         if !std::sync::Arc::ptr_eq(library.checked_program(), &owner.program)
             || !original
@@ -81,7 +82,8 @@ impl RevisionTypeBridge {
         {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        let mut bridge = Self::catalog_correspondence(original, library)?;
+        let mut bridge =
+            Self::catalog_correspondence_prepared(original, library, installed_fingerprints)?;
         bridge.standard_library = Some(owner.clone());
         Ok(bridge)
     }
@@ -195,8 +197,32 @@ impl RevisionTypeBridge {
         original: &DefinitionCatalog,
         compiled: &DefinitionCatalog,
     ) -> Result<Self, RevisionTypeBridgeError> {
+        Self::catalog_correspondence_prepared(original, compiled, None)
+    }
+
+    fn catalog_correspondence_prepared(
+        original: &DefinitionCatalog,
+        compiled: &DefinitionCatalog,
+        installed: Option<&BTreeMap<(GenericOwner, TypeId), CodeFingerprint>>,
+    ) -> Result<Self, RevisionTypeBridgeError> {
         let original_keys = fingerprints(original)?;
-        let compiled_keys = fingerprints(compiled)?;
+        let compiled_keys = match installed {
+            Some(keys) => compiled
+                .native_type_origins()
+                .iter()
+                .map(|origin| {
+                    let fingerprint = keys
+                        .get(&(origin.scope.clone(), origin.local))
+                        .copied()
+                        .ok_or_else(|| RevisionTypeBridgeError::MissingType {
+                            scope: origin.scope.clone(),
+                            ty: origin.local,
+                        })?;
+                    Ok((origin.descriptor, fingerprint))
+                })
+                .collect::<Result<HashMap<_, _>, RevisionTypeBridgeError>>()?,
+            None => fingerprints(compiled)?,
+        };
         let forward = correspond(original, &original_keys, compiled, &compiled_keys)?;
         let backward = correspond(compiled, &compiled_keys, original, &original_keys)?;
         let runtime_types =
@@ -477,7 +503,7 @@ fn agent_items(
     Ok(agents)
 }
 
-fn fingerprints(
+pub(crate) fn fingerprints(
     catalog: &DefinitionCatalog,
 ) -> Result<HashMap<TypeInfoRef, CodeFingerprint>, RevisionTypeBridgeError> {
     let mut keys = HashMap::new();

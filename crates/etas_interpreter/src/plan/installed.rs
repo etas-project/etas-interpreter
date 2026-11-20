@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::{context::PlanContext, dispatch::MethodDispatchPlan};
 
-const MAGIC: &[u8; 8] = b"ETASLAY1";
+const MAGIC: &[u8; 8] = b"ETASLAY2";
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct InstalledDispatch {
@@ -19,6 +19,12 @@ pub(super) struct InstalledDispatch {
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct InstalledLayouts {
+    /// SDK descriptor identities are fixed at installation. Only the caller's
+    /// newly checked types need fingerprinting during startup.
+    pub(super) type_fingerprints: std::collections::BTreeMap<
+        (etas_code::descriptor::GenericOwner, etas_types::TypeId),
+        etas_code::CodeFingerprint,
+    >,
     slots: super::SlotLayoutTable,
     frames: super::frames::FrameLayoutTable,
     arguments: super::arguments::CallArgumentTable,
@@ -53,7 +59,21 @@ pub fn encode_installed_layouts(
     let prepared = super::prepare_program(program)
         .map_err(|errors| format!("cannot prepare installed std layouts: {errors:?}"))?;
     let (methods, pure_abi) = prepared.dispatch.installed_dispatch();
+    let catalog = super::standard_library::catalog(program)?;
     let image = InstalledLayouts {
+        type_fingerprints: {
+            let fingerprints = super::code::fingerprints(&catalog).map_err(|e| e.to_string())?;
+            catalog
+                .native_type_origins()
+                .iter()
+                .map(|origin| {
+                    (
+                        (origin.scope.clone(), origin.local),
+                        fingerprints[&origin.descriptor],
+                    )
+                })
+                .collect()
+        },
         slots: prepared.slots.as_ref().clone(),
         frames: prepared.frames.as_ref().clone(),
         arguments: prepared.arguments.as_ref().clone(),

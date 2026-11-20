@@ -1,6 +1,7 @@
 mod foreign_methods;
 mod targets;
 mod type_bridge;
+pub(crate) use type_bridge::fingerprints;
 mod value_bridge;
 pub(crate) use foreign_methods::checked_foreign_method;
 pub(crate) use targets::{RevisionCallable, RevisionTargets};

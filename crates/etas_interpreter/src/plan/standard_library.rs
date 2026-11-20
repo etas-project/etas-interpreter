@@ -84,13 +84,6 @@ impl StandardLibraryProgram {
             let _phase = profile.span("std.runtime.catalogs", "std");
             (catalog(program)?, catalog(library)?)
         };
-        let bridge = {
-            let _phase = profile.span("std.runtime.type_bridge", "std");
-            Arc::new(
-                RevisionTypeBridge::for_standard_library(&caller, &bodies, standard)
-                    .map_err(|e| e.to_string())?,
-            )
-        };
         let installed = {
             let _phase = profile.span("std.runtime.decode_layouts", "std");
             standard
@@ -98,6 +91,18 @@ impl StandardLibraryProgram {
                 .as_deref()
                 .map(super::installed::decode)
                 .transpose()?
+        };
+        let bridge = {
+            let _phase = profile.span("std.runtime.type_bridge", "std");
+            Arc::new(
+                RevisionTypeBridge::for_standard_library(
+                    &caller,
+                    &bodies,
+                    standard,
+                    installed.as_ref().map(|layout| &layout.type_fingerprints),
+                )
+                .map_err(|e| e.to_string())?,
+            )
         };
         let prepared = {
             let _phase = profile.span("std.runtime.prepare", "std");
@@ -343,7 +348,7 @@ impl StandardLibraryProgram {
     }
 }
 
-fn catalog(program: &CheckedProgram) -> Result<DefinitionCatalog, String> {
+pub(super) fn catalog(program: &CheckedProgram) -> Result<DefinitionCatalog, String> {
     let origins = DefinitionOrigins {
         source_modules: DefinitionOrigins::checked_source_modules(program)
             .map_err(|e| e.to_string())?,
