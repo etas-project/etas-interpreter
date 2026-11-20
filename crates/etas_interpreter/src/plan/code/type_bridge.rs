@@ -211,13 +211,20 @@ impl RevisionTypeBridge {
                 .native_type_origins()
                 .iter()
                 .map(|origin| {
-                    let fingerprint = keys
-                        .get(&(origin.scope.clone(), origin.local))
-                        .copied()
-                        .ok_or_else(|| RevisionTypeBridgeError::MissingType {
-                            scope: origin.scope.clone(),
-                            ty: origin.local,
-                        })?;
+                    let fingerprint =
+                        match keys.get(&(origin.scope.clone(), origin.local)) {
+                            Some(fingerprint) => *fingerprint,
+                            // Linking can append caller-specific generic instances.
+                            // Their types are the only SDK-side additions to index.
+                            None => compiled
+                                .descriptors()
+                                .type_fingerprint(origin.descriptor)
+                                .map_err(|error| {
+                                    RevisionTypeBridgeError::Projection(
+                                etas_frontend::code::descriptor::ProjectionError::Descriptor(error)
+                            )
+                                })?,
+                        };
                     Ok((origin.descriptor, fingerprint))
                 })
                 .collect::<Result<HashMap<_, _>, RevisionTypeBridgeError>>()?,
