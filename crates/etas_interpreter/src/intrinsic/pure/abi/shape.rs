@@ -44,8 +44,10 @@ pub enum AbiShape {
 
 #[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct PureAbiProjector {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     shapes: HashMap<TypeId, AbiShape>,
     wrapper_walks: WrapperWalkLimits,
+    #[serde(serialize_with = "etas_utils::serde_ordered::set")]
     nominal_identities: HashSet<TypeId>,
 }
 

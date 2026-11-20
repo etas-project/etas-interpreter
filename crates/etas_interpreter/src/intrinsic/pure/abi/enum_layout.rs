@@ -7,6 +7,7 @@ mod tests;
 
 #[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnumAbiLayout {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     variants: HashMap<String, Result<Vec<TypeId>, String>>,
 }
 
