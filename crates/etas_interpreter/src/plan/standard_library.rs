@@ -106,12 +106,10 @@ impl StandardLibraryProgram {
             aliases.insert(symbol, binding.callable.clone());
             identities.insert(binding.callable.clone());
         }
-        for method in program.types.methods.entries() {
-            if let etas_types::method::MethodTarget::External { identity } = &method.target {
-                let callable = etas_code::CallableId::method(identity.clone());
-                if bodies.item_owner(&callable).is_some() {
-                    identities.insert(callable);
-                }
+        for identity in program.referenced_standard_methods() {
+            let callable = etas_code::CallableId::method(identity);
+            if bodies.item_owner(&callable).is_some() {
+                identities.insert(callable);
             }
         }
         identities.extend(
