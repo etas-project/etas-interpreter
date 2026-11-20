@@ -79,23 +79,36 @@ impl StandardLibraryProgram {
             return Ok(None);
         };
         let library = &standard.program;
-        let caller = catalog(program)?;
-        let bodies = catalog(library)?;
-        let bridge = Arc::new(
-            RevisionTypeBridge::for_standard_library(&caller, &bodies, standard)
-                .map_err(|e| e.to_string())?,
-        );
-        let installed = standard
-            .installed_layouts
-            .as_deref()
-            .map(super::installed::decode)
-            .transpose()?;
-        let prepared = super::pipeline::prepare_program_with_layouts(
-            library,
-            library.residual_plans().binding(),
-            installed,
-        )
-        .map_err(|errors| format!("std body preparation failed: {errors:?}"))?;
+        let profile = &standard.profile;
+        let (caller, bodies) = {
+            let _phase = profile.span("std.runtime.catalogs", "std");
+            (catalog(program)?, catalog(library)?)
+        };
+        let bridge = {
+            let _phase = profile.span("std.runtime.type_bridge", "std");
+            Arc::new(
+                RevisionTypeBridge::for_standard_library(&caller, &bodies, standard)
+                    .map_err(|e| e.to_string())?,
+            )
+        };
+        let installed = {
+            let _phase = profile.span("std.runtime.decode_layouts", "std");
+            standard
+                .installed_layouts
+                .as_deref()
+                .map(super::installed::decode)
+                .transpose()?
+        };
+        let prepared = {
+            let _phase = profile.span("std.runtime.prepare", "std");
+            super::pipeline::prepare_program_with_layouts(
+                library,
+                library.residual_plans().binding(),
+                installed,
+            )
+            .map_err(|errors| format!("std body preparation failed: {errors:?}"))?
+        };
+        let _phase = profile.span("std.runtime.bind_callables", "std");
         let mut callables = BTreeMap::new();
         let mut aliases = BTreeMap::new();
         let mut identities = BTreeSet::new();

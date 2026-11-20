@@ -333,7 +333,23 @@ impl InterpreterPlan {
 }
 
 fn run_pipeline<'a>(pipeline: &mut Pipeline<PlanContext<'a>>, context: &mut PlanContext<'a>) {
-    let run = PassManager::new().run_pipeline(pipeline, context);
+    let mut manager = PassManager::new();
+    let profile = context
+        .project
+        .standard_library
+        .as_ref()
+        .map(|library| library.profile.clone())
+        .unwrap_or_default();
+    manager.config_mut().collect_timing = profile.is_enabled();
+    let run = manager.run_pipeline(pipeline, context);
+    for record in &run.records {
+        if let Some(timing) = &record.timing {
+            profile.counter(
+                format!("interpreter.pass.{}.duration_ns", record.pass),
+                timing.duration.as_nanos() as u64,
+            );
+        }
+    }
     if let PassControl::Failed(failure) = run.control {
         context.push_missing_fact(
             diagnostics::primary_span(context.project),
