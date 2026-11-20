@@ -351,6 +351,6 @@ fn catalog(program: &CheckedProgram) -> Result<DefinitionCatalog, String> {
         external_definitions: DefinitionOrigins::checked_external_definitions(program)
             .map_err(|e| e.to_string())?,
     };
-    DefinitionCatalog::build(program.clone(), &origins, Default::default())
+    DefinitionCatalog::build_for_execution(program.clone(), &origins, Default::default())
         .map_err(|e| e.to_string())
 }

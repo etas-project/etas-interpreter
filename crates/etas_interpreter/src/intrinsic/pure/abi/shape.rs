@@ -213,6 +213,9 @@ impl PureAbiProjector {
                         wrapper: *wrapper,
                         inner: *inner,
                     },
+                    Type::Function(_) => AbiShape::Unsupported(
+                        "function values have no pure intrinsic ABI".into(),
+                    ),
                     unsupported => AbiShape::Unsupported(format!("{unsupported:?}")),
                 };
                 Ok((id, shape))
