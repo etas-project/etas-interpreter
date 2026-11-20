@@ -57,12 +57,7 @@ impl FrameLayoutTable {
         // One lexical-graph walk assigns local slots to their execution frame.
         // Lambda bodies are separate frames, planned by ClosureLayoutTable.
         // Linked HIR preserves original IDs while omitting unloaded scopes.
-        let count = project
-            .hir
-            .scopes
-            .iter()
-            .last()
-            .map_or(0, |scope| scope.id.index() + 1);
+        let count = project.hir.scopes.id_limit();
         let mut children = vec![Vec::new(); count];
         let mut pending = Vec::new();
         for scope in project.hir.scopes.iter() {
