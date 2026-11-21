@@ -79,6 +79,11 @@ impl StandardLibraryProgram {
             return Ok(None);
         };
         let library = &standard.program;
+        // An imported declaration does not require an executable SDK when the
+        // checked consumer has no standard-library execution roots.
+        if library.reachability.analysis_items.is_empty() {
+            return Ok(None);
+        }
         let profile = &standard.profile;
         let (caller, bodies) = {
             let _phase = profile.span("std.runtime.catalogs", "std");
