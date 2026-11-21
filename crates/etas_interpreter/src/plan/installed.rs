@@ -38,7 +38,25 @@ pub(super) struct InstalledLayouts {
 }
 
 impl InstalledLayouts {
-    pub(super) fn apply(self, context: &mut PlanContext<'_>) {
+    pub(super) fn apply(mut self, context: &mut PlanContext<'_>) {
+        let initialized = |symbol| match context
+            .project
+            .hir
+            .symbols
+            .get(symbol)
+            .map(|symbol| &symbol.def)
+        {
+            Some(etas_hir::SymbolDef::TopLevelLet { item, .. }) => {
+                matches!(context.project.hir.items.get(*item), Some(etas_hir::HirItem::TopLevelLet(value)) if value.value.is_some())
+            }
+            _ => false,
+        };
+        self.globals
+            .constants
+            .retain(|global| initialized(global.symbol));
+        self.resources
+            .handles
+            .retain(|resource| initialized(resource.symbol));
         context.slots = Some(self.slots);
         context.frames = Some(self.frames);
         context.arguments = Some(self.arguments);
