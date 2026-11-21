@@ -245,7 +245,10 @@ fn declared_host_search_environment(
                 .public_metadata
                 .definition_origins
                 .expect("published package origins"),
-            descriptors: metadata.public_metadata.definition_descriptors,
+            descriptors: metadata
+                .public_metadata
+                .definition_descriptors
+                .map(std::sync::Arc::new),
         }],
         tool_bindings: vec![etas_frontend::ProjectToolBindingInput {
             tool: "dep.tools.Search".into(),

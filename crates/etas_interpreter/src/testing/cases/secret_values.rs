@@ -174,6 +174,71 @@ async fn hmac_rejects_a_sealed_handle_with_the_wrong_checked_key_type_before_dis
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn a_secret_handle_does_not_grant_authority_to_use_it() {
+    let checked = checked_project(HMAC_SOURCE);
+    let entry = checked.entry.unwrap();
+    let etas_types::ItemSignature::Flow(signature) = &checked.types.item_signatures[&entry] else {
+        panic!("checked entry")
+    };
+    let secret = crate::value::HostHandleValue::secret_value(
+        signature.params[0],
+        etas_host::SecretValue::new(etas_host::SecretRef::new("sealed-key"), "<redacted>"),
+    );
+    let host = FakeHost::new(HostServiceAvailability {
+        secret_access: true,
+        ..Default::default()
+    });
+    host.seed_secret_payload(etas_host::SecretPayload::Bytes(vec![8; 32]));
+    let arguments = vec![
+        value::InterpValue::HostHandle(secret),
+        value::InterpValue::Bytes(vec![1].into()),
+    ];
+    let denied = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint { item: entry },
+            arguments.clone(),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(denied.value().is_none());
+    assert!(
+        denied
+            .diagnostics
+            .iter()
+            .any(|diagnostic| diagnostic.message.contains("current Secret action grant")),
+        "{:?}",
+        denied.diagnostics
+    );
+    let mut options = RunOptions::default();
+    options
+        .host_context
+        .authority
+        .grants
+        .push(HostActionGrant::allow("Secret", "use"));
+    let allowed = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint { item: entry },
+            arguments,
+            &host,
+            options,
+        )
+        .await
+        .unwrap();
+    assert!(allowed.diagnostics.is_empty(), "{:?}", allowed.diagnostics);
+    assert_eq!(
+        allowed.value(),
+        Some(&value::InterpValue::Nominal {
+            ty: signature.output,
+            value: value::InterpValue::Bytes(vec![8; 32].into()).into(),
+        })
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn a_secret_grant_approved_for_this_boundary_reaches_the_provider() {
     let checked = checked_project(HMAC_SOURCE);
     let entry = checked.entry.unwrap();
