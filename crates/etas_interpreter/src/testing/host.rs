@@ -1308,6 +1308,7 @@ impl HostServices for FakeHost {
             .push(request.clone());
         Box::pin(async move {
             operation.signal().check()?;
+            request.validate()?;
             let result = self
                 .secret_responses
                 .lock()
