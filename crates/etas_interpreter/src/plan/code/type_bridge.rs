@@ -71,7 +71,7 @@ impl RevisionTypeBridge {
         original: &DefinitionCatalog,
         library: &DefinitionCatalog,
         owner: &std::sync::Arc<etas_frontend::StandardLibrary>,
-        installed_fingerprints: Option<&BTreeMap<(GenericOwner, TypeId), CodeFingerprint>>,
+        installed_fingerprints: Option<&super::super::installed::InstalledTypeFingerprints>,
     ) -> Result<Self, RevisionTypeBridgeError> {
         if !std::sync::Arc::ptr_eq(library.checked_program(), &owner.program)
             || !original
@@ -203,7 +203,7 @@ impl RevisionTypeBridge {
     fn catalog_correspondence_prepared(
         original: &DefinitionCatalog,
         compiled: &DefinitionCatalog,
-        installed: Option<&BTreeMap<(GenericOwner, TypeId), CodeFingerprint>>,
+        installed: Option<&super::super::installed::InstalledTypeFingerprints>,
     ) -> Result<Self, RevisionTypeBridgeError> {
         let original_keys = fingerprints(original)?;
         let compiled_keys = match installed {
@@ -212,7 +212,10 @@ impl RevisionTypeBridge {
                 .iter()
                 .map(|origin| {
                     let fingerprint =
-                        match keys.get(&(origin.scope.clone(), origin.local)) {
+                        match keys
+                            .get(&origin.scope)
+                            .and_then(|scope| scope.get(&origin.local))
+                        {
                             Some(fingerprint) => *fingerprint,
                             // Linking can append caller-specific generic instances.
                             // Their types are the only SDK-side additions to index.

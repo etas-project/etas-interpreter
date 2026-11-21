@@ -1,4 +1,10 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+mod archive;
+use archive::ShapeArchive;
 
 use etas_types::{
     PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner, TypeStore, applied_representation,
@@ -42,13 +48,56 @@ pub enum AbiShape {
     Unsupported(String),
 }
 
-#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+#[derive(Clone, Debug, Default)]
 pub struct PureAbiProjector {
-    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     shapes: HashMap<TypeId, AbiShape>,
+    archive: Option<Arc<ShapeArchive>>,
     wrapper_walks: WrapperWalkLimits,
-    #[serde(serialize_with = "etas_utils::serde_ordered::set")]
     nominal_identities: HashSet<TypeId>,
+}
+
+impl serde::Serialize for PureAbiProjector {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct Stored<'a> {
+            shapes: &'a ShapeArchive,
+            wrapper_walks: &'a WrapperWalkLimits,
+            #[serde(serialize_with = "etas_utils::serde_ordered::set")]
+            nominal_identities: &'a HashSet<TypeId>,
+        }
+        let encoded;
+        let shapes = match &self.archive {
+            Some(archive) => archive.as_ref(),
+            None => {
+                encoded = ShapeArchive::encode(&self.shapes).map_err(serde::ser::Error::custom)?;
+                &encoded
+            }
+        };
+        Stored {
+            shapes,
+            wrapper_walks: &self.wrapper_walks,
+            nominal_identities: &self.nominal_identities,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PureAbiProjector {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            shapes: ShapeArchive,
+            wrapper_walks: WrapperWalkLimits,
+            nominal_identities: HashSet<TypeId>,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        Ok(Self {
+            shapes: HashMap::new(),
+            archive: Some(Arc::new(stored.shapes)),
+            wrapper_walks: stored.wrapper_walks,
+            nominal_identities: stored.nominal_identities,
+        })
+    }
 }
 
 impl PureAbiProjector {
@@ -226,13 +275,16 @@ impl PureAbiProjector {
         let wrapper_walks = WrapperWalkLimits::build(&shapes);
         Ok(Self {
             shapes,
+            archive: None,
             wrapper_walks,
             nominal_identities,
         })
     }
 
     pub fn shape(&self, ty: TypeId) -> Option<&AbiShape> {
-        self.shapes.get(&ty)
+        self.shapes
+            .get(&ty)
+            .or_else(|| self.archive.as_ref()?.get(ty))
     }
 
     pub(super) fn wrapper_steps(&self, ty: TypeId) -> Option<usize> {

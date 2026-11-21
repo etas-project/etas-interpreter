@@ -7,7 +7,7 @@ use std::sync::Arc;
 
 use super::{context::PlanContext, dispatch::MethodDispatchPlan};
 
-const MAGIC: &[u8; 8] = b"ETASLAY2";
+const MAGIC: &[u8; 8] = b"ETASLAY3";
 
 #[derive(Serialize, Deserialize)]
 pub(super) struct InstalledDispatch {
@@ -17,14 +17,16 @@ pub(super) struct InstalledDispatch {
     pub pure_abi: Arc<crate::intrinsic::pure::PureAbiProjector>,
 }
 
+pub(super) type InstalledTypeFingerprints = std::collections::BTreeMap<
+    etas_code::descriptor::GenericOwner,
+    std::collections::BTreeMap<etas_types::TypeId, etas_code::CodeFingerprint>,
+>;
+
 #[derive(Serialize, Deserialize)]
 pub(super) struct InstalledLayouts {
     /// SDK descriptor identities are fixed at installation. Only the caller's
     /// newly checked types need fingerprinting during startup.
-    pub(super) type_fingerprints: std::collections::BTreeMap<
-        (etas_code::descriptor::GenericOwner, etas_types::TypeId),
-        etas_code::CodeFingerprint,
-    >,
+    pub(super) type_fingerprints: InstalledTypeFingerprints,
     slots: super::SlotLayoutTable,
     frames: super::frames::FrameLayoutTable,
     arguments: super::arguments::CallArgumentTable,
@@ -63,16 +65,14 @@ pub fn encode_installed_layouts(
     let image = InstalledLayouts {
         type_fingerprints: {
             let fingerprints = super::code::fingerprints(&catalog).map_err(|e| e.to_string())?;
-            catalog
-                .native_type_origins()
-                .iter()
-                .map(|origin| {
-                    (
-                        (origin.scope.clone(), origin.local),
-                        fingerprints[&origin.descriptor],
-                    )
-                })
-                .collect()
+            let mut grouped = InstalledTypeFingerprints::new();
+            for origin in catalog.native_type_origins() {
+                grouped
+                    .entry(origin.scope.clone())
+                    .or_default()
+                    .insert(origin.local, fingerprints[&origin.descriptor]);
+            }
+            grouped
         },
         slots: prepared.slots.as_ref().clone(),
         frames: prepared.frames.as_ref().clone(),
