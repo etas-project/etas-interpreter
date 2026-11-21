@@ -12,7 +12,7 @@ use super::{
     context::{PlanContext, plan_pass},
 };
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct FrameLayoutTable {
     layouts: HashMap<ScopeId, Arc<SlotLayoutTable>>,
 }
@@ -56,7 +56,8 @@ impl FrameLayoutTable {
 
         // One lexical-graph walk assigns local slots to their execution frame.
         // Lambda bodies are separate frames, planned by ClosureLayoutTable.
-        let count = project.hir.scopes.iter().count();
+        // Linked HIR preserves original IDs while omitting unloaded scopes.
+        let count = project.hir.scopes.id_limit();
         let mut children = vec![Vec::new(); count];
         let mut pending = Vec::new();
         for scope in project.hir.scopes.iter() {
@@ -107,7 +108,12 @@ impl FrameLayoutTable {
             }
             pending.extend(children[id.index()].iter().map(|child| (*child, owner)));
         }
-        if visited.iter().any(|seen| !seen) {
+        if project
+            .hir
+            .scopes
+            .iter()
+            .any(|scope| !visited[scope.id.index()])
+        {
             return Err("cyclic frame scope ancestry".into());
         }
         let layouts: HashMap<_, _> = layouts

@@ -3,12 +3,12 @@ use etas_utils::{Pass, PassContext, PassManager, PassResult};
 
 use super::context::{PlanContext, plan_pass};
 
-#[derive(Clone, Debug, Default)]
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
 pub struct GlobalTable {
     pub constants: Vec<GlobalConst>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct GlobalConst {
     pub symbol: SymbolId,
 }
@@ -33,8 +33,11 @@ impl Pass<PlanContext<'_>> for BuildGlobalTablePass {
             .filter_map(|symbol| match &symbol.def {
                 SymbolDef::TopLevelLet {
                     classification: TopLevelLetClassification::Const,
+                    item,
                     ..
-                } => Some(GlobalConst { symbol: symbol.id }),
+                } if matches!(context.project.hir.items.get(*item), Some(etas_hir::HirItem::TopLevelLet(value)) if value.value.is_some()) => {
+                    Some(GlobalConst { symbol: symbol.id })
+                }
                 _ => None,
             })
             .collect();

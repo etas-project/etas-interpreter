@@ -5,9 +5,10 @@ use etas_types::{FieldType, TypeId};
 use super::AdapterError;
 use crate::value::record::RecordLayout;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct RecordAbiLayout {
     fields: Vec<FieldType>,
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     slots: HashMap<String, usize>,
     runtime: Arc<RecordLayout>,
 }

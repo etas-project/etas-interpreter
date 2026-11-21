@@ -71,6 +71,7 @@ impl RevisionTypeBridge {
         original: &DefinitionCatalog,
         library: &DefinitionCatalog,
         owner: &std::sync::Arc<etas_frontend::StandardLibrary>,
+        installed_fingerprints: Option<&super::super::installed::InstalledTypeFingerprints>,
     ) -> Result<Self, RevisionTypeBridgeError> {
         if !std::sync::Arc::ptr_eq(library.checked_program(), &owner.program)
             || !original
@@ -81,7 +82,8 @@ impl RevisionTypeBridge {
         {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        let mut bridge = Self::catalog_correspondence(original, library)?;
+        let mut bridge =
+            Self::catalog_correspondence_prepared(original, library, installed_fingerprints)?;
         bridge.standard_library = Some(owner.clone());
         Ok(bridge)
     }
@@ -195,8 +197,44 @@ impl RevisionTypeBridge {
         original: &DefinitionCatalog,
         compiled: &DefinitionCatalog,
     ) -> Result<Self, RevisionTypeBridgeError> {
-        let forward = correspond(original, compiled)?;
-        let backward = correspond(compiled, original)?;
+        Self::catalog_correspondence_prepared(original, compiled, None)
+    }
+
+    fn catalog_correspondence_prepared(
+        original: &DefinitionCatalog,
+        compiled: &DefinitionCatalog,
+        installed: Option<&super::super::installed::InstalledTypeFingerprints>,
+    ) -> Result<Self, RevisionTypeBridgeError> {
+        let original_keys = fingerprints(original)?;
+        let compiled_keys = match installed {
+            Some(keys) => compiled
+                .native_type_origins()
+                .iter()
+                .map(|origin| {
+                    let fingerprint =
+                        match keys
+                            .get(&origin.scope)
+                            .and_then(|scope| scope.get(&origin.local))
+                        {
+                            Some(fingerprint) => *fingerprint,
+                            // Linking can append caller-specific generic instances.
+                            // Their types are the only SDK-side additions to index.
+                            None => compiled
+                                .descriptors()
+                                .type_fingerprint(origin.descriptor)
+                                .map_err(|error| {
+                                    RevisionTypeBridgeError::Projection(
+                                etas_frontend::code::descriptor::ProjectionError::Descriptor(error)
+                            )
+                                })?,
+                        };
+                    Ok((origin.descriptor, fingerprint))
+                })
+                .collect::<Result<HashMap<_, _>, RevisionTypeBridgeError>>()?,
+            None => fingerprints(compiled)?,
+        };
+        let forward = correspond(original, &original_keys, compiled, &compiled_keys)?;
+        let backward = correspond(compiled, &compiled_keys, original, &original_keys)?;
         let runtime_types =
             runtime::RuntimeTypeBridge::new(original, compiled, &forward, &backward)?;
         let actions = actions::ActionBridge::new(original, compiled, &runtime_types)?;
@@ -475,7 +513,7 @@ fn agent_items(
     Ok(agents)
 }
 
-fn fingerprints(
+pub(crate) fn fingerprints(
     catalog: &DefinitionCatalog,
 ) -> Result<HashMap<TypeInfoRef, CodeFingerprint>, RevisionTypeBridgeError> {
     let mut keys = HashMap::new();
@@ -498,13 +536,13 @@ fn fingerprints(
 
 fn correspond(
     from: &DefinitionCatalog,
+    from_keys: &HashMap<TypeInfoRef, CodeFingerprint>,
     to: &DefinitionCatalog,
+    to_keys: &HashMap<TypeInfoRef, CodeFingerprint>,
 ) -> Result<BTreeMap<(GenericOwner, TypeId), Option<TypeId>>, RevisionTypeBridgeError> {
-    let from_keys = fingerprints(from)?;
-    let to_keys = fingerprints(to)?;
     let mut targets = BTreeMap::new();
     for origin in to.native_type_origins() {
-        let key = (origin.scope.clone(), key(&to_keys, origin.descriptor)?);
+        let key = (origin.scope.clone(), key(to_keys, origin.descriptor)?);
         if let Some(previous) = targets.insert(key, origin.local)
             && previous != origin.local
         {
@@ -518,7 +556,7 @@ fn correspond(
         .iter()
         .map(|origin| {
             let target = targets
-                .get(&(origin.scope.clone(), key(&from_keys, origin.descriptor)?))
+                .get(&(origin.scope.clone(), key(from_keys, origin.descriptor)?))
                 .copied();
             Ok(((origin.scope.clone(), origin.local), target))
         })

@@ -1181,9 +1181,12 @@ impl<'a> SnapshotValidator<'a> {
                         if checked_iter == iter && checked_pat == pat && checked_body == body && checked_span == span)) {
                     return Err(format!("{context} has no matching checked source loop"));
                 }
-                let protocol =
-                    crate::plan::iteration::SourceIteratorProtocol::checked(self.checked, *iter)?
-                        .ok_or("checkpoint source loop has no checked iterator protocol")?;
+                let protocol = crate::plan::iteration::SourceIteratorProtocol::checked(
+                    self.checked,
+                    *iter,
+                    None,
+                )?
+                .ok_or("checkpoint source loop has no checked iterator protocol")?;
                 self.index_at_most(*next_index, *iterations, context)?;
                 if *iterations == 0 || (*awaiting_step && *next_index >= *iterations) {
                     return Err(format!("{context} has invalid source iterator progress"));

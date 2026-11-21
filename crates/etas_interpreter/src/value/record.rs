@@ -3,7 +3,7 @@ use std::{cell::OnceCell, fmt, rc::Rc, sync::Arc};
 use super::InterpValue;
 
 /// A storage permutation, not a nominal type identity. Slots use lexical field order.
-#[derive(Debug, PartialEq, Eq)]
+#[derive(Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub(crate) struct RecordLayout {
     sorted_to_storage: Box<[usize]>,
 }

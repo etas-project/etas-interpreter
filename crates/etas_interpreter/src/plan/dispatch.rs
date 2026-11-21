@@ -22,6 +22,7 @@ mod checked_signatures;
 mod default_actions;
 mod forwarded_actions;
 mod methods;
+pub(crate) use methods::MethodDispatchPlan;
 
 use super::context::{PlanContext, plan_pass};
 
@@ -35,7 +36,7 @@ pub struct IntrinsicDispatchTable {
 
 #[derive(Debug, Default)]
 struct ProgramDispatch {
-    methods: methods::MethodDispatchPlan,
+    methods: Arc<methods::MethodDispatchPlan>,
     compiler_actions: HashMap<etas_effects::ActionRef, forwarded_actions::CheckedCompilerAction>,
     forwarded_actions: HashMap<StdIntrinsicId, forwarded_actions::CheckedForwardedAction>,
     default_actions: HashMap<HirExprId, default_actions::CheckedDefaultAction>,
@@ -43,7 +44,7 @@ struct ProgramDispatch {
     std_methods: HashMap<HirExprId, CheckedStdIntrinsicCall>,
     std_type_members: HashSet<HirExprId>,
     std_call_origins: HashMap<HirExprId, CheckedStdIntrinsicCall>,
-    pure_abi: PureAbiProjector,
+    pure_abi: Arc<PureAbiProjector>,
     handlers: StdIntrinsicHandlerRegistry,
     std_intrinsics: HashMap<SymbolId, StdIntrinsicIdentity>,
     enum_constructors: HashMap<SymbolId, StdEnumConstructor>,
@@ -87,6 +88,13 @@ impl IntrinsicDispatchTable {
     }
 
     fn for_program(project: &CheckedProject) -> Result<Self, Vec<String>> {
+        Self::for_program_with_layouts(project, None)
+    }
+
+    fn for_program_with_layouts(
+        project: &CheckedProject,
+        installed: Option<&super::installed::InstalledDispatch>,
+    ) -> Result<Self, Vec<String>> {
         for (expr, node) in project.hir.exprs.iter() {
             if let HirExpr::Call { callee, .. } = node
                 && project.types.expr_types.contains_key(&expr)
@@ -140,7 +148,15 @@ impl IntrinsicDispatchTable {
                 ]);
             }
         }
-        let methods = methods::MethodDispatchPlan::prepare(project).map_err(|error| vec![error])?;
+        let methods = match installed.filter(|image| {
+            image.type_count == project.type_store.len()
+                && image.method_count == project.types.methods.entries().count()
+        }) {
+            Some(image) => image.methods.clone(),
+            None => Arc::new(
+                methods::MethodDispatchPlan::prepare(project).map_err(|error| vec![error])?,
+            ),
+        };
         checked_actions::validate(project).map_err(|error| vec![error])?;
         checked_definition_ops::validate(project).map_err(|error| vec![error])?;
         let handlers = StdIntrinsicHandlerRegistry::build(&project.std_registry);
@@ -290,16 +306,22 @@ impl IntrinsicDispatchTable {
             }
         }
 
-        let pure_abi = PureAbiProjector::build_with_known_std_types(
-            &project.type_store,
-            &project.types.enum_layouts,
-            &project.types.known_std_types,
-        )
-        .map_err(|error| {
-            vec![format!(
-                "checked pure intrinsic ABI projection failed: {error}"
-            )]
-        })?;
+        let pure_abi = match installed.filter(|image| image.type_count == project.type_store.len())
+        {
+            Some(image) => image.pure_abi.clone(),
+            None => Arc::new(
+                PureAbiProjector::build_with_known_std_types(
+                    &project.type_store,
+                    &project.types.enum_layouts,
+                    &project.types.known_std_types,
+                )
+                .map_err(|error| {
+                    vec![format!(
+                        "checked pure intrinsic ABI projection failed: {error}"
+                    )]
+                })?,
+            ),
+        };
 
         Ok(Self {
             reflection_required: false,
@@ -325,6 +347,12 @@ impl IntrinsicDispatchTable {
                 brace_literals,
             }),
         })
+    }
+
+    pub(super) fn installed_dispatch(
+        &self,
+    ) -> (Arc<methods::MethodDispatchPlan>, Arc<PureAbiProjector>) {
+        (self.program.methods.clone(), self.program.pure_abi.clone())
     }
 
     pub(super) fn select_callable(
@@ -593,7 +621,10 @@ impl Pass<PlanContext<'_>> for BuildIntrinsicDispatchTablePass {
         _pass_context: &PassContext<PlanContext<'_>>,
         _manager: &mut PassManager<PlanContext<'_>>,
     ) -> PassResult {
-        match IntrinsicDispatchTable::for_program(context.project) {
+        match IntrinsicDispatchTable::for_program_with_layouts(
+            context.project,
+            context.installed_layouts.as_deref(),
+        ) {
             Ok(dispatch) => context.dispatch = Some(dispatch),
             Err(errors) => {
                 let span = crate::diagnostics::primary_span(context.project);

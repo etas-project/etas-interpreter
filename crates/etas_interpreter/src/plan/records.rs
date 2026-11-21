@@ -214,11 +214,19 @@ impl RecordLayoutTable {
         let mut table = Self::default();
         let spec_facts = etas_types::SpecFacts::from(project.types.as_ref());
         let mut shapes = RecordShapes::new(&project.type_store);
+        let mut iterator_types = None;
         // An entry-scoped check keeps HIR for other flows, but only publishes
         // body facts for the selected execution closure.
         for stmt in project.types.stmt_types.keys() {
             if let etas_hir::HirStmt::For { iter, .. } = &project.hir.stmts[*stmt] {
-                match super::iteration::SourceIteratorProtocol::checked(project, *iter)? {
+                let lookup = iterator_types.get_or_insert_with(|| {
+                    etas_types::ty::TypeLookupIndex::new(&project.type_store)
+                });
+                match super::iteration::SourceIteratorProtocol::checked(
+                    project,
+                    *iter,
+                    Some(lookup),
+                )? {
                     Some(protocol) => {
                         table.source_iterators.insert(*iter, protocol);
                     }

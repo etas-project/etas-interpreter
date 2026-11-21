@@ -6,9 +6,10 @@ use etas_types::{
     SpecMethodIdentity, TypeId, TypeSubstitutionEngine,
     facts::CheckedMethodCallFact,
     method::{MethodEvidence, MethodReceiver, MethodSignatureFact, MethodTarget},
+    ty::TypeLookupIndex,
 };
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 pub(crate) enum RequirementKey {
     Source(SymbolId),
     External { package: u32, path: Vec<String> },
@@ -54,14 +55,14 @@ impl From<&MethodTarget> for TargetKey {
     }
 }
 
-#[derive(Clone, Debug, PartialEq, Eq, Hash)]
+#[derive(Clone, Debug, PartialEq, Eq, Hash, serde::Serialize, serde::Deserialize)]
 struct WitnessKey {
     receiver: TypeId,
     member: RequirementKey,
     args: Vec<TypeId>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub(crate) struct PreparedWitness {
     pub target: MethodTarget,
     pub parameters: Vec<(String, String)>,
@@ -81,8 +82,8 @@ pub(crate) struct ResolvedMethodCall<'a> {
     pub bindings: crate::control::CheckedCallBindings,
 }
 
-#[derive(Debug, Default)]
-pub(super) struct MethodDispatchPlan {
+#[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(crate) struct MethodDispatchPlan {
     calls: HashMap<HirExprId, CheckedMethodCallFact>,
     witnesses: HashMap<WitnessKey, PreparedWitness>,
     packs: HashMap<
@@ -93,6 +94,14 @@ pub(super) struct MethodDispatchPlan {
 
 impl MethodDispatchPlan {
     pub(super) fn prepare(project: &CheckedProject) -> Result<Self, String> {
+        // Each executable revision owns its dispatch table. Imported method
+        // declarations alone do not create a call or an existential witness.
+        if project.types.checked_method_calls.is_empty()
+            && project.types.bound_method_values.is_empty()
+            && project.types.existential_packs.is_empty()
+        {
+            return Ok(Self::default());
+        }
         let mut result = Self::default();
         let mut declarations = HashMap::<TargetKey, Vec<&MethodSignatureFact>>::new();
         let requirements = project
@@ -117,9 +126,11 @@ impl MethodDispatchPlan {
                 .push(entry);
         }
         let specs = etas_types::SpecFacts::from(project.types.as_ref());
+        let lookup = TypeLookupIndex::new(&project.type_store);
         for (receiver, _) in project.type_store.iter() {
-            for resolved in project.types.methods.witnesses_for_receiver(
+            for resolved in project.types.methods.witnesses_for_receiver_indexed(
                 &project.type_store,
+                &lookup,
                 &specs,
                 receiver,
             )? {

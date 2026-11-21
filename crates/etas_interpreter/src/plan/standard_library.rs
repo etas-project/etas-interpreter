@@ -12,7 +12,7 @@ use etas_frontend::{
 };
 use etas_hir::HirItemId;
 use etas_std::StdSymbolId;
-use etas_types::{FlowType, ItemSignature, Type, TypeId};
+use etas_types::{FlowType, ItemSignature, Type, TypeId, ty::TypeLookupIndex};
 
 use super::{PreparedProgram, code::RevisionTypeBridge};
 use crate::{
@@ -79,33 +79,55 @@ impl StandardLibraryProgram {
             return Ok(None);
         };
         let library = &standard.program;
-        let caller = catalog(program)?;
-        let bodies = catalog(library)?;
-        let bridge = Arc::new(
-            RevisionTypeBridge::for_standard_library(&caller, &bodies, standard)
+        let profile = &standard.profile;
+        let (caller, bodies) = {
+            let _phase = profile.span("std.runtime.catalogs", "std");
+            (catalog(program)?, catalog(library)?)
+        };
+        let installed = {
+            let _phase = profile.span("std.runtime.decode_layouts", "std");
+            standard
+                .installed_layouts
+                .as_deref()
+                .map(super::installed::decode)
+                .transpose()?
+        };
+        let bridge = {
+            let _phase = profile.span("std.runtime.type_bridge", "std");
+            Arc::new(
+                RevisionTypeBridge::for_standard_library(
+                    &caller,
+                    &bodies,
+                    standard,
+                    installed.as_ref().map(|layout| &layout.type_fingerprints),
+                )
                 .map_err(|e| e.to_string())?,
-        );
-        let prepared = super::prepare_program(library)
-            .map_err(|errors| format!("std body preparation failed: {errors:?}"))?;
+            )
+        };
+        let prepared = {
+            let _phase = profile.span("std.runtime.prepare", "std");
+            super::pipeline::prepare_program_with_layouts(
+                library,
+                library.residual_plans().binding(),
+                installed,
+            )
+            .map_err(|errors| format!("std body preparation failed: {errors:?}"))?
+        };
+        let _phase = profile.span("std.runtime.bind_callables", "std");
         let mut callables = BTreeMap::new();
         let mut aliases = BTreeMap::new();
         let mut identities = BTreeSet::new();
-        for symbol in program.std_registry.symbols() {
-            if !program.symbols.iter().any(|import| matches!(&import.def, etas_hir::SymbolDef::ImportAlias { path, .. } if program.std_registry.lookup_qualified(path).is_some_and(|decl| decl.id == symbol.id))) {
-                continue;
-            }
-            let Some(binding) = program.std_registry.body_binding(symbol.id) else {
+        for symbol in program.referenced_standard_symbols() {
+            let Some(binding) = program.std_registry.body_binding(symbol) else {
                 continue;
             };
-            aliases.insert(symbol.id, binding.callable.clone());
+            aliases.insert(symbol, binding.callable.clone());
             identities.insert(binding.callable.clone());
         }
-        for method in program.types.methods.entries() {
-            if let etas_types::method::MethodTarget::External { identity } = &method.target {
-                let callable = etas_code::CallableId::method(identity.clone());
-                if bodies.item_owner(&callable).is_some() {
-                    identities.insert(callable);
-                }
+        for identity in program.referenced_standard_methods() {
+            let callable = etas_code::CallableId::method(identity);
+            if bodies.item_owner(&callable).is_some() {
+                identities.insert(callable);
             }
         }
         identities.extend(
@@ -115,6 +137,7 @@ impl StandardLibraryProgram {
                 .values()
                 .map(|call| call.callable.clone()),
         );
+        let library_lookup = TypeLookupIndex::new(&library.type_store);
         for identity in identities {
             let id = &identity;
             let item = bodies.item_owner(id).ok_or_else(|| {
@@ -188,12 +211,8 @@ impl StandardLibraryProgram {
                 output: signature.output,
                 effects: Some(row),
             };
-            let ty = library
-                .type_store
-                .iter()
-                .find_map(|(id, ty)| {
-                    matches!(ty, Type::Function(candidate) if candidate == &flow).then_some(id)
-                })
+            let ty = library_lookup
+                .get(&library.type_store, &Type::Function(flow))
                 .ok_or_else(|| format!("std artifact {id:?} has no checked function type"))?;
             callables.insert(identity, LibraryCallable { item, ty });
         }
@@ -329,7 +348,7 @@ impl StandardLibraryProgram {
     }
 }
 
-fn catalog(program: &CheckedProgram) -> Result<DefinitionCatalog, String> {
+pub(super) fn catalog(program: &CheckedProgram) -> Result<DefinitionCatalog, String> {
     let origins = DefinitionOrigins {
         source_modules: DefinitionOrigins::checked_source_modules(program)
             .map_err(|e| e.to_string())?,
@@ -337,6 +356,6 @@ fn catalog(program: &CheckedProgram) -> Result<DefinitionCatalog, String> {
         external_definitions: DefinitionOrigins::checked_external_definitions(program)
             .map_err(|e| e.to_string())?,
     };
-    DefinitionCatalog::build(program.clone(), &origins, Default::default())
+    DefinitionCatalog::build_for_execution(program.clone(), &origins, Default::default())
         .map_err(|e| e.to_string())
 }

@@ -1,14 +1,20 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    collections::{HashMap, HashSet},
+    sync::Arc,
+};
+
+mod archive;
+use archive::ShapeArchive;
 
 use etas_types::{
     PrimitiveType, TrustWrapper, Type, TypeId, TypeInterner, TypeStore, applied_representation,
-    facts::symbols::StdIterableItemFact,
+    facts::symbols::StdIterableItemFact, ty::TypeLookupIndex,
 };
 
 use super::record::RecordAbiLayout;
 use super::wrapper_walk::WrapperWalkLimits;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub enum AbiShape {
     Primitive(PrimitiveType),
     Array(TypeId),
@@ -45,8 +51,53 @@ pub enum AbiShape {
 #[derive(Clone, Debug, Default)]
 pub struct PureAbiProjector {
     shapes: HashMap<TypeId, AbiShape>,
+    archive: Option<Arc<ShapeArchive>>,
     wrapper_walks: WrapperWalkLimits,
     nominal_identities: HashSet<TypeId>,
+}
+
+impl serde::Serialize for PureAbiProjector {
+    fn serialize<S: serde::Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
+        #[derive(serde::Serialize)]
+        struct Stored<'a> {
+            shapes: &'a ShapeArchive,
+            wrapper_walks: &'a WrapperWalkLimits,
+            #[serde(serialize_with = "etas_utils::serde_ordered::set")]
+            nominal_identities: &'a HashSet<TypeId>,
+        }
+        let encoded;
+        let shapes = match &self.archive {
+            Some(archive) => archive.as_ref(),
+            None => {
+                encoded = ShapeArchive::encode(&self.shapes).map_err(serde::ser::Error::custom)?;
+                &encoded
+            }
+        };
+        Stored {
+            shapes,
+            wrapper_walks: &self.wrapper_walks,
+            nominal_identities: &self.nominal_identities,
+        }
+        .serialize(serializer)
+    }
+}
+
+impl<'de> serde::Deserialize<'de> for PureAbiProjector {
+    fn deserialize<D: serde::Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        #[derive(serde::Deserialize)]
+        struct Stored {
+            shapes: ShapeArchive,
+            wrapper_walks: WrapperWalkLimits,
+            nominal_identities: HashSet<TypeId>,
+        }
+        let stored = Stored::deserialize(deserializer)?;
+        Ok(Self {
+            shapes: HashMap::new(),
+            archive: Some(Arc::new(stored.shapes)),
+            wrapper_walks: stored.wrapper_walks,
+            nominal_identities: stored.nominal_identities,
+        })
+    }
 }
 
 impl PureAbiProjector {
@@ -63,6 +114,7 @@ impl PureAbiProjector {
         known: &etas_types::KnownStdTypes,
     ) -> Result<Self, String> {
         let mut interner = TypeInterner::from_store(store.clone());
+        let mut lookup = TypeLookupIndex::new(store);
         let mut representations = HashMap::new();
         let mut enums = HashMap::new();
         let mut cursor = 0_u32;
@@ -103,12 +155,14 @@ impl PureAbiProjector {
                         AbiShape::Unsupported("unapplied generic enum constructor".into()),
                     );
                 } else {
+                    lookup.include_appended_types(interner.store());
                     enums.insert(
                         TypeId(cursor),
                         AbiShape::Enum(super::enum_layout::EnumAbiLayout::build(
                             layout,
                             &args,
                             interner.store(),
+                            &lookup,
                         )?),
                     );
                 }
@@ -210,6 +264,9 @@ impl PureAbiProjector {
                         wrapper: *wrapper,
                         inner: *inner,
                     },
+                    Type::Function(_) => AbiShape::Unsupported(
+                        "function values have no pure intrinsic ABI".into(),
+                    ),
                     unsupported => AbiShape::Unsupported(format!("{unsupported:?}")),
                 };
                 Ok((id, shape))
@@ -218,13 +275,16 @@ impl PureAbiProjector {
         let wrapper_walks = WrapperWalkLimits::build(&shapes);
         Ok(Self {
             shapes,
+            archive: None,
             wrapper_walks,
             nominal_identities,
         })
     }
 
     pub fn shape(&self, ty: TypeId) -> Option<&AbiShape> {
-        self.shapes.get(&ty)
+        self.shapes
+            .get(&ty)
+            .or_else(|| self.archive.as_ref()?.get(ty))
     }
 
     pub(super) fn wrapper_steps(&self, ty: TypeId) -> Option<usize> {

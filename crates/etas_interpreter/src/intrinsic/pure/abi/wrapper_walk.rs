@@ -9,8 +9,10 @@ thread_local! { static LOOKUPS: std::cell::Cell<usize> = const { std::cell::Cell
 
 /// Exact number of wrapper edges before a terminal shape or the first repeated
 /// type. This graph is immutable after prepare; queries need only a counter.
-#[derive(Clone, Debug, Default)]
-pub(super) struct WrapperWalkLimits(HashMap<TypeId, usize>);
+#[derive(Clone, Debug, Default, serde::Serialize, serde::Deserialize)]
+pub(super) struct WrapperWalkLimits(
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")] HashMap<TypeId, usize>,
+);
 
 impl WrapperWalkLimits {
     pub(super) fn build(shapes: &HashMap<TypeId, AbiShape>) -> Self {

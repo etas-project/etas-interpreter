@@ -9,6 +9,7 @@ mod orchestration;
 mod plan;
 mod value;
 
+pub use plan::encode_installed_layouts;
 pub use plan::residual::interpreter_residual_capabilities;
 
 use api::{

@@ -83,12 +83,33 @@ pub(crate) fn prepare_program_with_residual_binding(
     project: &CheckedProject,
     residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
 ) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
+    prepare_program_with_layouts(project, residual_binding, None)
+}
+
+pub(super) fn prepare_program_with_layouts(
+    project: &CheckedProject,
+    residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
+    installed: Option<super::installed::InstalledLayouts>,
+) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
     let mut context = PlanContext::new(project);
     context.residual_binding = residual_binding.cloned();
     // Layout/ABI preparation must not select main or require analysis of a
     // merely reflected declaration.
     context.requested_root = None;
-    run_pipeline(&mut layout_pipeline(), &mut context);
+    if let Some(installed) = installed {
+        installed.apply(&mut context);
+        run_pipeline(
+            &mut Pipeline::new("interpreter.plan.load_installed_layouts")
+                .pass(ValidateCheckedProjectPass)
+                .pass(BuildRecordLayoutsPass)
+                .pass(BuildIntrinsicDispatchTablePass)
+                .pass(ValidateResidualPlansPass)
+                .pass(BindResidualSitesPass),
+            &mut context,
+        );
+    } else {
+        run_pipeline(&mut layout_pipeline(), &mut context);
+    }
     if context
         .diagnostics
         .iter()
@@ -312,7 +333,23 @@ impl InterpreterPlan {
 }
 
 fn run_pipeline<'a>(pipeline: &mut Pipeline<PlanContext<'a>>, context: &mut PlanContext<'a>) {
-    let run = PassManager::new().run_pipeline(pipeline, context);
+    let mut manager = PassManager::new();
+    let profile = context
+        .project
+        .standard_library
+        .as_ref()
+        .map(|library| library.profile.clone())
+        .unwrap_or_default();
+    manager.config_mut().collect_timing = profile.is_enabled();
+    let run = manager.run_pipeline(pipeline, context);
+    for record in &run.records {
+        if let Some(timing) = &record.timing {
+            profile.counter(
+                format!("interpreter.pass.{}.duration_ns", record.pass),
+                timing.duration.as_nanos() as u64,
+            );
+        }
+    }
     if let PassControl::Failed(failure) = run.control {
         context.push_missing_fact(
             diagnostics::primary_span(context.project),

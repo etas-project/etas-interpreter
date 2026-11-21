@@ -1,12 +1,13 @@
 use super::AdapterError;
-use etas_types::{EnumLayoutFact, TypeId, TypeStore};
+use etas_types::{EnumLayoutFact, TypeId, TypeStore, TypeSubstitutionEngine, ty::TypeLookupIndex};
 use std::collections::HashMap;
 
 #[cfg(test)]
 mod tests;
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(Clone, Debug, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct EnumAbiLayout {
+    #[serde(serialize_with = "etas_utils::serde_ordered::map")]
     variants: HashMap<String, Result<Vec<TypeId>, String>>,
 }
 
@@ -15,6 +16,7 @@ impl EnumAbiLayout {
         layout: &EnumLayoutFact,
         args: &[TypeId],
         store: &TypeStore,
+        lookup: &TypeLookupIndex,
     ) -> Result<Self, String> {
         if layout.type_params.len() != args.len() {
             return Err("enum ABI has inconsistent generic arguments".into());
@@ -25,13 +27,15 @@ impl EnumAbiLayout {
             .cloned()
             .zip(args.iter().copied())
             .collect();
+        let mut substitution = TypeSubstitutionEngine::existing_indexed(store, lookup, &bindings);
         let mut variants = HashMap::new();
         for variant in &layout.variants {
             let fields = variant
                 .fields
                 .iter()
                 .map(|ty| {
-                    etas_types::substitute_named_params_in_store(store, *ty, &bindings)
+                    substitution
+                        .substitute(*ty)
                         .map_err(|error| error.to_string())
                 })
                 .collect::<Result<Vec<_>, _>>();
