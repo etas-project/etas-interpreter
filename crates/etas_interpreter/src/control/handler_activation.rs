@@ -150,6 +150,17 @@ impl HandlerActivation {
         if fact.params.len() != request.parameters.len() {
             return Err("Handler request parameter arity differs".into());
         }
+        if checked
+            .hir
+            .handler_ignores_request_abi(&checked.hir.handler_arms[arm], || Ok::<_, String>(()))?
+        {
+            return Ok(Self {
+                arm,
+                request,
+                bindings: outer.clone(),
+                memory_place,
+            });
+        }
         let pairs = fact
             .params
             .iter()
