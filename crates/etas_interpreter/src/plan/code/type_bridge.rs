@@ -540,16 +540,96 @@ fn correspond(
     to: &DefinitionCatalog,
     to_keys: &HashMap<TypeInfoRef, CodeFingerprint>,
 ) -> Result<BTreeMap<(GenericOwner, TypeId), Option<TypeId>>, RevisionTypeBridgeError> {
+    // Linked and imported signatures can use different local IDs for the
+    // same checked declaration binder. Normalize those IDs before comparing
+    // structural types that contain them; unrelated structural collisions
+    // must still fail closed.
+    let store = &to.checked_program().type_store;
+    let mut declared_parameters = BTreeMap::new();
+    for (callable, item) in to.native_callables() {
+        let owner = match callable.as_method() {
+            Some(method) => GenericOwner::Method(method.clone()),
+            None => GenericOwner::Declaration(
+                callable
+                    .as_declaration()
+                    .ok_or_else(|| RevisionTypeBridgeError::MissingCallable(callable.clone()))?
+                    .clone(),
+            ),
+        };
+        let signature = match to.checked_program().types.item_signatures.get(&item) {
+            Some(ItemSignature::Flow(signature) | ItemSignature::Tool(signature)) => {
+                Some(signature)
+            }
+            Some(ItemSignature::Agent(agent)) => agent.callable(),
+            _ => None,
+        };
+        if let Some(signature) = signature {
+            for (position, parameter) in signature.generic_params.iter().enumerate() {
+                declared_parameters.insert((owner.clone(), position as u32), parameter.subject);
+            }
+        }
+    }
+    let mut parameters = BTreeMap::new();
+    for origin in to.native_type_origins() {
+        if let Some(etas_code::descriptor::TypeInfo::Parameter(reference)) =
+            to.descriptors().type_info(origin.descriptor)
+        {
+            let key = (origin.scope.clone(), key(to_keys, origin.descriptor)?);
+            let selected = parameters.entry(key).or_insert(origin.local);
+            let binder = to.descriptors().binder(*reference).ok_or_else(|| {
+                RevisionTypeBridgeError::MissingType {
+                    scope: origin.scope.clone(),
+                    ty: origin.local,
+                }
+            })?;
+            if let Some(declared) =
+                declared_parameters.get(&(binder.owner.clone(), binder.position))
+            {
+                *selected = *declared;
+            } else if store.parameter_identity(origin.local).is_some() {
+                *selected = origin.local;
+            }
+        }
+    }
+    let mut aliases: BTreeMap<GenericOwner, HashMap<TypeId, TypeId>> = BTreeMap::new();
+    for origin in to.native_type_origins() {
+        if let Some(parameter) =
+            parameters.get(&(origin.scope.clone(), key(to_keys, origin.descriptor)?))
+        {
+            aliases
+                .entry(origin.scope.clone())
+                .or_default()
+                .insert(origin.local, *parameter);
+        }
+    }
+    let empty_names = HashMap::new();
     let mut targets = BTreeMap::new();
     for origin in to.native_type_origins() {
         let key = (origin.scope.clone(), key(to_keys, origin.descriptor)?);
-        if let Some(previous) = targets.insert(key, origin.local)
-            && previous != origin.local
-        {
+        if let Some(previous) = targets.get_mut(&key) {
+            if *previous == origin.local {
+                continue;
+            }
+            if let Some(parameters) = aliases.get(&origin.scope) {
+                let mut substitution =
+                    etas_types::TypeSubstitutionEngine::existing(store, &empty_names)
+                        .with_type_parameters(parameters);
+                if let (Ok(left), Ok(right)) = (
+                    substitution.substitute(*previous),
+                    substitution.substitute(origin.local),
+                ) {
+                    if left == right {
+                        *previous = left;
+                        continue;
+                    }
+                }
+            }
             return Err(RevisionTypeBridgeError::AmbiguousType {
                 scope: origin.scope.clone(),
                 ty: origin.local,
             });
+        } else {
+            targets.insert(key, origin.local);
         }
     }
     from.native_type_origins()
