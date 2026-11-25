@@ -202,6 +202,7 @@ impl TaskScheduler {
             .collect();
         let mut scheduler = Self {
             agents: Default::default(),
+            lease_cleanups: Default::default(),
             next_scope: snapshot.next_scope,
             next_task: snapshot.next_task,
             groups: snapshot

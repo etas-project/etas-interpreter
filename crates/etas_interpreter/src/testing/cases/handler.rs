@@ -480,6 +480,42 @@ flow main() -> string ![Console.stdin_read_line, Error<IOError>, Approval.reques
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn same_action_in_an_arm_uses_the_outer_handler_and_resume_reinstalls_the_inner() {
+    let checked = checked_project(
+        r#"
+module app.main;
+effect Probe { action value() -> i32; }
+flow main() -> i32 {
+    return handle {
+        handle {
+            let first = perform Probe.value();
+            first + perform Probe.value()
+        } with {
+            Probe.value() => { let outer = perform Probe.value(); resume outer + 1; }
+        }
+    } with {
+        Probe.value() => { resume 20; }
+    };
+}
+"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &FakeHost::new(availability(&[])),
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(42)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn run_checked_executes_nested_perform_inside_handler_body() {
     let checked = checked_project(
         r#"

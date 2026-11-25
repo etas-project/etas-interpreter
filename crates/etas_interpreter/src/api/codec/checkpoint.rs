@@ -31,6 +31,7 @@ pub(super) fn readable_schema(value: &Value) -> Result<&str, InterpreterCodecErr
     let schema = required_str(value, "schema")?;
     match schema {
         crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
+        | "etas.cli.interpreter-checkpoint.v127"
         | "etas.cli.interpreter-checkpoint.v102"
         | "etas.cli.interpreter-checkpoint.v101"
         | "etas.cli.interpreter-checkpoint.v100" => Ok(schema),

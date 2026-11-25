@@ -207,9 +207,15 @@ impl EvalContext<'_> {
                 });
             (request, self.scheduler.pending_handoff())
         });
-        Ok(InterpValue::HostHandle(
-            crate::value::HostHandleValue::session_lease(ty, lease, pending_delivery),
-        ))
+        let scope = lease.scope().clone();
+        let handle = crate::value::HostHandleValue::session_lease(ty, lease, pending_delivery);
+        let acquisition_owner = match operation {
+            Op::Acquire(_) => self.task.host_resource_owner().map(|(owner, _)| owner),
+            _ => None,
+        };
+        self.scheduler
+            .confirm_lease_generation(acquisition_owner, &scope, &handle);
+        Ok(InterpValue::HostHandle(handle))
     }
 
     pub(super) fn decode_source_session_result(

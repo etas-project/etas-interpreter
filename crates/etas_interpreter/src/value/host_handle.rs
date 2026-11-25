@@ -106,6 +106,10 @@ impl HostHandleValue {
         }
     }
 
+    pub(crate) fn live_session_lease(&self) -> bool {
+        matches!(&self.payload, HostHandlePayload::SessionLease(handle) if handle.0.borrow().current.is_some())
+    }
+
     pub(crate) fn read_owner(nominal_type: TypeId, scope: etas_host::StreamReadScope) -> Self {
         Self {
             nominal_type,

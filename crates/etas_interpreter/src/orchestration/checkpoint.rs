@@ -1006,6 +1006,10 @@ pub(crate) enum ContinuationSnapshot {
         next_index: usize,
         span: Span,
     },
+    RestoreHandlerArms {
+        scope_id: HandlerScopeId,
+        handlers: Vec<ActiveHandlerArmRecord>,
+    },
     HandlerDispatch {
         outer: ContinuationSnapshotLink,
         deferred: Option<crate::value::ContinuationTokenValue>,

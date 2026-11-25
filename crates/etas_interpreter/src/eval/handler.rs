@@ -319,17 +319,11 @@ impl<'a> EvalContext<'a> {
                     if let Err(fault) = self.observe_residual_attempt(&mut perform) {
                         return ControlSignal::Fault(Box::new(fault));
                     }
-                    signal = match self.dispatch_handler(*perform.clone(), &handler_records, frame)
-                    {
+                    signal = match self.dispatch_handler(*perform.clone(), scope_id, frame) {
                         Some(signal) => signal,
                         None => {
-                            return self.suspend_handler_for_perform(
-                                *perform,
-                                scope_id,
-                                handler_records,
-                                span,
-                                frame,
-                            );
+                            return self
+                                .suspend_handler_for_perform(*perform, scope_id, span, frame);
                         }
                     };
                 }
@@ -459,8 +453,7 @@ impl<'a> EvalContext<'a> {
                     if let Err(fault) = self.observe_residual_attempt(&mut perform) {
                         return ControlSignal::Fault(Box::new(fault));
                     }
-                    signal = match self.dispatch_handler(*perform.clone(), &record.handlers, frame)
-                    {
+                    signal = match self.dispatch_handler(*perform.clone(), record.id, frame) {
                         Some(signal) => signal,
                         None => return ControlSignal::Perform(perform),
                     };
@@ -473,12 +466,18 @@ impl<'a> EvalContext<'a> {
     fn dispatch_handler(
         &mut self,
         perform: PendingPerform,
-        handlers: &[ActiveHandlerArmRecord],
+        scope_id: HandlerScopeId,
         frame: &Frame,
     ) -> Option<ControlSignal> {
         let memory_target = self.source_memory_handler_target(&perform);
+        let scope = self
+            .task
+            .handler_stack
+            .last()
+            .expect("active handler scope");
+        debug_assert_eq!(scope.id, scope_id);
         let mut matched = None;
-        for handler in handlers {
+        for handler in &scope.handlers {
             match self.handler_matches_perform(
                 &perform,
                 handler,
@@ -486,7 +485,7 @@ impl<'a> EvalContext<'a> {
                 memory_target.as_ref(),
             ) {
                 Ok(true) => {
-                    matched = Some(handler);
+                    matched = Some(handler.clone());
                     break;
                 }
                 Ok(false) => {}
@@ -557,6 +556,17 @@ impl<'a> EvalContext<'a> {
             Some(guard) => compose_continuation(guard, perform.continuation),
             None => perform.continuation,
         };
+        // The arm runs under its enclosing handlers. Resume reinstalls this
+        // handler before any captured code runs, including a parked continuation.
+        let scope = self.task.handler_stack.last_mut().expect("matched handler");
+        scope.handled_actions.clear();
+        let outer_continuation = compose_continuation(
+            Continuation::RestoreHandlerArms {
+                scope_id,
+                handlers: std::mem::take(&mut scope.handlers),
+            },
+            outer_continuation,
+        );
         let (outer_continuation, deferred) = match handler.continuation {
             None => (outer_continuation, None),
             Some(symbol) => {
@@ -833,12 +843,11 @@ impl<'a> EvalContext<'a> {
                     if let Err(fault) = self.observe_residual_attempt(&mut perform) {
                         return ControlSignal::Fault(Box::new(fault));
                     }
-                    signal = match self.dispatch_handler(*perform.clone(), &handlers, frame) {
+                    signal = match self.dispatch_handler(*perform.clone(), scope_id, frame) {
                         Some(signal) => signal,
                         None => {
-                            return self.suspend_handler_for_perform(
-                                *perform, scope_id, handlers, span, frame,
-                            );
+                            return self
+                                .suspend_handler_for_perform(*perform, scope_id, span, frame);
                         }
                     };
                 }
@@ -955,7 +964,6 @@ impl<'a> EvalContext<'a> {
         &mut self,
         mut perform: PendingPerform,
         scope_id: HandlerScopeId,
-        handlers: Vec<ActiveHandlerArmRecord>,
         span: Span,
         frame: &Frame,
     ) -> ControlSignal {
@@ -965,6 +973,13 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         }
+        let handlers = self
+            .task
+            .handler_stack
+            .last()
+            .expect("forwarded scope")
+            .handlers
+            .clone();
         if let Err(fault) = self.pop_handler_scope(scope_id, span) {
             return ControlSignal::Fault(Box::new(fault));
         }

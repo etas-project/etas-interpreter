@@ -1437,7 +1437,10 @@ async fn drive_one_with_root<'host>(
                     .task
                     .inherited_handler_records()
                     .iter()
-                    .filter(|scope| reserved.is_none_or(|handler| handler == scope.id))
+                    .filter(|scope| {
+                        !scope.handlers.is_empty()
+                            && reserved.is_none_or(|handler| handler == scope.id)
+                    })
                     .cloned()
                     .collect::<Vec<_>>();
                 let child_logical_identity = child.task.logical_identity;

@@ -365,6 +365,10 @@ pub enum Continuation {
         next_index: usize,
         span: Span,
     },
+    RestoreHandlerArms {
+        scope_id: HandlerScopeId,
+        handlers: Vec<ActiveHandlerArmRecord>,
+    },
     HandlerDispatch {
         outer: ContinuationLink,
         deferred: Option<crate::value::ContinuationTokenValue>,

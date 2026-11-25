@@ -518,6 +518,19 @@ impl EvalMachine {
         loop {
             match continuation {
                 Continuation::Chain { inner, outer } => {
+                    if let Continuation::RestoreHandlerArms { scope_id, handlers } = &*inner {
+                        ctx.task
+                            .restore_handler_arms(*scope_id, handlers.clone())
+                            .map_err(|reason| {
+                                ExecutionFault::new(
+                                    AnalysisDiagnosticCode::MissingCheckedFact,
+                                    span,
+                                    reason,
+                                )
+                            })?;
+                        continuation = outer.into_value();
+                        continue;
+                    }
                     self.push_continuation_frames(outer.into_value());
                     continuation = inner.into_value();
                 }

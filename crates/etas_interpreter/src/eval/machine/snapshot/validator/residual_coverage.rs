@@ -437,6 +437,7 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         | Resume
         | Finish
         | CompleteRecordConstruction { .. }
+        | RestoreHandlerArms { .. }
         | BlockValue => return None,
     };
     Some((node, frame))

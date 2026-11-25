@@ -138,9 +138,13 @@ impl EvalMachine {
                 .close_handler_scope(scope, saved.span)?;
         }
         ctx.task.retry_stack.truncate(saved.retry_base);
-        self.stack[at] = EvalFrame::Handler(saved.borrowed_handler.take().ok_or_else(|| {
+        let handler = saved.borrowed_handler.take().ok_or_else(|| {
             fail("cancelled Agent Handler lost its original owner boundary".into())
-        })?);
+        })?;
+        ctx.task
+            .restore_handler_arms(handler.scope_id, handler.handlers.clone())
+            .map_err(fail)?;
+        self.stack[at] = EvalFrame::Handler(handler);
         drop(saved.host_context.take());
         drop(saved.record_context.take());
         ctx.task.handler_stack.append(&mut saved.handlers);

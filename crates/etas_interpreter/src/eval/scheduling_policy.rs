@@ -30,11 +30,21 @@ impl EvalContext<'_> {
                 span,
             );
         };
-        let [InterpValue::Callable(body)] = args.as_slice() else {
+        let Some((InterpValue::Callable(body), rest)) = args.split_first() else {
             return ControlSignal::missing_checked_fact(
                 "resource scope requires its checked callback",
                 span,
             );
+        };
+        let cleanup = match rest {
+            [] => None,
+            [InterpValue::Callable(release)] => Some(release.clone()),
+            _ => {
+                return ControlSignal::missing_checked_fact(
+                    "invalid resource cleanup callback",
+                    span,
+                );
+            }
         };
         let etas_types::ItemSignature::Flow(signature) = &self.checked.types.item_signatures[&item]
         else {
@@ -52,7 +62,14 @@ impl EvalContext<'_> {
             .scheduler
             .current_source_policy(self.task.task_scope)
             .cloned();
-        self.enter_owned_scope(body.clone(), plan, None, policy, Some(report_type), span)
+        self.enter_owned_scope(
+            body.clone(),
+            plan,
+            None,
+            policy,
+            Some((report_type, cleanup)),
+            span,
+        )
     }
 
     pub(super) fn execute_runtime_scope(

@@ -1319,6 +1319,15 @@ impl<'a> EvalContext<'a> {
                 guard.publish();
                 ControlSignal::Value(value)
             }
+            Continuation::RestoreHandlerArms { scope_id, handlers } => {
+                match self.task.restore_handler_arms(scope_id, handlers) {
+                    Ok(()) => ControlSignal::Value(value),
+                    Err(reason) => ControlSignal::runtime_fault(
+                        reason,
+                        item_span(self.checked, self.entry_item),
+                    ),
+                }
+            }
             Continuation::BlockValue => ControlSignal::Value(value),
         }
     }

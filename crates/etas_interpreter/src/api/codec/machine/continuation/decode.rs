@@ -556,6 +556,15 @@ fn continuation_leaf_from_snapshot(
         "return" => ContinuationSnapshot::Return,
         "resume" => ContinuationSnapshot::Resume,
         "finish" => ContinuationSnapshot::Finish,
+        "restore_handler_arms" => ContinuationSnapshot::RestoreHandlerArms {
+            scope_id: crate::orchestration::HandlerScopeId(required_u32(value, "scope_id")?),
+            handlers: required(value, "handlers")?
+                .as_array()
+                .ok_or("expected handler arms")?
+                .iter()
+                .map(handler_arm_from_snapshot)
+                .collect::<Result<_, _>>()?,
+        },
         "block_value" => ContinuationSnapshot::BlockValue,
         other => return Err(format!("unknown machine continuation `{other}`")),
     })

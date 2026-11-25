@@ -707,6 +707,10 @@ impl ContinuationSnapshot {
             Continuation::Return => Self::Return,
             Continuation::Resume => Self::Resume,
             Continuation::Finish => Self::Finish,
+            Continuation::RestoreHandlerArms { scope_id, handlers } => Self::RestoreHandlerArms {
+                scope_id: *scope_id,
+                handlers: handlers.clone(),
+            },
             Continuation::BlockValue => Self::BlockValue,
         })
     }
@@ -1392,6 +1396,9 @@ impl ContinuationSnapshot {
             Self::Return => Continuation::Return,
             Self::Resume => Continuation::Resume,
             Self::Finish => Continuation::Finish,
+            Self::RestoreHandlerArms { scope_id, handlers } => {
+                Continuation::RestoreHandlerArms { scope_id, handlers }
+            }
             Self::BlockValue => Continuation::BlockValue,
         })
     }

@@ -1196,6 +1196,9 @@ impl<'a> SnapshotValidator<'a> {
                 self.index_at_most(*next_index, remaining_keys.len(), context)?;
                 self.snapshot_values(remaining_keys)
             }
+            ContinuationSnapshot::RestoreHandlerArms { handlers, .. } => handlers
+                .iter()
+                .try_for_each(|arm| self.handler_arm(arm, context)),
             ContinuationSnapshot::ReenterHandler { boundary } => {
                 if !matches!(&**boundary, ContinuationSnapshot::HandleBoundary { .. }) {
                     return Err(format!(

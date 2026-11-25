@@ -113,6 +113,25 @@ pub(crate) struct TaskLocalState {
 }
 
 impl TaskLocalState {
+    pub(crate) fn restore_handler_arms(
+        &mut self,
+        scope_id: crate::orchestration::HandlerScopeId,
+        handlers: Vec<crate::orchestration::ActiveHandlerArmRecord>,
+    ) -> Result<(), String> {
+        let scope = self
+            .handler_stack
+            .iter_mut()
+            .rev()
+            .find(|scope| scope.id == scope_id)
+            .ok_or("resumed handler is outside its scope")?;
+        scope.handled_actions = handlers
+            .iter()
+            .map(|arm| format!("{}.{}", arm.effect_segments.join("."), arm.action))
+            .collect();
+        scope.handlers = handlers;
+        Ok(())
+    }
+
     pub(crate) fn inherited_handler_records(&self) -> &[ActiveHandlerRecord] {
         &self.handler_stack[..self.inherited_handlers]
     }

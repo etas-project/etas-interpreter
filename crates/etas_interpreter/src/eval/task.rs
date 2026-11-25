@@ -459,7 +459,7 @@ impl EvalContext<'_> {
         concurrency_plan: CheckedConcurrencyPlan,
         callback_site: Option<crate::control::CallSite>,
         policy: Option<crate::driver::scheduler::SourceSchedulingPolicy>,
-        resource_report: Option<etas_types::TypeId>,
+        resource_report: Option<(etas_types::TypeId, Option<crate::control::CallTarget>)>,
         span: Span,
     ) -> ControlSignal {
         let concurrency = concurrency_plan.effective_limit;
@@ -528,8 +528,14 @@ impl EvalContext<'_> {
         {
             return ControlSignal::runtime_fault(error.to_string(), span);
         }
-        if let Some(error) = resource_report {
-            self.scheduler.configure_resource_scope(scope, error, span);
+        if let Some((report_type, release)) = resource_report {
+            self.scheduler
+                .configure_resource_scope(scope, report_type, span);
+            if let Some(release) = release
+                && let Err(error) = self.scheduler.configure_lease_cleanup(owner, release, span)
+            {
+                return ControlSignal::runtime_fault(error.to_string(), span);
+            }
         }
         if let Err(error) = self.scheduler.attach_resources(owner, resources) {
             return ControlSignal::runtime_fault(error.to_string(), span);

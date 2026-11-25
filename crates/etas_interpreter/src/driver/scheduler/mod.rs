@@ -5,6 +5,7 @@ mod continuation;
 mod group;
 mod host;
 mod host_wait;
+mod lease_cleanup;
 mod policy;
 mod resource;
 mod resource_scope;
@@ -105,6 +106,7 @@ pub(crate) enum ScopeDecision {
 /// One structured task scope. Tasks remain owned here after their language
 /// handles are dropped, and terminal outcomes remain cached for repeat awaits.
 pub(crate) struct TaskScheduler {
+    lease_cleanups: BTreeMap<TaskId, lease_cleanup::LeaseCleanup>,
     agents: agent::AgentInstances,
     next_scope: u64,
     next_task: u64,
@@ -135,6 +137,7 @@ impl TaskScheduler {
             next_scope: owner.0.checked_add(1).expect("task scope id exhausted"),
             next_task: 0,
             groups,
+            lease_cleanups: BTreeMap::new(),
             tasks: BTreeMap::new(),
             ready: VecDeque::new(),
             deferred_handlers: BTreeMap::new(),
@@ -1164,6 +1167,13 @@ impl TaskScheduler {
 
     pub(crate) fn apply_group_policy(&mut self, handle: TaskHandle) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        if self
+            .lease_cleanups
+            .get(&id)
+            .is_some_and(|cleanup| cleanup.running())
+        {
+            return Ok(());
+        }
         let scope = self.tasks[&id].scope;
         let outcome = self.tasks[&id]
             .outcome
@@ -1255,6 +1265,24 @@ impl TaskScheduler {
         notify_inherited: bool,
     ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        if let Some(cleanup) = self.lease_cleanups.get(&id)
+            && cleanup.running()
+        {
+            cleanup
+                .owner_execution()
+                .cancel_source()
+                .stop(reason.clone())?;
+            // A finalizer waiting for a discarded Handler continuation cannot
+            // resume. Let the host fence the chain before publishing completion.
+            if reason != etas_host::execution::CancellationReason::OwnerDropped
+                || !matches!(
+                    self.tasks[&id].waiting_continuation,
+                    Some(TaskResume::Handler { .. } | TaskResume::DeferredHandler { .. })
+                )
+            {
+                return Ok(());
+            }
+        }
         let task = self.tasks.get_mut(&id).expect("resolved task");
         if task.state.is_terminal() {
             return Ok(());
@@ -1527,6 +1555,9 @@ impl TaskScheduler {
             return Ok(());
         }
         if self.wait_for_resource_children(handle, &outcome)? {
+            return Ok(());
+        }
+        if self.process_lease_cleanup(handle, &mut outcome)? {
             return Ok(());
         }
         let group = self.groups.get_mut(&handle.owner).expect("task scope");

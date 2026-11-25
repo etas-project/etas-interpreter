@@ -718,6 +718,11 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
         },
+        Continuation::RestoreHandlerArms { scope_id, handlers } => object! { slot, pending;
+            "kind": json!("restore_handler_arms"),
+            "scope_id": json!(scope_id.0),
+            "handlers": json!(handlers.iter().map(handler_arm_snapshot).collect::<Vec<_>>()),
+        },
         Continuation::ReenterHandler { boundary } => object! { slot, pending;
             "kind": json!("reenter_handler"),
             "boundary": Node::Continuation(boundary),
