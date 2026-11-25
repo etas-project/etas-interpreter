@@ -324,6 +324,7 @@ fn admit(eval: &mut EvalContext<'_>, state: PendingManagedAuthorization) -> Cont
             reference,
             updating,
             autonomous,
+            args,
             ..
         } = &state.original.operation
         else {
@@ -338,6 +339,8 @@ fn admit(eval: &mut EvalContext<'_>, state: PendingManagedAuthorization) -> Cont
             cancel_unadmitted(eval, Some(request));
             return ControlSignal::runtime_fault(error.to_string(), state.original.span);
         }
+        eval.scheduler
+            .record_handoff_deliveries(args, request.task.0);
         eval.events.push(state.event);
         for event in eval.scheduler.take_agent_events() {
             eval.events.push(event);

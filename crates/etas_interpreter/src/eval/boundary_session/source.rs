@@ -153,7 +153,8 @@ impl EvalContext<'_> {
     }
 
     pub(super) fn decode_session_lease_result(
-        &self,
+        &mut self,
+        request: etas_host::HostRequestId,
         operation: &SessionLeaseOperation,
         result: SessionResult,
         ty: etas_types::TypeId,
@@ -190,8 +191,24 @@ impl EvalContext<'_> {
                 "session lease response has no checked capability type",
             ));
         }
+        let pending_delivery = matches!(operation, Op::Handoff(_)).then(|| {
+            let source_request = match self.task.agent_request_root() {
+                Some(crate::driver::scheduler::TaskIdentity::Scheduled(task)) => Some(task.0),
+                _ => None,
+            };
+            self.events
+                .push(crate::orchestration::WorkflowEvent::SessionHandoff {
+                    handoff: request,
+                    source_request,
+                    session: lease.session().id.clone(),
+                    generation: blake3::hash(lease.generation().as_token().as_bytes())
+                        .to_hex()
+                        .to_string(),
+                });
+            (request, self.scheduler.pending_handoff())
+        });
         Ok(InterpValue::HostHandle(
-            crate::value::HostHandleValue::session_lease(ty, lease),
+            crate::value::HostHandleValue::session_lease(ty, lease, pending_delivery),
         ))
     }
 

@@ -1582,6 +1582,9 @@ impl TaskScheduler {
                 outcome = TaskOutcome::Cancelled(cause);
             }
             if let Some(contract) = resource_report {
+                self.agents
+                    .events
+                    .extend(resource_scope::cleanup_events(&report));
                 outcome = resource_scope::completion(
                     contract,
                     &report,

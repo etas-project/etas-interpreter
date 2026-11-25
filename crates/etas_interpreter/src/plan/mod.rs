@@ -40,3 +40,14 @@ pub use slots::SlotLayoutTable;
 pub use types::InterpreterPlan;
 pub(crate) use types::PreparedProgram;
 pub use variants::NamedVariantLayoutTable;
+
+/// Projecting an SDK callable can retain distinct slots for the same checked function type.
+pub(crate) fn same_checked_abi_type(
+    store: &etas_types::TypeStore,
+    left: etas_types::TypeId,
+    right: etas_types::TypeId,
+) -> bool {
+    left == right
+        || matches!((store.get(left), store.get(right)),
+        (Some(etas_types::Type::Function(left)), Some(etas_types::Type::Function(right))) if left == right)
+}

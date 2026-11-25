@@ -194,7 +194,7 @@ fn same_abi_type(
     left: etas_types::TypeId,
     right: etas_types::TypeId,
 ) -> bool {
-    if left == right {
+    if crate::plan::same_checked_abi_type(store, left, right) {
         return true;
     }
     match (store.get(left), store.get(right)) {

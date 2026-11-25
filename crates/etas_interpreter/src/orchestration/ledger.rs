@@ -195,6 +195,23 @@ pub enum WorkflowEvent {
         session: String,
         created: bool,
     },
+    SessionHandoff {
+        handoff: etas_host::HostRequestId,
+        source_request: Option<u64>,
+        session: String,
+        generation: String,
+    },
+    SessionHandoffReceived {
+        handoff: etas_host::HostRequestId,
+        target_request: u64,
+    },
+    SessionLeaseCleanup {
+        acquisition: Option<etas_host::HostRequestId>,
+        scope: u64,
+        operation: u64,
+        session: String,
+        confirmed: bool,
+    },
     SessionMessageAppended {
         session: String,
         message: String,

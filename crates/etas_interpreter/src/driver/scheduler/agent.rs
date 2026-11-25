@@ -5,7 +5,9 @@ use crate::value::{AgentReference, CheckedExecutionProgram};
 pub(super) struct AgentInstances {
     run: u64,
     next_instance: u64,
-    events: Vec<WorkflowEvent>,
+    // Each confirmed generation holds a clone until delivered, consumed or dropped.
+    pending_handoffs: std::rc::Rc<()>,
+    pub(super) events: Vec<WorkflowEvent>,
     instances: BTreeMap<u64, AgentInstance>,
     waiting_owners: BTreeMap<TaskId, Vec<u64>>,
     autonomous: std::collections::BTreeSet<TaskId>,
@@ -17,6 +19,7 @@ impl Default for AgentInstances {
         Self {
             run: NEXT_RUN.fetch_add(1, std::sync::atomic::Ordering::Relaxed),
             next_instance: 0,
+            pending_handoffs: Default::default(),
             events: Vec::new(),
             instances: BTreeMap::new(),
             waiting_owners: BTreeMap::new(),
@@ -56,6 +59,25 @@ impl Drop for AgentInstances {
 }
 
 impl TaskScheduler {
+    pub(crate) fn pending_handoff(&self) -> std::rc::Rc<()> {
+        self.agents.pending_handoffs.clone()
+    }
+
+    pub(crate) fn record_handoff_deliveries(&mut self, args: &[InterpValue], target_request: u64) {
+        if std::rc::Rc::strong_count(&self.agents.pending_handoffs) > 1 {
+            crate::value::graph::visit_host_handles(args, |handle| {
+                if let Some(handoff) = handle.take_handoff_delivery() {
+                    self.agents
+                        .events
+                        .push(WorkflowEvent::SessionHandoffReceived {
+                            handoff,
+                            target_request,
+                        });
+                }
+            });
+        }
+    }
+
     pub(crate) fn begin_record_construction(
         &self,
         parent: &crate::eval::TaskLocalState,

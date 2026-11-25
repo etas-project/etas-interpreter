@@ -565,6 +565,32 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "item": item,
             "trace": trace,
         }),
+        WorkflowEvent::SessionHandoff {
+            handoff,
+            source_request,
+            session,
+            generation,
+        } => json!({
+            "kind": "session_handoff", "handoff": handoff.0, "source_request": source_request,
+            "session": session, "generation": generation,
+        }),
+        WorkflowEvent::SessionHandoffReceived {
+            handoff,
+            target_request,
+        } => json!({
+            "kind": "session_handoff_received", "handoff": handoff.0, "target_request": target_request,
+        }),
+        WorkflowEvent::SessionLeaseCleanup {
+            acquisition,
+            scope,
+            operation,
+            session,
+            confirmed,
+        } => json!({
+            "kind": "session_lease_cleanup", "qualified_action": "Session.release", "mode": "revoke",
+            "acquisition": acquisition.map(|id| id.0), "scope": scope, "operation": operation,
+            "session": session, "outcome": if *confirmed { "confirmed" } else { "unknown" },
+        }),
         WorkflowEvent::SessionResolved { session, created } => json!({
             "kind": "session_resolved",
             "session": session,

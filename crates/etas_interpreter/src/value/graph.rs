@@ -11,6 +11,35 @@ pub(crate) enum Node<'a> {
     Target(&'a CallTarget),
 }
 
+pub(crate) fn visit_host_handles(args: &[Value], mut visit: impl FnMut(&super::HostHandleValue)) {
+    let mut discovery = FrameDiscovery::default();
+    let mut seen = HashSet::new();
+    let mut visit_value = |value: &Value| {
+        discovery.frames_filtered(
+            Node::Value(value),
+            true,
+            |_| false,
+            |value| {
+                if let Value::HostHandle(handle) = value {
+                    visit(handle);
+                }
+                false
+            },
+        )
+    };
+    let mut frames: Vec<_> = args.iter().flat_map(&mut visit_value).collect();
+    while let Some(frame) = frames.pop() {
+        if seen.insert(frame.capture_identity()) {
+            frame
+                .try_visit_locals(|value| {
+                    frames.extend(visit_value(value));
+                    Ok::<_, std::convert::Infallible>(())
+                })
+                .unwrap_or_else(|never| match never {});
+        }
+    }
+}
+
 pub(crate) fn has_scoped_bindings(root: Node<'_>) -> bool {
     match root {
         Node::Target(CallTarget::Lambda { captured, .. })

@@ -730,7 +730,16 @@ fn validate_callable_site(
         }
         None => true, // An inferred receiver row carries no explicit row bound.
     };
-    if parameters != actual_parameters || output != actual_output || !effects_match {
+    let same_type =
+        |left, right| crate::plan::same_checked_abi_type(&parent.type_store, left, right);
+    if parameters.len() != actual_parameters.len()
+        || !parameters
+            .iter()
+            .zip(actual_parameters)
+            .all(|(left, right)| same_type(*left, right))
+        || !same_type(output, actual_output)
+        || !effects_match
+    {
         return Err("scoped callable boundary differs from its checked call site type".into());
     }
 

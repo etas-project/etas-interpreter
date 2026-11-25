@@ -84,6 +84,26 @@ impl TaskScheduler {
     }
 }
 
+pub(super) fn cleanup_events(
+    report: &etas_host::execution::TerminationReport,
+) -> impl Iterator<Item = crate::orchestration::WorkflowEvent> + '_ {
+    use etas_host::execution::{ExternalOutcome, ResourceCleanup};
+    report
+        .operations()
+        .iter()
+        .filter(|op| op.scope() == report.scope())
+        .filter_map(|op| {
+            let ResourceCleanup::RevokeSessionLease(session) = op.cleanup()?;
+            Some(crate::orchestration::WorkflowEvent::SessionLeaseCleanup {
+                acquisition: op.request(),
+                scope: op.scope().as_u64(),
+                operation: op.id().as_u64(),
+                session: session.id.clone(),
+                confirmed: matches!(op.outcome(), Some(ExternalOutcome::Confirmed)),
+            })
+        })
+}
+
 pub(super) fn completion(
     (report_type, _span): (etas_types::TypeId, etas_core::Span),
     report: &etas_host::execution::TerminationReport,

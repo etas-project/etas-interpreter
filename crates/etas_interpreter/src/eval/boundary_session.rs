@@ -82,7 +82,12 @@ impl<'a> EvalContext<'a> {
         if let etas_host::SessionOperation::Lease(operation) = &session.request.operation
             && let SessionDecode::SourceValue { result_type } = session.decode
         {
-            return match self.decode_session_lease_result(operation, result, result_type) {
+            return match self.decode_session_lease_result(
+                session.request.id,
+                operation,
+                result,
+                result_type,
+            ) {
                 Ok(value) => self.apply_continuation(session.continuation, value),
                 Err(error) => {
                     self.storage_error_with_continuation(error, session.span, session.continuation)

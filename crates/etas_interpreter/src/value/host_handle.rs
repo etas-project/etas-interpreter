@@ -38,7 +38,12 @@ enum HostHandlePayload {
 }
 
 #[derive(Clone)]
-struct LeaseHandle(Rc<RefCell<Option<etas_host::session::SessionLease>>>);
+struct LeaseHandle(Rc<RefCell<LeaseState>>);
+
+struct LeaseState {
+    current: Option<etas_host::session::SessionLease>,
+    pending_delivery: Option<(etas_host::HostRequestId, Rc<()>)>,
+}
 
 impl PartialEq for LeaseHandle {
     fn eq(&self, other: &Self) -> bool {
@@ -65,18 +70,38 @@ impl HostHandleValue {
     pub(crate) fn session_lease(
         nominal_type: TypeId,
         lease: etas_host::session::SessionLease,
+        pending_delivery: Option<(etas_host::HostRequestId, Rc<()>)>,
     ) -> Self {
         Self {
             nominal_type,
-            payload: HostHandlePayload::SessionLease(LeaseHandle(Rc::new(RefCell::new(Some(
-                lease,
-            ))))),
+            payload: HostHandlePayload::SessionLease(LeaseHandle(Rc::new(RefCell::new(
+                LeaseState {
+                    current: Some(lease),
+                    pending_delivery,
+                },
+            )))),
         }
+    }
+
+    pub(crate) fn take_handoff_delivery(&self) -> Option<etas_host::HostRequestId> {
+        let HostHandlePayload::SessionLease(handle) = &self.payload else {
+            return None;
+        };
+        handle
+            .0
+            .borrow_mut()
+            .pending_delivery
+            .take()
+            .map(|(request, _)| request)
     }
 
     pub(crate) fn take_session_lease(&self) -> Option<etas_host::session::SessionLease> {
         match &self.payload {
-            HostHandlePayload::SessionLease(handle) => handle.0.borrow_mut().take(),
+            HostHandlePayload::SessionLease(handle) => {
+                let mut state = handle.0.borrow_mut();
+                state.pending_delivery.take();
+                state.current.take()
+            }
             _ => None,
         }
     }

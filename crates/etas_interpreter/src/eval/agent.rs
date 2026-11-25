@@ -1032,17 +1032,25 @@ impl<'a> EvalContext<'a> {
             | Type::Refined { base: inner, .. } => {
                 self.host_schema_for_type(inner, span, depth + 1)
             }
-            Type::Nominal(nominal) => {
-                let Some(representation) = nominal.representation else {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        format!(
-                            "tool schema type `{}` has no representation and cannot be lowered to host schema",
-                            nominal.name
-                        ),
-                    ));
-                };
+            Type::Nominal(_) | Type::Applied { .. } => {
+                let representation =
+                    etas_types::applied_representation_in_store(&self.checked.type_store, ty)
+                        .map_err(|error| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                format!(
+                                    "host schema has no checked representation for {ty:?}: {error}"
+                                ),
+                            )
+                        })?
+                        .ok_or_else(|| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::InvalidArguments,
+                                span,
+                                format!("type {ty:?} has no representation for its host schema"),
+                            )
+                        })?;
                 self.host_schema_for_type(representation, span, depth + 1)
             }
             Type::Prompt | Type::PromptPart => Ok(HostSchema::String),
