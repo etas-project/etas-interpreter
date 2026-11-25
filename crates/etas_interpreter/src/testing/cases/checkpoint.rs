@@ -555,7 +555,7 @@ flow descend(n: i32) -> i32 {
     checkpoint("inside-retry-stack");
     return 0;
   }
-  retry limit Attempts(1) {
+  retry {
     return 1 + descend(n - 1);
   }
   return -1;

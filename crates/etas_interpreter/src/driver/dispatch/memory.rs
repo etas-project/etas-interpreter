@@ -13,9 +13,7 @@ use crate::{
     value::InterpValue,
 };
 
-use super::{
-    error::retry_or_report, host_dispatch::HostDispatch, policy::evaluate_before_boundary,
-};
+use super::{error::retry_or_report, host_dispatch::HostDispatch};
 
 pub(in crate::driver) enum MemoryDispatchStart<'host> {
     Complete(Option<ControlSignal>),
@@ -87,6 +85,27 @@ pub(in crate::driver) async fn begin<'host>(
         Ok(key) => key,
         Err(signal) => return MemoryDispatchStart::Complete(signal),
     };
+    let subject = policy_subject(&memory.request);
+    let budget = memory.request.budget.clone();
+    MemoryDispatchStart::Complete(Some(super::authorization::prepare(
+        eval,
+        crate::control::NativeBoundaryTarget::Memory {
+            pending: memory,
+            key,
+        },
+        vec![(eval.boundary_policy_ref(), subject)],
+        budget,
+    )))
+}
+
+pub(in crate::driver) async fn begin_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    mut memory: PendingMemory,
+    key: etas_host::replay::ReplayFingerprint,
+    machine: &mut EvalMachine,
+) -> MemoryDispatchStart<'host> {
+    memory.request.authority = eval.host_authority();
     let io = match memory.request.operation {
         MemoryOperation::Put { .. } | MemoryOperation::Delete { .. } => {
             match super::memory_write::begin(eval, host, memory.request.clone()) {
@@ -156,18 +175,6 @@ async fn prepare(
             format!("memory host boundary failed: {}", error.message),
         ));
     }
-    if !evaluate_before_boundary(
-        eval,
-        host,
-        eval.boundary_policy_ref(),
-        policy_subject(&memory.request),
-        memory.span,
-        "memory",
-    )
-    .await
-    {
-        return Err(None);
-    }
     Ok(key)
 }
 
@@ -235,18 +242,33 @@ fn finish_response(
             }
             Ok(result) => {
                 eval.record_memory_result_versions(&memory.request, &result);
-                match eval.memory_result_value(&memory, result) {
-                    Ok(value) => {
+                match eval.memory_result_with_replay(&memory, result) {
+                    Ok((value, recorded)) => {
                         if let Err(fault) = eval.record_completed_host_boundary(
                             crate::orchestration::BoundaryOccurrenceId::HostRequest(request_id),
                             "memory",
                             key,
-                            value.clone(),
+                            recorded,
                             memory.span,
                         ) {
                             return Some(ControlSignal::Fault(Box::new(fault)));
                         }
                         Some(eval.resume_memory_signal(memory, value))
+                    }
+                    Err(fault)
+                        if matches!(
+                            memory.decode,
+                            crate::eval::MemoryDecode::SourceRead { .. }
+                        ) =>
+                    {
+                        Some(eval.storage_error_with_continuation(
+                            etas_host::HostError::new(
+                                etas_host::HostErrorCode::SchemaMismatch,
+                                fault.message,
+                            ),
+                            memory.span,
+                            memory.continuation,
+                        ))
                     }
                     Err(fault) => Some(ControlSignal::Fault(Box::new(fault))),
                 }
@@ -263,13 +285,17 @@ fn report_dispatched_error(
     memory: PendingMemory,
     error: HostError,
 ) -> Option<ControlSignal> {
-    retry_or_report(
-        eval,
-        machine,
-        memory.continuation,
-        memory.span,
-        format!("memory host boundary failed: {}", error.message),
-    )
+    if matches!(memory.decode, crate::eval::MemoryDecode::SourceRead { .. }) {
+        Some(eval.storage_error_with_continuation(error, memory.span, memory.continuation))
+    } else {
+        retry_or_report(
+            eval,
+            machine,
+            memory.continuation,
+            memory.span,
+            format!("memory host boundary failed: {}", error.message),
+        )
+    }
 }
 
 fn policy_subject(request: &MemoryRequest) -> PolicySubject {
@@ -367,8 +393,8 @@ async fn validate_replayed_memory_result(
         Err(error) => Err(error),
     };
     let message = match result {
-        Ok(result) => match eval.memory_result_value(memory, result) {
-            Ok(actual) if &actual == replayed => return true,
+        Ok(result) => match eval.memory_result_with_replay(memory, result) {
+            Ok((actual, _)) if &actual == replayed => return true,
             Ok(_) => "checkpoint memory result no longer matches the recorded value".to_owned(),
             Err(fault) => {
                 eval.diagnostics.push(fault.into_diagnostic());

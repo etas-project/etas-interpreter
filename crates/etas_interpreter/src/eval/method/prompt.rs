@@ -85,7 +85,7 @@ impl<'a> EvalContext<'a> {
                     }
                 };
                 MemoryOperation::Query {
-                    query: etas_host::MemoryQuery {
+                    query: etas_host::MemoryQuery::Predicate {
                         predicate: Some(predicate),
                         order_by: Vec::new(),
                     },

@@ -3,7 +3,6 @@ use super::*;
 struct RetryResumeState {
     retry: RetryAttemptRecord,
     body: HirBlockId,
-    attempts: usize,
     next_attempt: usize,
     block: HirBlockId,
     next_stmt_index: usize,
@@ -16,19 +15,10 @@ impl<'a> EvalContext<'a> {
         block: HirBlockId,
         stmt_index: usize,
         body: HirBlockId,
-        limits: &[HirExprId],
-        span: Span,
+        _span: Span,
         frame: &mut Frame,
     ) -> Option<ControlSignal> {
-        let attempts = match self.retry_attempts(limits, span) {
-            Ok(attempts) => attempts as usize,
-            Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
-        };
-        if attempts == 0 {
-            self.events.push(WorkflowEvent::RetryExhausted);
-            return None;
-        }
-        self.execute_retry_attempt(block, stmt_index, body, attempts, 0, frame)
+        self.execute_retry_attempt(block, stmt_index, body, 0, frame)
     }
 
     pub(crate) fn retry_boundary_failure_signal(
@@ -52,7 +42,6 @@ impl<'a> EvalContext<'a> {
                 Continuation::RetryAttempt {
                     retry,
                     body,
-                    attempts,
                     next_attempt,
                     block,
                     next_stmt_index,
@@ -62,7 +51,6 @@ impl<'a> EvalContext<'a> {
                         RetryResumeState {
                             retry,
                             body,
-                            attempts,
                             next_attempt,
                             block,
                             next_stmt_index,
@@ -85,8 +73,8 @@ impl<'a> EvalContext<'a> {
     fn retry_attempt_failed(
         &mut self,
         mut state: RetryResumeState,
-        span: Span,
-        message: &str,
+        _span: Span,
+        _message: &str,
     ) -> ControlSignal {
         if self
             .task
@@ -99,22 +87,10 @@ impl<'a> EvalContext<'a> {
         self.events
             .push(WorkflowEvent::RetryAttemptFailed(state.retry.id));
 
-        if state.next_attempt >= state.attempts {
-            self.events.push(WorkflowEvent::RetryExhausted);
-            return ControlSignal::invalid_arguments(
-                format!(
-                    "retry exhausted after {} attempt(s): {message}",
-                    state.attempts
-                ),
-                span,
-            );
-        }
-
         match self.execute_retry_attempt(
             state.block,
             state.next_stmt_index - 1,
             state.body,
-            state.attempts,
             state.next_attempt,
             &mut state.frame,
         ) {
@@ -128,7 +104,6 @@ impl<'a> EvalContext<'a> {
         block: HirBlockId,
         stmt_index: usize,
         body: HirBlockId,
-        attempts: usize,
         attempt: usize,
         frame: &mut Frame,
     ) -> Option<ControlSignal> {
@@ -161,7 +136,6 @@ impl<'a> EvalContext<'a> {
                 RetryResumeState {
                     retry,
                     body,
-                    attempts,
                     next_attempt: attempt + 1,
                     block,
                     next_stmt_index: stmt_index + 1,
@@ -217,7 +191,6 @@ impl<'a> EvalContext<'a> {
         let continuation = Continuation::RetryAttempt {
             retry: state.retry,
             body: state.body,
-            attempts: state.attempts,
             next_attempt: state.next_attempt,
             block: state.block,
             next_stmt_index: state.next_stmt_index,

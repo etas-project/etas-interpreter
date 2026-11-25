@@ -100,7 +100,6 @@ impl MachineFrameSnapshot {
                 continuation: ContinuationSnapshot::RetryAttempt {
                     retry: frame.retry.clone(),
                     body: frame.body,
-                    attempts: frame.attempts,
                     next_attempt: frame.next_attempt,
                     block: frame.block,
                     next_stmt_index: frame.next_stmt_index,

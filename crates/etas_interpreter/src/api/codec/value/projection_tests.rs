@@ -289,7 +289,7 @@ flow wrap(f: () -> i32 ![]) -> (() -> i32 ![]) { return () => f(); }
 flow main() -> (() -> i32 ![]) {
     var f = () => 42;
     var n = 0;
-    while n < 1000 limit Iterations(1001) { f = wrap(f); n = n + 1; }
+    while n < 1000 { f = wrap(f); n = n + 1; }
     return f;
 }
 "#,

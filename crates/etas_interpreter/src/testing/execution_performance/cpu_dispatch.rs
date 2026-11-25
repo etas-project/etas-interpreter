@@ -42,7 +42,7 @@ fn cpu_dispatch_benchmark() {
                     "return value + 1;".to_owned()
                 } else {
                     format!(
-                        "var index = 0; while index < {iterations} limit Iterations({iterations}) {{ index = index + 1; }} return value + 1;"
+                        "var index = 0; while index < {iterations} {{ index = index + 1; }} return value + 1;"
                     )
                 };
                 let work = match shape {

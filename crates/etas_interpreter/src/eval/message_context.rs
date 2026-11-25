@@ -14,7 +14,7 @@ impl EvalContext<'_> {
         if let Some(signal) = self.cancellation_signal(span) {
             return signal;
         }
-        if let Err(error) = self.host_context.budget.check_time() {
+        if let Err(error) = self.task.host_budget().check_time() {
             return ControlSignal::runtime_fault(error.message, span);
         }
         if role == R::MessageContextRecord {
@@ -36,14 +36,9 @@ impl EvalContext<'_> {
         else {
             unreachable!("checked message context signature")
         };
-        let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
-            Ok(now) => now,
-            Err(error) => {
-                return ControlSignal::runtime_fault(
-                    format!("runtime clock cannot capture message context: {error}"),
-                    span,
-                );
-            }
+        let unix_millis = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
+            Ok(now) => now.as_millis() as i128,
+            Err(error) => -(error.duration().as_millis() as i128),
         };
         let value = HostValue::Record(vec![
             (
@@ -56,16 +51,13 @@ impl EvalContext<'_> {
             ),
             (
                 "created_at".into(),
-                HostValue::Record(vec![(
-                    "unix_millis".into(),
-                    HostValue::UInt(now.as_millis()),
-                )]),
+                HostValue::Record(vec![("unix_millis".into(), HostValue::Int(unix_millis))]),
             ),
             (
                 "trace".into(),
                 host_option(Some(HostValue::String(format!(
                     "{:?}",
-                    self.host_context.trace.trace_id
+                    self.task.host_trace().trace_id
                 )))),
             ),
         ]);
@@ -128,7 +120,7 @@ pub(super) fn source_message_value(
     };
     let millis = match representation(self::field(field("created_at")?, "unix_millis")?) {
         InterpValue::Number(number) => number
-            .as_u128()
+            .as_i128()
             .ok_or("message clock requires unix milliseconds")?,
         _ => return Err("message clock requires unix milliseconds".into()),
     };

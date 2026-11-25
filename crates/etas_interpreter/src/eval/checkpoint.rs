@@ -149,7 +149,7 @@ impl<'a> EvalContext<'a> {
                     )
                 })?;
         let budget =
-            crate::orchestration::CheckpointBudgetSnapshot::capture(&self.host_context.budget)
+            crate::orchestration::CheckpointBudgetSnapshot::capture(&self.task.host_budget())
                 .map_err(|error| {
                     crate::control::ExecutionFault::new(
                         AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -235,7 +235,7 @@ impl<'a> EvalContext<'a> {
                 original_limits: self.execution_limits,
             },
             host_state: crate::orchestration::CheckpointHostState {
-                trace: self.host_context.trace.clone(),
+                trace: self.task.host_trace(),
                 budget,
             },
             current_session: self.current_session.clone(),

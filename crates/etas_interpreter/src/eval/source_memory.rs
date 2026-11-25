@@ -1,4 +1,4 @@
-use super::{data_capture, host_value, memory_page, storage, *};
+use super::{host_value, memory_page, storage, *};
 use crate::control::handler_activation::SourceMemoryPlace;
 use crate::value::{InterpValue as V, enum_value};
 use etas_host::memory::{
@@ -23,7 +23,12 @@ impl EvalContext<'_> {
             ("schema_fingerprint".into(), memory_page::option_value(None)),
         ]);
         host_value::decode_checked_host_value(
-            HostValue::Record(vec![("description".into(), descriptor)]),
+            HostValue::Record(vec![
+                ("description".into(), descriptor),
+                ("key_format".into(), memory_page::option_value(None)),
+                ("value_format".into(), memory_page::option_value(None)),
+                ("encoded_schema".into(), memory_page::option_value(None)),
+            ]),
             ty,
             self.checked,
         )
@@ -41,7 +46,7 @@ impl EvalContext<'_> {
             .as_ref()
             .expect("checked default action");
         let operation = match action {
-            "read" | "write" => {
+            "read" => {
                 let [store, request] = perform.args.as_slice() else {
                     return Some(ControlSignal::missing_checked_fact(
                         "Memory action payload",
@@ -55,19 +60,10 @@ impl EvalContext<'_> {
                         let request =
                             enum_value::payload(request, proof.parameters[1], self.checked)
                                 .map_err(storage::invalid)?;
-                        let (operation, decode) = if action == "read" {
-                            (
-                                self.source_memory_read(request)?,
-                                MemoryDecode::SourceRead {
-                                    result_type: proof.output,
-                                    selection: request.0 == "Selection",
-                                },
-                            )
-                        } else {
-                            (
-                                mutation_operation(self.source_memory_mutation(request)?),
-                                MemoryDecode::Unit,
-                            )
+                        let operation = self.source_memory_read(request)?;
+                        let decode = MemoryDecode::SourceRead {
+                            result_type: proof.output,
+                            selection: request.0 == "Selection",
                         };
                         Ok((place, operation, decode))
                     })
@@ -87,8 +83,8 @@ impl EvalContext<'_> {
                         })
                     })
             }
-            "commit" | "reconcile" => {
-                let action = if action == "commit" {
+            "write" | "reconcile" => {
+                let action = if action == "write" {
                     "commit"
                 } else {
                     "reconcile"
@@ -111,20 +107,16 @@ impl EvalContext<'_> {
             }
             _ => return None,
         };
-        Some(
-            operation.unwrap_or_else(|error| {
-                ControlSignal::invalid_arguments(error.message, perform.span)
-            }),
-        )
+        Some(operation.unwrap_or_else(|error| {
+            self.storage_error_with_continuation(error, perform.span, perform.continuation.clone())
+        }))
     }
 
-    pub(super) fn source_memory_result(
-        &self,
+    pub(super) fn source_memory_wire(
         request: &MemoryRequest,
         result: MemoryResult,
-        result_type: TypeId,
         selection: bool,
-    ) -> Result<V, String> {
+    ) -> Result<HostValue, String> {
         let (name, value) = match (&request.operation, result) {
             (MemoryOperation::Get { .. }, MemoryResult::None) => {
                 ("Entry", memory_page::option_value(None))
@@ -141,66 +133,17 @@ impl EvalContext<'_> {
                 )
             }
             (_, MemoryResult::Entries { entries, cursor }) if selection => {
-                let Some(etas_types::Type::Applied { args, .. }) =
-                    self.checked.type_store.get(result_type)
-                else {
-                    return Err(
-                        "source memory read result is missing its checked key/value parameters"
-                            .into(),
-                    );
-                };
-                let [key, item] = args.as_slice() else {
-                    return Err(
-                        "source memory read result requires key and value parameters".into(),
-                    );
-                };
-                let mut selected = Vec::with_capacity(entries.len());
-                for entry in entries {
-                    self.storage_limits
-                        .result_value_size(&entry.key)
-                        .map_err(|error| error.message)?;
-                    self.storage_limits
-                        .result_value_size(&entry.value)
-                        .map_err(|error| error.message)?;
-                    host_value::decode_checked_host_value(entry.key.clone(), *key, self.checked)?;
-                    host_value::decode_checked_host_value(
-                        entry.value.clone(),
-                        *item,
-                        self.checked,
-                    )?;
-                    selected.push(HostValue::Record(vec![
-                        ("key".into(), data_capture::source_data_wire(entry.key)),
-                        ("value".into(), data_capture::source_data_wire(entry.value)),
-                        ("version".into(), memory_page::version_value(entry.version)),
-                    ]));
-                }
-                (
-                    "Selected",
-                    HostValue::Record(vec![
-                        ("entries".into(), HostValue::List(selected)),
-                        (
-                            "cursor".into(),
-                            memory_page::option_value(
-                                cursor.map(|cursor| memory_page::opaque_value(cursor.opaque)),
-                            ),
-                        ),
-                    ]),
-                )
+                ("Selected", memory_page::page_value(entries, cursor))
             }
             (MemoryOperation::Scan { .. }, MemoryResult::Entries { entries, cursor }) => {
                 ("Page", memory_page::page_value(entries, cursor))
             }
             _ => return Err("memory response does not match the checked source read".into()),
         };
-        host_value::host_to_checked_interp_value(
-            HostValue::Variant {
-                name: name.into(),
-                fields: vec![value],
-            },
-            result_type,
-            self.checked,
-            &self.storage_limits,
-        )
+        Ok(HostValue::Variant {
+            name: name.into(),
+            fields: vec![value],
+        })
     }
 
     pub(super) fn source_memory_store(
@@ -227,8 +170,10 @@ impl EvalContext<'_> {
             .iter()
             .map(|part| self.storage_string(part))
             .collect::<Result<Vec<_>, _>>()?;
+        let schema = crate::value::conversation::protocol::field(value, "encoded_schema")
+            .map_err(|error| storage::invalid(error.message))?;
         let schema_fingerprint = self
-            .source_memory_option(storage::field(fields, "schema_fingerprint")?)?
+            .source_memory_option(schema)?
             .map(|value| self.storage_string(value))
             .transpose()?;
         Ok(StoreRef {
@@ -302,36 +247,20 @@ impl EvalContext<'_> {
                     super::resolve_std_type(self.checked, &["std", "memory", "SelectionRequest"])
                         .ok_or_else(|| storage::invalid("selection request type is missing"))?;
                 match enum_value::payload(selection, ty, self.checked).map_err(storage::invalid)? {
-                    ("Scan", [cursor, limit]) => Ok(MemoryOperation::Scan {
-                        cursor: self.source_memory_cursor(cursor)?,
-                        limit: Some(count(limit)?),
-                    }),
-                    ("Query", [predicate, limit]) => Ok(MemoryOperation::Query {
-                        query: MemoryQuery {
-                            predicate: Some(
-                                data_capture::source_data_to_host(
-                                    self.checked,
-                                    predicate,
-                                    &self.storage_limits,
-                                )
-                                .map_err(storage::invalid)?,
-                            ),
-                            order_by: Vec::new(),
+                    ("Query", [language, version, payload, limit]) => Ok(MemoryOperation::Query {
+                        query: MemoryQuery::Encoded {
+                            language: self.storage_string(language)?,
+                            version: count(version)?,
+                            payload: match project(payload)? {
+                                HostValue::Bytes(bytes) => bytes,
+                                _ => {
+                                    return Err(storage::invalid(
+                                        "memory query payload must be bytes",
+                                    ));
+                                }
+                            },
                         },
                         limit: self.source_memory_option(limit)?.map(count).transpose()?,
-                    }),
-                    ("Vector", [embedding, limit]) => Ok(MemoryOperation::VectorSearch {
-                        embedding: array(embedding)?
-                            .iter()
-                            .map(|value| match value {
-                                V::Number(crate::value::NumericValue::F32(bits)) => {
-                                    Ok(f32::from_bits(*bits))
-                                }
-                                _ => Err(storage::invalid("invalid memory vector coordinate")),
-                            })
-                            .collect::<Result<_, _>>()?,
-                        limit: count(limit)?,
-                        filter: None,
                     }),
                     _ => Err(storage::invalid("invalid selection operation")),
                 }
@@ -461,19 +390,4 @@ fn count(value: &V) -> Result<u32, HostError> {
 
 fn project(value: &V) -> Result<HostValue, HostError> {
     host_value::interp_to_host_value(value).map_err(storage::invalid)
-}
-
-fn mutation_operation(mutation: MemoryMutation) -> MemoryOperation {
-    match mutation {
-        MemoryMutation::Put {
-            key,
-            value,
-            condition,
-        } => MemoryOperation::Put {
-            key,
-            value,
-            condition,
-        },
-        MemoryMutation::Delete { key, condition } => MemoryOperation::Delete { key, condition },
-    }
 }

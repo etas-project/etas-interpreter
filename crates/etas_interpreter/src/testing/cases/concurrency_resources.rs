@@ -365,7 +365,7 @@ flow main() -> i32 {
         Owner.Values.put("owner", 1);
         let child = start(() => {
             var index: i32 = 0;
-            while index < 2 limit Iterations(2) {
+            while index < 2 {
                 Peer.Values.put("part-" + from_i32(index), index);
                 index = index + 1;
             }

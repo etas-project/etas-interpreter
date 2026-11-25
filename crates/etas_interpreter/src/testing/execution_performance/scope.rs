@@ -11,7 +11,9 @@ fn checked_loop_scope_work_does_not_multiply_frame_width_by_iterations() {
             write!(source, ", unused{index}: i32").unwrap();
             args.push(InterpValue::i32(index));
         }
-        source.push_str(") -> i32 { var count = 0; for x in input limit Iterations(1000) { count = count + 1; } return count; }");
+        source.push_str(
+            ") -> i32 { var count = 0; for x in input { count = count + 1; } return count; }",
+        );
         let program = PreparedExecution::new(&source);
         let (value, cost, elapsed) = program.run(&args);
         assert_eq!(value, InterpValue::i32(1000));

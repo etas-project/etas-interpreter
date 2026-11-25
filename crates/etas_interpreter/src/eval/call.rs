@@ -173,31 +173,36 @@ impl<'a> EvalContext<'a> {
                 ControlSignal::Continue => return ControlSignal::Continue,
             }
         }
-        let (parameter_count, slots, defaults) =
-            if let Some(method) = self.plan.dispatch.method(call) {
-                let mut slots = Vec::new();
-                if let etas_types::method::MethodReceiver::Value { slot } = method.receiver {
-                    slots.push(slot);
-                }
-                slots.extend(&method.argument_slots);
-                (
-                    method.signature.params.len(),
-                    slots,
-                    method.defaults.clone(),
-                )
-            } else if let Some(binding) = self.checked.types.declared_call_arguments.get(&call) {
-                (
-                    binding.argument_slots.len() + binding.defaults.len(),
-                    binding.argument_slots.clone(),
-                    binding.defaults.clone(),
-                )
-            } else {
-                (
-                    evaluated_args.len(),
-                    (0..evaluated_args.len() as u32).collect(),
-                    Vec::new(),
-                )
-            };
+        let (parameter_count, slots, defaults) = if let Some(method) =
+            self.plan.dispatch.method(call)
+        {
+            let mut slots = Vec::new();
+            if let etas_types::method::MethodReceiver::Value { slot } = method.receiver {
+                slots.push(slot);
+            } else if let etas_types::method::MethodReceiver::Updating { slot } = method.receiver
+                && method.kind.is_agent()
+            {
+                slots.push(slot);
+            }
+            slots.extend(&method.argument_slots);
+            (
+                method.signature.params.len(),
+                slots,
+                method.defaults.clone(),
+            )
+        } else if let Some(binding) = self.checked.types.declared_call_arguments.get(&call) {
+            (
+                binding.argument_slots.len() + binding.defaults.len(),
+                binding.argument_slots.clone(),
+                binding.defaults.clone(),
+            )
+        } else {
+            (
+                evaluated_args.len(),
+                (0..evaluated_args.len() as u32).collect(),
+                Vec::new(),
+            )
+        };
         self.prepare_default_arguments(super::arguments::DefaultArguments {
             expr: call,
             parameter_count,
@@ -224,6 +229,7 @@ impl<'a> EvalContext<'a> {
         let mut update = None;
         if let Some(method) = self.plan.dispatch.method(call)
             && let etas_types::method::MethodReceiver::Updating { slot } = method.receiver
+            && !method.kind.is_agent()
         {
             let symbol = match etas_types::method::updating_receiver_symbol(
                 &self.checked.hir,
@@ -303,6 +309,18 @@ impl<'a> EvalContext<'a> {
         update: Option<crate::control::ReceiverOutcome>,
         site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
+        if matches!(
+            self.checked.hir.items.get(item),
+            Some(HirItem::Flow(etas_hir::HirFlowDecl {
+                body: etas_hir::HirFlowBody::Runtime {
+                    role: etas_std::StdExecutionRole::ResourceScope,
+                    ..
+                },
+                ..
+            }))
+        ) {
+            return self.execute_resource_scope(item, call_args, &Default::default(), site, span);
+        }
         if matches!(
             self.checked.hir.items.get(item),
             Some(HirItem::Flow(etas_hir::HirFlowDecl {
@@ -437,6 +455,12 @@ impl<'a> EvalContext<'a> {
         span: Span,
         site: Option<crate::control::CallSite>,
     ) -> ControlSignal {
+        if let Some((reference, updating)) = self.active_method_request(&target, &call_args)
+            && !self.is_agent_turn_helper(reference, site.as_ref())
+        {
+            return self
+                .prepare_managed_agent_call(reference, updating, target, call_args, span, false);
+        }
         ControlSignal::pending_call(PendingCall {
             purity: crate::control::CallPurity::Ordinary,
             site,
@@ -660,6 +684,15 @@ impl<'a> EvalContext<'a> {
             }
             CallTarget::FlowItem(item) => match self.checked.hir.items.get(item) {
                 Some(HirItem::Flow(flow)) => {
+                    if matches!(
+                        flow.body,
+                        etas_hir::HirFlowBody::Runtime {
+                            role: etas_std::StdExecutionRole::ResourceScope,
+                            ..
+                        }
+                    ) {
+                        return self.execute_resource_scope(item, call_args, &bindings, site, span);
+                    }
                     if matches!(
                         flow.body,
                         etas_hir::HirFlowBody::Runtime {

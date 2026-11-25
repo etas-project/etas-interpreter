@@ -5,6 +5,93 @@ use crate::{
 };
 
 #[tokio::test(flavor = "current_thread")]
+async fn run_checked_preserves_callback_returned_from_argument_factory() {
+    let checked = checked_project(
+        r#"
+module app.main;
+type Cursor<T> = { next: () -> Option<(T, Cursor<T>)> ![] };
+impl Cursor<T> {
+    public flow empty() -> Cursor<T> ![] {
+        return Cursor { next= () => None };
+    }
+    public flow bind<U>(self, factory: (T) -> Cursor<U> ![]) -> Cursor<U> ![] {
+        return Cursor { next= () => match (self.next)() {
+            None => None,
+            Some((value, _)) => ((factory(value)).next)(),
+        } };
+    }
+}
+flow main() -> i32 ![] {
+    let input: Cursor<i32> = Cursor { next= () => Some((7, Cursor.empty())) };
+    let mapped = input.bind((value: i32) => Cursor {
+        next= () => Some((value + 1, Cursor.empty()))
+    });
+    return match (mapped.next)() {
+        Some((value, _)) => value,
+        None => 0,
+    };
+}
+"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&value::InterpValue::i32(8)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn run_checked_preserves_callbacks_through_composed_record_updates() {
+    let checked = checked_project(
+        r#"
+module app.main;
+type Cell<T> = { value: Option<T>, callback: () -> i32 ![] };
+impl Cell<T> {
+    public flow push(self, value: T) -> Cell<T> ![] {
+        return Cell { value= Some(value), callback= self.callback };
+    }
+    public flow pop(self) -> (Cell<T>, Option<T>) ![] {
+        return (Cell { value= None, callback= self.callback }, self.value);
+    }
+    public flow push_pop(self, value: T) -> (Cell<T>, T) ![] {
+        let inserted = self.push(value);
+        let (remaining, value) = inserted.pop();
+        return (remaining, value.unwrap());
+    }
+}
+flow main() -> i32 ![] {
+    let initial: Cell<i32> = Cell { value= None, callback= () => 34 };
+    let (cell, value) = initial.push_pop(8);
+    return (cell.callback)() + value;
+}
+"#,
+    );
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &FakeHost::new(HostServiceAvailability::default()),
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&value::InterpValue::i32(42)));
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn scoped_lambdas_and_handler_share_the_original_var_and_keep_let_snapshots() {
     let source = r#"
 module app.main;
@@ -147,7 +234,7 @@ flow wrap(inner: () -> unit ![]) -> () -> unit ![] {
 flow main() -> i32 {
     var callback: () -> unit ![] = () => { return; };
     var count = 0;
-    while count < 1000 limit Iterations(1001) {
+    while count < 1000 {
         callback = wrap(callback);
         count = count + 1;
     }

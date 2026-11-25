@@ -97,7 +97,7 @@ effect Append { action suffix() -> string; }
 type Row = { text: string }
 flow main(input: Array<i32>, expected: string) -> bool {
     var text = "";
-    for _ in input limit Iterations(128) { text = text + "中😀"; }
+    for _ in input { text = text + "中😀"; }
     let old = text;
     var rows = [Row { text = text }];
     let before = rows;

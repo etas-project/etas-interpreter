@@ -17,10 +17,10 @@ flow main() -> bool {
     var count_ids = 0;
     var count_arrays = 0;
     var count_nested = 0;
-    for value in empty limit Iterations(4) { count_empty = count_empty + 1; }
-    for value in ids limit Iterations(4) { count_ids = count_ids + 1; }
-    for value in arrays limit Iterations(4) { count_arrays = count_arrays + 1; }
-    for value in nested limit Iterations(4) { count_nested = count_nested + 1; }
+    for value in empty { count_empty = count_empty + 1; }
+    for value in ids { count_ids = count_ids + 1; }
+    for value in arrays { count_arrays = count_arrays + 1; }
+    for value in nested { count_nested = count_nested + 1; }
     return count_empty == 0 && count_ids == 2 && count_arrays == 2 && count_nested == 2
         && #{1, 2} == #{2, 1};
 }
@@ -56,7 +56,7 @@ flow element(value: i32, label: string) -> i32 {
 flow main() -> i32 {
     let values = #{element(2, "a"), element(1, "b"), element(2, "c"), element(1, "d")};
     var result = 0;
-    for value in values limit Iterations(8) { result = result * 10 + value; }
+    for value in values { result = result * 10 + value; }
     return result;
 }
 "#,
@@ -89,7 +89,7 @@ flow main() -> i32 {
     var values = #{2, 1, 2};
     let alias = values;
     var result = 0;
-    for value in values limit Iterations(8) {
+    for value in values {
         values = #{9};
         if value == 2 { checkpoint("set-iteration"); }
         result = result * 10 + value;

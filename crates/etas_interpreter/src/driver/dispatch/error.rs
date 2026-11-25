@@ -32,6 +32,17 @@ pub(in crate::driver) fn retry_or_report(
     {
         return Some(signal);
     }
+    report_failure(eval, span, message)
+}
+
+pub(in crate::driver) fn report_failure(
+    eval: &mut EvalContext<'_>,
+    span: Span,
+    message: String,
+) -> Option<ControlSignal> {
+    if let Some(signal) = eval.cancellation_signal(span) {
+        return Some(signal);
+    }
     eval.diagnostics.push(Diagnostic::analysis(
         AnalysisDiagnosticCode::UnhandledRuntimeError,
         span,

@@ -1,6 +1,9 @@
 use super::*;
 use crate::intrinsic::dispatch::SessionContextCallable;
-use etas_host::session::{MessageEnvelope, message_envelope_from_host_value};
+use etas_host::session::{
+    MessageEnvelope, SessionLeaseOperation, SessionLeaseResult, SessionLeaseScope,
+    message_envelope_from_host_value,
+};
 use etas_host::{HostError, SessionCursor, SessionOperation, SessionRef, SessionResult};
 
 impl EvalContext<'_> {
@@ -25,7 +28,7 @@ impl EvalContext<'_> {
                     Err(error) => self.storage_error_signal(error, span),
                 }
             }
-            "resolve" | "append" | "read" => {
+            "resolve" | "append" | "read" | "acquire" | "handoff" | "release" => {
                 match self.source_session_operation(name, &proof.parameters, &perform.args) {
                     Ok(operation) => ControlSignal::pending_session(PendingSession {
                         request: etas_host::SessionRequest {
@@ -41,7 +44,9 @@ impl EvalContext<'_> {
                         span,
                         continuation: Continuation::BlockValue,
                     }),
-                    Err(error) if name == "read" => self.storage_error_signal(error, span),
+                    Err(error) if matches!(name, "read" | "acquire" | "handoff" | "release") => {
+                        self.storage_error_signal(error, span)
+                    }
                     Err(error) => ControlSignal::invalid_arguments(error.message, span),
                 }
             }
@@ -58,6 +63,33 @@ impl EvalContext<'_> {
     ) -> Result<SessionOperation, HostError> {
         use crate::eval::storage::{invalid, text};
         match (name, parameters, args) {
+            ("acquire", [config_type], [config]) => {
+                if self.task.host_resource_owner().is_none() {
+                    return Err(invalid(
+                        "session lease acquisition requires a resource scope",
+                    ));
+                }
+                let config = self.checked_session_config(config, Some(config_type))?;
+                let ttl = std::time::Duration::from_secs(
+                    self.storage_limits.max_receipt_retention_seconds,
+                );
+                Ok(SessionOperation::Lease(SessionLeaseOperation::Acquire(
+                    SessionLeaseScope::new(SessionRef { id: config.id }, ttl)?,
+                )))
+            }
+            ("handoff" | "release", [expected], [InterpValue::HostHandle(lease)])
+                if lease.nominal_type() == *expected =>
+            {
+                let lease = lease
+                    .take_session_lease()
+                    .ok_or_else(|| invalid("session lease was already consumed"))?;
+                let operation = if name == "handoff" {
+                    SessionLeaseOperation::Handoff(lease)
+                } else {
+                    SessionLeaseOperation::Release(lease)
+                };
+                Ok(SessionOperation::Lease(operation))
+            }
             ("resolve", [config_type], [config]) => {
                 let config = self.checked_session_config(config, Some(config_type))?;
                 Ok(SessionOperation::Resolve { config })
@@ -118,6 +150,49 @@ impl EvalContext<'_> {
                 "session action payload differs from its checked signature",
             )),
         }
+    }
+
+    pub(super) fn decode_session_lease_result(
+        &self,
+        operation: &SessionLeaseOperation,
+        result: SessionResult,
+        ty: etas_types::TypeId,
+    ) -> Result<InterpValue, HostError> {
+        use SessionLeaseOperation as Op;
+        use SessionLeaseResult as Receipt;
+        let lease = match (operation, result) {
+            (Op::Acquire(scope), SessionResult::Lease(Receipt::Acquired(lease)))
+                if lease.scope() == scope =>
+            {
+                lease
+            }
+            (Op::Handoff(previous), SessionResult::Lease(Receipt::Transferred(next)))
+                if previous.scope() == next.scope()
+                    && previous.generation() != next.generation() =>
+            {
+                next
+            }
+            (Op::Release(_), SessionResult::Lease(Receipt::Released)) => {
+                return Ok(InterpValue::Unit);
+            }
+            _ => {
+                return Err(HostError::new(
+                    etas_host::HostErrorCode::InvalidResponse,
+                    "session lease response does not confirm the requested transition",
+                ));
+            }
+        };
+        if crate::eval::resolve_std_type(self.checked, &["std", "agent", "session", "SessionLease"])
+            != Some(ty)
+        {
+            return Err(HostError::new(
+                etas_host::HostErrorCode::SchemaMismatch,
+                "session lease response has no checked capability type",
+            ));
+        }
+        Ok(InterpValue::HostHandle(
+            crate::value::HostHandleValue::session_lease(ty, lease),
+        ))
     }
 
     pub(super) fn decode_source_session_result(

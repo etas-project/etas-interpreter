@@ -27,6 +27,21 @@ pub(crate) mod checkpoint;
 #[derive(Clone, Debug)]
 pub struct TaskHandlerContinuation(Rc<RefCell<Option<SuspendedTaskHandler>>>);
 
+#[derive(Clone, Debug)]
+pub(crate) struct WeakTaskHandlerContinuation(std::rc::Weak<RefCell<Option<SuspendedTaskHandler>>>);
+
+impl TaskHandlerContinuation {
+    pub(crate) fn downgrade(&self) -> WeakTaskHandlerContinuation {
+        WeakTaskHandlerContinuation(Rc::downgrade(&self.0))
+    }
+}
+
+impl WeakTaskHandlerContinuation {
+    pub(crate) fn upgrade(&self) -> Option<TaskHandlerContinuation> {
+        self.0.upgrade().map(TaskHandlerContinuation)
+    }
+}
+
 #[derive(Debug)]
 struct SuspendedTaskHandler {
     child: TaskHandle,
@@ -43,6 +58,9 @@ struct SuspendedTaskHandler {
     handlers: Vec<ActiveHandlerRecord>,
     retries: Vec<RetryAttemptRecord>,
     model_policy: crate::api::ModelExecutionPolicy,
+    host_context: Option<crate::eval::request_context::AgentHostContextLease>,
+    record_context: Option<crate::control::RecordContextLease>,
+    borrowed_handler: Option<super::frame::HandlerFrame>,
     projection: ActionProjection,
     calls: TaskCallLease,
     span: Span,
@@ -60,6 +78,85 @@ impl Drop for TaskCallLease {
 }
 
 impl EvalMachine {
+    /// Stop an arm whose originating request was cancelled, preserving the
+    /// lexical owner's suspended wait and all unrelated requests.
+    pub(crate) fn abandon_cancelled_agent_handler(
+        &mut self,
+        ctx: &mut EvalContext<'_>,
+    ) -> Result<bool, ExecutionFault> {
+        let span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
+        let fail = |reason: String| {
+            ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason)
+        };
+        let Some(continuation) = ctx
+            .task
+            .cancelled_agent_handler()
+            .map_err(|error| fail(error.to_string()))?
+        else {
+            return Ok(false);
+        };
+        let Some(mut saved) = continuation.0.borrow_mut().take() else {
+            return Err(fail(
+                "cancelled Agent Handler lost its suspended owner".into(),
+            ));
+        };
+        if saved.owner_task != ctx.task.identity
+            || !Rc::ptr_eq(&saved.calls.total, &self.active_call_depth)
+        {
+            return Err(fail(
+                "cancelled Agent Handler belongs to another machine".into(),
+            ));
+        }
+        let at = self.stack.iter().position(|frame| {
+            matches!(frame, EvalFrame::Handler(handler) if handler.scope_id == saved.handler)
+        }).ok_or_else(|| fail("cancelled Agent Handler lost its lexical boundary".into()))?;
+        self.input = None;
+        self.root_wait = None;
+        while self.stack.len() > at + 1 {
+            match self.pop_frame().expect("Handler suffix exists") {
+                EvalFrame::ResidualScope(scope) => {
+                    ctx.exit_residual_scope(
+                        &scope,
+                        crate::control::residual::ResidualExitKind::Cancellation,
+                        saved.span,
+                    )?;
+                }
+                EvalFrame::ProgramReturn(boundary) => {
+                    ctx.task.agent_context = boundary.parent_agent_context;
+                }
+                _ => {}
+            }
+        }
+        while ctx.task.handler_stack.len() > saved.handler_base {
+            let scope = ctx
+                .task
+                .handler_stack
+                .last()
+                .expect("nested Handler exists")
+                .id;
+            ctx.scoped_context(&saved.owner, saved.owner_handler_floor)
+                .close_handler_scope(scope, saved.span)?;
+        }
+        ctx.task.retry_stack.truncate(saved.retry_base);
+        self.stack[at] = EvalFrame::Handler(saved.borrowed_handler.take().ok_or_else(|| {
+            fail("cancelled Agent Handler lost its original owner boundary".into())
+        })?);
+        drop(saved.host_context.take());
+        drop(saved.record_context.take());
+        ctx.task.handler_stack.append(&mut saved.handlers);
+        ctx.task.retry_stack.append(&mut saved.retries);
+        ctx.task.model_policy = saved.model_policy;
+        self.stack.append(&mut saved.frames);
+        self.resync_residual_mirror();
+        saved.calls.count = 0;
+        self.program_scope = saved.scope;
+        self.root_wait = Some(saved.wait);
+        self.resume(ControlSignal::Task(Box::new(
+            PendingTaskControl::RestoreHandlerWait { span: saved.span },
+        )));
+        Ok(true)
+    }
+
     pub(crate) fn take_task_input(&mut self) -> Option<MachineInput> {
         self.input.take()
     }
@@ -72,6 +169,8 @@ impl EvalMachine {
         ctx: &mut EvalContext<'_>,
         child: TaskHandle,
         child_logical_identity: crate::driver::scheduler::TaskIdentity,
+        child_host_context: Option<crate::eval::request_context::AgentHostContext>,
+        child_record_context: Option<crate::control::RecordContextInput>,
         child_machine: &EvalMachine,
         child_program: &CheckedExecutionProgram,
         pending: &PendingPerform,
@@ -190,6 +289,14 @@ impl EvalMachine {
                 handlers: ctx.task.handler_stack.split_off(at + 1),
                 retries: ctx.task.retry_stack.split_off(retry_at),
                 model_policy: std::mem::replace(&mut ctx.task.model_policy, owner_policy),
+                host_context: child_host_context.clone().map(|context| {
+                    ctx.task
+                        .borrow_agent_host_context(context, Some(handler.scope_id))
+                }),
+                record_context: child_record_context
+                    .clone()
+                    .map(|(source, guards)| ctx.task.borrow_record_context(source, guards)),
+                borrowed_handler: child_host_context.as_ref().map(|_| handler.clone()),
                 projection,
                 calls: TaskCallLease {
                     total: self.active_call_depth.clone(),
@@ -197,9 +304,16 @@ impl EvalMachine {
                 },
                 span: pending.span,
             };
-            action.continuation = Continuation::TaskResume(TaskHandlerContinuation(Rc::new(
-                RefCell::new(Some(saved)),
-            )));
+            let continuation = TaskHandlerContinuation(Rc::new(RefCell::new(Some(saved))));
+            if let Some(loan) = continuation
+                .0
+                .borrow()
+                .as_ref()
+                .and_then(|saved| saved.host_context.as_ref())
+            {
+                loan.attach(&continuation);
+            }
+            action.continuation = Continuation::TaskResume(continuation);
             self.program_scope = scope;
             self.resync_residual_mirror();
             self.input = Some(MachineInput::Signal(ControlSignal::pending_perform(action)));
@@ -343,6 +457,8 @@ impl EvalMachine {
             Ok(value) => value,
             Err(reason) => return fail(reason),
         };
+        drop(saved.host_context.take());
+        drop(saved.record_context.take());
         ctx.task.handler_stack.append(&mut saved.handlers);
         ctx.task.retry_stack.append(&mut saved.retries);
         ctx.task.model_policy = saved.model_policy;

@@ -49,7 +49,7 @@ impl EvalContext<'_> {
         span: Span,
     ) -> Result<etas_types::TypeId, ExecutionFault> {
         bindings
-            .substitution(&self.checked.type_store)
+            .indexed_substitution(&self.checked.type_store, self.plan.type_lookup())
             .substitute(ty)
             .map_err(|error| {
                 ExecutionFault::new(

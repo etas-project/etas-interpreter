@@ -14,6 +14,7 @@ use super::{
 
 #[derive(Clone, Debug)]
 pub enum InterpValue {
+    Agent(super::AgentReference),
     ScopedHandler(Box<super::ScopedHandlerValue>),
     Existential(Box<super::ExistentialValue>),
     Unit,
@@ -118,6 +119,7 @@ impl Eq for InterpValue {}
 impl InterpValue {
     pub(crate) fn kind_name(&self) -> &'static str {
         match self {
+            Self::Agent(_) => "Agent",
             Self::ScopedHandler(_) => "Handler",
             Self::Existential(_) => "Existential",
             Self::Unit => "Unit",

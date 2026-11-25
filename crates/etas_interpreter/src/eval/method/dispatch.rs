@@ -15,7 +15,8 @@ impl EvalContext<'_> {
                 span,
             );
         };
-        let MethodReceiver::Value { slot } = fact.receiver else {
+        let (MethodReceiver::Value { slot } | MethodReceiver::Updating { slot }) = fact.receiver
+        else {
             unreachable!()
         };
         match self.prepared_method_target(expr, Some(&receiver), frame, span) {
@@ -49,7 +50,7 @@ impl EvalContext<'_> {
                 frame,
             );
         }
-        if fact.receiver.is_updating() {
+        if fact.receiver.is_updating() && !fact.kind.is_agent() {
             return self.resume_call_args(
                 CallArgsState {
                     call: dispatch.expr,
@@ -116,7 +117,9 @@ impl EvalContext<'_> {
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
         let evaluated_args = match (receiver_mode, receiver) {
-            (MethodReceiver::Value { .. }, Some(value)) => vec![value],
+            (MethodReceiver::Value { .. } | MethodReceiver::Updating { .. }, Some(value)) => {
+                vec![value]
+            }
             (MethodReceiver::Associated, None) | (MethodReceiver::Component, Some(_)) => Vec::new(),
             _ => {
                 return ControlSignal::missing_checked_fact(

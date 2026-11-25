@@ -16,6 +16,37 @@ pub enum WorkflowEventLayer {
 
 #[derive(Clone, Debug, PartialEq)]
 pub enum WorkflowEvent {
+    AgentBoundary {
+        action: String,
+        resource: String,
+        request: Option<u64>,
+        parent_request: Option<u64>,
+        instance: Option<u64>,
+        method: Option<u32>,
+        source: u32,
+        revision: Option<String>,
+    },
+    AgentCreated {
+        instance: u64,
+        scope: u64,
+    },
+    AgentRequestQueued {
+        instance: u64,
+        request: u64,
+        updating: bool,
+    },
+    AgentRequestAdmitted {
+        instance: u64,
+        request: u64,
+        updating: bool,
+        version: u64,
+    },
+    AgentRequestSettled {
+        instance: u64,
+        request: u64,
+        committed: bool,
+        version: u64,
+    },
     StepStarted(WorkflowStepId),
     StepCompleted(WorkflowStepId),
     ScopeEntered {

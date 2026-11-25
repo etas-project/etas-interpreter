@@ -11,13 +11,13 @@ enum Link { End, Next(Link) }
 flow main() -> i32 {
     var chain = Link.End;
     var count: i32 = 0;
-    while count < 1000 limit Iterations(2000) {
+    while count < 1000 {
         chain = Link.Next(chain);
         count = count + 1;
     }
     checkpoint("deep-adt");
     var visited: i32 = 0;
-    while visited < count limit Iterations(2000) {
+    while visited < count {
         match chain {
             Link.Next(next) => { chain = next; visited = visited + 1; },
             Link.End => { return -1; },

@@ -156,6 +156,16 @@ fn same_node<'a>(a: &'a ValueSnapshot, b: &'a ValueSnapshot, pending: &mut Pendi
         (V::Provenance(a), V::Provenance(b)) => a == b,
         (V::ModelResponse(a), V::ModelResponse(b)) => a == b,
         (V::MemoryWriteIntent(a), V::MemoryWriteIntent(b)) => a == b,
+        (
+            V::ClockDomain {
+                ty: a_ty,
+                domain: a,
+            },
+            V::ClockDomain {
+                ty: b_ty,
+                domain: b,
+            },
+        ) => a_ty == b_ty && a == b,
         (V::CodeIdentity { ty: a, identity: x }, V::CodeIdentity { ty: b, identity: y }) => {
             a == b && x == y
         }

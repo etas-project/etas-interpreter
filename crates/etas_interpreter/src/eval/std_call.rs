@@ -1311,7 +1311,7 @@ impl<'a> EvalContext<'a> {
     ) -> ControlSignal {
         match callable {
             TcpCallable::Connect => {
-                let [host, port, _options] = call_args.as_slice() else {
+                let [host, port, options] = call_args.as_slice() else {
                     return self.invalid_arguments_abort(
                         span,
                         "std.net.tcp.connect expects Host, Port, TcpOptions",
@@ -1322,10 +1322,16 @@ impl<'a> EvalContext<'a> {
                         self.string_support_argument(host, &["host", "name"], "Host", span,)
                     );
                 let port = std_value!(self.port_argument(port, span));
+                let options = if self.checked.hir.source_standard_types {
+                    std_value!(self.source_tcp_options(options, span))
+                } else {
+                    Default::default()
+                };
                 ControlSignal::pending_host(PendingHostBoundary {
                     request: HostBoundaryRequest::Tcp(TcpConnectRequest {
                         id: self.next_host_request_id(),
                         operation: TcpConnectOperation::Connect {
+                            options,
                             endpoint: TcpEndpoint { host, port },
                         },
                         authority: self.host_authority(),
@@ -1379,26 +1385,44 @@ impl<'a> EvalContext<'a> {
                 );
             }
             StreamCallable::WriteAll => {
-                let [stream, body] = call_args.as_slice() else {
-                    return self.invalid_arguments_abort(
-                        span,
-                        "std.stream.write_all expects ByteStream and bytes",
-                    );
-                };
+                let (stream, body, timeout) =
+                    match call_args.as_slice() {
+                        [stream, body] => (stream, body, None),
+                        [stream, body, timeout] => (stream, body, Some(timeout)),
+                        _ => return self.invalid_arguments_abort(
+                            span,
+                            "std.stream.write_all expects ByteStream, bytes and optional Timeout",
+                        ),
+                    };
+                let timeout_ms = std_value!(self.optional_timeout_ms(timeout, span));
                 let stream = std_value!(self.stream_ref_argument(stream, span));
                 let body = std_value!(self.bytes_argument(body, "std.stream.write_all body", span));
                 (
-                    StreamOperation::WriteAll { stream, body },
+                    StreamOperation::WriteAll {
+                        stream,
+                        body,
+                        timeout_ms,
+                    },
                     HostBoundaryDecode::Unit,
                 )
             }
             StreamCallable::Flush => {
-                let [stream] = call_args.as_slice() else {
-                    return self
-                        .invalid_arguments_abort(span, "std.stream.flush expects ByteStream");
+                let (stream, timeout) = match call_args.as_slice() {
+                    [stream] => (stream, None),
+                    [stream, timeout] => (stream, Some(timeout)),
+                    _ => {
+                        return self.invalid_arguments_abort(
+                            span,
+                            "std.stream.flush expects ByteStream and optional Timeout",
+                        );
+                    }
                 };
+                let timeout_ms = std_value!(self.optional_timeout_ms(timeout, span));
                 let stream = std_value!(self.stream_ref_argument(stream, span));
-                (StreamOperation::Flush { stream }, HostBoundaryDecode::Unit)
+                (
+                    StreamOperation::Flush { stream, timeout_ms },
+                    HostBoundaryDecode::Unit,
+                )
             }
             StreamCallable::Close => {
                 let [stream] = call_args.as_slice() else {
@@ -1432,7 +1456,7 @@ impl<'a> EvalContext<'a> {
     ) -> ControlSignal {
         match callable {
             TlsCallable::Connect => {
-                let [stream, server_name, _config] = call_args.as_slice() else {
+                let [stream, server_name, config] = call_args.as_slice() else {
                     return self.invalid_arguments_abort(
                         span,
                         "std.tls.connect expects TcpStream, Host, TlsConfig",
@@ -1445,10 +1469,16 @@ impl<'a> EvalContext<'a> {
                     "Host",
                     span,
                 ));
+                let options = if self.checked.hir.source_standard_types {
+                    std_value!(self.source_tls_options(config, span))
+                } else {
+                    Default::default()
+                };
                 ControlSignal::pending_host(PendingHostBoundary {
                     request: HostBoundaryRequest::Tls(TlsConnectRequest {
                         id: self.next_host_request_id(),
                         operation: TlsConnectOperation::Connect {
+                            options,
                             stream,
                             server_name,
                         },
@@ -2133,13 +2163,16 @@ impl<'a> EvalContext<'a> {
                 "ByteStream must be a sealed host handle",
             ));
         };
-        handle.byte_stream_ref().ok_or_else(|| {
-            ExecutionFault::new(
-                AnalysisDiagnosticCode::InvalidArguments,
-                span,
-                "host handle is not a ByteStream",
-            )
-        })
+        handle
+            .byte_stream_ref()
+            .map(|stream| stream.for_read_owner(&format!("{:?}", self.task.logical_identity)))
+            .ok_or_else(|| {
+                ExecutionFault::new(
+                    AnalysisDiagnosticCode::InvalidArguments,
+                    span,
+                    "host handle is not a ByteStream",
+                )
+            })
     }
 
     fn tcp_stream_ref_argument(

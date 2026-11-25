@@ -100,7 +100,19 @@ impl EvalMachine {
     }
     pub(crate) fn run_until_yield(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
         loop {
+            match self.abandon_cancelled_agent_handler(ctx) {
+                Ok(true) => return MachinePoll::ProgramChanged,
+                Ok(false) => {}
+                Err(fault) => return MachinePoll::Fault(fault),
+            }
             let poll = self.run_until_boundary(ctx);
+            if matches!(poll, MachinePoll::Cancelled(_)) {
+                match self.abandon_cancelled_agent_handler(ctx) {
+                    Ok(true) => return MachinePoll::ProgramChanged,
+                    Ok(false) => {}
+                    Err(fault) => return MachinePoll::Fault(fault),
+                }
+            }
             match &poll {
                 MachinePoll::Fault(_) | MachinePoll::Cancelled(_) => {
                     ctx.task.receiver_updates.abort_all()
@@ -123,6 +135,13 @@ impl EvalMachine {
     }
 
     fn run_until_boundary(&mut self, ctx: &mut EvalContext<'_>) -> MachinePoll {
+        for guard in self
+            .pending_record_constructions
+            .drain(..)
+            .filter_map(|weak| weak.upgrade())
+        {
+            ctx.task.register_record_construction(&guard);
+        }
         let step_span = crate::diagnostics::item_span(ctx.checked, ctx.entry_item);
         if let Some(scope) = &self.program_scope
             && (!std::sync::Arc::ptr_eq(ctx.checked, scope.program())
@@ -148,6 +167,13 @@ impl EvalMachine {
         }
         let mirror = ctx.task.residual.mirror.clone();
         self.join_residual_mirror(&mirror);
+        for guard in self
+            .pending_record_constructions
+            .drain(..)
+            .filter_map(|weak| weak.upgrade())
+        {
+            ctx.task.register_record_construction(&guard);
+        }
         let Some(input) = self.input.take() else {
             return machine_fault(
                 "evaluation machine was polled without a start or resume input".to_owned(),
@@ -629,7 +655,13 @@ impl EvalMachine {
                 ControlSignal::Host(pending) => {
                     return MachinePoll::Yield(PendingBoundary::Host(pending));
                 }
-                ControlSignal::Task(pending) => {
+                ControlSignal::Task(mut pending) => {
+                    if let crate::control::PendingTaskControl::ManagedAgent(managed) =
+                        pending.as_mut()
+                        && let Err(fault) = ctx.observe_managed_agent(managed)
+                    {
+                        return MachinePoll::Fault(fault);
+                    }
                     return MachinePoll::Yield(PendingBoundary::Task(pending));
                 }
                 ControlSignal::Fault(fault) => return MachinePoll::Fault(*fault),

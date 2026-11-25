@@ -5,14 +5,20 @@ use crate::value::HostJsonSupportValue as Json;
 // These backings expose no mutation. Checkpoint capture and ordinary value reads
 // share them; host/codec ingress transfers already-validated owned child buffers.
 macro_rules! storage {
-    ($name:ident, $node:ident, $element:ty, $cursor:ident $(, $field:ident: $ty:ty = $initialize:expr)?) => {
-        #[derive(Clone, PartialEq, Eq)]
+    ($name:ident, $node:ident, $element:ty, $cursor:ident $(, $field:ident: $ty:ty = $initialize:expr)*) => {
+        #[derive(Clone)]
         pub struct $name(Rc<$node>);
 
-        #[derive(PartialEq, Eq)]
+        impl PartialEq for $name {
+            fn eq(&self, other: &Self) -> bool {
+                self.0.values == other.0.values
+            }
+        }
+        impl Eq for $name {}
+
         struct $node {
             values: Vec<$element>,
-            $($field: $ty,)?
+            $($field: $ty,)*
         }
 
         impl $name {
@@ -25,8 +31,8 @@ macro_rules! storage {
 
         impl From<Vec<$element>> for $name {
             fn from(values: Vec<$element>) -> Self {
-                $(let $field = ($initialize)(&values);)?
-                Self(Rc::new($node { values, $($field,)? }))
+                $(let $field = ($initialize)(&values);)*
+                Self(Rc::new($node { values, $($field,)* }))
             }
         }
 
@@ -65,9 +71,22 @@ macro_rules! storage {
     };
 }
 
-storage!(JsonArray, ArrayNode, Json, Array);
+storage!(JsonArray, ArrayNode, Json, Array,
+    has_source: bool = |values: &[Json]| values.iter().any(Json::has_source_map));
 storage!(JsonObject, ObjectNode, (String, Json), Object,
-    order: Option<Box<[usize]>> = canonical_order);
+    order: Option<Box<[usize]>> = canonical_order,
+    has_source_child: bool = |fields: &[(String, Json)]| fields.iter().any(|(_, v)| v.has_source_map()),
+    source: Option<(etas_types::TypeId, crate::value::SharedValue)> = |_| None);
+
+impl Json {
+    pub(crate) fn has_source_map(&self) -> bool {
+        match self {
+            Self::Array(array) => array.0.has_source,
+            Self::Object(object) => object.0.source.is_some() || object.0.has_source_child,
+            _ => false,
+        }
+    }
+}
 
 fn canonical_order(fields: &[(String, Json)]) -> Option<Box<[usize]>> {
     if fields.windows(2).all(|pair| pair[0].0 <= pair[1].0) {
@@ -84,6 +103,21 @@ pub(crate) struct JsonObjectIter<'a> {
 }
 
 impl JsonObject {
+    pub(super) fn from_source(
+        fields: Vec<(String, Json)>,
+        ty: etas_types::TypeId,
+        map: crate::value::SharedValue,
+    ) -> Self {
+        let mut object = Self::from(fields);
+        Rc::get_mut(&mut object.0).expect("new JSON object").source = Some((ty, map));
+        object
+    }
+
+    pub(super) fn source(&self, expected: etas_types::TypeId) -> Option<crate::value::SharedValue> {
+        let (ty, value) = self.0.source.as_ref()?;
+        (*ty == expected).then(|| value.clone())
+    }
+
     pub(crate) fn canonical_iter(&self) -> JsonObjectIter<'_> {
         JsonObjectIter {
             object: self,

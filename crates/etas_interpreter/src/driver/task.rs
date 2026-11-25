@@ -72,6 +72,12 @@ pub(super) async fn resume_root_wait<'host>(
     reactor: &mut TaskHostReactor<'host>,
     machine: &mut crate::eval::machine::EvalMachine,
 ) -> Result<(), EvaluationOutcome> {
+    if machine
+        .abandon_cancelled_agent_handler(eval)
+        .map_err(|fault| EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault)))?
+    {
+        return Ok(());
+    }
     if matches!(machine.root_wait, Some(RootTaskWait::Ready(_))) {
         let Some(RootTaskWait::Ready(input)) = machine.root_wait.take() else {
             unreachable!()
@@ -141,6 +147,22 @@ pub(super) async fn resume_root_wait<'host>(
     Ok(())
 }
 
+fn start_managed<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    control: PendingTaskControl,
+) -> dispatch::managed_agent::ManagedDispatchStart<'host> {
+    match control {
+        PendingTaskControl::ManagedAgent(pending) => {
+            dispatch::managed_agent::begin(eval, host, *pending)
+        }
+        PendingTaskControl::ManagedAuthorization(pending) => {
+            dispatch::managed_agent::advance(eval, host, *pending)
+        }
+        _ => unreachable!("managed admission control"),
+    }
+}
+
 pub(super) async fn control_from_root<'host>(
     eval: &mut EvalContext<'_>,
     host: &'host dyn HostServices,
@@ -149,19 +171,77 @@ pub(super) async fn control_from_root<'host>(
     control: PendingTaskControl,
 ) -> Result<(), EvaluationOutcome> {
     match control {
+        PendingTaskControl::NativeAuthorization(pending) => {
+            match dispatch::authorization::advance(eval, host, *pending) {
+                dispatch::authorization::AuthorizationStart::Complete(signal) => {
+                    machine.resume(signal)
+                }
+                dispatch::authorization::AuthorizationStart::Pending(pending) => {
+                    machine.root_wait = Some(RootTaskWait::Host(
+                        reactor.start_authorization(HostOwner::Root, pending),
+                    ));
+                    return await_root_host(eval, host, reactor, machine).await;
+                }
+            }
+            Ok(())
+        }
+        PendingTaskControl::AuthorizedNative(pending) => {
+            match Box::pin(dispatch::authorization::dispatch(
+                eval, host, machine, *pending,
+            ))
+            .await
+            {
+                dispatch::authorization::AuthorizedDispatchStart::Signal(signal) => {
+                    machine.resume(signal)
+                }
+                dispatch::authorization::AuthorizedDispatchStart::Ready => {}
+                dispatch::authorization::AuthorizedDispatchStart::Failed => {
+                    return Err(evaluation_failure(eval));
+                }
+                dispatch::authorization::AuthorizedDispatchStart::Pending(pending) => {
+                    machine.root_wait = Some(RootTaskWait::Host(
+                        reactor.start_authorized(HostOwner::Root, pending),
+                    ));
+                    return await_root_host(eval, host, reactor, machine).await;
+                }
+            }
+            Ok(())
+        }
+        control @ (PendingTaskControl::ManagedAgent(_)
+        | PendingTaskControl::ManagedAuthorization(_)) => {
+            match start_managed(eval, host, control) {
+                dispatch::managed_agent::ManagedDispatchStart::Complete(signal) => {
+                    machine.resume(signal)
+                }
+                dispatch::managed_agent::ManagedDispatchStart::Pending(pending) => {
+                    machine.root_wait = Some(RootTaskWait::Host(
+                        reactor.start_managed(HostOwner::Root, pending),
+                    ));
+                    return await_root_host(eval, host, reactor, machine).await;
+                }
+            }
+            Ok(())
+        }
+        PendingTaskControl::AgentReply {
+            task, continuation, ..
+        } => await_from_root(eval, host, reactor, machine, task, continuation).await,
         PendingTaskControl::NextCompletion { .. } => Err(task_fault(
             eval,
             "completion observation requires a scheduled scope owner",
         )),
-        PendingTaskControl::ResumeHandled {
-            task,
-            handler,
-            value,
-            ..
-        } => {
-            eval.scheduler
-                .resume_handled_action(task, handler, value)
-                .map_err(|error| scheduler_failure(eval, error))?;
+        control @ (PendingTaskControl::ResumeHandled { .. }
+        | PendingTaskControl::RestoreHandlerWait { .. }) => {
+            if let PendingTaskControl::ResumeHandled {
+                task,
+                handler,
+                value,
+                ..
+            } = control
+            {
+                eval.scheduler
+                    .resume_handled_action(task, handler, value)
+                    .map_err(|error| scheduler_failure(eval, error))?;
+            }
             resume_root_wait(eval, host, reactor, machine).await
         }
         PendingTaskControl::Run { scope, .. } => {
@@ -234,6 +314,14 @@ async fn await_scope_outcome<'host>(
     machine: &mut crate::eval::machine::EvalMachine,
 ) -> Result<Option<TaskOutcome>, EvaluationOutcome> {
     loop {
+        if machine
+            .abandon_cancelled_agent_handler(eval)
+            .map_err(|fault| {
+                EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+            })?
+        {
+            return Ok(None);
+        }
         match eval.scheduler.scope_outcome(scope) {
             Ok(Some(outcome)) => return Ok(Some(outcome)),
             Ok(None) => {}
@@ -304,6 +392,13 @@ async fn settle_tasks<'host>(
     mut root: EvaluationOutcome,
     machine: &mut crate::eval::machine::EvalMachine,
 ) -> EvaluationOutcome {
+    if let Err(error) = eval
+        .scheduler
+        .close_agent_scope(crate::driver::scheduler::TaskScopeId(0))
+    {
+        return scheduler_failure(eval, error);
+    }
+    eval.task.agent_initializations.clear();
     record_cancellation_events(eval);
     if !matches!(root, EvaluationOutcome::Completed(_)) {
         if let Err(outcome) = cancel_and_drain(eval, host, reactor, machine).await {
@@ -361,6 +456,14 @@ pub(super) async fn await_root_host<'host>(
         return Ok(());
     }
     loop {
+        if machine
+            .abandon_cancelled_agent_handler(eval)
+            .map_err(|fault| {
+                EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+            })?
+        {
+            return Ok(());
+        }
         if machine.root_wait.is_none() {
             return Ok(());
         }
@@ -394,6 +497,14 @@ async fn await_outcome<'host>(
     machine: &mut crate::eval::machine::EvalMachine,
 ) -> Result<Option<TaskOutcome>, EvaluationOutcome> {
     loop {
+        if machine
+            .abandon_cancelled_agent_handler(eval)
+            .map_err(|fault| {
+                EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+            })?
+        {
+            return Ok(None);
+        }
         if let Some(failure) = primary_failure(eval) {
             if let Err(error) = eval
                 .scheduler
@@ -449,6 +560,36 @@ fn resume_task_wakeup(
     task: &mut ScheduledTask,
     wakeup: Option<TaskWakeup>,
 ) -> Result<(), EvaluationOutcome> {
+    if task
+        .local
+        .cancelled_agent_handler()
+        .map_err(|error| scheduler_failure(eval, error.into()))?
+        .is_some()
+    {
+        let (program, floor) = task.machine.program_scope().map_or_else(
+            || {
+                (
+                    task.program
+                        .clone()
+                        .expect("Handler owner has a checked program"),
+                    task.handler_floor,
+                )
+            },
+            |scope| (scope.program, scope.handler_floor),
+        );
+        let mut child = eval.scheduled_task_context(&program, &mut task.local, handle.task, floor);
+        if task
+            .machine
+            .abandon_cancelled_agent_handler(&mut child)
+            .map_err(|fault| {
+                EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+            })?
+        {
+            task.host_wait = None;
+            task.waiting_continuation = None;
+            return Ok(());
+        }
+    }
     match wakeup {
         Some(TaskWakeup::Completion { scope, event }) => {
             eval.events.push(WorkflowEvent::TaskReady {
@@ -589,6 +730,19 @@ async fn drive_one_with_root<'host>(
     mut root: Option<&mut crate::eval::machine::EvalMachine>,
 ) -> Result<bool, EvaluationOutcome> {
     record_cancellation_events(eval);
+    let terminal_events = eval.scheduler.terminal_event_count();
+    eval.scheduler
+        .reap_closed_agents()
+        .map_err(|error| scheduler_failure(eval, error))?;
+    eval.scheduler
+        .wake_cancelled_agent_handlers()
+        .map_err(|error| scheduler_failure(eval, error))?;
+    eval.scheduler
+        .finish_available_host_drains()
+        .map_err(|error| scheduler_failure(eval, error))?;
+    for (task, execution) in eval.scheduler.take_resource_drains() {
+        reactor.drain_resources(task, execution);
+    }
     if drain_cpu_completions(eval)? {
         return Ok(true);
     }
@@ -605,6 +759,12 @@ async fn drive_one_with_root<'host>(
     let ready = dispatch_ready(eval)?;
     record_resource_events(eval);
     let Some(handle) = ready else {
+        // Reaping an owned Agent or finishing a Host drain may settle a
+        // wait without enqueuing another runnable body.
+        if eval.scheduler.terminal_event_count() > terminal_events {
+            record_cancellation_events(eval);
+            return Ok(true);
+        }
         if !eval.cpu_jobs.is_empty() {
             wait_for_cpu_or_host(eval, reactor).await?;
             return Ok(true);
@@ -764,6 +924,105 @@ async fn drive_one_with_root<'host>(
         }
         if let PendingBoundary::Task(control) = boundary {
             match *control {
+                PendingTaskControl::NativeAuthorization(pending) => {
+                    match dispatch::authorization::advance(&mut child, host, *pending) {
+                        dispatch::authorization::AuthorizationStart::Complete(signal) => {
+                            task.machine.resume(signal);
+                            continue;
+                        }
+                        dispatch::authorization::AuthorizationStart::Pending(pending) => {
+                            let operation = pending.operation_id();
+                            drop(child);
+                            task.host_wait =
+                                Some(reactor.start_authorization(HostOwner::Task(handle), pending));
+                            eval.scheduler
+                                .restore_running(handle, task)
+                                .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                                .map_err(|error| scheduler_failure(eval, error))?;
+                            return Ok(true);
+                        }
+                    }
+                }
+                PendingTaskControl::AuthorizedNative(pending) => {
+                    match Box::pin(dispatch::authorization::dispatch(
+                        &mut child,
+                        host,
+                        &mut task.machine,
+                        *pending,
+                    ))
+                    .await
+                    {
+                        dispatch::authorization::AuthorizedDispatchStart::Signal(signal) => {
+                            task.machine.resume(signal);
+                            continue;
+                        }
+                        dispatch::authorization::AuthorizedDispatchStart::Ready => continue,
+                        dispatch::authorization::AuthorizedDispatchStart::Failed => {
+                            let outcome = evaluation_failure(&mut child);
+                            drop(child);
+                            finish_task(eval, handle, task, outcome)?;
+                            return Ok(true);
+                        }
+                        dispatch::authorization::AuthorizedDispatchStart::Pending(pending) => {
+                            drop(child);
+                            let wait = reactor.start_authorized(HostOwner::Task(handle), pending);
+                            let operation = wait.operation_id();
+                            task.host_wait = Some(wait);
+                            eval.scheduler
+                                .restore_running(handle, task)
+                                .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                                .map_err(|error| scheduler_failure(eval, error))?;
+                            return Ok(true);
+                        }
+                    }
+                }
+                control @ (PendingTaskControl::ManagedAgent(_)
+                | PendingTaskControl::ManagedAuthorization(_)) => {
+                    match start_managed(&mut child, host, control) {
+                        dispatch::managed_agent::ManagedDispatchStart::Complete(signal) => {
+                            task.machine.resume(signal);
+                            continue;
+                        }
+                        dispatch::managed_agent::ManagedDispatchStart::Pending(pending) => {
+                            let operation = pending.operation_id();
+                            drop(child);
+                            task.host_wait =
+                                Some(reactor.start_managed(HostOwner::Task(handle), pending));
+                            eval.scheduler
+                                .restore_running(handle, task)
+                                .and_then(|()| eval.scheduler.wait_for_host(handle, operation))
+                                .map_err(|error| scheduler_failure(eval, error))?;
+                            return Ok(true);
+                        }
+                    }
+                }
+                PendingTaskControl::AgentReply {
+                    task: target,
+                    continuation,
+                    ..
+                } => {
+                    task.waiting_continuation = Some(TaskResume::Await(continuation));
+                    drop(child);
+                    eval.scheduler
+                        .restore_running(handle, task)
+                        .map_err(|error| scheduler_failure(eval, error))?;
+                    if let AwaitDecision::Ready(outcome) = eval
+                        .scheduler
+                        .await_task(handle, target)
+                        .map_err(|error| scheduler_failure(eval, error))?
+                    {
+                        eval.scheduler
+                            .wake_task_wait(
+                                handle,
+                                TaskWakeup::Task {
+                                    completed: target,
+                                    outcome,
+                                },
+                            )
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                    }
+                    return Ok(true);
+                }
                 PendingTaskControl::NextCompletion {
                     scope,
                     result_type,
@@ -815,16 +1074,20 @@ async fn drive_one_with_root<'host>(
                         }
                     }
                 }
-                PendingTaskControl::ResumeHandled {
-                    task: target,
-                    handler,
-                    value,
-                    ..
-                } => {
+                control @ (PendingTaskControl::ResumeHandled { .. }
+                | PendingTaskControl::RestoreHandlerWait { .. }) => {
                     drop(child);
-                    eval.scheduler
-                        .resume_handled_action(target, handler, value)
-                        .map_err(|error| scheduler_failure(eval, error))?;
+                    if let PendingTaskControl::ResumeHandled {
+                        task: target,
+                        handler,
+                        value,
+                        ..
+                    } = control
+                    {
+                        eval.scheduler
+                            .resume_handled_action(target, handler, value)
+                            .map_err(|error| scheduler_failure(eval, error))?;
+                    }
                     match task
                         .machine
                         .root_wait
@@ -1178,6 +1441,8 @@ async fn drive_one_with_root<'host>(
                     .cloned()
                     .collect::<Vec<_>>();
                 let child_logical_identity = child.task.logical_identity;
+                let child_host_context = child.task.capture_agent_host_context();
+                let child_record_context = child.task.capture_record_context();
                 drop(child);
                 let mut owner = None;
                 let mut parent = task.local.parent;
@@ -1302,6 +1567,8 @@ async fn drive_one_with_root<'host>(
                             &mut caller_ctx,
                             handle,
                             child_logical_identity,
+                            child_host_context.clone(),
+                            child_record_context.clone(),
                             &task.machine,
                             &program,
                             &perform,
@@ -1406,6 +1673,8 @@ async fn drive_one_with_root<'host>(
                             eval,
                             handle,
                             child_logical_identity,
+                            child_host_context.clone(),
+                            child_record_context.clone(),
                             &task.machine,
                             &program,
                             &perform,
@@ -1731,11 +2000,21 @@ pub(super) fn settle_host_reply(
     eval: &mut EvalContext<'_>,
     ready: ReadyTaskHost,
 ) -> Result<(), EvaluationOutcome> {
-    let ReadyTaskHost {
-        owner,
-        operation,
-        completed,
-    } = ready;
+    let (owner, operation, completed) = match ready {
+        ReadyTaskHost::Cleanup { task, report } => {
+            let report = report.map_err(|error| scheduler_failure(eval, error.into()))?;
+            eval.scheduler
+                .finish_resource_drain(task, report)
+                .map_err(|error| scheduler_failure(eval, error))?;
+            record_cancellation_events(eval);
+            return Ok(());
+        }
+        ReadyTaskHost::Operation {
+            owner,
+            operation,
+            completed,
+        } => (owner, operation, completed),
+    };
     let stage = |ctx: &mut EvalContext<'_>| {
         operation.context.run(ctx, |ctx| {
             let mut input = crate::eval::machine::EvalMachine::new();
@@ -1807,6 +2086,12 @@ pub(super) fn commit_host_completion(
     completed: CompletedTaskHost,
 ) -> Result<(), EvaluationOutcome> {
     let signal = match completed {
+        CompletedTaskHost::Authorization(completed) => {
+            Some(dispatch::authorization::finish(eval, completed))
+        }
+        CompletedTaskHost::Managed(completed) => {
+            Some(dispatch::managed_agent::finish(eval, completed))
+        }
         CompletedTaskHost::Console(completed) => dispatch::console::finish(eval, completed),
         CompletedTaskHost::Command(completed) => {
             dispatch::command::finish(eval, machine, completed)
@@ -2102,11 +2387,12 @@ fn record_scope_exit(
         decision: decision.to_owned(),
         task: task.map(|task| task.0),
     });
-    let budget = eval
-        .host_context
-        .budget
-        .snapshot()
+    let accounts = eval
+        .task
+        .host_budget()
+        .account_snapshots()
         .expect("task scope budget observation succeeds");
+    let budget = &accounts[0];
     eval.events.push(WorkflowEvent::ScopeBudgetObserved {
         scope: scope.0,
         consumed_tokens: budget.consumed_tokens,
@@ -2125,6 +2411,9 @@ fn record_scope_exit(
 }
 
 pub(super) fn record_cancellation_events(eval: &mut EvalContext<'_>) {
+    for event in eval.scheduler.take_agent_events() {
+        eval.events.push(event);
+    }
     record_resource_events(eval);
     for (handle, reason) in eval.scheduler.take_cancellation_events() {
         for (job, record) in &eval.cpu_jobs {
@@ -2194,11 +2483,26 @@ fn primary_failure(eval: &mut EvalContext<'_>) -> Option<EvaluationOutcome> {
     let handle = eval.scheduler.primary_failure()?;
     match eval.scheduler.outcome(handle) {
         Ok(Some(TaskOutcome::Failed(failure))) => Some(EvaluationOutcome::Failed(failure.clone())),
+        Ok(Some(TaskOutcome::Raised(perform))) => {
+            Some(EvaluationOutcome::Failed(crate::api::RunFailure::Language(
+                Box::new(crate::diagnostics::unhandled_effect_action(perform)),
+            )))
+        }
         _ => None,
     }
 }
 
 fn scheduler_deadlock(eval: &mut EvalContext<'_>) -> EvaluationOutcome {
+    if let Some(message) = eval.scheduler.agent_wait_cycle() {
+        let span = crate::diagnostics::item_span(eval.checked, eval.entry_item);
+        let fault = crate::control::ExecutionFault::new(
+            AnalysisDiagnosticCode::AgentRequestDeadlock,
+            span,
+            message,
+        );
+        eval.diagnostics.push(fault.clone().into_diagnostic());
+        return EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault));
+    }
     task_fault(
         eval,
         "structured task scope has no runnable task but still owns unfinished work",

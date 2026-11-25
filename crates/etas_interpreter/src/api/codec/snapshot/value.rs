@@ -214,6 +214,7 @@ pub(super) fn message<'a>(
 fn leaf(value: &ValueSnapshot) -> Value {
     use ValueSnapshot as V;
     match value {
+        V::ClockDomain { ty, domain } => json!({"kind":"clock_domain", "ty":ty.0, "domain":domain}),
         V::TaskRuntime(value) => json!({"kind":"task_runtime", "value":value}),
         V::MemoryWriteIntent(value) => {
             json!({"kind":"memory_write_intent","ty":value.ty.0,"key_type":value.key_type.0,"value_type":value.value_type.0,"intent":value.encoded()})

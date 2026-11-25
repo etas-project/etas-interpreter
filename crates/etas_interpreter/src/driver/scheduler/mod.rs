@@ -1,3 +1,5 @@
+mod agent;
+pub(crate) use agent::AgentTurn;
 mod completion;
 mod continuation;
 mod group;
@@ -5,6 +7,7 @@ mod host;
 mod host_wait;
 mod policy;
 mod resource;
+mod resource_scope;
 mod snapshot;
 mod task;
 
@@ -102,6 +105,7 @@ pub(crate) enum ScopeDecision {
 /// One structured task scope. Tasks remain owned here after their language
 /// handles are dropped, and terminal outcomes remain cached for repeat awaits.
 pub(crate) struct TaskScheduler {
+    agents: agent::AgentInstances,
     next_scope: u64,
     next_task: u64,
     groups: BTreeMap<TaskScopeId, group::TaskGroup>,
@@ -127,6 +131,7 @@ impl TaskScheduler {
             group::TaskGroup::new(None, concurrency, TaskGroupPolicy::Run),
         );
         Self {
+            agents: Default::default(),
             next_scope: owner.0.checked_add(1).expect("task scope id exhausted"),
             next_task: 0,
             groups,
@@ -451,6 +456,10 @@ impl TaskScheduler {
         &mut self,
     ) -> Vec<(TaskHandle, etas_host::execution::CancellationReason)> {
         std::mem::take(&mut self.cancellation_events)
+    }
+
+    pub(crate) fn terminal_event_count(&self) -> usize {
+        self.terminal_events.len()
     }
 
     pub(crate) fn take_terminal_events(
@@ -1195,18 +1204,71 @@ impl TaskScheduler {
         reason: etas_host::execution::CancellationReason,
     ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        // Communication scopes do not describe lifetime ownership: an Agent
+        // request has its own group but remains a child of its calling task.
+        let mut children_of = BTreeMap::<TaskId, Vec<TaskId>>::new();
+        for (child, task) in &self.tasks {
+            if let Some(TaskIdentity::Scheduled(parent)) = task.local.parent {
+                children_of.entry(parent).or_default().push(*child);
+            }
+        }
+        let mut tree = vec![id];
+        let mut next = 0;
+        while next < tree.len() {
+            if let Some(children) = children_of.get(&tree[next]) {
+                tree.extend(children.iter().copied());
+            }
+            next += 1;
+        }
+        let mut children = Vec::new();
+        for id in tree.into_iter().skip(1) {
+            let task = &self.tasks[&id];
+            children.push((
+                TaskHandle {
+                    owner: task.scope,
+                    task: id,
+                },
+                task.local.execution.signal()?.cause()?.is_some(),
+            ));
+        }
+        self.cancel_one(handle, reason.clone(), false)?;
+        for (child, already_cancelled) in children.into_iter().rev() {
+            // The parent's token already carries the original cancellation
+            // cause. Also notify the scheduler so parked children can settle.
+            if self.tasks[&child.task].state == TaskState::Running {
+                // An executing body still reports its in-flight completion;
+                // it observes the inherited token at its next safe point.
+                if !already_cancelled {
+                    self.cancellation_events.push((child, reason.clone()));
+                }
+            } else {
+                self.cancel_one(child, reason.clone(), !already_cancelled)?;
+            }
+        }
+        Ok(())
+    }
+
+    fn cancel_one(
+        &mut self,
+        handle: TaskHandle,
+        reason: etas_host::execution::CancellationReason,
+        notify_inherited: bool,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
         let task = self.tasks.get_mut(&id).expect("resolved task");
         if task.state.is_terminal() {
             return Ok(());
         }
         let already_cancelled = task.local.execution.signal()?.cause()?.is_some();
         task.local.execution.cancel_source().stop(reason.clone())?;
-        if !already_cancelled {
+        if !already_cancelled || notify_inherited {
             self.cancellation_events.push((handle, reason));
         }
         if matches!(
             task.state,
-            TaskState::Waiting(TaskWait::Host(_) | TaskWait::HostDrain)
+            TaskState::Waiting(
+                TaskWait::Host(_) | TaskWait::HostDrain | TaskWait::ResourceChildren
+            )
         ) {
             return Ok(());
         }
@@ -1305,7 +1367,11 @@ impl TaskScheduler {
     pub(crate) fn primary_failure(&self) -> Option<TaskHandle> {
         self.tasks
             .iter()
-            .filter(|(_, task)| matches!(task.outcome, Some(TaskOutcome::Failed(_))))
+            .filter(|(id, task)| {
+                matches!(task.outcome, Some(TaskOutcome::Failed(_)))
+                    || self.is_autonomous_main(**id)
+                        && matches!(task.outcome, Some(TaskOutcome::Raised(_)))
+            })
             .min_by_key(|(id, task)| (task.source_index, **id))
             .map(|(id, _)| TaskHandle {
                 owner: self.tasks[id].scope,
@@ -1315,15 +1381,125 @@ impl TaskScheduler {
 
     /// A language body can finish while an abandoned Host supervisor still
     /// owns work. Retain its resource permits and result until that work settles.
+    pub(crate) fn take_resource_drains(
+        &mut self,
+    ) -> Vec<(TaskHandle, etas_host::execution::ExecutionScope)> {
+        self.tasks
+            .iter_mut()
+            .filter_map(|(id, task)| {
+                if task.state != TaskState::Waiting(TaskWait::HostDrain)
+                    || !task.body_finished
+                    || task.cleanup_registered
+                {
+                    return None;
+                }
+                task.cleanup_registered = true;
+                Some((
+                    TaskHandle {
+                        owner: task.scope,
+                        task: *id,
+                    },
+                    task.local.execution.clone(),
+                ))
+            })
+            .collect()
+    }
+
+    pub(crate) fn finish_available_host_drains(&mut self) -> Result<(), SchedulerError> {
+        let ready = self
+            .tasks
+            .iter()
+            .filter_map(|(id, task)| {
+                (task.state == TaskState::Waiting(TaskWait::HostDrain)
+                    && !task.body_finished
+                    && task.local.host_operations.get() == 0)
+                    .then_some(TaskHandle {
+                        owner: task.scope,
+                        task: *id,
+                    })
+            })
+            .collect::<Vec<_>>();
+        for handle in ready {
+            self.finish_host_drain(handle)?;
+        }
+        Ok(())
+    }
+
+    pub(crate) fn wake_cancelled_agent_handlers(&mut self) -> Result<(), SchedulerError> {
+        let mut ready = Vec::new();
+        for (id, task) in &self.tasks {
+            if !task.body_finished
+                && matches!(
+                    task.state,
+                    TaskState::Waiting(
+                        TaskWait::Host(_)
+                            | TaskWait::Task(_)
+                            | TaskWait::Scope(_)
+                            | TaskWait::Completion(_)
+                    )
+                )
+                && task.local.cancelled_agent_handler()?.is_some()
+            {
+                ready.push(*id);
+            }
+        }
+        for id in ready {
+            self.wakeups.remove(&id);
+            match self.tasks[&id].state {
+                TaskState::Waiting(TaskWait::Task(target)) => {
+                    self.tasks
+                        .get_mut(&target)
+                        .expect("awaited task")
+                        .waiters
+                        .retain(
+                            |waiter| !matches!(waiter, TaskWaiter::Task(waiter) if *waiter == id),
+                        );
+                }
+                TaskState::Waiting(TaskWait::Scope(scope)) => {
+                    self.groups
+                        .get_mut(&scope)
+                        .expect("awaited scope")
+                        .waiters
+                        .retain(|waiter| *waiter != id);
+                }
+                TaskState::Waiting(TaskWait::Completion(scope)) => {
+                    self.groups
+                        .get_mut(&scope)
+                        .expect("completion scope")
+                        .completion_waiter = None;
+                }
+                _ => {}
+            }
+            let task = self.tasks.get_mut(&id).expect("cancelled Handler owner");
+            task.host_wait = None;
+            task.waiting_continuation = None;
+            task.state = TaskState::Ready;
+            self.enqueue(id);
+        }
+        Ok(())
+    }
+
+    pub(crate) fn finish_resource_drain(
+        &mut self,
+        handle: TaskHandle,
+        report: etas_host::execution::TerminationReport,
+    ) -> Result<(), SchedulerError> {
+        let id = self.resolve_id(handle)?;
+        let task = self.tasks.get_mut(&id).expect("resource owner exists");
+        if report.scope() != task.local.execution.id() || !task.cleanup_registered {
+            return Err(SchedulerError::WrongOwner);
+        }
+        task.cleanup_report = Some(report);
+        self.finish_host_drain(handle)?;
+        Ok(())
+    }
+
     pub(crate) fn finish_host_drain(&mut self, handle: TaskHandle) -> Result<bool, SchedulerError> {
         let id = self.resolve_id(handle)?;
         let task = self.tasks.get_mut(&id).expect("Host owner exists");
         if task.state != TaskState::Waiting(TaskWait::HostDrain)
-            || task
-                .local
-                .host_operations
-                .as_ref()
-                .is_some_and(|count| count.get() != 0)
+            || task.local.host_operations.get() != 0
+            || task.body_finished && task.local.execution.termination()?.is_none()
         {
             return Ok(false);
         }
@@ -1331,7 +1507,7 @@ impl TaskScheduler {
             .pending_outcome
             .take()
             .expect("draining task has its body outcome");
-        if matches!(outcome, TaskOutcome::Completed(_) | TaskOutcome::Raised(_))
+        if matches!(outcome, TaskOutcome::Completed(_))
             && let Some(cause) = task.local.execution.signal()?.cause()?
         {
             outcome = TaskOutcome::Cancelled(cause);
@@ -1341,9 +1517,20 @@ impl TaskScheduler {
         Ok(true)
     }
 
-    fn terminal(&mut self, handle: TaskHandle, outcome: TaskOutcome) -> Result<(), SchedulerError> {
+    fn terminal(
+        &mut self,
+        handle: TaskHandle,
+        mut outcome: TaskOutcome,
+    ) -> Result<(), SchedulerError> {
         let id = self.resolve_id(handle)?;
+        if self.wait_for_owned_agents(handle, &outcome)? {
+            return Ok(());
+        }
+        if self.wait_for_resource_children(handle, &outcome)? {
+            return Ok(());
+        }
         let group = self.groups.get_mut(&handle.owner).expect("task scope");
+        let resource_report = group.resource_report.filter(|_| group.owner == Some(id));
         if group.completion_waiter == Some(id) {
             group.completion_waiter = None;
         }
@@ -1355,12 +1542,7 @@ impl TaskScheduler {
             if task.state.is_terminal() {
                 return Err(SchedulerError::InvalidTransition);
             }
-            if task
-                .local
-                .host_operations
-                .as_ref()
-                .is_some_and(|count| count.get() != 0)
-            {
+            if task.local.host_operations.get() != 0 {
                 task.pending_outcome = Some(outcome);
                 task.state = TaskState::Waiting(TaskWait::HostDrain);
                 task.host_wait = None;
@@ -1368,12 +1550,50 @@ impl TaskScheduler {
                 task.machine = EvalMachine::new();
                 return Ok(());
             }
+            if !task.body_finished {
+                task.local.execution.finish_body(!matches!(
+                    outcome,
+                    TaskOutcome::Raised(_) | TaskOutcome::Failed(_)
+                ))?;
+                task.body_finished = true;
+            }
+            let Some(report) = task.local.execution.termination()? else {
+                // The body is done, but its native resources/children still
+                // own work. Release the language slot, retain its result and
+                // native ownership, and publish completion after actual join.
+                task.pending_outcome = Some(outcome);
+                task.state = TaskState::Waiting(TaskWait::HostDrain);
+                task.host_wait = None;
+                task.waiting_continuation = None;
+                task.machine = EvalMachine::new();
+                let active = std::mem::replace(&mut task.active_slot, false);
+                let scope = task.scope;
+                if active {
+                    self.change_active(scope, false);
+                }
+                // No language/Host operation can use these Memory selectors
+                // again. A child may need them before its owner can join it.
+                self.release_task_resources(id);
+                return Ok(());
+            };
+            if matches!(outcome, TaskOutcome::Completed(_))
+                && let Some(cause) = task.local.execution.signal()?.cause()?
+            {
+                outcome = TaskOutcome::Cancelled(cause);
+            }
+            if let Some(contract) = resource_report {
+                outcome = resource_scope::completion(
+                    contract,
+                    &report,
+                    task.program
+                        .as_ref()
+                        .expect("resource scope has checked program"),
+                    outcome,
+                )?;
+            }
+            task.cleanup_report = Some(report);
             let was_running = task.active_slot;
             task.active_slot = false;
-            task.local.execution.finish_body(!matches!(
-                outcome,
-                TaskOutcome::Raised(_) | TaskOutcome::Failed(_)
-            ))?;
             task.state = outcome.state();
             task.outcome = Some(outcome.clone());
             task.waiting_continuation = None;
@@ -1385,21 +1605,8 @@ impl TaskScheduler {
             let scope = self.tasks[&id].scope;
             self.change_active(scope, false);
         }
-        self.resources.release(id);
-        let queued = self.resources.waiting.len();
-        for _ in 0..queued {
-            let waiting = self.resources.waiting.pop_front().unwrap();
-            let task = self.tasks.get_mut(&waiting).expect("resource waiter");
-            if !matches!(task.state, TaskState::Waiting(TaskWait::Resource(_))) {
-                continue;
-            }
-            if self.resources.acquire(waiting, &task.resource_keys) {
-                task.state = TaskState::Ready;
-                self.enqueue(waiting);
-            } else {
-                self.resources.waiting.push_back(waiting);
-            }
-        }
+        self.release_task_resources(id);
+        self.finish_agent_request(id, matches!(outcome, TaskOutcome::Completed(_)));
         for waiter in waiters {
             match waiter {
                 TaskWaiter::Task(waiter) => {
@@ -1419,9 +1626,28 @@ impl TaskScheduler {
             }
         }
         self.record_completion(id);
+        self.finish_resource_owner(handle.owner)?;
         self.wake_scope_if_settled(self.tasks[&id].scope)?;
         self.terminal_events.push((handle, outcome.state()));
         Ok(())
+    }
+
+    fn release_task_resources(&mut self, id: TaskId) {
+        self.resources.release(id);
+        let queued = self.resources.waiting.len();
+        for _ in 0..queued {
+            let waiting = self.resources.waiting.pop_front().unwrap();
+            let task = self.tasks.get_mut(&waiting).expect("resource waiter");
+            if !matches!(task.state, TaskState::Waiting(TaskWait::Resource(_))) {
+                continue;
+            }
+            if self.resources.acquire(waiting, &task.resource_keys) {
+                task.state = TaskState::Ready;
+                self.enqueue(waiting);
+            } else {
+                self.resources.waiting.push_back(waiting);
+            }
+        }
     }
 
     fn resolve(&self, handle: TaskHandle) -> Result<&ScheduledTask, SchedulerError> {
@@ -1433,12 +1659,21 @@ impl TaskScheduler {
 
     fn record_primary_failure(&mut self, scope: TaskScopeId, id: TaskId) {
         let source_index = self.tasks[&id].source_index;
-        let replace = self.groups[&scope]
-            .primary_failure
-            .is_none_or(|primary_id| {
-                let primary = &self.tasks[&primary_id];
-                (source_index, id) < (primary.source_index, primary_id)
-            });
+        let group = &self.groups[&scope];
+        let replace = group.primary_failure.is_none_or(|primary_id| {
+            // Resource cleanup preserves the body's control outcome even
+            // when a child fails while that body is waiting for release.
+            if group.resource_report.is_some() {
+                if group.owner == Some(id) {
+                    return true;
+                }
+                if group.owner == Some(primary_id) {
+                    return false;
+                }
+            }
+            let primary = &self.tasks[&primary_id];
+            (source_index, id) < (primary.source_index, primary_id)
+        });
         if replace {
             self.groups
                 .get_mut(&scope)

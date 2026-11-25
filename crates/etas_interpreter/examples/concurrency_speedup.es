@@ -5,7 +5,7 @@ import std.task.{map_concurrent, run, Scheduler};
 // Compare the same program with --cpu-threads 1 and --cpu-threads 4.
 flow burn(value: i32) -> i32 {
     var index = 0;
-    while index < 100000 limit Iterations(100000) {
+    while index < 100000 {
         index = index + 1;
     }
     return value;

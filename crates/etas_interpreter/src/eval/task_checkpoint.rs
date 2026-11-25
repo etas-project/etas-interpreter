@@ -3,7 +3,8 @@ use std::{collections::BTreeMap, sync::Arc};
 use crate::{
     control::{Continuation, PendingPerform},
     driver::scheduler::{
-        RootTaskWait, TaskIdentity, TaskOutcome, TaskResume, TaskState, TaskWait, TaskWaiter,
+        RootTaskWait, TaskIdentity, TaskOutcome, TaskResume, TaskScheduler, TaskState, TaskWait,
+        TaskWaiter,
     },
     eval::machine::{
         EvalMachine,
@@ -263,12 +264,16 @@ impl super::EvalContext<'_> {
                 .as_ref()
                 .map(|resume| capture.resume(&self.scheduler, &active, resume))
                 .transpose()?;
-            let outcome = task
-                .outcome
-                .as_ref()
-                .map(|outcome| capture.outcome(outcome, &cancellation))
-                .transpose()?;
-            let saved_machine = if task.state.is_terminal() {
+            let waiting_children = TaskScheduler::checkpoint_waiting_for_children(task, tasks)?;
+            let outcome = if waiting_children {
+                &task.pending_outcome
+            } else {
+                &task.outcome
+            }
+            .as_ref()
+            .map(|outcome| capture.outcome(outcome, &cancellation))
+            .transpose()?;
+            let saved_machine = if task.state.is_terminal() || waiting_children {
                 if !capture.auxiliary.is_empty() {
                     return Err("terminal task still owns an executable continuation".into());
                 }
@@ -285,6 +290,11 @@ impl super::EvalContext<'_> {
                 Some(saved)
             };
             let state = match task.state {
+                TaskState::Waiting(TaskWait::Agent(_) | TaskWait::AgentAdmission(_)) => {
+                    return Err(
+                        "checkpoint capture of queued Agent requests is not supported".into(),
+                    );
+                }
                 TaskState::Ready => ScheduledTaskStateSnapshot::Ready,
                 TaskState::Waiting(TaskWait::HandlerOwner(owner)) => {
                     ScheduledTaskStateSnapshot::WaitingHandlerOwner(owner)
@@ -308,8 +318,16 @@ impl super::EvalContext<'_> {
                 TaskState::Raised => ScheduledTaskStateSnapshot::Raised,
                 TaskState::Failed => ScheduledTaskStateSnapshot::Failed,
                 TaskState::Cancelled => ScheduledTaskStateSnapshot::Cancelled,
+                TaskState::Waiting(TaskWait::HostDrain) if waiting_children => {
+                    ScheduledTaskStateSnapshot::WaitingChildren
+                }
                 TaskState::Running
-                | TaskState::Waiting(TaskWait::Host(_) | TaskWait::Cpu(_) | TaskWait::HostDrain) => {
+                | TaskState::Waiting(
+                    TaskWait::Host(_)
+                    | TaskWait::Cpu(_)
+                    | TaskWait::HostDrain
+                    | TaskWait::ResourceChildren,
+                ) => {
                     return Err("task has not reached the coordinator checkpoint barrier".into());
                 }
             };
@@ -579,6 +597,7 @@ impl super::EvalContext<'_> {
             if matches!(
                 task.state,
                 ScheduledTaskStateSnapshot::Completed
+                    | ScheduledTaskStateSnapshot::WaitingChildren
                     | ScheduledTaskStateSnapshot::Raised
                     | ScheduledTaskStateSnapshot::Failed
                     | ScheduledTaskStateSnapshot::Cancelled
@@ -586,14 +605,14 @@ impl super::EvalContext<'_> {
                 locals[id]
                     .execution
                     .finish_body(!matches!(
-                        task.state,
-                        ScheduledTaskStateSnapshot::Raised | ScheduledTaskStateSnapshot::Failed
+                        task.outcome,
+                        Some(TaskOutcomeSnapshot::Raised { .. } | TaskOutcomeSnapshot::Failed(_))
                     ))
                     .map_err(|error| error.to_string())?;
             }
         }
         let frames = SharedFrameRestore::for_tasks(logical_owners);
-        let current = self.host_context.clone();
+        let current = self.task.host_context().clone();
         let locked_model = self.locked_model.clone();
         let limits = self.storage_limits.clone();
         let mut root_restored = restore_machine(
@@ -642,7 +661,7 @@ impl super::EvalContext<'_> {
                 Some(snapshot) => restore_machine(
                     snapshot,
                     &mut local,
-                    &self.host_context,
+                    &self.task.host_context(),
                     SnapshotRestoreResources {
                         root: Some(CheckpointRoot {
                             program: program.clone(),
@@ -664,7 +683,7 @@ impl super::EvalContext<'_> {
                 None => {
                     let context = RestoreContext::for_task(
                         program.clone(),
-                        &self.host_context,
+                        &self.task.host_context(),
                         self.locked_model.clone(),
                         revisions.clone(),
                         ordering.clone(),
@@ -819,6 +838,9 @@ impl super::EvalContext<'_> {
                 ScheduledTaskStateSnapshot::WaitingResource(id) => {
                     TaskState::Waiting(TaskWait::Resource(ResourceGuardId(id)))
                 }
+                ScheduledTaskStateSnapshot::WaitingChildren => {
+                    TaskState::Waiting(TaskWait::HostDrain)
+                }
                 ScheduledTaskStateSnapshot::Completed => TaskState::Completed,
                 ScheduledTaskStateSnapshot::Raised => TaskState::Raised,
                 ScheduledTaskStateSnapshot::Failed => TaskState::Failed,
@@ -838,6 +860,16 @@ impl super::EvalContext<'_> {
             } else {
                 None
             };
+            let cleanup_report = local
+                .execution
+                .termination()
+                .map_err(|error| error.to_string())?;
+            let waiting_children = task.state == ScheduledTaskStateSnapshot::WaitingChildren;
+            let (outcome, pending_outcome) = if waiting_children {
+                (None, outcome)
+            } else {
+                (outcome, None)
+            };
             tasks.insert(
                 *id,
                 ScheduledTask {
@@ -853,7 +885,10 @@ impl super::EvalContext<'_> {
                     waiters: task.waiters.iter().copied().map(TaskWaiter::Task).collect(),
                     waiting_continuation,
                     host_wait: None,
-                    pending_outcome: None,
+                    pending_outcome,
+                    body_finished: state.is_terminal() || waiting_children,
+                    cleanup_registered: false,
+                    cleanup_report,
                     source_index: task.source_index,
                     cpu_capsule,
                     active_slot: task.active_slot,
@@ -930,7 +965,7 @@ impl super::EvalContext<'_> {
             validator.validate_policy_value(policy.entry, &policy.instance)?;
             let mut context = RestoreContext::for_task(
                 program.clone(),
-                &self.host_context,
+                &self.task.host_context(),
                 self.locked_model.clone(),
                 revisions.clone(),
                 ordering.clone(),
@@ -1050,6 +1085,18 @@ impl super::EvalContext<'_> {
             })
             .transpose()?;
         frames.validate_bindings()?;
+        let guards = frames.record_constructions();
+        self.task.record_constructions = guards.iter().map(std::rc::Rc::downgrade).collect();
+        let record_contexts = frames.record_contexts();
+        self.task.borrowed_record_contexts = record_contexts
+            .iter()
+            .filter(|weak| {
+                weak.upgrade()
+                    .is_some_and(|context| context.owner == TaskIdentity::Root)
+            })
+            .cloned()
+            .collect();
+        scheduler.restore_record_contexts(&guards, &record_contexts, self.task);
         *self.scheduler = scheduler;
         bodies.0 = None;
         // The scheduler owns machines only after its continuation arena and all

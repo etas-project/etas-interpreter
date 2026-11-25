@@ -44,7 +44,7 @@ impl<'a> EvalContext<'a> {
             } => self.execute_assign_stmt(block, stmt_index, *target, *value, *span, frame),
             HirStmt::Return { value, .. } => self.execute_return_stmt(*value, frame),
             HirStmt::While { .. } | HirStmt::For { .. } => {
-                let signal = self.execute_limited_loop(stmt, frame);
+                let signal = self.execute_loop(stmt, frame);
                 match signal {
                     ControlSignal::Value(_) => None,
                     signal if is_pending_host_boundary_signal(&signal) => {
@@ -60,8 +60,8 @@ impl<'a> EvalContext<'a> {
                     other => Some(other),
                 }
             }
-            HirStmt::Retry { body, limits, span } => {
-                self.execute_retry_stmt(block, stmt_index, *body, limits, *span, frame)
+            HirStmt::Retry { body, span } => {
+                self.execute_retry_stmt(block, stmt_index, *body, *span, frame)
             }
             HirStmt::Resume { value, .. } => self.execute_resume_stmt(*value, frame),
             HirStmt::Finish { value, .. } => self.execute_finish_stmt(*value, frame),

@@ -1,4 +1,201 @@
 use super::super::*;
+
+#[tokio::test(flavor = "current_thread")]
+async fn source_constructor_injection_preserves_order_generic_bindings_and_stored_values() {
+    let mut input =
+        etas_frontend::ProjectInput::single_source(etas_frontend::SourceInput::anonymous(
+            include_str!("../../../examples/active_injection.es"),
+        ));
+    input.entry.module = Some(etas_frontend::ModulePath {
+        segments: vec!["app".into(), "active_injection".into()],
+    });
+    let output = etas_frontend::Frontend.check_project(input);
+    assert!(
+        output.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::RuntimeRequiredInPhase1,
+                )
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+    let checked = output.checked.expect("checked injection example");
+    let host = FakeHost::new(availability(&[]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            crate::api::default_entry_args(&checked),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(0)));
+}
+#[tokio::test(flavor = "current_thread")]
+async fn agent_initialization_finish_releases_new_children_and_preserves_borrowed_instances() {
+    let mut input =
+        etas_frontend::ProjectInput::single_source(etas_frontend::SourceInput::anonymous(
+            include_str!("../../../examples/active_initialization.es"),
+        ));
+    input.entry.module = Some(etas_frontend::ModulePath {
+        segments: vec!["app".into(), "active_initialization".into()],
+    });
+    let output = etas_frontend::Frontend.check_project(input);
+    assert!(
+        output.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::RuntimeRequiredInPhase1,
+                )
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+    let checked = output.checked.expect("checked injection example");
+    let host = FakeHost::new(availability(&[]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            crate::api::default_entry_args(&checked),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(0)));
+}
+#[tokio::test(flavor = "current_thread")]
+async fn record_constructor_preserves_borrowed_refs_and_helper_task_children() {
+    let mut input =
+        etas_frontend::ProjectInput::single_source(etas_frontend::SourceInput::anonymous(
+            include_str!("../../../examples/record_initialization.es"),
+        ));
+    input.entry.module = Some(etas_frontend::ModulePath {
+        segments: vec!["app".into(), "record_initialization".into()],
+    });
+    let output = etas_frontend::Frontend.check_project(input);
+    assert!(
+        output.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::RuntimeRequiredInPhase1,
+                )
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+    let checked = output.checked.expect("checked injection example");
+    let host = FakeHost::new(availability(&[]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            crate::api::default_entry_args(&checked),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(0)));
+}
+#[tokio::test(flavor = "current_thread")]
+async fn record_constructor_keeps_unrelated_provider_instances_outside_its_cleanup() {
+    let mut input =
+        etas_frontend::ProjectInput::single_source(etas_frontend::SourceInput::anonymous(
+            include_str!("../../../examples/record_initialization.es"),
+        ));
+    input.entry.module = Some(etas_frontend::ModulePath {
+        segments: vec!["app".into(), "record_initialization".into()],
+    });
+    input.entry.flow = "isolation_case".into();
+    let output = etas_frontend::Frontend.check_project(input);
+    assert!(
+        output.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::RuntimeRequiredInPhase1,
+                )
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+    let checked = output.checked.expect("checked injection example");
+    let host = FakeHost::new(availability(&[]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            crate::api::default_entry_args(&checked),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(0)));
+}
+#[tokio::test(flavor = "current_thread")]
+async fn record_constructor_checkpoint_restores_provider_ownership_and_cleanup() {
+    let mut input =
+        etas_frontend::ProjectInput::single_source(etas_frontend::SourceInput::anonymous(
+            include_str!("../../../examples/record_initialization_checkpoint.es"),
+        ));
+    input.entry.module = Some(etas_frontend::ModulePath {
+        segments: vec!["app".into(), "record_initialization_checkpoint".into()],
+    });
+    let output = etas_frontend::Frontend.check_project(input);
+    assert!(
+        output.diagnostics.iter().all(|diagnostic| {
+            diagnostic.code
+                == etas_core::DiagnosticCode::Effect(
+                    etas_core::EffectDiagnosticCode::RuntimeRequiredInPhase1,
+                )
+        }),
+        "{:?}",
+        output.diagnostics
+    );
+    let checked = output.checked.expect("checked injection example");
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            crate::api::default_entry_args(&checked),
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(0)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        crate::api::codec::checkpoint_artifact_json(&[], "main", &result.checkpoints[0]).unwrap();
+    let snapshot = crate::api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &snapshot, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&InterpValue::i32(0)));
+}
 use crate::api::codec::{checkpoint_artifact_json, checkpoint_from_json};
 
 #[tokio::test(flavor = "current_thread")]
@@ -58,7 +255,7 @@ flow main() -> bool {
     let map: Map<Row, string> = { left => "kept" };
     checkpoint("records");
     var count = 0;
-    for key in keys limit Iterations(4) { count = count + 1; }
+    for key in keys { count = count + 1; }
     return left == right && count == 1 && map.contains_key(right) && contains_key(map, right)
         && map.get(right) == Some("kept");
 }

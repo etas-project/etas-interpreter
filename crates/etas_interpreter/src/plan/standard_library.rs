@@ -194,23 +194,7 @@ impl StandardLibraryProgram {
                     "std artifact {id:?} body differs from its public interface"
                 ));
             }
-            let contract = library
-                .effects
-                .public_contracts
-                .iter()
-                .find(|contract| contract.item == item)
-                .ok_or("std body has no checked public effect contract")?;
-            let parameters = signature
-                .generic_params
-                .iter()
-                .filter(|param| param.kind == etas_types::CallableGenericParamKind::Effect)
-                .map(|param| param.name.clone())
-                .collect::<Vec<_>>();
-            let row = etas_effects::facts::checked_type_effect_row(
-                &contract.public_row,
-                &library.effect_registry,
-                &parameters,
-            )?;
+            let row = library.checked_standard_callable_row(&identity, item)?;
             let flow = FlowType {
                 input: signature.params.clone(),
                 output: signature.output,

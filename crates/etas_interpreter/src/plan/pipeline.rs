@@ -157,6 +157,7 @@ pub(super) fn prepare_program_with_layouts(
         program: project.clone(),
         known_std_types: crate::eval::KnownStdTypes::from_checked(project),
         spec_facts: Arc::new(std::sync::OnceLock::new()),
+        type_lookup: std::sync::OnceLock::new(),
         slots: Arc::new(slots),
         frames: Arc::new(frames),
         arguments: Arc::new(arguments),
@@ -299,6 +300,12 @@ impl PreparedProgram {
 }
 
 impl InterpreterPlan {
+    pub(crate) fn type_lookup(&self) -> &etas_types::ty::TypeLookupIndex {
+        self.prepared
+            .type_lookup
+            .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&self.prepared.program.type_store))
+    }
+
     pub(crate) fn checked_spec_facts(&self) -> &etas_types::SpecFacts {
         self.spec_facts
             .get_or_init(|| etas_types::SpecFacts::from(self.program.types.as_ref()))

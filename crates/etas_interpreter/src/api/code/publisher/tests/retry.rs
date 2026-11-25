@@ -19,7 +19,7 @@ agent Worker(input: string) -> string {
 }
 flow main(worker: Worker) -> string {
     var output = "";
-    retry limit Attempts(2) { output = worker.run("draft"); }
+    retry { output = worker.run("draft"); }
     return output + ":caller";
 }
 flow inspect() -> unit { let definition = ^Worker; return; }

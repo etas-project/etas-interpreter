@@ -86,7 +86,7 @@ flow verify_try_join() -> i32 {{
         () => {{ perform Async.yield(); perform Error<string>.raise("lower"); }},
         () => perform Error<string>.raise("higher"),
         () => {{
-            while true limit Iterations(1024) {{ perform Async.yield(); }}
+            while true {{ perform Async.yield(); }}
             std.runtime.checkpoint("loser-finished");
             return 99;
         }},
@@ -301,19 +301,21 @@ fn bind_source_origin(input: &mut etas_frontend::ProjectInput) {
 }
 
 fn copy_collection_sources(library: &std::path::Path, root: &std::path::Path) {
+    for module in ["collections", "math", "option", "result"] {
+        let mut sources = std::fs::read_dir(library.join(module))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .collect::<Vec<_>>();
+        sources.sort();
+        for source in sources {
+            let relative = std::path::Path::new(module).join(source);
+            copy_source(library, root, relative.to_str().unwrap());
+        }
+    }
     for relative in [
         "core/mod.es",
-        "collections/mod.es",
-        "collections/algorithms.es",
-        "collections/iteration.es",
-        "collections/range_iteration.es",
-        "collections/sequences.es",
-        "collections/order.es",
-        "collections/ordered.es",
-        "collections/priority_queue.es",
-        "option/mod.es",
-        "result/mod.es",
         "runtime/error/complete.es",
+        "io/error.es",
         "runtime/mod.es",
         "runtime/budget/mod.es",
         "runtime/limits/mod.es",
@@ -582,7 +584,7 @@ public flow fixture_context_matches() -> bool ![] {
 
 public flow sum() -> i32 ![] {
     var total: i32 = 0;
-    for value in numbers(1, 5) limit Iterations(10) {
+    for value in numbers(1, 5) {
         total = total + value;
         if value == 2 { std.runtime.checkpoint(value); }
     }
@@ -591,12 +593,6 @@ public flow sum() -> i32 ![] {
 
 "###
         ),
-    )
-    .unwrap();
-    std::fs::create_dir_all(root.join("library/std/math")).unwrap();
-    std::fs::copy(
-        library.join("math/complete.es"),
-        root.join("library/std/math/mod.es"),
     )
     .unwrap();
     let fs_source = std::fs::read_to_string(library.join("fs/mod.es")).unwrap();
@@ -611,6 +607,10 @@ public flow sum() -> i32 ![] {
         "public flow list_limited<",
         "public flow stat<",
         "public flow atomic_replace<",
+        "public flow create_dir<",
+        "public flow rename<",
+        "public flow remove_file<",
+        "public flow remove_dir<",
     ]
     .map(|start| {
         let source = &fs_source[fs_source.find(start).unwrap()..];
@@ -624,8 +624,14 @@ public flow sum() -> i32 ![] {
             fs_flows.join("\n"),
             r#"
 impl WorkspacePath<R> {
+    public flow fixture_path(self, relative: string) -> WorkspacePath<R> ![] {
+        return WorkspacePath { relative = relative };
+    }
     public flow fixture_file(self) -> WorkspacePath<R> ![] {
         return WorkspacePath { relative = "data.bin" };
+    }
+    public flow fixture_missing(self) -> WorkspacePath<R> ![] {
+        return WorkspacePath { relative = "missing.bin" };
     }
 }
 "#
@@ -721,6 +727,47 @@ flow math_score() -> i32 ![] {
 }
 type Documents;
 impl Documents ~ std.fs.Region;
+flow fs_lifecycle() -> unit {
+    let root = std.fs.root<Documents>();
+    let parent = root.fixture_path("lifecycle");
+    let directory = root.fixture_path("lifecycle/nested");
+    let original = root.fixture_path("lifecycle/nested/original.bin");
+    let renamed = root.fixture_path("lifecycle/nested/renamed.bin");
+    var intercepted = false;
+    handle {
+        std.fs.create_dir(root.fixture_path("handler-only"));
+    } with {
+        std.effects.Fs.create_dir<Documents>(_, _) => {
+            intercepted = true;
+            resume ();
+        }
+    };
+    std.core.assert(intercepted);
+    std.fs.create_dir(directory, true);
+    std.fs.create_dir(directory);
+    std.fs.create_dir(root);
+    let metadata = std.fs.stat(directory);
+    let root_metadata = std.fs.stat(root);
+    std.core.assert(metadata.is_dir && !metadata.is_file && metadata.len == 0);
+    std.core.assert(root_metadata.is_dir && root_metadata.len == 0);
+    std.fs.write_bytes(original, "original".utf8);
+    std.fs.write_bytes(renamed, "kept".utf8);
+    let collision: bool = handle {
+        std.fs.rename(original, renamed);
+        false
+    } with {
+        Error<std.io.IOError>.raise(std.io.IOError.AlreadyExists) => { finish true; }
+    };
+    std.core.assert(collision);
+    std.core.assert(std.fs.read_bytes(original) == "original".utf8);
+    std.core.assert(std.fs.read_bytes(renamed) == "kept".utf8);
+    std.fs.remove_file(renamed);
+    std.fs.rename(original, renamed);
+    std.core.assert(std.fs.read_bytes(renamed) == "original".utf8);
+    std.fs.remove_file(renamed);
+    std.fs.remove_dir(directory);
+    std.fs.remove_dir(parent);
+}
 flow fs_score() -> i32 {
     let root = std.fs.root<Documents>();
     let path = root.fixture_file();
@@ -731,13 +778,13 @@ flow fs_score() -> i32 {
     };
     let bytes = std.fs.read_bytes_limited(path, 4);
     if bytes.length == 4 { score = score + 1; }
-    let exceeded: usize = handle {
+    let exceeded: bool = handle {
         let body = std.fs.read_bytes_limited(path, 2);
-        0
+        false
     } with {
-        Error<std.fs.ReadLimitError>.raise(std.fs.ReadLimitError.LimitExceeded(maximum)) => { finish maximum; }
+        Error<std.runtime.error.IOError>.raise(std.io.IOError.LimitExceeded) => { finish true; }
     };
-    if exceeded == 2 { score = score + 1; }
+    if exceeded { score = score + 1; }
     let original = std.fs.read_bytes(path);
     if original.length == 4 { score = score + 1; }
     let metadata = std.fs.stat(path);
@@ -749,7 +796,7 @@ flow fs_score() -> i32 {
     if std.fs.read_bytes(path).length == 4 { score = score + 1; }
     match perform std.effects.Fs.list<Documents>(root, None) {
         Ok(entries) => {
-            for entry in entries limit Iterations(2) {
+            for entry in entries {
                 if std.fs.relative_name(entry) == "data.bin" { score = score + 1; }
             }
         },
@@ -757,7 +804,7 @@ flow fs_score() -> i32 {
     };
     match perform std.effects.Fs.list<Documents>(root, Some((2, 17))) {
         Ok(entries) => {
-            for entry in entries limit Iterations(2) {
+            for entry in entries {
                 if std.fs.relative_name(entry) == "data.bin" { score = score + 1; }
             }
         },
@@ -770,30 +817,34 @@ flow fs_score() -> i32 {
         Ok(_) => {},
     };
     var names = "";
-    for entry in std.fs.list(root) limit Iterations(2) {
+    for entry in std.fs.list(root) {
         if names != "" { names = names + ","; }
         names = names + std.fs.relative_name(entry);
     }
     if names == "alpha.bin,data.bin" { score = score + 1; }
     var limited_names = "";
-    for entry in std.fs.list_limited(root, 2, 17) limit Iterations(2) {
+    for entry in std.fs.list_limited(root, 2, 17) {
         if limited_names != "" { limited_names = limited_names + ","; }
         limited_names = limited_names + std.fs.relative_name(entry);
     }
     if limited_names == "alpha.bin,data.bin" { score = score + 1; }
-    let list_limit: usize = handle {
+    let list_limit: bool = handle {
         let entries = std.fs.list_limited(root, 1, 17);
-        0
+        false
     } with {
-        Error<std.fs.ListLimitError>.raise(std.fs.ListLimitError.LimitExceeded(maximum, _)) => { finish maximum; }
+        Error<std.io.IOError>.raise(std.fs.IOError.LimitExceeded) => { finish true; }
     };
-    if list_limit == 1 { score = score + 1; }
+    if list_limit { score = score + 1; }
     var ordered: std.collections.OrderedMap<string, i32> = std.collections.OrderedMap.new();
     ordered = ordered.insert("c", 3).insert("a", 1).insert("b", 2);
     if ordered.get("b") == Some(2) && ordered.contains_key("a") && ordered.len() == 3 {
         score = score + 1;
     }
-    std.core.assert(score == 15);
+    match std.fs.read_bytes(root.fixture_missing())? {
+        Err(std.runtime.error.IOError.NotFound) => { score = score + 1; },
+        _ => std.core.abort("filesystem error lost its shared identity"),
+    };
+    std.core.assert(score == 16);
     return score;
 }
 type CapturedRecord = { answer: i32, label: string };
@@ -823,7 +874,7 @@ flow capture_score() -> i32 {
     };
     var large = "xx";
     var i: usize = 0;
-    while i < 20 limit Iterations(20) { large = large + large; i = i + 1; }
+    while i < 20 { large = large + large; i = i + 1; }
     match std.runtime.value.Data.capture(large) {
         Err(error) => { if error.code == "budget_exceeded" { score = score + 1; } },
         _ => {},
@@ -836,9 +887,10 @@ flow observation_score() -> i32 {
     let context_matches = std.memory.fixture_context_matches();
     let milliseconds = std.stream.fixture_millis();
     std.runtime.checkpoint(milliseconds);
-    return (if context_matches { 1 } else { 0 }) + (if milliseconds / 1000 > 1700000000 { 1 } else { 0 });
+    return (if context_matches { 1 } else { 0 }) + (if std.stream.fixture_millis() >= milliseconds { 1 } else { 0 });
 }
 flow verify(overflow: bool, crash: bool) -> i32 {
+    fs_lifecycle();
     if crash { std.core.assert(false); }
     if overflow { return i32 { bits = magnitude_overflow().bits }; }
     let checkpoint: (i32) -> unit ![] = std.runtime.checkpoint;
@@ -860,16 +912,16 @@ flow verify(overflow: bool, crash: bool) -> i32 {
     let range = std.collections.Range.closed(left, right);
     std.runtime.checkpoint(range);
     var range_sum: usize = 0;
-    for number in range limit Iterations(3) { range_sum = range_sum + number; }
+    for number in range { range_sum = range_sum + number; }
     let open = std.collections.Range.open(left, right);
-    for number in open limit Iterations(1) { range_sum = range_sum + number; }
+    for number in open { range_sum = range_sum + number; }
     let literal = [left, right);
     let endpoints = if range.include_start && range.include_end && !open.include_start && !open.include_end {
         range.start + range.end + literal.start + literal.end
     } else { 0 };
     var digits: i32 = 0;
     var position: i32 = 0;
-    while position < 4 limit Iterations(4) {
+    while position < 4 {
         position = position + 1;
         let digit: i32 = if position == 2 { continue; } else if position == 4 { break; } else { position };
         digits = digits + digit;
@@ -888,20 +940,20 @@ flow verify(overflow: bool, crash: bool) -> i32 {
     };
     let original = numbers(1, 5);
     var first: i32 = 0;
-    for value in original limit Iterations(10) { first = first + value; if value == 2 { std.runtime.checkpoint(value); } }
+    for value in original { first = first + value; if value == 2 { std.runtime.checkpoint(value); } }
     var second: i32 = 0;
-    for value in original limit Iterations(4) {
+    for value in original {
         if value == 2 { continue; }
         second = second + value;
         if value == 3 { break; }
     }
     var mapped: u128 = 0;
-    for value in original.map((value: i32) => value.bits).map((value: u128) => value.bits) limit Iterations(10) {
+    for value in original.map((value: i32) => value.bits).map((value: u128) => value.bits) {
         mapped = mapped + value;
     }
     let bytes_value = bytes { data = [2, 3] };
     var byte_sum: u128 = 0;
-    for value in bytes_value limit Iterations(2) { byte_sum = byte_sum + value.bits; if value.bits == 2 { std.runtime.checkpoint(value); } }
+    for value in bytes_value { byte_sum = byte_sum + value.bits; if value.bits == 2 { std.runtime.checkpoint(value); } }
     let math = math_score();
     std.core.assert(math == 11);
     return first * 100 + second * 10 + sum() + i32 { bits = byte_sum + mapped + range_sum.bits + endpoints.bits } + indexing + digits + updates + math + fs_score() + capture_score() + observation_score();
@@ -938,7 +990,7 @@ flow verify(overflow: bool, crash: bool) -> i32 {
             _ => None,
         })
         .collect::<Vec<_>>();
-    assert_eq!(primitives.len(), 6);
+    assert_eq!(primitives.len(), 8);
     for (item, role) in &primitives {
         if matches!(
             role,
@@ -1027,7 +1079,17 @@ flow verify(overflow: bool, crash: bool) -> i32 {
         requests: Default::default(),
     };
     let mut options = RunOptions::default();
-    for action in ["read", "write", "list", "stat", "atomic_replace"] {
+    for action in [
+        "read",
+        "write",
+        "list",
+        "stat",
+        "atomic_replace",
+        "create_dir",
+        "rename",
+        "remove_file",
+        "remove_dir",
+    ] {
         options
             .host_context
             .authority
@@ -1041,10 +1103,10 @@ flow verify(overflow: bool, crash: bool) -> i32 {
             ));
     }
     options.host_context.authority.sandbox = etas_host::SandboxPolicy::allow_listed(
-        etas_host::FilesystemPolicy::allow_workspace(workspace_root),
+        etas_host::FilesystemPolicy::allow_destructive_workspace(workspace_root),
         etas_host::NetworkPolicy::deny_all(),
         etas_host::CommandPolicy::deny_all(),
-        etas_host::DestructiveOpPolicy::deny_all(),
+        etas_host::DestructiveOpPolicy::allow_workspace_delete(),
     );
     options.host_context.trace = etas_host::TraceContext::root(etas_host::TraceId(91));
 
@@ -1069,11 +1131,11 @@ flow verify(overflow: bool, crash: bool) -> i32 {
         (*document).clone()
     });
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
-    assert_eq!(value.as_ref().unwrap()["value"], "1174");
+    assert_eq!(value.as_ref().unwrap()["value"], "1175");
     assert_eq!(first.checkpoints.len(), 16);
     {
         let requests = host.requests.lock().unwrap();
-        assert_eq!(requests.len(), 15);
+        assert_eq!(requests.len(), 32);
         for request in requests.iter() {
             assert_eq!(request.authority, options.host_context.authority);
             assert_eq!(request.trace, options.host_context.trace);
@@ -1086,28 +1148,27 @@ flow verify(overflow: bool, crash: bool) -> i32 {
                 | etas_host::FilesystemOperation::ReadLimited { path, .. }
                 | etas_host::FilesystemOperation::Write { path, .. }
                 | etas_host::FilesystemOperation::AtomicReplace { path, .. }
+                | etas_host::FilesystemOperation::CreateDir { path, .. }
+                | etas_host::FilesystemOperation::RemoveFile { path }
+                | etas_host::FilesystemOperation::RemoveDir { path }
+                | etas_host::FilesystemOperation::Rename { source: path, .. }
                 | etas_host::FilesystemOperation::ReadDir { path }
                 | etas_host::FilesystemOperation::ReadDirLimited { path, .. }
                 | etas_host::FilesystemOperation::Stat { path } => path,
                 _ => panic!("unexpected source filesystem operation"),
             };
             assert_eq!(path.region, region);
-            assert_eq!(
-                path.relative.to_str(),
-                Some(
-                    if matches!(
-                        request.operation,
-                        etas_host::FilesystemOperation::ReadDir { .. }
-                            | etas_host::FilesystemOperation::ReadDirLimited { .. }
-                    ) {
-                        "."
-                    } else {
-                        "data.bin"
-                    }
-                )
-            );
+            if let etas_host::FilesystemOperation::Rename { destination, .. } = &request.operation {
+                assert_eq!(destination.region, region);
+                assert_eq!(
+                    destination.relative.to_str(),
+                    Some("lifecycle/nested/renamed.bin")
+                );
+            }
         }
     }
+    assert!(!workspace.path().join("lifecycle").exists());
+    assert!(!workspace.path().join("handler-only").exists());
 
     let mut resumed = 0;
     for checkpoint in &first.checkpoints {

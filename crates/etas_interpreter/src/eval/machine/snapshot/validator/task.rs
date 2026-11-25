@@ -10,6 +10,14 @@ impl SnapshotValidator<'_> {
         if let Some(request) = &task.local.agent_context {
             self.agent_request_context(request)?;
         }
+        if task.state == crate::orchestration::ScheduledTaskStateSnapshot::WaitingChildren
+            && (task.outcome.is_none()
+                || task.machine.is_some()
+                || task.active_slot
+                || task.waiting_continuation.is_some())
+        {
+            return Err("task waiting for children has no retained body outcome".into());
+        }
         let Some(machine) = &task.machine else {
             return Ok(());
         };

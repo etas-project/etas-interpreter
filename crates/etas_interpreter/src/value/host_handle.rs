@@ -1,17 +1,21 @@
-use std::fmt;
+use std::{cell::RefCell, fmt, rc::Rc};
 
-use etas_host::{ByteStreamRef, SecretRef, SecretValue, TcpStreamRef, TlsStreamRef};
+use etas_host::{ByteStreamRef, FileStreamRef, SecretRef, SecretValue, TcpStreamRef, TlsStreamRef};
 use etas_types::TypeId;
 
 use super::InterpValue;
 
 #[derive(Clone, Copy, Debug, PartialEq, Eq)]
 pub(crate) enum HostHandleKind {
+    FileStream,
     TcpStream,
     TlsStream,
     SecretValue,
     BrowserSession,
     CommandProcess,
+    ClockDomain,
+    ReadOwner,
+    SessionLease,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -22,14 +26,86 @@ pub struct HostHandleValue {
 
 #[derive(Clone, PartialEq, Eq)]
 enum HostHandlePayload {
+    FileStream(FileStreamRef),
     TcpStream(TcpStreamRef),
     TlsStream(TlsStreamRef),
     SecretValue(SecretRef),
     BrowserSession(String),
     CommandProcess(String),
+    ClockDomain(String),
+    ReadOwner(etas_host::StreamReadScope),
+    SessionLease(LeaseHandle),
 }
 
+#[derive(Clone)]
+struct LeaseHandle(Rc<RefCell<Option<etas_host::session::SessionLease>>>);
+
+impl PartialEq for LeaseHandle {
+    fn eq(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.0, &other.0)
+    }
+}
+impl Eq for LeaseHandle {}
+
 impl HostHandleValue {
+    pub(crate) fn file_stream(nominal_type: TypeId, stream: FileStreamRef) -> Self {
+        Self {
+            nominal_type,
+            payload: HostHandlePayload::FileStream(stream),
+        }
+    }
+
+    pub(crate) fn file_stream_ref(&self) -> Option<FileStreamRef> {
+        match &self.payload {
+            HostHandlePayload::FileStream(stream) => Some(stream.clone()),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn session_lease(
+        nominal_type: TypeId,
+        lease: etas_host::session::SessionLease,
+    ) -> Self {
+        Self {
+            nominal_type,
+            payload: HostHandlePayload::SessionLease(LeaseHandle(Rc::new(RefCell::new(Some(
+                lease,
+            ))))),
+        }
+    }
+
+    pub(crate) fn take_session_lease(&self) -> Option<etas_host::session::SessionLease> {
+        match &self.payload {
+            HostHandlePayload::SessionLease(handle) => handle.0.borrow_mut().take(),
+            _ => None,
+        }
+    }
+
+    pub(crate) fn read_owner(nominal_type: TypeId, scope: etas_host::StreamReadScope) -> Self {
+        Self {
+            nominal_type,
+            payload: HostHandlePayload::ReadOwner(scope),
+        }
+    }
+
+    pub(crate) fn with_read_scope(&self, scope: &etas_host::StreamReadScope) -> Option<Self> {
+        let payload = match &self.payload {
+            HostHandlePayload::FileStream(stream) => {
+                HostHandlePayload::FileStream(stream.with_read_scope(scope))
+            }
+            HostHandlePayload::TcpStream(stream) => {
+                HostHandlePayload::TcpStream(stream.with_read_scope(scope))
+            }
+            HostHandlePayload::TlsStream(stream) => {
+                HostHandlePayload::TlsStream(stream.with_read_scope(scope))
+            }
+            _ => return None,
+        };
+        Some(Self {
+            nominal_type: self.nominal_type,
+            payload,
+        })
+    }
     pub(crate) fn tcp_stream(nominal_type: etas_types::TypeId, stream: TcpStreamRef) -> Self {
         Self {
             nominal_type,
@@ -65,6 +141,20 @@ impl HostHandleValue {
         }
     }
 
+    pub(crate) fn clock_domain(nominal_type: TypeId, domain: String) -> Self {
+        Self {
+            nominal_type,
+            payload: HostHandlePayload::ClockDomain(domain),
+        }
+    }
+
+    pub(crate) fn clock_domain_id(&self) -> Option<&str> {
+        match &self.payload {
+            HostHandlePayload::ClockDomain(domain) => Some(domain),
+            _ => None,
+        }
+    }
+
     pub fn nominal_type(&self) -> etas_types::TypeId {
         self.nominal_type
     }
@@ -78,71 +168,99 @@ impl HostHandleValue {
 
     pub(crate) fn kind(&self) -> HostHandleKind {
         match self.payload {
+            HostHandlePayload::FileStream(_) => HostHandleKind::FileStream,
             HostHandlePayload::TcpStream(_) => HostHandleKind::TcpStream,
             HostHandlePayload::TlsStream(_) => HostHandleKind::TlsStream,
             HostHandlePayload::SecretValue(_) => HostHandleKind::SecretValue,
             HostHandlePayload::BrowserSession(_) => HostHandleKind::BrowserSession,
             HostHandlePayload::CommandProcess(_) => HostHandleKind::CommandProcess,
+            HostHandlePayload::ClockDomain(_) => HostHandleKind::ClockDomain,
+            HostHandlePayload::ReadOwner(_) => HostHandleKind::ReadOwner,
+            HostHandlePayload::SessionLease(_) => HostHandleKind::SessionLease,
         }
     }
 
     pub fn kind_name(&self) -> &'static str {
         match self.kind() {
+            HostHandleKind::FileStream => "file_stream",
             HostHandleKind::TcpStream => "tcp_stream",
             HostHandleKind::TlsStream => "tls_stream",
             HostHandleKind::SecretValue => "secret_value",
             HostHandleKind::BrowserSession => "browser_session",
             HostHandleKind::CommandProcess => "command_process",
+            HostHandleKind::ClockDomain => "clock_domain",
+            HostHandleKind::ReadOwner => "read_owner",
+            HostHandleKind::SessionLease => "session_lease",
         }
     }
 
     pub(crate) fn byte_stream_ref(&self) -> Option<ByteStreamRef> {
         match &self.payload {
+            HostHandlePayload::FileStream(stream) => Some(stream.as_byte_stream()),
             HostHandlePayload::TcpStream(stream) => Some(stream.as_byte_stream()),
             HostHandlePayload::TlsStream(stream) => Some(stream.as_byte_stream()),
             HostHandlePayload::SecretValue(_)
             | HostHandlePayload::BrowserSession(_)
-            | HostHandlePayload::CommandProcess(_) => None,
+            | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::ClockDomain(_)
+            | HostHandlePayload::ReadOwner(_)
+            | HostHandlePayload::SessionLease(_) => None,
         }
     }
 
     pub(crate) fn tcp_stream_ref(&self) -> Option<TcpStreamRef> {
         match &self.payload {
             HostHandlePayload::TcpStream(stream) => Some(stream.clone()),
-            HostHandlePayload::TlsStream(_)
+            HostHandlePayload::FileStream(_)
+            | HostHandlePayload::TlsStream(_)
             | HostHandlePayload::SecretValue(_)
             | HostHandlePayload::BrowserSession(_)
-            | HostHandlePayload::CommandProcess(_) => None,
+            | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::ClockDomain(_)
+            | HostHandlePayload::ReadOwner(_)
+            | HostHandlePayload::SessionLease(_) => None,
         }
     }
 
     pub(crate) fn secret_ref(&self) -> Option<SecretRef> {
         match &self.payload {
             HostHandlePayload::SecretValue(reference) => Some(reference.clone()),
-            HostHandlePayload::TcpStream(_)
+            HostHandlePayload::FileStream(_)
+            | HostHandlePayload::TcpStream(_)
             | HostHandlePayload::TlsStream(_)
             | HostHandlePayload::BrowserSession(_)
-            | HostHandlePayload::CommandProcess(_) => None,
+            | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::ClockDomain(_)
+            | HostHandlePayload::ReadOwner(_)
+            | HostHandlePayload::SessionLease(_) => None,
         }
     }
 
     pub(crate) fn browser_session_id(&self) -> Option<&str> {
         match &self.payload {
             HostHandlePayload::BrowserSession(id) => Some(id),
-            HostHandlePayload::TcpStream(_)
+            HostHandlePayload::FileStream(_)
+            | HostHandlePayload::TcpStream(_)
             | HostHandlePayload::TlsStream(_)
             | HostHandlePayload::SecretValue(_)
-            | HostHandlePayload::CommandProcess(_) => None,
+            | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::ClockDomain(_)
+            | HostHandlePayload::ReadOwner(_)
+            | HostHandlePayload::SessionLease(_) => None,
         }
     }
 
     pub(crate) fn command_process_id(&self) -> Option<&str> {
         match &self.payload {
             HostHandlePayload::CommandProcess(id) => Some(id),
-            HostHandlePayload::TcpStream(_)
+            HostHandlePayload::FileStream(_)
+            | HostHandlePayload::TcpStream(_)
             | HostHandlePayload::TlsStream(_)
             | HostHandlePayload::SecretValue(_)
-            | HostHandlePayload::BrowserSession(_) => None,
+            | HostHandlePayload::BrowserSession(_)
+            | HostHandlePayload::ClockDomain(_)
+            | HostHandlePayload::ReadOwner(_)
+            | HostHandlePayload::SessionLease(_) => None,
         }
     }
 }
@@ -174,6 +292,28 @@ pub(crate) fn source_handle_type(
         })
         .map(|item| item.ty)
         .ok_or_else(|| format!("source capability has no checked opaque `{field}` field"))
+}
+
+pub(crate) fn validate_clock_domain(
+    checked: &etas_frontend::CheckedProject,
+    ty: TypeId,
+    domain: &str,
+) -> Result<(), String> {
+    if !matches!(checked.type_store.get(ty), Some(etas_types::Type::Nominal(owner))
+        if owner.name == "std.runtime.time.ClockDomain" && owner.representation.is_none())
+        || !checked.types.known_std_types.opaque_values.contains(&ty)
+    {
+        return Err("clock domain has a different checked opaque identity".into());
+    }
+    let (process, run) = domain
+        .split_once('/')
+        .ok_or("invalid clock domain identity")?;
+    process
+        .parse::<etas_host::replay::ReplayKeyId>()
+        .map_err(|error| error.to_string())?;
+    run.parse::<etas_host::replay::ReplayKeyId>()
+        .map_err(|error| error.to_string())?;
+    Ok(())
 }
 
 pub(crate) fn source_handle(

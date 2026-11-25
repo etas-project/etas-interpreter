@@ -61,12 +61,49 @@ impl Walk<'_> {
             self.values.push(value);
             return Ok(());
         }
-        if matches!(&value, InterpValue::Json(_))
+        if let InterpValue::Json(json) = &value
             && self.source.types.known_std_types.json_value == Some(from)
             && self.target.types.known_std_types.json_value == Some(to)
         {
-            // The immutable JSON payload carries no program-local type ids.
-            self.values.push(value);
+            if json.has_source_map() {
+                // Source Map storage contains nominal IDs owned by the producing program.
+                let (variant, fields) = crate::value::json::project(json, self.source);
+                let payload = |project| {
+                    crate::value::json::payload_type(project, variant)
+                        .ok_or(Failure::InconsistentLayout)
+                };
+                let left = payload(self.source)?;
+                let right = payload(self.target)?;
+                self.children(
+                    from,
+                    to,
+                    Build::Json(variant),
+                    fields.into_iter().map(|v| (left, right, v)).collect(),
+                );
+            } else {
+                self.values.push(value);
+            }
+            return Ok(());
+        }
+        if crate::eval::resolve_std_type(self.source, &["std", "collections", "ComparatorIdentity"])
+            == Some(from)
+            && crate::eval::resolve_std_type(
+                self.target,
+                &["std", "collections", "ComparatorIdentity"],
+            ) == Some(to)
+        {
+            let InterpValue::Nominal { ty, value } = value else {
+                return Err(wrong("Nominal", &value));
+            };
+            if ty != from {
+                return Err(Failure::WrongNominalIdentity { actual: ty });
+            }
+            if !matches!(value.as_ref(), InterpValue::Callable(_)) {
+                return Err(wrong("Callable", value.as_ref()));
+            }
+            // This opaque observation compares an instance without invoking it.
+            // Retain its original callable scope and instance across the bridge.
+            self.values.push(InterpValue::Nominal { ty: to, value });
             return Ok(());
         }
         if matches!(
@@ -102,6 +139,27 @@ impl Walk<'_> {
                 Build::Existential(object),
                 vec![(concrete, target_concrete, payload)],
             );
+            return Ok(());
+        }
+        if let InterpValue::Agent(mut reference) = value {
+            // A checked nominal correspondence transports the instance handle;
+            // its state and owning scheduler remain in the defining program.
+            if reference.program != std::sync::Arc::as_ptr(self.source) as usize {
+                return Err(Failure::WrongProgram);
+            }
+            if reference.ty != from {
+                return Err(Failure::WrongNominalIdentity {
+                    actual: reference.ty,
+                });
+            }
+            if !matches!(source, Type::Nominal(_) | Type::Applied { .. })
+                || !matches!(target, Type::Nominal(_) | Type::Applied { .. })
+            {
+                return Err(Failure::UnsupportedType);
+            }
+            reference.ty = to;
+            reference.program = std::sync::Arc::as_ptr(self.target) as usize;
+            self.values.push(InterpValue::Agent(reference));
             return Ok(());
         }
         if let InterpValue::StdConstant(value) = value {
@@ -150,6 +208,14 @@ impl Walk<'_> {
         }
         if self.source.types.known_std_types.filesystem_io_error == Some(from)
             && self.target.types.known_std_types.filesystem_io_error == Some(to)
+            && !matches!(
+                self.source.type_store.get(from),
+                Some(etas_types::Type::Enum(_))
+            )
+            && !matches!(
+                self.target.type_store.get(to),
+                Some(etas_types::Type::Enum(_))
+            )
         {
             // The filesystem host boundary constructs this opaque error with
             // a string payload; its representation is not a public type alias.
@@ -319,6 +385,7 @@ impl Walk<'_> {
                 }
                 let mut children = Vec::with_capacity(left.fields.len());
                 let mut names = Vec::with_capacity(left.fields.len());
+                let member_tool = values.member_tool_binding();
                 for (name, value) in values.into_values() {
                     let source = source_fields
                         .remove(name.as_str())
@@ -329,7 +396,7 @@ impl Walk<'_> {
                     names.push(name);
                     children.push((source, to, value));
                 }
-                self.children(from, to, Build::Record(names), children);
+                self.children(from, to, Build::Record { names, member_tool }, children);
             }
             (Type::Option(left), Type::Option(right)) => match value {
                 InterpValue::OptionNone => self.values.push(InterpValue::OptionNone),

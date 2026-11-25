@@ -61,6 +61,24 @@ impl<'a> EvalContext<'a> {
                 continuation => {
                     signal = match signal {
                         ControlSignal::Perform(mut pending) => match continuation {
+                            Continuation::CompleteRecordConstruction(guard)
+                                if pending.error_type.is_some() =>
+                            {
+                                match guard.abort() {
+                                    Ok(()) => ControlSignal::Perform(pending),
+                                    Err(error) => ControlSignal::runtime_fault(
+                                        error.to_string(),
+                                        pending.span,
+                                    ),
+                                }
+                            }
+                            Continuation::PublishAgentConstruction {
+                                initialization,
+                                span,
+                            } if pending.error_type.is_some() => match initialization.abort() {
+                                Ok(()) => ControlSignal::Perform(pending),
+                                Err(error) => ControlSignal::runtime_fault(error.to_string(), span),
+                            },
                             Continuation::CommitReceiver { lease, span, .. } => {
                                 lease.abort();
                                 if pending.error_type.is_some() {
@@ -205,7 +223,9 @@ impl<'a> EvalContext<'a> {
                 pending.continuation = compose_continuation(pending.continuation, outer);
                 ControlSignal::Host(pending)
             }
-            ControlSignal::Task(pending) => ControlSignal::Task(pending),
+            ControlSignal::Task(pending) => {
+                compose_signal_continuation(ControlSignal::Task(pending), outer)
+            }
             ControlSignal::Call(mut pending) => {
                 pending.continuation = compose_continuation(pending.continuation, outer);
                 ControlSignal::Call(pending)
@@ -611,6 +631,11 @@ impl<'a> EvalContext<'a> {
                 self.continue_priority_update(*state, value)
             }
             Continuation::OrderedSearch(state) => self.continue_ordered_search(*state, value),
+            Continuation::ValueEquality(state) => self.continue_value_equality(*state, value),
+            Continuation::StorageTransfer(state) => self.continue_storage_transfer(*state, value),
+            Continuation::ModelStepProviderData(state) => {
+                self.complete_model_step_provider_data(*state, value)
+            }
             Continuation::StreamReadReduction(state) => self.continue_stream_read(*state, value),
             Continuation::FileReadReduction(state) => self.continue_file_read(*state, value),
             Continuation::DirectoryListReduction(state) => {
@@ -684,9 +709,16 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => self.resume_binary_left(op, value, rhs, span, &mut frame),
             Continuation::BinaryRight { op, left, span } => {
-                match self.finish_binary_right(op, left, value, span) {
-                    Ok(value) => ControlSignal::Value(value),
-                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                if matches!(
+                    op,
+                    etas_hir::HirBinaryOp::AndAnd | etas_hir::HirBinaryOp::OrOr
+                ) {
+                    match self.finish_binary_right(op, left, value, span) {
+                        Ok(value) => ControlSignal::Value(value),
+                        Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                    }
+                } else {
+                    self.eval_binary_with_equality(op, left, value, span)
                 }
             }
             Continuation::AggregateElement {
@@ -767,13 +799,11 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => self.resume_slice_start(eval, base, value, &mut frame),
             Continuation::SliceEnd {
-                eval, base, start, ..
-            } => {
-                match self.eval_slice_value(eval.expr, base, start, value, eval.bounds, eval.span) {
-                    Ok(value) => ControlSignal::Value(value),
-                    Err(fault) => ControlSignal::Fault(Box::new(fault)),
-                }
-            }
+                eval,
+                base,
+                start,
+                frame,
+            } => self.eval_checked_slice_value(eval, base, start, value, &frame),
             Continuation::MethodReceiver {
                 expr,
                 method,
@@ -1021,15 +1051,11 @@ impl<'a> EvalContext<'a> {
             Continuation::CallBoundary { outer, .. } => {
                 self.apply_continuation(outer.into_value(), value)
             }
-            Continuation::LoopLimit { stmt, mut frame } => {
-                self.resume_loop_limit(stmt, value, &mut frame)
-            }
             Continuation::ForLoop {
                 pat,
                 source,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 span,
                 mut frame,
@@ -1039,7 +1065,6 @@ impl<'a> EvalContext<'a> {
                     source: source.map(|source| *source),
                     next_index,
                     body,
-                    iterations,
                     loop_scope,
                     span,
                 },
@@ -1053,7 +1078,6 @@ impl<'a> EvalContext<'a> {
                 awaiting_step,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 span,
                 mut frame,
@@ -1065,7 +1089,6 @@ impl<'a> EvalContext<'a> {
                     awaiting_step,
                     next_index,
                     body,
-                    iterations,
                     loop_scope,
                     span,
                 },
@@ -1075,8 +1098,6 @@ impl<'a> EvalContext<'a> {
             Continuation::WhileLoop {
                 cond,
                 body,
-                iteration,
-                max_iterations,
                 resume_after_body,
                 span,
                 mut frame,
@@ -1085,8 +1106,6 @@ impl<'a> EvalContext<'a> {
                     value,
                     cond,
                     body,
-                    iteration,
-                    max_iterations,
                     resume_after_body,
                     span,
                 },
@@ -1095,7 +1114,6 @@ impl<'a> EvalContext<'a> {
             Continuation::RetryAttempt {
                 retry,
                 body: _,
-                attempts: _,
                 next_attempt: _,
                 block,
                 next_stmt_index,
@@ -1145,6 +1163,18 @@ impl<'a> EvalContext<'a> {
                     Err(fault) => ControlSignal::Fault(Box::new(fault)),
                 }
             }
+            Continuation::ValidateFileOpenResult {
+                result_type,
+                mode,
+                span,
+            } => match self.source_file_stream(&value, result_type, span) {
+                Ok(file) if file.mode() == mode => ControlSignal::Value(value),
+                Ok(_) => ControlSignal::invalid_arguments(
+                    "Fs.open handler resumed with a different file mode",
+                    span,
+                ),
+                Err(fault) => ControlSignal::Fault(Box::new(fault)),
+            },
             Continuation::MemoryClearDeleteNext {
                 region_stable_id,
                 path,
@@ -1268,6 +1298,27 @@ impl<'a> EvalContext<'a> {
                 guard,
                 ControlSignal::Value(value),
             ),
+            Continuation::PublishAgentConstruction {
+                initialization,
+                span,
+            } => {
+                match self
+                    .scheduler
+                    .publish_agent_construction(&initialization, value)
+                {
+                    Ok(reference) => {
+                        for event in self.scheduler.take_agent_events() {
+                            self.events.push(event);
+                        }
+                        self.start_autonomous_main(reference, span)
+                    }
+                    Err(error) => ControlSignal::runtime_fault(error.to_string(), span),
+                }
+            }
+            Continuation::CompleteRecordConstruction(guard) => {
+                guard.publish();
+                ControlSignal::Value(value)
+            }
             Continuation::BlockValue => ControlSignal::Value(value),
         }
     }

@@ -5,7 +5,7 @@ import std.task.scheduler.park;
 
 flow burn() -> i32 {
     var index = 0;
-    while index < 100000 limit Iterations(100000) {
+    while index < 100000 {
         index = index + 1;
     }
     return 1;

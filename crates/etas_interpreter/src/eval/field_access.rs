@@ -340,6 +340,22 @@ impl<'a> EvalContext<'a> {
                 }
                 self.try_eval_field_value(site, value.into_value(), field, span)
             }
+            InterpValue::Agent(reference) => {
+                let state = self
+                    .task
+                    .agent_turn
+                    .as_ref()
+                    .filter(|turn| turn.reference == reference)
+                    .and_then(|turn| turn.state.as_ref())
+                    .ok_or_else(|| {
+                        ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            "private Agent state requires the current request turn",
+                        )
+                    })?;
+                self.try_eval_field_value(site, state.clone(), field, span)
+            }
             InterpValue::Record(fields) => {
                 let layout = self.plan.records.field(site).ok_or_else(|| {
                     ExecutionFault::new(

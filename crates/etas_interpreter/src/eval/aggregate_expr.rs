@@ -249,7 +249,22 @@ impl<'a> EvalContext<'a> {
         record: &etas_hir::HirRecordExpr,
         frame: &mut Frame,
     ) -> ControlSignal {
-        self.resume_record_fields(expr, 0, Vec::with_capacity(record.fields.len()), frame)
+        if let Some(signal) = self.prepare_managed_agent_construction(expr, frame, record.span) {
+            return signal;
+        }
+        if record.path.is_none() {
+            return self.resume_record_fields(
+                expr,
+                0,
+                Vec::with_capacity(record.fields.len()),
+                frame,
+            );
+        }
+        let guard = self.scheduler.begin_record_construction(self.task);
+        self.task.register_record_construction(&guard);
+        let signal =
+            self.resume_record_fields(expr, 0, Vec::with_capacity(record.fields.len()), frame);
+        self.continue_chain_signal(signal, Continuation::CompleteRecordConstruction(guard))
     }
 
     pub(super) fn resume_record_fields(
@@ -357,9 +372,18 @@ impl<'a> EvalContext<'a> {
                     Ok(ty) => ty,
                     Err(fault) => return ControlSignal::Fault(Box::new(fault)),
                 };
-                InterpValue::Nominal {
-                    ty,
-                    value: crate::value::SharedValue::new(value),
+                if self
+                    .checked
+                    .types
+                    .is_active_agent(&self.checked.type_store, ty)
+                {
+                    // The enclosing constructor continuation publishes this state.
+                    value
+                } else {
+                    InterpValue::Nominal {
+                        ty,
+                        value: crate::value::SharedValue::new(value),
+                    }
                 }
             }
             None => value,

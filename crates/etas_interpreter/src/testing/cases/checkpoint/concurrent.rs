@@ -12,7 +12,7 @@ let Memory = std.memory.region<Schema>(stable_id = "checkpoint-resources", store
 flow write(key: string) -> string {
     Memory.Papers.put(key, key);
     var step = 0;
-    while step < 10000 limit Iterations(10000) { step = step + 1; }
+    while step < 10000 { step = step + 1; }
     return key;
 }
 flow main() -> Array<string> {
@@ -21,7 +21,7 @@ flow main() -> Array<string> {
         let second = start(() => { return write("a"); });
         let marker = start(() => {
             var step = 0;
-            while step < 1000 limit Iterations(1000) { step = step + 1; }
+            while step < 1000 { step = step + 1; }
             checkpoint("resources");
             return ();
         });
@@ -227,7 +227,7 @@ import std.task.{run, start, await, Scheduler};
 agent Solver() -> string { return perform infer(Prompt.new().data("hello")); }
 flow burn() -> i32 {
     var index = 0;
-    while index < 2000 limit Iterations(2000) { index = index + 1; }
+    while index < 2000 { index = index + 1; }
     return index;
 }
 flow main() -> string {
@@ -344,7 +344,7 @@ async fn concurrent_checkpoint_preserves_completed_scope_owner_and_nested_waits(
         ),
         (
             "inherited-retry",
-            r#"retry limit Attempts(1) { let child = start(() => { checkpoint("inherited-retry"); return "retried"; }); return await(child); } return "failed";"#,
+            r#"retry { let child = start(() => { checkpoint("inherited-retry"); return "retried"; }); return await(child); } return "failed";"#,
             "retried",
         ),
     ] {
@@ -384,17 +384,16 @@ flow main() -> string {{ return run((scheduler: Scheduler) => {{ {body} }}); }}
         let saved = first.checkpoints.first().expect(kind);
         if kind == "completed-owner" {
             assert!(
-                saved
-                    .tasks
-                    .as_ref()
-                    .unwrap()
-                    .tasks
-                    .values()
-                    .any(|task| matches!(
-                        task.state,
-                        crate::orchestration::ScheduledTaskStateSnapshot::Completed
-                    )),
-                "the owner returned before its child requested checkpoint"
+                saved.tasks.as_ref().unwrap().tasks.values().any(|task| {
+                    task.state == crate::orchestration::ScheduledTaskStateSnapshot::WaitingChildren
+                        && matches!(
+                            task.outcome,
+                            Some(crate::orchestration::TaskOutcomeSnapshot::Completed(_))
+                        )
+                        && task.machine.is_none()
+                        && !task.active_slot
+                }),
+                "the owner's completed body must retain its outcome while joining the child"
             );
         }
         let wire = crate::api::codec::checkpoint_artifact_json(&["main.es".into()], "main", saved)

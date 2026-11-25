@@ -59,7 +59,18 @@ async fn drain(
         while let Some(completed) = reactor.poll_ready().await {
             task::settle_host_reply(eval, completed)?;
         }
-        if eval.cpu_jobs.is_empty() && !reactor.has_pending() {
+        let host_pending = reactor
+            .has_checkpoint_work(&eval.scheduler)
+            .map_err(|message| {
+                let fault = crate::control::ExecutionFault::new(
+                    etas_core::AnalysisDiagnosticCode::MissingCheckedFact,
+                    crate::diagnostics::item_span(eval.checked, eval.entry_item),
+                    message,
+                );
+                eval.diagnostics.push(fault.clone().into_diagnostic());
+                EvaluationOutcome::Failed(crate::api::RunFailure::ExecutionFault(fault))
+            })?;
+        if eval.cpu_jobs.is_empty() && !host_pending {
             if let Some(super::scheduler::RootTaskWait::Host(wait)) = &root.root_wait {
                 let input = wait
                     .take_input()
@@ -238,6 +249,8 @@ mod tests {
                     &mut eval,
                     handle,
                     child.local.logical_identity,
+                    child.local.capture_agent_host_context(),
+                    child.local.capture_record_context(),
                     &child.machine,
                     &program,
                     &perform,
@@ -284,7 +297,7 @@ mod tests {
                         &root,
                         &program,
                         eval.task.identity,
-                        &eval.host_context,
+                        &eval.task.host_context(),
                     )
                     .unwrap(),
                 );
@@ -517,8 +530,13 @@ mod tests {
 
     #[tokio::test]
     async fn barrier_commits_host_work_without_running_the_ready_continuation() {
-        use super::super::dispatch::console::{self, ConsoleDispatchStart};
-        use crate::control::{ConsoleDecode, PendingConsole};
+        use super::super::dispatch::{
+            authorization::{
+                self, AuthorizationStart, AuthorizedDispatchStart, AuthorizedHostDispatch,
+            },
+            console::{self, ConsoleDispatchStart},
+        };
+        use crate::control::{ConsoleDecode, PendingConsole, PendingTaskControl};
         use etas_host::console::{ConsoleOperation, ConsoleRequest};
         let checked = checked_project("module app.main; flow main() -> unit { return; }");
         let plan = crate::Interpreter.plan(&checked, PlanOptions).plan.unwrap();
@@ -553,19 +571,34 @@ mod tests {
                     text: "once".into(),
                     newline: true,
                 },
-                authority: child.host_context.authority.clone(),
-                trace: child.host_context.trace.clone(),
-                budget: child.host_context.budget.clone(),
+                authority: child.task.host_context.authority.clone(),
+                trace: child.task.host_context.trace.clone(),
+                budget: child.task.host_context.budget.clone(),
             },
             decode: ConsoleDecode::Unit,
             span,
             continuation: Continuation::Return,
         };
-        let pending = match console::begin(&mut child, &host, console).await {
-            ConsoleDispatchStart::Pending(pending) => pending,
-            ConsoleDispatchStart::Complete(_) => {
-                panic!("Host request was not admitted: {:?}", child.diagnostics)
-            }
+        let ConsoleDispatchStart::Complete(Some(ControlSignal::Task(control))) =
+            console::begin(&mut child, &host, console).await
+        else {
+            panic!("console must enter authorization before native dispatch");
+        };
+        let PendingTaskControl::NativeAuthorization(state) = *control else {
+            panic!("native authorization");
+        };
+        let AuthorizationStart::Complete(ControlSignal::Task(control)) =
+            authorization::advance(&mut child, &host, *state)
+        else {
+            panic!("fixture needs no external policy decision");
+        };
+        let PendingTaskControl::AuthorizedNative(approved) = *control else {
+            panic!("authorized native boundary");
+        };
+        let AuthorizedDispatchStart::Pending(AuthorizedHostDispatch::Console(pending)) =
+            authorization::dispatch(&mut child, &host, &mut scheduled.machine, *approved).await
+        else {
+            panic!("Host request was not admitted: {:?}", child.diagnostics);
         };
         drop(child);
         let operation = pending.operation_id();
@@ -718,7 +751,7 @@ flow main() -> i32 {
                     plan.slots.clone(),
                     &plan.dispatch,
                     &plan.closures,
-                    &eval.host_context,
+                    &eval.task.host_context(),
                     SnapshotRestoreResources {
                         task: Some(TaskSnapshotRestoreResources {
                             inherited_handlers: 0,
@@ -922,8 +955,9 @@ flow main() -> i32 {
         assert_eq!(restored.consumed_steps(), 0);
         assert_eq!(
             restored.scheduler.state(parent).unwrap(),
-            TaskState::Completed
+            TaskState::Waiting(super::super::scheduler::TaskWait::HostDrain)
         );
+        assert!(restored.scheduler.outcome(parent).unwrap().is_none());
         assert_eq!(restored.scheduler.state(child).unwrap(), TaskState::Ready);
         assert!(matches!(
             restored.scheduler.consume_continuation(

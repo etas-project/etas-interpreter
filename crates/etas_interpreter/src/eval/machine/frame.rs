@@ -41,7 +41,6 @@ pub(crate) struct HandlerFrame {
 pub(crate) struct RetryFrame {
     pub retry: RetryAttemptRecord,
     pub body: HirBlockId,
-    pub attempts: usize,
     pub next_attempt: usize,
     pub block: HirBlockId,
     pub next_stmt_index: usize,
@@ -115,7 +114,6 @@ impl EvalFrame {
             Continuation::RetryAttempt {
                 retry,
                 body,
-                attempts,
                 next_attempt,
                 block,
                 next_stmt_index,
@@ -123,7 +121,6 @@ impl EvalFrame {
             } => Self::Retry(RetryFrame {
                 retry,
                 body,
-                attempts,
                 next_attempt,
                 block,
                 next_stmt_index,
@@ -159,7 +156,6 @@ impl EvalFrame {
             Self::Retry(frame) => Continuation::RetryAttempt {
                 retry: frame.retry,
                 body: frame.body,
-                attempts: frame.attempts,
                 next_attempt: frame.next_attempt,
                 block: frame.block,
                 next_stmt_index: frame.next_stmt_index,

@@ -10,7 +10,7 @@ use crate::{
 
 use super::{
     host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation},
-    policy::{boundary_policy_ref_for, evaluate_before_boundary},
+    policy::boundary_policy_ref_for,
 };
 
 type ModelCall<'host> = crate::host::HostFuture<'host, Result<ModelResponse, etas_host::HostError>>;
@@ -40,25 +40,29 @@ pub(in crate::driver) struct CompletedModelHostDispatch {
 
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &'host dyn HostServices,
+    _host: &'host dyn HostServices,
     pending: crate::control::PendingModel,
     machine: &mut EvalMachine,
 ) -> ModelDispatchStart<'host> {
     let policy_ref = boundary_policy_ref_for(eval, pending.request.policy_ref.clone());
-    let trace_subject = policy_subject(&pending.request);
-    if !evaluate_before_boundary(
+    let subject = policy_subject(&pending.request);
+    let budget = pending.request.budget.clone();
+    machine.resume(super::authorization::prepare(
         eval,
-        host,
-        policy_ref,
-        trace_subject.clone(),
-        pending.span,
-        "model",
-    )
-    .await
-    {
-        return ModelDispatchStart::Complete(false);
-    }
+        crate::control::NativeBoundaryTarget::Model(pending),
+        vec![(policy_ref, subject)],
+        budget,
+    ));
+    ModelDispatchStart::Complete(true)
+}
 
+pub(in crate::driver) async fn begin_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    mut pending: crate::control::PendingModel,
+    machine: &mut EvalMachine,
+) -> ModelDispatchStart<'host> {
+    pending.request.authority = eval.host_authority();
     if let Err(error) = pending.request.budget.check_time() {
         machine.resume_model_result(Err(error));
         return ModelDispatchStart::Complete(true);

@@ -11,7 +11,11 @@ type RestoredScopeGuards =
 struct SharedFrameRestoreState {
     frames: std::cell::RefCell<std::collections::HashMap<u64, (LocalsSnapshot, Frame)>>,
     scopes: std::cell::RefCell<RestoredScopeGuards>,
+    records: std::cell::RefCell<
+        std::collections::HashMap<u64, std::rc::Rc<crate::control::RecordConstruction>>,
+    >,
     bindings: std::rc::Rc<std::cell::RefCell<SharedBindingRestore>>,
+    record_contexts: std::cell::RefCell<Vec<std::rc::Weak<crate::control::RecordContext>>>,
     validation: super::validator::SharedFrameValidation,
 }
 
@@ -30,6 +34,14 @@ impl SharedFrameRestore {
             ..Default::default()
         }))
     }
+    pub(crate) fn record_constructions(
+        &self,
+    ) -> Vec<std::rc::Rc<crate::control::RecordConstruction>> {
+        self.0.records.borrow().values().cloned().collect()
+    }
+    pub(crate) fn record_contexts(&self) -> Vec<std::rc::Weak<crate::control::RecordContext>> {
+        self.0.record_contexts.borrow().clone()
+    }
     pub(crate) fn validation(&self) -> super::validator::SharedFrameValidation {
         self.0.validation.clone()
     }
@@ -41,6 +53,8 @@ impl SharedFrameRestore {
 #[derive(Default)]
 struct SharedBindingRestore {
     scopes: RestoredScopeGuards,
+    records: std::collections::HashMap<u64, std::rc::Rc<crate::control::RecordConstruction>>,
+    record_contexts: Vec<std::rc::Weak<crate::control::RecordContext>>,
     frames: std::collections::HashMap<u64, u64>,
     bindings: std::collections::HashMap<
         u64,
@@ -329,6 +343,73 @@ impl RestoreContext {
             .as_ref()
             .ok_or("checkpoint agent reference requires freshly prepared revisions")?
             .restore(reference, program)
+    }
+
+    pub(in crate::eval::machine) fn record_context(
+        &mut self,
+        owner: crate::driver::scheduler::TaskIdentity,
+        source: crate::driver::scheduler::TaskIdentity,
+        order: u64,
+        guards: &[(
+            u64,
+            crate::driver::scheduler::TaskIdentity,
+            crate::driver::scheduler::TaskScopeId,
+        )],
+    ) -> Result<crate::control::RecordContextLease, String> {
+        let guards = guards
+            .iter()
+            .map(|(id, task, owner)| {
+                self.record_construction(*id, *task, *owner)
+                    .map(|guard| std::rc::Rc::downgrade(&guard))
+            })
+            .collect::<Result<Vec<_>, _>>()?;
+        let lease = crate::control::RecordContextLease::restore(owner, source, order, guards)?;
+        if let Some(shared) = &self.shared_frames {
+            shared
+                .0
+                .record_contexts
+                .borrow_mut()
+                .push(std::rc::Rc::downgrade(&lease.0));
+        } else {
+            self.shared_bindings
+                .get_or_insert_with(Default::default)
+                .borrow_mut()
+                .record_contexts
+                .push(std::rc::Rc::downgrade(&lease.0));
+        }
+        Ok(lease)
+    }
+    pub(super) fn record_construction(
+        &mut self,
+        id: u64,
+        task: crate::driver::scheduler::TaskIdentity,
+        owner: crate::driver::scheduler::TaskScopeId,
+    ) -> Result<std::rc::Rc<crate::control::RecordConstruction>, String> {
+        fn restore(
+            records: &mut std::collections::HashMap<
+                u64,
+                std::rc::Rc<crate::control::RecordConstruction>,
+            >,
+            id: u64,
+            task: crate::driver::scheduler::TaskIdentity,
+            owner: crate::driver::scheduler::TaskScopeId,
+        ) -> Result<std::rc::Rc<crate::control::RecordConstruction>, String> {
+            if let Some(guard) = records.get(&id) {
+                if guard.task != task || guard.owner != owner {
+                    return Err("conflicting record construction identity".into());
+                }
+                return Ok(guard.clone());
+            }
+            let guard = crate::control::RecordConstruction::new(task, owner);
+            records.insert(id, guard.clone());
+            Ok(guard)
+        }
+        if let Some(shared) = &self.shared_frames {
+            restore(&mut shared.0.records.borrow_mut(), id, task, owner)
+        } else {
+            let shared = self.shared_bindings.get_or_insert_with(Default::default);
+            restore(&mut shared.borrow_mut().records, id, task, owner)
+        }
     }
 
     pub(super) fn scope_exit_guard(

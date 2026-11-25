@@ -44,7 +44,12 @@ impl<'a> EvalContext<'a> {
             Ok(error_type) => error_type,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        let value = if self
+        let value = if self.checked.hir.source_standard_types {
+            match self.source_io_error_value(&error, console.span) {
+                Ok(value) => value,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            }
+        } else if self
             .checked
             .types
             .known_std_types
@@ -120,6 +125,7 @@ fn console_error_value(error: HostError) -> InterpValue {
         | HostErrorCode::IncompleteResponse
         | HostErrorCode::IoFailure
         | HostErrorCode::SchemaMismatch
+        | HostErrorCode::Unsupported
         | HostErrorCode::BudgetExceeded
         | HostErrorCode::TimedOut
         | HostErrorCode::Cancelled

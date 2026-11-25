@@ -1,10 +1,12 @@
 pub(super) mod approval;
+pub(super) mod authorization;
 pub(super) mod command;
 pub(super) mod compiler;
 pub(super) mod console;
 pub(super) mod error;
 pub(super) mod host;
 pub(super) mod host_dispatch;
+pub(super) mod managed_agent;
 pub(super) mod memory;
 mod memory_commit;
 mod memory_pages;

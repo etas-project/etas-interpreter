@@ -192,3 +192,83 @@ pub(crate) fn residual_project_input(text: &str) -> ProjectInput {
         },
     }
 }
+
+/// Native lifecycle cases use the maintained Etas library, checked once for the
+/// fixture. They do not extend the legacy registry with handwritten APIs.
+pub(crate) fn checked_autonomous_project() -> &'static CheckedProject {
+    static PROJECT: std::sync::OnceLock<CheckedProject> = std::sync::OnceLock::new();
+    PROJECT.get_or_init(|| {
+        let root = etas_std::library::source_checkout_manifest()
+            .parent()
+            .unwrap();
+        let mut loaded = etas_frontend::ProjectSourceLoader::default()
+            .load(etas_frontend::ProjectSourceLoadOptions {
+                project_root: root.into(),
+                roots: vec![root.join("library")],
+                entry: ProjectEntry {
+                    module: Some(ModulePath {
+                        segments: vec!["app".into(), "main".into()],
+                    }),
+                    flow: "main".into(),
+                },
+                scope: etas_frontend::ProjectSourceLoadScope::FullSourceTree,
+                source_kind: None,
+                import_search_roots: Vec::new(),
+                external_module_roots: Vec::new(),
+            })
+            .unwrap();
+        let id = SourceId(
+            loaded
+                .input
+                .sources
+                .iter()
+                .map(|source| source.id.0)
+                .max()
+                .unwrap()
+                + 1,
+        );
+        loaded.input.sources.push(SourceInput {
+            id,
+            path: Some(root.join("library/app/main.es")),
+            text: include_str!("fixtures/autonomous_lifecycle.es").into(),
+            kind: SourceKind::SourceProjectFile,
+        });
+        let package =
+            etas_code::PackageKey::from_name_and_version("source_lifecycle_fixture", "1.0.0")
+                .unwrap();
+        loaded.input.environment.local_source_package = Some(package);
+        loaded.input.environment.stable_source_keys = loaded
+            .input
+            .sources
+            .iter()
+            .map(|source| etas_frontend::ProjectStableSourceKeyInput {
+                source: source.id,
+                key: etas_code::StableSourceKey::new(
+                    etas_code::StableSourceOrigin::Package(package),
+                    &source
+                        .path
+                        .as_ref()
+                        .unwrap()
+                        .strip_prefix(root)
+                        .unwrap()
+                        .components()
+                        .map(|part| part.as_os_str().to_str().unwrap().to_owned())
+                        .collect::<Vec<_>>(),
+                )
+                .unwrap(),
+            })
+            .collect();
+        let output = Frontend.check_standard_library_source(loaded.input);
+        assert!(
+            !output
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.severity == etas_core::Severity::Error),
+            "{:?}",
+            output.diagnostics
+        );
+        output
+            .checked
+            .expect("maintained source std and lifecycle fixture are checked")
+    })
+}

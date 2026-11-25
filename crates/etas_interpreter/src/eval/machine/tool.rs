@@ -40,6 +40,7 @@ impl EvalMachine {
             Some(source) => {
                 if let Err(fault) = ctx.prepare_source_tool_call(
                     source.item,
+                    resolved.member_state.clone(),
                     resolved.args.clone(),
                     invocation.span,
                 ) {
@@ -99,7 +100,12 @@ impl EvalMachine {
             ))
         })?;
         let (target, args) = ctx
-            .prepare_source_tool_call(source.item, resolved.args, invocation.span)
+            .prepare_source_tool_call(
+                source.item,
+                resolved.member_state,
+                resolved.args,
+                invocation.span,
+            )
             .map_err(MachinePoll::Fault)?;
         let span = invocation.span;
         self.push_continuation_frames(Continuation::ToolInvocationResult(invocation));

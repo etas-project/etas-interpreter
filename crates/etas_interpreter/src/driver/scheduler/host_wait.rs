@@ -23,11 +23,8 @@ impl HostOperationScope {
     pub(in crate::driver) fn new(
         parent: &mut crate::eval::TaskLocalState,
     ) -> Result<Self, etas_host::HostError> {
-        let execution = parent.execution.child()?;
-        let operations = parent
-            .host_operations
-            .get_or_insert_with(|| Rc::new(Cell::new(0)))
-            .clone();
+        let execution = parent.host_execution().child()?;
+        let operations = parent.host_operations();
         operations.set(operations.get() + 1);
         let scope = Self {
             execution,

@@ -33,20 +33,20 @@ fn quantum_yield_preserves_consumed_fuel_and_scope_stop_wins_before_more_work() 
     let mut scheduler = ExecutionSafePointScheduler::new(80);
     for _ in 0..WORK_QUANTUM {
         assert!(matches!(
-            scheduler.observe(&signal, &budget, span()),
+            scheduler.observe(&signal, || budget.clone(), span()),
             SafePointDecision::Continue
         ));
         scheduler
-            .consume(ExecutionLimits::default(), &budget, span())
+            .consume(ExecutionLimits::default(), || budget.clone(), span())
             .unwrap();
     }
     assert!(matches!(
-        scheduler.observe(&signal, &budget, span()),
+        scheduler.observe(&signal, || budget.clone(), span()),
         SafePointDecision::Yield
     ));
     assert_eq!(scheduler.consumed_steps(), 80 + WORK_QUANTUM);
     assert!(matches!(
-        scheduler.observe(&signal, &budget, span()),
+        scheduler.observe(&signal, || budget.clone(), span()),
         SafePointDecision::Continue
     ));
     scope
@@ -54,7 +54,7 @@ fn quantum_yield_preserves_consumed_fuel_and_scope_stop_wins_before_more_work() 
         .stop(CancellationReason::Requested)
         .unwrap();
     assert!(matches!(
-        scheduler.observe(&signal, &budget, span()),
+        scheduler.observe(&signal, || budget.clone(), span()),
         SafePointDecision::Cancelled(_)
     ));
     assert_eq!(scheduler.consumed_steps(), 80 + WORK_QUANTUM);
@@ -76,12 +76,12 @@ fn safe_points_use_the_run_budget_monotonic_clock_without_wall_time_sleeps() {
     let mut scheduler = ExecutionSafePointScheduler::new(0);
     for _ in 0..TIME_BUDGET_CHECK_INTERVAL {
         scheduler
-            .consume(ExecutionLimits::default(), &budget, span())
+            .consume(ExecutionLimits::default(), || budget.clone(), span())
             .unwrap();
     }
     clock.millis.store(11, Ordering::Relaxed);
     let failure = scheduler
-        .consume(ExecutionLimits::default(), &budget, span())
+        .consume(ExecutionLimits::default(), || budget.clone(), span())
         .unwrap_err();
     assert!(failure.message.contains("wall-time"));
     assert_eq!(failure.span, span());

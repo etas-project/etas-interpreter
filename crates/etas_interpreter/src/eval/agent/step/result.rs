@@ -8,6 +8,7 @@ impl EvalContext<'_> {
         model: &PendingModel,
         response: ModelOutput,
         usage: Option<ModelUsage>,
+        provider_data: Option<InterpValue>,
     ) -> Result<InterpValue, ExecutionFault> {
         let missing = |reason: String| {
             ExecutionFault::new(
@@ -30,7 +31,7 @@ impl EvalContext<'_> {
                 ModelContent::Value(value) => variant("Value", vec![value.clone()]),
             })
             .collect();
-        let turn = HostValue::Record(vec![
+        let turn = vec![
             (
                 "request_id".into(),
                 option(response.provider_request_id.clone().map(HostValue::String)),
@@ -47,7 +48,8 @@ impl EvalContext<'_> {
                         .collect(),
                 ),
             ),
-        ]);
+        ];
+        let mut member_calls = std::collections::BTreeMap::new();
         let decision = match &response.termination {
             ModelTermination::Truncated => stopped("Truncated", Vec::new()),
             ModelTermination::Refused(reason) => {
@@ -62,7 +64,7 @@ impl EvalContext<'_> {
                 vec![diagnostic("invalid_output", reason.clone())],
             ),
             ModelTermination::Complete if !response.message.tool_calls.is_empty() => {
-                match self.step_tool_calls(model, &response.message.tool_calls) {
+                match self.step_tool_calls(model, &response.message.tool_calls, &mut member_calls) {
                     Ok(calls) => variant("CallTools", vec![HostValue::List(calls)]),
                     Err(ToolInvocationError::Rejected(error)) => stopped(
                         "InvalidToolCall",
@@ -102,19 +104,104 @@ impl EvalContext<'_> {
                 }
             }
         };
-        let value = HostValue::Record(vec![
-            ("turn".into(), turn),
+        let mut fields = vec![
             ("decision".into(), decision),
             ("usage".into(), option(usage.map(usage_value))),
-        ]);
-        crate::eval::host_value::decode_checked_host_value(value, result, self.checked)
-            .map_err(missing)
+        ];
+        let mut value = match provider_data {
+            Some(map) => {
+                let turn_ty =
+                    checked_record_field(self.checked, result, "turn").map_err(missing)?;
+                let turn =
+                    decode_record_with_field(self.checked, turn_ty, turn, "provider_data", map)
+                        .map_err(missing)?;
+                decode_record_with_field(self.checked, result, fields, "turn", turn)
+            }
+            None => {
+                fields.push(("turn".into(), HostValue::Record(turn)));
+                crate::eval::host_value::decode_checked_host_value(
+                    HostValue::Record(fields),
+                    result,
+                    self.checked,
+                )
+            }
+        }
+        .map_err(missing)?;
+        // The request task stays suspended between Model.step and response decoding.
+        if let Some(turn) = &mut self.task.agent_turn
+            && let Some(state) = &turn.state
+            && !member_calls.is_empty()
+        {
+            let snapshot = std::rc::Rc::new(crate::value::MemberToolSnapshot {
+                instance: turn.reference,
+                request: self.task.logical_identity,
+                state: state.clone(),
+                calls: member_calls,
+            });
+            bind_member_tool_calls(&mut value, &snapshot);
+            turn.tool_snapshots
+                .retain(|snapshot| std::rc::Rc::weak_count(snapshot) > 0);
+            turn.tool_snapshots.push(snapshot);
+        }
+        Ok(value)
+    }
+
+    pub(in crate::eval) fn step_provider_data_builder(
+        &self,
+        result: etas_types::TypeId,
+        data: &[(String, HostValue)],
+    ) -> Result<Option<(CallTarget, InterpValue)>, String> {
+        let turn = checked_record_field(self.checked, result, "turn")?;
+        let map = checked_record_field(self.checked, turn, "provider_data")?;
+        if matches!(self.checked.type_store.get(map), Some(Type::Map { .. })) {
+            return Ok(None);
+        }
+        let mut types =
+            etas_types::TypeInterner::from_store(self.checked.type_store.as_ref().clone());
+        let layout = etas_types::storage_layout::materialize_storage_shapes(
+            &mut types,
+            &self.checked.types,
+            map,
+            etas_code::descriptor::DescriptorLimits::default().max_nodes,
+        )
+        .map_err(|error| error.to_string())?;
+        let etas_types::storage_layout::StorageKind::Collection {
+            kind: etas_types::storage_layout::StorageCollection::Map,
+            restore,
+            fallible_restore: false,
+            ..
+        } = &layout[0].kind
+        else {
+            return Err("model provider data requires a checked Map builder".into());
+        };
+        let json = self
+            .checked
+            .types
+            .known_std_types
+            .json_value
+            .ok_or("provider data requires checked JsonValue")?;
+        let entries = data
+            .iter()
+            .map(|(name, value)| {
+                let value = crate::eval::host_value::decode_checked_host_value(
+                    value.clone(),
+                    json,
+                    self.checked,
+                )?;
+                Ok(InterpValue::Tuple(
+                    vec![InterpValue::String(name.clone().into()), value].into(),
+                ))
+            })
+            .collect::<Result<Vec<_>, String>>()?;
+        let target = self.storage_adapter_target(restore)?;
+        Ok(Some((target, InterpValue::Array(entries.into()))))
     }
 
     fn step_tool_calls(
         &mut self,
         model: &PendingModel,
         calls: &[etas_host::ModelToolCall],
+        member_calls: &mut std::collections::BTreeMap<String, SymbolId>,
     ) -> Result<Vec<HostValue>, ToolInvocationError> {
         let missing = |message: &str| {
             ToolInvocationError::Fault(ExecutionFault::new(
@@ -147,15 +234,14 @@ impl EvalContext<'_> {
         {
             return Err(missing("step has no checked method context"));
         }
-        let agent = self
+        let method = self
             .checked
             .types
             .agent_methods
             .get(&context.method)
-            .ok_or_else(|| missing("step method is missing"))?
-            .agent;
+            .ok_or_else(|| missing("step method is missing"))?;
         let tools = self
-            .agent_tool_surface(agent)
+            .agent_tool_surface(method.agent, method.body)
             .map_err(ToolInvocationError::Fault)?;
         calls
             .iter()
@@ -184,6 +270,13 @@ impl EvalContext<'_> {
                 let (id, revision) = self
                     .canonical_tool_identity(binding.symbol)
                     .map_err(|message| missing(&message))?;
+                if binding
+                    .source
+                    .as_ref()
+                    .is_some_and(|source| self.checked.hir.member_tool_owner(source.item).is_some())
+                {
+                    member_calls.insert(call.id.clone(), binding.symbol);
+                }
                 Ok(HostValue::Record(vec![
                     ("id".into(), HostValue::String(call.id.clone())),
                     (
@@ -198,6 +291,96 @@ impl EvalContext<'_> {
             })
             .collect()
     }
+}
+
+fn checked_record_field(
+    checked: &etas_frontend::CheckedProject,
+    ty: etas_types::TypeId,
+    name: &str,
+) -> Result<etas_types::TypeId, String> {
+    etas_types::record_fields_with_applied_params(&checked.type_store, ty)
+        .map_err(|error| error.to_string())?
+        .and_then(|record| record.fields.into_iter().find(|field| field.name == name))
+        .map(|field| field.ty)
+        .ok_or_else(|| format!("model response has no checked field `{name}`"))
+}
+
+fn decode_record_with_field(
+    checked: &etas_frontend::CheckedProject,
+    ty: etas_types::TypeId,
+    fields: Vec<(String, HostValue)>,
+    prepared_name: &str,
+    prepared_value: InterpValue,
+) -> Result<InterpValue, String> {
+    let layout = etas_types::record_fields_with_applied_params(&checked.type_store, ty)
+        .map_err(|error| error.to_string())?
+        .ok_or("model response requires a checked record layout")?;
+    let mut fields: std::collections::BTreeMap<_, _> = fields.into_iter().collect();
+    let mut values = Vec::with_capacity(layout.fields.len());
+    let mut prepared_value = Some(prepared_value);
+    for field in layout.fields {
+        let value = if field.name == prepared_name {
+            prepared_value.take().expect("one prepared record field")
+        } else {
+            let value = fields
+                .remove(&field.name)
+                .expect("checked model response field");
+            crate::eval::host_value::decode_checked_host_value(value, field.ty, checked)?
+        };
+        values.push((field.name, value));
+    }
+    let record = InterpValue::Record(crate::value::RecordValue::new(values));
+    Ok(match checked.type_store.get(ty) {
+        Some(Type::Record(_)) => record,
+        _ => InterpValue::Nominal {
+            ty,
+            value: record.into(),
+        },
+    })
+}
+
+fn bind_member_tool_calls(
+    value: &mut InterpValue,
+    snapshot: &std::rc::Rc<crate::value::MemberToolSnapshot>,
+) {
+    fn record(value: &mut InterpValue) -> Option<&mut crate::value::RecordValue> {
+        match value {
+            InterpValue::Nominal { value, .. } => record(value.make_mut()),
+            InterpValue::Record(record) => Some(record),
+            _ => None,
+        }
+    }
+    let Some(decision) = record(value).and_then(|result| result.field_mut("decision")) else {
+        return;
+    };
+    let decision = match decision {
+        InterpValue::Nominal { value, .. } => value.make_mut(),
+        decision => decision,
+    };
+    let InterpValue::Variant { name, fields } = decision else {
+        return;
+    };
+    if name.as_str() != "CallTools" {
+        return;
+    }
+    let mut values = std::mem::take(fields).into_values();
+    if let [InterpValue::Array(calls)] = values.as_mut_slice() {
+        for call in calls.borrow_mut() {
+            if !matches!(
+                crate::value::conversation::protocol::field(call, "id"),
+                Ok(InterpValue::String(id)) if snapshot.calls.contains_key(id.as_str())
+            ) {
+                continue;
+            }
+            if let Some(tool) = record(call)
+                .and_then(|call| call.field_mut("tool"))
+                .and_then(record)
+            {
+                tool.bind_member_tool(std::rc::Rc::downgrade(snapshot));
+            }
+        }
+    }
+    *fields = values.into();
 }
 
 fn stopped(name: &str, fields: Vec<HostValue>) -> HostValue {

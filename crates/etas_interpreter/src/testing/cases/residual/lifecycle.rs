@@ -200,7 +200,7 @@ async fn cancel_cpu(source: &str) -> api::RunResult {
     result
 }
 
-const LOOP: &str = "while true limit std.runtime.limits.Iterations(1000000) {}";
+const LOOP: &str = "while true {}";
 
 #[tokio::test(flavor = "current_thread")]
 async fn cancelled_cpu_scope_keeps_cancellation_and_reports_incomplete() {

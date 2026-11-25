@@ -7,6 +7,7 @@ pub(super) mod number;
 mod number_tests;
 mod projection;
 mod record;
+mod source_map;
 
 pub(crate) fn interp_to_host_value(value: &InterpValue) -> Result<HostValue, String> {
     etas_host::value::projection::project_to_host_value(&projection::BorrowedValue(value))
@@ -39,31 +40,17 @@ pub(in crate::eval) fn checked_map_to_host(
         },
         _ => false,
     };
-    let wire = interp_to_bounded_host_value(value, &mut limits.value_budget())
-        .map_err(|error| error.message)?;
+    let wire = if source_map {
+        etas_host::value::projection::project_to_host_value_bounded(
+            &source_map::SourceMap(value),
+            &mut limits.value_budget(),
+        )
+    } else {
+        interp_to_bounded_host_value(value, &mut limits.value_budget())
+    }
+    .map_err(|error| error.message)?;
     match wire {
         wire @ HostValue::Map(_) => Ok(wire),
-        HostValue::Record(fields) if source_map => {
-            let entries = fields
-                .into_iter()
-                .find_map(|(field, value)| match (field.as_str(), value) {
-                    ("entries", HostValue::List(entries)) => Some(entries),
-                    _ => None,
-                })
-                .ok_or("checked source Map has no entry list")?;
-            let entries = entries
-                .into_iter()
-                .map(|entry| match entry {
-                    HostValue::List(values) => {
-                        let [key, value]: [_; 2] =
-                            values.try_into().map_err(|_| "Map entry is not a pair")?;
-                        Ok((key, value))
-                    }
-                    _ => Err("Map entry is not a pair"),
-                })
-                .collect::<Result<_, _>>()?;
-            Ok(HostValue::Map(entries))
-        }
         _ => Err("host projection requires a checked map".into()),
     }
 }
@@ -76,6 +63,7 @@ pub(super) fn interp_to_host_json_string(
 
 fn interp_value_kind(value: &InterpValue) -> &'static str {
     match value {
+        InterpValue::Agent(_) => "scoped Agent reference",
         InterpValue::WorkspacePath(_) => "workspace path",
         InterpValue::SyntaxBlock(_) => "structured syntax",
         InterpValue::CodeMetadata(_) => "compiler descriptor metadata",
@@ -165,7 +153,8 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
     substitutions: &super::host_type_environment::HostTypeEnvironment<'_>,
 ) -> Result<InterpValue, String> {
     if let Some(Type::Named(named)) = store.get(expected)
-        && let Some((expected, substitutions)) = substitutions.lookup(&named.name)
+        && let Some((expected, substitutions)) =
+            substitutions.lookup(&named.name, store.parameter_identity(expected))
     {
         return host_to_typed_interp_value_with_substitutions(
             value,
@@ -333,9 +322,11 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
             }
             let applied_substitutions = super::host_type_environment::HostTypeEnvironment::applied(
                 substitutions,
+                store,
+                TypeId(constructor.0),
                 &nominal.params,
                 args,
-            );
+            )?;
             let representation = nominal.representation.ok_or_else(|| {
                 format!(
                     "applied nominal type `{}` has no checked representation",

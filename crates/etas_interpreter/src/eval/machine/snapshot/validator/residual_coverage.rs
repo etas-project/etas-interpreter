@@ -350,7 +350,6 @@ fn call_site_node(site: crate::control::CallSiteKind) -> HirNodeRef {
 fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)> {
     use ContinuationSnapshot::*;
     let (node, frame) = match node {
-        LoopLimit { stmt, frame } => (HirNodeRef::Stmt(*stmt), frame),
         DefaultArguments(state) => (HirNodeRef::Expr(state.expr), &state.frame),
         ScopeExit { block, frame, .. }
         | ContinueBlock { block, frame, .. }
@@ -437,6 +436,7 @@ fn location(node: &ContinuationSnapshot) -> Option<(HirNodeRef, &LocalsSnapshot)
         | Return
         | Resume
         | Finish
+        | CompleteRecordConstruction { .. }
         | BlockValue => return None,
     };
     Some((node, frame))

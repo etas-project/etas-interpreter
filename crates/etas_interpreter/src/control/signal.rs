@@ -218,6 +218,15 @@ impl ControlSignal {
 
 #[derive(Clone, Debug)]
 pub enum PendingTaskControl {
+    ManagedAgent(Box<super::PendingManagedAgent>),
+    ManagedAuthorization(Box<super::PendingManagedAuthorization>),
+    NativeAuthorization(Box<super::PendingNativeAuthorization>),
+    AuthorizedNative(Box<super::AuthorizedNativeBoundary>),
+    AgentReply {
+        task: crate::driver::scheduler::TaskHandle,
+        continuation: Continuation,
+        span: Span,
+    },
     NextCompletion {
         scope: crate::driver::scheduler::TaskScopeId,
         result_type: etas_types::TypeId,
@@ -227,6 +236,9 @@ pub enum PendingTaskControl {
         task: crate::driver::scheduler::TaskHandle,
         handler: crate::orchestration::HandlerScopeId,
         value: InterpValue,
+        span: Span,
+    },
+    RestoreHandlerWait {
         span: Span,
     },
     Run {
@@ -246,12 +258,29 @@ pub enum PendingTaskControl {
 }
 
 impl PendingTaskControl {
+    pub(crate) fn continuation_mut(&mut self) -> Option<&mut Continuation> {
+        match self {
+            Self::NativeAuthorization(pending) => pending.target.continuation_mut(),
+            Self::AuthorizedNative(pending) => pending.target.continuation_mut(),
+            Self::ManagedAgent(pending) => Some(&mut pending.continuation),
+            Self::ManagedAuthorization(pending) => Some(&mut pending.original.continuation),
+            Self::AgentReply { continuation, .. } => Some(continuation),
+            _ => None,
+        }
+    }
+
     pub(crate) fn span(&self) -> Span {
         match self {
+            Self::NativeAuthorization(pending) => pending.target.span(),
+            Self::AuthorizedNative(pending) => pending.target.span(),
+            Self::ManagedAgent(pending) => pending.span,
+            Self::ManagedAuthorization(pending) => pending.original.span,
             Self::NextCompletion { span, .. } => *span,
-            Self::Run { span, .. }
+            Self::AgentReply { span, .. }
+            | Self::Run { span, .. }
             | Self::Requeue { span, .. }
             | Self::Park { span, .. }
+            | Self::RestoreHandlerWait { span }
             | Self::ResumeHandled { span, .. } => *span,
         }
     }
@@ -365,6 +394,8 @@ pub enum HostBoundaryRequest {
     Stream(StreamRequest),
     Tls(TlsConnectRequest),
     Secret(SecretRequest),
+    Entropy(etas_host::EntropyRequest),
+    Clock(etas_host::ClockRequest),
     Browser(BrowserProtocolRequest),
 }
 
@@ -380,6 +411,8 @@ impl HostBoundaryRequest {
             Self::Stream(request) => request.authority = current,
             Self::Tls(request) => request.authority = current,
             Self::Secret(request) => request.authority = current,
+            Self::Entropy(request) => request.authority = current,
+            Self::Clock(request) => request.authority = current,
             Self::Browser(request) => request.authority = current,
         }
     }
@@ -447,6 +480,9 @@ pub enum CommandDecode {
 
 #[derive(Clone, Copy, Debug)]
 pub enum HostBoundaryDecode {
+    Clock {
+        result_type: etas_types::TypeId,
+    },
     SessionHistory {
         result_type: etas_types::TypeId,
     },
@@ -471,6 +507,12 @@ pub enum HostBoundaryDecode {
         limits: Option<(usize, usize)>,
     },
     SourceFilesystemStat {
+        result_type: etas_types::TypeId,
+    },
+    SourceFileStream {
+        result_type: etas_types::TypeId,
+    },
+    SourceWorkspacePath {
         result_type: etas_types::TypeId,
     },
     FileReadLimited {

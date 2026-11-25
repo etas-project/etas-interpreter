@@ -76,7 +76,7 @@ const FAMILIES: [Family; 8] = [
 fn checked_early_break_execution_does_not_scale_with_unvisited_payload() {
     for family in FAMILIES {
         let program = PreparedExecution::new(&format!(
-            "module app.main; flow main(input: {}) -> string {{ for {} in input limit Iterations(5000) {{ return element; }} return \"empty\"; }}",
+            "module app.main; flow main(input: {}) -> string {{ for {} in input {{ return element; }} return \"empty\"; }}",
             family.ty(),
             family.pattern(),
         ));
@@ -105,7 +105,7 @@ fn checked_early_break_execution_does_not_scale_with_unvisited_payload() {
 fn checked_full_iteration_execution_has_linear_allocation_scaling() {
     for family in FAMILIES {
         let program = PreparedExecution::new(&format!(
-            "module app.main; flow main(input: {}) -> i32 {{ var count = 0; for {} in input limit Iterations(5000) {{ count = count + 1; }} return count; }}",
+            "module app.main; flow main(input: {}) -> i32 {{ var count = 0; for {} in input {{ count = count + 1; }} return count; }}",
             family.ty(),
             family.pattern(),
         ));
@@ -157,7 +157,7 @@ flow main() -> bool {{
     var values = {constructor};
     let before = values;
     var seen = 0;
-    for element in values limit Iterations(4) {{
+    for element in values {{
         seen = seen * 10 + element;
         values = values.{push}(9);
     }}
@@ -165,7 +165,7 @@ flow main() -> bool {{
     let (empty, b) = tail.{pop}();
     let (_, c) = empty.{pop}();
     var updated_count = 0;
-    for element in values limit Iterations(8) {{ updated_count = updated_count + 1; }}
+    for element in values {{ updated_count = updated_count + 1; }}
     return seen == {order} && updated_count == 4 && a == Some({first}) && b == Some({second}) && c == None;
 }}
 "#
@@ -178,7 +178,7 @@ flow main() -> bool {{
 fn checked_huge_range_early_exit_never_materializes_the_original_interval() {
     use crate::value::{NumericValue, RangeBounds, RangeValue};
     let program = PreparedExecution::new(
-        "module app.main; flow main(input: Range<u128>) -> u128 { for n in input limit Iterations(4) { return n; } return 0; }",
+        "module app.main; flow main(input: Range<u128>) -> u128 { for n in input { return n; } return 0; }",
     );
     let mut baseline = None;
     for end in [1000, 2000, 4000, u128::MAX] {

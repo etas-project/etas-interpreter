@@ -13,7 +13,7 @@ type Row = { text: string }
 flow build(prefix: string) -> string {
     var text = prefix;
     var i = 0;
-    while i < 64 limit Iterations(128) {
+    while i < 64 {
         text = text + "中😀";
         i = i + 1;
     }

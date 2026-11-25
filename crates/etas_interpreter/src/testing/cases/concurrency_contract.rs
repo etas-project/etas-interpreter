@@ -73,7 +73,7 @@ flow recurse(n: i32) -> i32 {{
 }}
 flow job(value: i32) -> {output} {{
     var index = 0;
-    while index < 2000 limit Iterations(2000) {{ index = index + 1; }}
+    while index < 2000 {{ index = index + 1; }}
     return {expression};
 }}
 flow main() -> Array<{output}> {{
@@ -178,7 +178,7 @@ module app.main;
 import std.task.{run, map_concurrent, Scheduler};
 flow job(value: i32) -> i32 {
     var index = 0;
-    while index < 20000 limit Iterations(20000) { index = index + 1; }
+    while index < 20000 { index = index + 1; }
     return value;
 }
 
@@ -233,7 +233,7 @@ module app.main;
 import std.task.{run, map_concurrent, Scheduler};
 flow job(value: i32) -> i32 {
     var index = 0;
-    while index < 2000 limit Iterations(2000) { index = index + 1; }
+    while index < 2000 { index = index + 1; }
     return value;
 }
 flow main() -> Array<i32> {

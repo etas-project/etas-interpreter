@@ -17,6 +17,11 @@ impl ValueSnapshot {
         context: &mut super::capture_context::CaptureContext,
     ) -> Result<Self, String> {
         Ok(match value {
+            InterpValue::Agent(_) => {
+                return Err(
+                    "checkpoint capture of active Agent references is not supported".into(),
+                );
+            }
             InterpValue::MemoryWriteIntent(value) => Self::MemoryWriteIntent(value.clone()),
             InterpValue::Unit => Self::Unit,
             InterpValue::Bool(value) => Self::Bool(*value),
@@ -99,6 +104,12 @@ impl ValueSnapshot {
                     .transpose()?,
             },
             InterpValue::HostHandle(handle) => {
+                if let Some(domain) = handle.clock_domain_id() {
+                    return Ok(Self::ClockDomain {
+                        ty: handle.nominal_type(),
+                        domain: domain.into(),
+                    });
+                }
                 return Err(format!(
                     "live {} host handles cannot be captured in a checkpoint",
                     handle.kind_name()
@@ -201,6 +212,9 @@ impl ValueSnapshot {
         context: &mut RestoreContext,
     ) -> Result<InterpValue, String> {
         Ok(match self {
+            Self::ClockDomain { ty, domain } => {
+                InterpValue::HostHandle(crate::value::HostHandleValue::clock_domain(ty, domain))
+            }
             Self::TaskRuntime(value) => {
                 if !context.task_handles {
                     return Err("task values require their restored scheduler".into());

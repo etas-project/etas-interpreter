@@ -1,6 +1,7 @@
 use super::host_value::{host_value_to_json_interp_value, interp_to_host_value};
 use super::*;
 use crate::control::ExecutionFault;
+use crate::orchestration::{BoundaryOccurrenceId, CompletedHostBoundaryResult};
 use etas_host::{MemoryEntry, MemoryVersion, host_value_to_json};
 
 impl<'a> EvalContext<'a> {
@@ -20,12 +21,29 @@ impl<'a> EvalContext<'a> {
         ) {
             return Ok(None);
         }
-        self.completed_host_boundary_result(
-            &crate::orchestration::BoundaryOccurrenceId::HostRequest(memory.request.id),
+        let Some(boundary) = self.checked_completed_boundary(
+            &BoundaryOccurrenceId::HostRequest(memory.request.id),
             "memory",
             key,
             memory.span,
-        )
+        )?
+        else {
+            return Ok(None);
+        };
+        match (&boundary.result, memory.decode) {
+            (
+                CompletedHostBoundaryResult::Host(wire),
+                MemoryDecode::SourceRead { result_type, .. },
+            ) => self
+                .decode_read_wire(memory.span, result_type, wire)
+                .map(Some),
+            (CompletedHostBoundaryResult::Runtime(value), _) => Ok(Some(value.clone())),
+            _ => Err(ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                memory.span,
+                "recorded memory result does not match the checked read ABI",
+            )),
+        }
     }
 
     pub(crate) fn memory_replay_resources(
@@ -132,27 +150,30 @@ impl<'a> EvalContext<'a> {
             .sort_by(|left, right| left.resource.cmp(&right.resource));
     }
 
-    pub(crate) fn memory_result_value(
+    pub(crate) fn memory_result_with_replay(
         &self,
         memory: &PendingMemory,
         result: MemoryResult,
-    ) -> Result<InterpValue, ExecutionFault> {
-        match (memory.decode, result) {
-            (
-                MemoryDecode::SourceRead {
-                    result_type,
-                    selection,
-                },
-                result,
-            ) => self
-                .source_memory_result(&memory.request, result, result_type, selection)
-                .map_err(|error| {
+    ) -> Result<(InterpValue, CompletedHostBoundaryResult), ExecutionFault> {
+        if let MemoryDecode::SourceRead {
+            result_type,
+            selection,
+        } = memory.decode
+        {
+            // The replay ledger outlives the SDK revision that owns result_type.
+            let wire = Self::source_memory_wire(&memory.request, result, selection).map_err(
+                |message| {
                     ExecutionFault::new(
                         AnalysisDiagnosticCode::UnhandledRuntimeError,
                         memory.span,
-                        error,
+                        message,
                     )
-                }),
+                },
+            )?;
+            let value = self.decode_read_wire(memory.span, result_type, &wire)?;
+            return Ok((value, CompletedHostBoundaryResult::Host(wire)));
+        }
+        let value = match (memory.decode, result) {
             (MemoryDecode::Page { result_type }, MemoryResult::Entries { entries, cursor }) => self
                 .decode_memory_record(
                     super::memory_page::page_value(entries, cursor),
@@ -245,7 +266,25 @@ impl<'a> EvalContext<'a> {
                     other
                 ),
             )),
-        }
+        }?;
+        Ok((value.clone(), CompletedHostBoundaryResult::Runtime(value)))
+    }
+
+    fn decode_read_wire(
+        &self,
+        span: Span,
+        result_type: etas_types::TypeId,
+        wire: &HostValue,
+    ) -> Result<InterpValue, ExecutionFault> {
+        host_value::host_to_checked_interp_value(
+            wire.clone(),
+            result_type,
+            self.checked,
+            &self.storage_limits,
+        )
+        .map_err(|error| {
+            ExecutionFault::new(AnalysisDiagnosticCode::UnhandledRuntimeError, span, error)
+        })
     }
 
     fn decode_memory_record(

@@ -51,6 +51,17 @@ impl ContinuationSnapshot {
                     frame: context.frame(&state.frame)?,
                 }))
             }
+            Continuation::CompleteRecordConstruction(guard) => {
+                guard.checkpoint()?;
+                Self::CompleteRecordConstruction {
+                    id: guard.id,
+                    task: guard.task,
+                    owner: guard.owner,
+                }
+            }
+            Continuation::PublishAgentConstruction { .. } => {
+                return Err("cannot checkpoint an unfinished Agent initialization".into());
+            }
             Continuation::FinishReceiver { .. } | Continuation::CommitReceiver { .. } => {
                 return Err("cannot checkpoint while an updating receiver is held".into());
             }
@@ -79,6 +90,9 @@ impl ContinuationSnapshot {
             Continuation::ValidateCompileResult { .. } => {
                 return Err("pending compiler contract evidence must be restored from source in its locked definition environment, not an opaque checkpoint handle".into());
             }
+            Continuation::ValidateFileOpenResult { .. } => {
+                return Err("cannot checkpoint a pending native file capability contract".into());
+            }
             Continuation::PriorityQueueUpdate(_) => {
                 return Err(
                     "an in-progress pure priority comparison cannot cross a checkpoint boundary"
@@ -88,6 +102,21 @@ impl ContinuationSnapshot {
             Continuation::OrderedSearch(_) => {
                 return Err(
                     "an in-progress pure key comparison cannot cross a checkpoint boundary".into(),
+                );
+            }
+            Continuation::ValueEquality(_) => {
+                return Err(
+                    "an in-progress pure value comparison cannot cross a checkpoint boundary"
+                        .into(),
+                );
+            }
+            Continuation::ModelStepProviderData(_) => {
+                return Err("a checked model response is still being decoded".into());
+            }
+            Continuation::StorageTransfer(_) => {
+                return Err(
+                    "an in-progress pure storage value transfer cannot cross a checkpoint boundary"
+                        .into(),
                 );
             }
             Continuation::DirectoryListReduction(state) => Self::DirectoryListReduction {
@@ -540,16 +569,11 @@ impl ContinuationSnapshot {
                     .collect::<Result<Vec<_>, _>>()?,
                 span: *span,
             },
-            Continuation::LoopLimit { stmt, frame } => Self::LoopLimit {
-                stmt: *stmt,
-                frame: context.frame(frame)?,
-            },
             Continuation::ForLoop {
                 pat,
                 source,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 span,
                 frame,
@@ -569,7 +593,6 @@ impl ContinuationSnapshot {
                         .flatten(),
                     next_index: *next_index,
                     body: *body,
-                    iterations: *iterations,
                     loop_scope,
                     span: *span,
                     frame: context.frame(frame)?,
@@ -582,7 +605,6 @@ impl ContinuationSnapshot {
                 awaiting_step,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 span,
                 frame,
@@ -599,7 +621,6 @@ impl ContinuationSnapshot {
                     awaiting_step: *awaiting_step,
                     next_index: *next_index,
                     body: *body,
-                    iterations: *iterations,
                     loop_scope,
                     span: *span,
                     frame: context.frame(frame)?,
@@ -608,16 +629,12 @@ impl ContinuationSnapshot {
             Continuation::WhileLoop {
                 cond,
                 body,
-                iteration,
-                max_iterations,
                 resume_after_body,
                 span,
                 frame,
             } => Self::WhileLoop {
                 cond: *cond,
                 body: *body,
-                iteration: *iteration,
-                max_iterations: *max_iterations,
                 resume_after_body: *resume_after_body,
                 span: *span,
                 frame: context.frame(frame)?,
@@ -625,7 +642,6 @@ impl ContinuationSnapshot {
             Continuation::RetryAttempt {
                 retry,
                 body,
-                attempts,
                 next_attempt,
                 block,
                 next_stmt_index,
@@ -633,7 +649,6 @@ impl ContinuationSnapshot {
             } => Self::RetryAttempt {
                 retry: retry.clone(),
                 body: *body,
-                attempts: *attempts,
                 next_attempt: *next_attempt,
                 block: *block,
                 next_stmt_index: *next_stmt_index,
@@ -730,6 +745,11 @@ impl ContinuationSnapshot {
                     span: state.span,
                     frame: super::frame::restore_frame(state.frame, context)?,
                 }))
+            }
+            Self::CompleteRecordConstruction { id, task, owner } => {
+                Continuation::CompleteRecordConstruction(
+                    context.record_construction(id, task, owner)?,
+                )
             }
             Self::ToolInvocationStart(invocation) => {
                 Continuation::ToolInvocationStart(invocation.restore(context)?)
@@ -1227,17 +1247,12 @@ impl ContinuationSnapshot {
                     .into(),
                 span,
             },
-            Self::LoopLimit { stmt, frame } => Continuation::LoopLimit {
-                stmt,
-                frame: super::frame::restore_frame(frame, context)?,
-            },
             Self::ForLoop {
                 pat,
                 source,
                 text_cursor,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 span,
                 frame,
@@ -1263,7 +1278,6 @@ impl ContinuationSnapshot {
                 },
                 next_index,
                 body,
-                iterations,
                 loop_scope: loop_scope.into_iter().collect::<HashSet<_>>(),
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
@@ -1275,7 +1289,6 @@ impl ContinuationSnapshot {
                 awaiting_step,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 span,
                 frame,
@@ -1288,7 +1301,6 @@ impl ContinuationSnapshot {
                 awaiting_step,
                 next_index,
                 body,
-                iterations,
                 loop_scope: loop_scope.into_iter().collect(),
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
@@ -1296,16 +1308,12 @@ impl ContinuationSnapshot {
             Self::WhileLoop {
                 cond,
                 body,
-                iteration,
-                max_iterations,
                 resume_after_body,
                 span,
                 frame,
             } => Continuation::WhileLoop {
                 cond,
                 body,
-                iteration,
-                max_iterations,
                 resume_after_body,
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
@@ -1313,7 +1321,6 @@ impl ContinuationSnapshot {
             Self::RetryAttempt {
                 retry,
                 body,
-                attempts,
                 next_attempt,
                 block,
                 next_stmt_index,
@@ -1321,7 +1328,6 @@ impl ContinuationSnapshot {
             } => Continuation::RetryAttempt {
                 retry,
                 body,
-                attempts,
                 next_attempt,
                 block,
                 next_stmt_index,

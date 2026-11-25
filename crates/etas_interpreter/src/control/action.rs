@@ -20,6 +20,17 @@ pub struct CheckedActionInvocation {
 }
 
 impl CheckedActionInvocation {
+    pub(crate) fn managed_agent(
+        execution: crate::value::CheckedExecutionProgram,
+        origin: crate::control::managed_agent::ManagedAgentOrigin,
+    ) -> Result<Self, String> {
+        let abi = crate::plan::checked_action::managed_agent(&execution, &origin)?;
+        Ok(Self::with_abi(
+            execution.checked.clone(),
+            abi,
+            ActionEvidence::native(execution, NativeActionOrigin::ManagedAgent(origin)),
+        ))
+    }
     pub(crate) fn checkpoint_evidence(
         &self,
         context: &mut crate::eval::machine::snapshot::CaptureContext,

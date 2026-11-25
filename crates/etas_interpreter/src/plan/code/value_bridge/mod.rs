@@ -214,7 +214,8 @@ fn convert_scoped(
                     .ok_or_else(|| error(from, to, RevisionValueFailure::InconsistentLayout))?;
                 let values = walk.values.split_off(start);
                 walk.values.push(
-                    aggregate::build(kind, values).map_err(|failure| error(from, to, failure))?,
+                    aggregate::build(kind, values, target)
+                        .map_err(|failure| error(from, to, failure))?,
                 );
             }
         }
@@ -258,6 +259,7 @@ enum Work {
 }
 
 enum Build {
+    Json(&'static str),
     Existential(Box<crate::value::ExistentialValue>),
     Nominal(TypeId),
     Trust(TrustWrapper),
@@ -267,9 +269,15 @@ enum Build {
     Set,
     Map,
     Tuple,
-    Record(Vec<String>),
+    Record {
+        names: Vec<String>,
+        member_tool: Option<std::rc::Weak<crate::value::MemberToolSnapshot>>,
+    },
     Variant(StringValue),
-    Enum { ty: TypeId, name: StringValue },
+    Enum {
+        ty: TypeId,
+        name: StringValue,
+    },
     Some,
     Message(crate::value::MessageValue),
     Range(RangeBounds),

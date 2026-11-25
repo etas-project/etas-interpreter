@@ -120,7 +120,7 @@ enum Link { End, Next { child: Link } }
 flow main() -> Link {
     var chain = Link.End;
     var count: i32 = 0;
-    while count < 1000 limit Iterations(2000) {
+    while count < 1000 {
         chain = Link.Next { child = chain };
         count = count + 1;
     }

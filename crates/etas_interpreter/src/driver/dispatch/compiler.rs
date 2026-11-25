@@ -52,14 +52,31 @@ pub(in crate::driver) async fn begin<'host>(
             "missing Phase 1 host service for Compiler support",
         ));
     }
-    match begin_request(
+    let subject = policy_subject(&invocation.request);
+    let budget = invocation.request.budget.clone();
+    CompilerDispatchStart::Complete(super::authorization::prepare(
+        eval,
+        crate::control::NativeBoundaryTarget::Compiler {
+            invocation,
+            perform,
+        },
+        vec![(eval.boundary_policy_ref(), subject)],
+        budget,
+    ))
+}
+
+pub(in crate::driver) async fn begin_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    invocation: crate::eval::CompilerInvocation,
+    perform: PendingPerform,
+) -> CompilerDispatchStart<'host> {
+    match begin_request_authorized(
         eval,
         host,
         invocation.request.clone(),
         invocation.definitions.clone(),
-    )
-    .await
-    {
+    ) {
         Ok(pending) => CompilerDispatchStart::Pending(Box::new(PendingCompilerDispatch {
             invocation,
             perform,
@@ -92,7 +109,19 @@ async fn begin_request<'host>(
             "missing host service for Compiler support",
         ));
     }
-    let subject = PolicySubject {
+    request.budget.check_time()?;
+    authorize_before_boundary(
+        eval,
+        host,
+        eval.boundary_policy_ref(),
+        policy_subject(&request),
+    )
+    .await?;
+    begin_request_authorized(eval, host, request, definitions)
+}
+
+fn policy_subject(request: &etas_host::compiler::CompilerRequest) -> PolicySubject {
+    PolicySubject {
         kind: "compiler".into(),
         attributes: vec![
             (
@@ -119,37 +148,41 @@ async fn begin_request<'host>(
                 ),
             ),
         ],
-    };
-    async {
-        request.budget.check_time()?;
-        authorize_before_boundary(eval, host, eval.boundary_policy_ref(), subject).await?;
-        // Approval may add a scoped grant; only the current invocation authority
-        // is used, never authority retained by a definition or compiler worker.
-        let mut request = request;
-        request.authority = eval.host_authority();
-        if !request.authority.allows(&request.action()) {
-            return Err(HostError::new(
-                HostErrorCode::AuthorityDenied,
-                "compiler action is not authorized",
-            ));
-        }
-        let expected = request.clone();
-        HostDispatch::begin(
-            eval,
-            request.id,
-            HostRequestKind::Compiler,
-            request.trace_payload(),
-            request.authority.clone(),
-            request.trace.clone(),
-            |operation| {
-                Box::pin(async move {
-                    let response = host.compiler(operation, request).await?;
-                    prepare_response(host, &expected, definitions, response)
-                }) as CompilerCall<'host>
-            },
-        )
     }
-    .await
+}
+
+fn begin_request_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    request: etas_host::compiler::CompilerRequest,
+    definitions: std::sync::Arc<etas_frontend::code::definition::NativeDefinitionStore>,
+) -> Result<PendingHostOperation<PreparedCompilerReply, CompilerCall<'host>>, HostError> {
+    request.budget.check_time()?;
+    // Approval may add a scoped grant; only the current invocation authority
+    // is used, never authority retained by a definition or compiler worker.
+    let mut request = request;
+    request.authority = eval.host_authority();
+    if !request.authority.allows(&request.action()) {
+        return Err(HostError::new(
+            HostErrorCode::AuthorityDenied,
+            "compiler action is not authorized",
+        ));
+    }
+    let expected = request.clone();
+    HostDispatch::begin(
+        eval,
+        request.id,
+        HostRequestKind::Compiler,
+        request.trace_payload(),
+        request.authority.clone(),
+        request.trace.clone(),
+        |operation| {
+            Box::pin(async move {
+                let response = host.compiler(operation, request).await?;
+                prepare_response(host, &expected, definitions, response)
+            }) as CompilerCall<'host>
+        },
+    )
 }
 
 pub(in crate::driver) fn finish(
@@ -172,7 +205,7 @@ pub(in crate::driver) fn finish(
     }
 }
 
-fn compiler_error(
+pub(in crate::driver) fn compiler_error(
     eval: &mut EvalContext<'_>,
     perform: PendingPerform,
     error: HostError,

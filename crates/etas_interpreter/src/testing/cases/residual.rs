@@ -70,6 +70,49 @@ flow main() -> i32 ![] ~ Safe {
 "#;
 
 #[tokio::test(flavor = "current_thread")]
+async fn managed_construction_and_calls_use_the_same_ordered_residual_monitor() {
+    let checked = residual_checked(
+        r#"
+module app.main;
+effect Init { action value() -> i32; action done() -> unit; }
+agent Counter = { n: i32 };
+impl Counter {
+    public flow get(self) -> i32 ![] { return self.n; }
+}
+spec Safe: trace =
+    (Agentic.create<Counter> >> Agentic.call<Counter.get>)
+    & (Init.value >> Agentic.call<Counter.get>)
+    & (Agentic.call<Counter.get> >> Init.done);
+flow main() -> i32 ![] ~ Safe {
+    let counter = handle { Counter { n = perform Init.value() } } with {
+        Init.value() => { resume 7; }
+    };
+    let value = counter.get();
+    handle { perform Init.done(); } with { Init.done() => { resume (); } };
+    return value;
+}
+"#,
+    );
+    let result = run(&checked, &FakeHost::new(availability(&[]))).await;
+    assert_eq!(
+        result.value(),
+        Some(&value::InterpValue::i32(7)),
+        "{:?}",
+        result.diagnostics
+    );
+    assert!(residual_violation(&result).is_none());
+    let actions = result
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            WorkflowEvent::AgentBoundary { action, .. } => Some(action.as_str()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(actions, ["Agentic.create", "Agentic.call"]);
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn handled_guard_outcome_discharges_the_residual_before_dispatch() {
     let checked = residual_checked(ORDERED_HANDLED);
     let host = FakeHost::new(availability(&[]));

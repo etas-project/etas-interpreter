@@ -137,7 +137,9 @@ impl<'a> RunInvocation<'a> {
     pub fn execute(
         self,
     ) -> impl std::future::Future<Output = Result<RunResult, RunInfrastructureError>> + 'a {
-        lifecycle::drive_invocation(self)
+        // Multiple runs can be composed in one caller future. Keep each
+        // interpreter's state out of that caller's stack-sized async frame.
+        Box::pin(lifecycle::drive_invocation(self))
     }
 }
 

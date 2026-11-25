@@ -69,8 +69,55 @@ impl<'a> EvalContext<'a> {
             }
             other => return other,
         };
-        match self.eval_slice_value(eval.expr, base, start, end, eval.bounds, eval.span) {
+        self.eval_checked_slice_value(eval, base, start, end, frame)
+    }
+
+    pub(super) fn eval_checked_slice_value(
+        &mut self,
+        eval: SliceExprEval,
+        base: InterpValue,
+        start: InterpValue,
+        end: InterpValue,
+        frame: &Frame,
+    ) -> ControlSignal {
+        let diagnostic_base = base.clone();
+        match self.eval_slice_value(
+            eval.expr,
+            base,
+            start.clone(),
+            end.clone(),
+            eval.bounds,
+            eval.span,
+            frame,
+        ) {
             Ok(value) => ControlSignal::Value(value),
+            Err(fault) if fault.code == AnalysisDiagnosticCode::InvalidArguments => {
+                let length = match &diagnostic_base {
+                    InterpValue::Array(values) => Some(values.borrow().len()),
+                    InterpValue::Slice(values) => Some(values.borrow().len()),
+                    InterpValue::Bytes(values) => Some(values.len()),
+                    _ => match crate::value::source_slice::SourceSliceView::checked(
+                        &diagnostic_base,
+                        &self.checked.types.known_std_types,
+                        &self.checked.type_store,
+                    ) {
+                        Ok(view) => view.map(|view| view.length),
+                        Err(message) => {
+                            return ControlSignal::missing_checked_fact(message, eval.span);
+                        }
+                    },
+                };
+                match length {
+                    Some(length) => {
+                        let index = self
+                            .slice_bounds(start, end, eval.bounds, eval.span)
+                            .ok()
+                            .map(|(start, end)| if start > end { start } else { end });
+                        self.raise_index_error(eval.expr, index, length, "slice", eval.span)
+                    }
+                    None => ControlSignal::Fault(Box::new(fault)),
+                }
+            }
             Err(fault) => ControlSignal::Fault(Box::new(fault)),
         }
     }
@@ -83,17 +130,64 @@ impl<'a> EvalContext<'a> {
         end: InterpValue,
         bounds: etas_hir::HirRangeBounds,
         span: Span,
+        frame: &Frame,
     ) -> Result<InterpValue, ExecutionFault> {
-        if !self.checked.types.slice_facts.contains_key(&expr) {
+        let Some(fact) = self.checked.types.slice_facts.get(&expr) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
                 "slice expression is missing its checked slice fact",
             ));
+        };
+        let source_slice = crate::value::source_slice::SourceSliceView::checked(
+            &base,
+            &self.checked.types.known_std_types,
+            &self.checked.type_store,
+        )
+        .map_err(|message| {
+            ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
+        })?;
+        let source_output = if self.checked.types.known_std_types.source_slice.is_some()
+            && (matches!(&base, InterpValue::Array(_)) || source_slice.is_some())
+        {
+            let output = match fact {
+                etas_types::CheckedSliceKind::Sequence { output, .. }
+                | etas_types::CheckedSliceKind::Range { output, .. } => *output,
+            };
+            Some(self.materialized_type(
+                output,
+                &frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(expr)),
+                span,
+            )?)
+        } else {
+            None
+        };
+        if let Some(view) = source_slice {
+            let (start, end) = self.slice_bounds(start, end, bounds, span)?;
+            if start > end || end > view.length {
+                return Err(self.slice_bounds_fault("slice", span));
+            }
+            return Ok(crate::value::source_slice::SourceSliceView {
+                source: view.source,
+                start: view.start + start,
+                length: end - start,
+            }
+            .into_value(source_output.expect("checked source Slice result")));
         }
         match base {
             InterpValue::Array(values) => {
                 let (start, end) = self.slice_bounds(start, end, bounds, span)?;
+                if let Some(ty) = source_output {
+                    if start > end || end > values.borrow().len() {
+                        return Err(self.slice_bounds_fault("array", span));
+                    }
+                    return Ok(crate::value::source_slice::SourceSliceView {
+                        source: values,
+                        start,
+                        length: end - start,
+                    }
+                    .into_value(ty));
+                }
                 SliceValue::from_array(values, start..end)
                     .ok_or_else(|| self.slice_bounds_fault("array", span))
                     .map(InterpValue::Slice)

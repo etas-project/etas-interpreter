@@ -464,7 +464,7 @@ flow fallback() -> i32 ![Console, Error<IOError>] {
 }
 
 flow main() -> i32 ![Console, Error<IOError>] {
-    retry limit Attempts(2) {
+    retry {
         return effectful_success();
     }
     return fallback();

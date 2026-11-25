@@ -3,7 +3,7 @@ use std::hash::{Hash, Hasher};
 mod storage;
 mod variant;
 pub use storage::{JsonArray, JsonObject};
-pub(crate) use variant::{construct, project};
+pub(crate) use variant::{construct, payload_type, project};
 
 use super::{
     HostJsonSupportValue as Json,

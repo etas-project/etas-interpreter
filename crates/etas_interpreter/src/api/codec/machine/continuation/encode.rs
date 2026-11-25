@@ -15,6 +15,9 @@ pub(in crate::api::codec) fn write_continuation<'a>(
     budget: &mut crate::api::codec::snapshot::EncodingBudget,
 ) -> Result<(), crate::api::codec::InterpreterCodecError> {
     match continuation {
+        Continuation::CompleteRecordConstruction { id, task, owner } => {
+            *slot = json!({ "kind": "complete_record_construction", "id": id, "task": task, "owner": owner });
+        }
         Continuation::DefaultArguments(state) => {
             let (operation, target, action, type_args, args) = match &state.destination {
                 crate::orchestration::ArgumentDestinationSnapshot::Call { target } => {
@@ -620,18 +623,12 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "next_index": json!(next_index),
             "span": json!(span_snapshot(*span)),
         },
-        Continuation::LoopLimit { stmt, frame } => object! { slot, pending;
-            "kind": json!("loop_limit"),
-            "stmt": json!(stmt.0),
-            "frame": Node::Frame(frame),
-        },
         Continuation::ForLoop {
             pat,
             source,
             text_cursor,
             next_index,
             body,
-            iterations,
             loop_scope,
             span,
             frame,
@@ -645,7 +642,6 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "text_cursor": json!(text_cursor.as_ref().map(crate::api::codec::value::text_cursor_json)),
                 "next_index": json!(next_index),
                 "body": json!(body.0),
-                "iterations": json!(iterations),
                 "loop_scope": json!(scope),
                 "span": json!(span_snapshot(*span)),
                 "frame": Node::Frame(frame),
@@ -658,7 +654,6 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             awaiting_step,
             next_index,
             body,
-            iterations,
             loop_scope,
             span,
             frame,
@@ -673,7 +668,6 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 "awaiting_step": json!(awaiting_step),
                 "next_index": json!(next_index),
                 "body": json!(body.0),
-                "iterations": json!(iterations),
                 "loop_scope": json!(scope),
                 "span": json!(span_snapshot(*span)),
                 "frame": Node::Frame(frame),
@@ -682,8 +676,6 @@ pub(in crate::api::codec) fn write_continuation<'a>(
         Continuation::WhileLoop {
             cond,
             body,
-            iteration,
-            max_iterations,
             resume_after_body,
             span,
             frame,
@@ -691,8 +683,6 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "kind": json!("while_loop"),
             "cond": json!(cond.0),
             "body": json!(body.0),
-            "iteration": json!(iteration),
-            "max_iterations": json!(max_iterations),
             "resume_after_body": json!(resume_after_body),
             "span": json!(span_snapshot(*span)),
             "frame": Node::Frame(frame),
@@ -700,7 +690,6 @@ pub(in crate::api::codec) fn write_continuation<'a>(
         Continuation::RetryAttempt {
             retry,
             body,
-            attempts,
             next_attempt,
             block,
             next_stmt_index,
@@ -710,7 +699,6 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "retry_id": json!(retry.id.0),
             "retry_ordinal": json!(retry.ordinal),
             "body": json!(body.0),
-            "attempts": json!(attempts),
             "next_attempt": json!(next_attempt),
             "block": json!(block.0),
             "next_stmt_index": json!(next_stmt_index),

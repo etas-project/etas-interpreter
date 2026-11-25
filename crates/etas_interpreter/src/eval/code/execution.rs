@@ -7,11 +7,21 @@ use crate::{
 use etas_core::{AnalysisDiagnosticCode, Span};
 use etas_host::compiler::{CompilerFailure, CompilerRequest, CompilerResult};
 
+#[derive(Clone)]
 pub(crate) struct CompilerInvocation {
     pub request: CompilerRequest,
     pub definitions: std::sync::Arc<etas_frontend::code::definition::NativeDefinitionStore>,
     pub result_type: etas_types::TypeId,
     pub error_type: etas_types::TypeId,
+}
+
+impl std::fmt::Debug for CompilerInvocation {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.debug_struct("CompilerInvocation")
+            .field("request", &self.request.id)
+            .field("result_type", &self.result_type)
+            .finish_non_exhaustive()
+    }
 }
 
 impl EvalContext<'_> {

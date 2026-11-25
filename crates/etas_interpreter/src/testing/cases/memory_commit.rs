@@ -9,7 +9,7 @@ module app.main;
 alias Schema = MemoryRegion<{ Papers: Store<string, string> }>;
 let Memory = std.memory.region<Schema>(stable_id = "wrong-target", store = "test");
 flow main() -> unit {
-    retry limit Attempts(3) { Memory.Papers.put("key", "value"); }
+    retry { Memory.Papers.put("key", "value"); }
 }
 "#,
     );
@@ -317,7 +317,7 @@ module app.main;
 alias Schema = MemoryRegion<{ Papers: Store<string, string> }>;
 let Memory = std.memory.region<Schema>(stable_id = "unknown", store = "test");
 flow main() -> unit {
-    retry limit Attempts(3) { Memory.Papers.put("key", "value"); }
+    retry { Memory.Papers.put("key", "value"); }
 }
 "#,
     );

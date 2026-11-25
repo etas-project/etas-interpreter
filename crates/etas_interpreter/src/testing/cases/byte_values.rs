@@ -18,7 +18,7 @@ flow main(input: bytes, text: string, length: usize) -> bool {
     var rows = [Row { body = input, text = text }];
     let original = rows;
     let retained = Some(rows[0]);
-    for row in rows limit Iterations(2) {
+    for row in rows {
         checkpoint("large-capture");
         rows[0].body = utf8_encode("new");
         rows[0].text = "new";

@@ -53,15 +53,14 @@ impl EvalContext<'_> {
                 code: "resource_limit",
                 message: error.message,
             })?;
-        let agent = self
+        let method = self
             .checked
             .types
             .agent_methods
             .get(&invocation.context.method)
-            .ok_or_else(|| missing("invoke has no checked method identity"))?
-            .agent;
+            .ok_or_else(|| missing("invoke has no checked method identity"))?;
         for binding in self
-            .agent_tool_surface(agent)
+            .agent_tool_surface(method.agent, method.body)
             .map_err(ToolInvocationError::Fault)?
         {
             let (id, current) = self
@@ -83,12 +82,46 @@ impl EvalContext<'_> {
                     message,
                 },
             )?;
+            let member_state = if let Some(source) = &binding.source
+                && self.checked.hir.member_tool_owner(source.item).is_some()
+            {
+                let record = match tool {
+                    InterpValue::Nominal { value, .. } => value.as_ref(),
+                    value => value,
+                };
+                let snapshot = match record {
+                    InterpValue::Record(record) => record.member_tool_snapshot(),
+                    _ => None,
+                };
+                let snapshot = snapshot
+                    .filter(|snapshot| {
+                        snapshot.request == self.task.logical_identity
+                            && snapshot.calls.get(&call_id) == Some(&binding.symbol)
+                            && self
+                                .task
+                                .agent_turn
+                                .as_ref()
+                                .is_some_and(|turn| turn.reference == snapshot.instance)
+                    })
+                    .ok_or_else(|| ToolRejection {
+                        code: "tool_not_exposed",
+                        message: "member tool call requires a snapshot from this Agent request"
+                            .into(),
+                    })?;
+                self.checked
+                    .hir
+                    .member_tool_receiver(source.item)
+                    .map(|_| snapshot.state.clone())
+            } else {
+                None
+            };
             return Ok(ResolvedToolInvocation {
                 binding,
                 call_id,
                 args,
                 identity,
                 revision,
+                member_state,
             });
         }
         Err(ToolRejection {

@@ -403,7 +403,7 @@ async fn session_publication_source_unknown_is_query_only_after_lost_or_invalid_
     let checked = program(
         r#"
     var unknown = false;
-    retry limit Attempts(3) {
+    retry {
         let result = publish_context(config, page.fence, content, operation);
         unknown = match result {WriteOutcome.Unknown(op) => op.key == operation.key, _ => false};
     }

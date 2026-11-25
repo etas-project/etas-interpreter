@@ -10,7 +10,7 @@ flow wrong_output(a: i32, b: i32) -> string ![] { return "wrong"; }
 flow equivalent(a: i32, b: i32) -> i32 ![] { return 0; }
 flow loud(a: i32, b: i32) -> i32 ![] { println("must not run")?; return 0; }
 flow forever(a: i32, b: i32) -> i32 ![] {
-    while true limit Iterations(10000000) {}
+    while true {}
     return 0;
 }
 flow comparison(direction: i32) -> (i32, i32) -> i32 ![] {
@@ -29,8 +29,8 @@ flow main() -> bool {
     let next = map.insert(4, "four");
     var map_order = 0;
     var set_order = 0;
-    for (key, value) in next limit Iterations(8) { map_order = map_order * 10 + key; }
-    for key in set limit Iterations(8) { set_order = set_order * 10 + key; }
+    for (key, value) in next { map_order = map_order * 10 + key; }
+    for key in set { set_order = set_order * 10 + key; }
     return map_order == 4321 && set_order == 321 && old.get(2) == Some("old")
         && map.get(2) == Some("changed") && !map.contains_key(4) && set.contains(2);
 }
@@ -309,7 +309,7 @@ flow main(map: OrderedMap<i32, string>) -> bool {
     checkpoint("argument");
     let next = map.insert(3, "three");
     var order = 0;
-    for (key, value) in next limit Iterations(8) { order = order * 10 + key; }
+    for (key, value) in next { order = order * 10 + key; }
     return order == 321 && map.get(2) == Some("two") && !map.contains_key(3);
 }
 "#,

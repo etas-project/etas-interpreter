@@ -209,7 +209,7 @@ module app.main;
 import std.runtime.checkpoint;
 flow main() -> i32 {
     var count = 0;
-    while count < 2 limit Iterations(18446744073709551615) {
+    while count < 2 {
         checkpoint("wide-loop");
         count = count + 1;
     }

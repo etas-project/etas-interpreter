@@ -70,7 +70,7 @@ fn checked_text_prepend_has_linear_execution_allocation_cost() {
 module app.main;
 flow main(input: Array<i32>) -> string {
     var text = "tail";
-    for _ in input limit Iterations(5000) { text = "中😀" + text; }
+    for _ in input { text = "中😀" + text; }
     return text;
 }
 "#,

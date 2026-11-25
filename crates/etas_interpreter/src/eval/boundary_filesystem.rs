@@ -3,51 +3,72 @@ use etas_host::{HostError, HostErrorCode};
 
 #[derive(Clone, Copy)]
 enum SourceFsAction {
+    Open,
+    Sync,
+    Canonicalize,
     Read,
     Write,
     List,
     Stat,
     AtomicReplace,
+    CreateDir,
+    Rename,
+    RemoveFile,
+    RemoveDir,
 }
 
 impl EvalContext<'_> {
+    pub(super) fn source_filesystem_result_guard(
+        &self,
+        perform: &PendingPerform,
+    ) -> Result<Option<Continuation>, crate::control::ExecutionFault> {
+        if self.source_default_signature(perform) != Some(("Fs", "open")) {
+            return Ok(None);
+        }
+        let proof = perform.checked_action.as_ref().unwrap();
+        let mode = perform
+            .args
+            .get(1)
+            .and_then(|value| self.source_file_mode(value))
+            .ok_or_else(|| {
+                crate::control::ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    perform.span,
+                    "Fs.open requires its checked file mode",
+                )
+            })?;
+        self.source_file_stream_region(proof.output, perform.span)?;
+        Ok(Some(Continuation::ValidateFileOpenResult {
+            result_type: proof.output,
+            mode,
+            span: perform.span,
+        }))
+    }
+
     /// Execute raw source Fs actions after language handlers and the
     /// checked residual policy. Source owns path algorithms and Result policy.
     pub(crate) fn source_filesystem_action(
         &mut self,
         perform: &PendingPerform,
     ) -> Option<ControlSignal> {
-        let proof = perform.checked_action.as_ref()?;
-        let action = match &proof.effect {
-            etas_effects::Effect::Action(action) => action,
-            etas_effects::Effect::AppliedAction(instance) => &instance.action,
+        let ("Fs", name) = self.source_default_signature(perform)? else {
+            return None;
+        };
+        let operation = match name {
+            "open" => SourceFsAction::Open,
+            "sync" => SourceFsAction::Sync,
+            "canonicalize" => SourceFsAction::Canonicalize,
+            "read" => SourceFsAction::Read,
+            "write" => SourceFsAction::Write,
+            "list" => SourceFsAction::List,
+            "stat" => SourceFsAction::Stat,
+            "atomic_replace" => SourceFsAction::AtomicReplace,
+            "create_dir" => SourceFsAction::CreateDir,
+            "rename" => SourceFsAction::Rename,
+            "remove_file" => SourceFsAction::RemoveFile,
+            "remove_dir" => SourceFsAction::RemoveDir,
             _ => return None,
         };
-        let tag = etas_std::StdSourceRole::EffectFs
-            .effect_execution()
-            .unwrap()
-            .0;
-        if action.tag.0 != tag {
-            return None;
-        }
-        let operation = [
-            ("read", SourceFsAction::Read),
-            ("write", SourceFsAction::Write),
-            ("list", SourceFsAction::List),
-            ("stat", SourceFsAction::Stat),
-            ("atomic_replace", SourceFsAction::AtomicReplace),
-        ]
-        .into_iter()
-        .find_map(|(name, operation)| {
-            let symbol = self
-                .checked
-                .std_registry
-                .lookup_qualified(&["std", "effects", "actions", "Fs", name])?;
-            let etas_std::StdDecl::EffectAction(declaration) = &symbol.decl else {
-                return None;
-            };
-            (declaration.stable_id == Some(action.action.0)).then_some(operation)
-        })?;
         let signal = self.start_source_filesystem_action(perform, operation);
         Some(self.continue_chain_signal(signal, perform.continuation.clone()))
     }
@@ -73,7 +94,12 @@ impl EvalContext<'_> {
         let (Some(path_type), Some(path)) = (proof.parameters.first(), perform.args.first()) else {
             return fail("source Fs action requires its checked path payload");
         };
-        let path = match self.source_workspace_path(path, *path_type, perform.span) {
+        let path = match if matches!(action, SourceFsAction::Sync) {
+            self.source_file_stream(path, *path_type, perform.span)
+                .map(|file| file.path())
+        } else {
+            self.source_workspace_path(path, *path_type, perform.span)
+        } {
             Ok(path) => path,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
@@ -127,6 +153,54 @@ impl EvalContext<'_> {
             )
         };
         match (action, perform.args.as_slice(), proof.parameters.as_slice()) {
+            (SourceFsAction::Open, [_, mode], [path_type, mode_type]) => {
+                if Some(*mode_type) != self.filesystem_support_type("FileMode", None) {
+                    return Err(fail("Fs.open requires checked FileMode"));
+                }
+                let mode = self
+                    .source_file_mode(mode)
+                    .ok_or_else(|| fail("Fs.open has no checked FileMode value"))?;
+                let region = self.source_file_stream_region(proof.output, perform.span)?;
+                if region
+                    != self.workspace_path_region(*path_type, &Default::default(), perform.span)?
+                {
+                    return Err(fail(
+                        "Fs.open must return FileStream in the requested region",
+                    ));
+                }
+                crate::value::host_handle::source_handle_type(
+                    self.checked,
+                    proof.output,
+                    "connection",
+                )
+                .map_err(|reason| fail(&reason))?;
+                Ok((
+                    FilesystemOperation::Open { path, mode },
+                    HostBoundaryDecode::SourceFileStream {
+                        result_type: proof.output,
+                    },
+                ))
+            }
+            (SourceFsAction::Sync, [file], [file_type]) => {
+                if self.checked.type_store.get(proof.output)
+                    != Some(&Type::Primitive(PrimitiveType::Unit))
+                {
+                    return Err(fail("Fs.sync must return unit"));
+                }
+                let file = self.source_file_stream(file, *file_type, perform.span)?;
+                Ok((FilesystemOperation::Sync { file }, HostBoundaryDecode::Unit))
+            }
+            (SourceFsAction::Canonicalize, [_], [path_type]) => {
+                if *path_type != proof.output {
+                    return Err(fail("Fs.canonicalize must preserve WorkspacePath region"));
+                }
+                Ok((
+                    FilesystemOperation::Canonicalize { path },
+                    HostBoundaryDecode::SourceWorkspacePath {
+                        result_type: proof.output,
+                    },
+                ))
+            }
             (SourceFsAction::Read, [_, maximum], [_, maximum_type]) => {
                 let Some((ok, err)) = etas_types::value_representation::result_parameters(
                     &self.checked.type_store,
@@ -279,8 +353,122 @@ impl EvalContext<'_> {
                     result_type: proof.output,
                 },
             )),
+            (SourceFsAction::CreateDir, [_, InterpValue::Bool(recursive)], [_, recursive_type]) => {
+                if self.checked.type_store.get(*recursive_type)
+                    != Some(&Type::Primitive(PrimitiveType::Bool))
+                    || self.checked.type_store.get(proof.output)
+                        != Some(&Type::Primitive(PrimitiveType::Unit))
+                {
+                    return Err(fail("source Fs.create_dir requires bool and returns unit"));
+                }
+                Ok((
+                    FilesystemOperation::CreateDir {
+                        path,
+                        recursive: *recursive,
+                    },
+                    HostBoundaryDecode::Unit,
+                ))
+            }
+            (SourceFsAction::Rename, [_, destination], [source_type, destination_type]) => {
+                if source_type != destination_type
+                    || self.checked.type_store.get(proof.output)
+                        != Some(&Type::Primitive(PrimitiveType::Unit))
+                {
+                    return Err(fail(
+                        "source Fs.rename requires paths in the same region and returns unit",
+                    ));
+                }
+                let destination =
+                    self.source_workspace_path(destination, *destination_type, perform.span)?;
+                if destination.region != path.region {
+                    return Err(fail("source Fs.rename path regions differ"));
+                }
+                Ok((
+                    FilesystemOperation::Rename {
+                        source: path,
+                        destination,
+                    },
+                    HostBoundaryDecode::Unit,
+                ))
+            }
+            (SourceFsAction::RemoveFile | SourceFsAction::RemoveDir, [_], [_]) => {
+                if self.checked.type_store.get(proof.output)
+                    != Some(&Type::Primitive(PrimitiveType::Unit))
+                {
+                    return Err(fail("source Fs removal actions must return unit"));
+                }
+                let operation = match action {
+                    SourceFsAction::RemoveFile => FilesystemOperation::RemoveFile { path },
+                    SourceFsAction::RemoveDir => FilesystemOperation::RemoveDir { path },
+                    _ => unreachable!(),
+                };
+                Ok((operation, HostBoundaryDecode::Unit))
+            }
             _ => Err(fail(
                 "source Fs action payload differs from its minimum host ABI",
+            )),
+        }
+    }
+
+    pub(super) fn source_file_mode(&self, value: &InterpValue) -> Option<etas_host::FileMode> {
+        let InterpValue::Variant { name, fields } =
+            super::std_call::nominal_representation_ref(value)
+        else {
+            return None;
+        };
+        if !fields.is_empty() {
+            return None;
+        }
+        Some(match name.as_str() {
+            "Read" => etas_host::FileMode::Read,
+            "WriteTruncate" => etas_host::FileMode::WriteTruncate,
+            "Append" => etas_host::FileMode::Append,
+            "ReadWrite" => etas_host::FileMode::ReadWrite,
+            "CreateNew" => etas_host::FileMode::CreateNew,
+            _ => return None,
+        })
+    }
+
+    fn source_file_stream_region(
+        &self,
+        ty: etas_types::TypeId,
+        span: Span,
+    ) -> Result<String, crate::control::ExecutionFault> {
+        if let Some(etas_types::Type::Applied { constructor, args }) =
+            self.checked.type_store.get(ty)
+            && Some(etas_types::TypeId(constructor.0))
+                == self.filesystem_support_type("FileStream", None)
+            && let [region] = args.as_slice()
+        {
+            return self.canonical_region_identity(*region, &Default::default(), span);
+        }
+        Err(crate::control::ExecutionFault::new(
+            AnalysisDiagnosticCode::MissingCheckedFact,
+            span,
+            "file stream requires checked FileStream<R> identity",
+        ))
+    }
+
+    pub(super) fn source_file_stream(
+        &self,
+        value: &InterpValue,
+        ty: etas_types::TypeId,
+        span: Span,
+    ) -> Result<etas_host::FileStreamRef, crate::control::ExecutionFault> {
+        let region = self.source_file_stream_region(ty, span)?;
+        let file =
+            crate::value::host_handle::open_source_handle(self.checked, ty, "connection", value)
+                .ok()
+                .and_then(|value| match value {
+                    InterpValue::HostHandle(handle) => handle.file_stream_ref(),
+                    _ => None,
+                });
+        match file {
+            Some(file) if file.path().region.as_str() == region => Ok(file),
+            _ => Err(crate::control::ExecutionFault::new(
+                AnalysisDiagnosticCode::MissingCheckedFact,
+                span,
+                "file stream requires its sealed region-matched file handle",
             )),
         }
     }
@@ -293,37 +481,7 @@ impl EvalContext<'_> {
         if !self.checked.hir.source_standard_types {
             return legacy;
         }
-        self.checked.hir.items.iter().find_map(|(_, item)| {
-            let symbol = match item {
-                HirItem::Type(item) => item.symbol,
-                HirItem::Enum(item) => item.symbol,
-                _ => return None,
-            };
-            let declaration = self.checked.symbols.get(symbol)?;
-            let module = self
-                .checked
-                .hir
-                .modules_arena
-                .get(declaration.defining_module)?;
-            if declaration.name.rsplit('.').next()? != name
-                || !module
-                    .name
-                    .as_ref()?
-                    .segments
-                    .iter()
-                    .map(|part| part.name.as_str())
-                    .eq(["std", "fs"])
-            {
-                return None;
-            }
-            match self.checked.types.symbol_types.get(&symbol)? {
-                etas_types::SymbolTypeFact::Type { constructor }
-                | etas_types::SymbolTypeFact::NominalType { constructor, .. } => {
-                    Some(etas_types::TypeId(constructor.0))
-                }
-                _ => None,
-            }
-        })
+        super::resolve_std_type(self.checked, &["std", "fs", name])
     }
 
     pub(super) fn checked_option_payload<'a>(
@@ -391,6 +549,30 @@ impl EvalContext<'_> {
                     error.message,
                 )
             })
+    }
+
+    pub(crate) fn decode_source_workspace_path(
+        &self,
+        result_type: etas_types::TypeId,
+        region: &etas_host::WorkspaceRegionId,
+        path: etas_host::WorkspacePathRef,
+    ) -> Result<InterpValue, String> {
+        if &path.region != region {
+            return Err("Fs.canonicalize response has a different region".into());
+        }
+        let relative = path
+            .relative
+            .to_str()
+            .ok_or("canonical path is not UTF-8")?;
+        super::host_to_checked_interp_value(
+            etas_host::HostValue::Record(vec![(
+                "relative".into(),
+                etas_host::HostValue::String(relative.into()),
+            )]),
+            result_type,
+            self.checked,
+            &self.storage_limits,
+        )
     }
 
     pub(crate) fn decode_source_file_read(
@@ -546,23 +728,34 @@ impl EvalContext<'_> {
         if let Some(signal) = self.cancellation_signal(boundary.span) {
             return signal;
         }
-        if error.code != HostErrorCode::IoFailure {
+        if error.code != HostErrorCode::IoFailure
+            && !error.details.iter().any(|detail| detail.key == "io_kind")
+        {
             return ControlSignal::missing_checked_fact(
                 "filesystem IOError projection requires a tagged I/O failure",
                 boundary.span,
             );
         }
-        let Some(error_type) =
+        let Some(error_type) = (if self.checked.hir.source_standard_types {
+            self.known_std_types.io_error
+        } else {
             self.filesystem_support_type("IOError", self.known_std_types.filesystem_io_error)
-        else {
+        }) else {
             return ControlSignal::missing_checked_fact(
                 "filesystem operation requires checked std.fs.IOError",
                 boundary.span,
             );
         };
-        let value = InterpValue::Nominal {
-            ty: error_type,
-            value: InterpValue::String(error.to_string().into()).into(),
+        let value = if self.checked.hir.source_standard_types {
+            match self.source_io_error_value(&error, boundary.span) {
+                Ok(value) => value,
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+            }
+        } else {
+            InterpValue::Nominal {
+                ty: error_type,
+                value: InterpValue::String(error.to_string().into()).into(),
+            }
         };
         self.raise_file_error(error_type, value, boundary.continuation, boundary.span)
     }

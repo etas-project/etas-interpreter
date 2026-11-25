@@ -9,6 +9,7 @@ use crate::{
 
 #[derive(Clone, Debug)]
 pub(super) enum NativeActionOrigin {
+    ManagedAgent(crate::control::managed_agent::ManagedAgentOrigin),
     ControllerStep(etas_hir::HirExprId),
     Source {
         expr: etas_hir::HirExprId,
@@ -100,6 +101,11 @@ impl ActionEvidence {
             return Err("projected action origin requires its owning suspended segment".into());
         };
         let origin = match &native.origin {
+            NativeActionOrigin::ManagedAgent(_) => {
+                return Err(
+                    "checkpoint capture of managed Agent operations is not supported".into(),
+                );
+            }
             NativeActionOrigin::ControllerStep(inference) => ActionOriginSnapshot::ControllerStep {
                 inference: *inference,
             },
@@ -202,6 +208,9 @@ impl ActionEvidence {
             }
         };
         let mut abi = match &native.origin {
+            NativeActionOrigin::ManagedAgent(origin) => {
+                crate::plan::checked_action::managed_agent(&native.execution, origin)?
+            }
             NativeActionOrigin::ControllerStep(inference) => {
                 crate::plan::checked_action::controller_step(&native.execution, *inference)?
             }

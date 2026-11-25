@@ -50,6 +50,14 @@ impl EvalContext<'_> {
             }
             None => None,
         };
+        let continuation = match self.declaration_model_policy(item) {
+            Ok(Some(policy)) => crate::control::Continuation::RestoreModelPolicy {
+                previous: Box::new(std::mem::replace(&mut self.task.model_policy, policy)),
+                inner: crate::control::Continuation::BlockValue.into(),
+            },
+            Ok(None) => crate::control::Continuation::BlockValue,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
         ControlSignal::pending_block(PendingBlock {
             agent_context: self
                 .checked
@@ -62,7 +70,7 @@ impl EvalContext<'_> {
             block: body,
             next_stmt_index: 0,
             frame: frame.clone(),
-            continuation: crate::control::Continuation::BlockValue,
+            continuation,
             residual,
         })
     }

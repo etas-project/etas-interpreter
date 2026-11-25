@@ -141,7 +141,7 @@ impl EvalContext<'_> {
         if let Some(signal) = self.cancellation_signal(span) {
             return Some(signal);
         }
-        self.host_context.budget.check_time().err().map(|error| {
+        self.task.host_budget().check_time().err().map(|error| {
             ControlSignal::runtime_fault(
                 format!(
                     "syntax operation exhausted the run-owned wall-time budget: {}",

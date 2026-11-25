@@ -153,6 +153,16 @@ impl GenericBindings {
             .with_effect_arguments(&self.rows)
     }
 
+    pub(crate) fn indexed_substitution<'a>(
+        &'a self,
+        store: &'a TypeStore,
+        lookup: &'a etas_types::ty::TypeLookupIndex,
+    ) -> TypeSubstitutionEngine<'a> {
+        TypeSubstitutionEngine::existing_indexed(store, lookup, &self.types)
+            .with_type_parameters(&self.parameters)
+            .with_effect_arguments(&self.rows)
+    }
+
     pub(crate) fn is_empty(&self) -> bool {
         self.types.is_empty() && self.parameters.is_empty() && self.rows.is_empty()
     }

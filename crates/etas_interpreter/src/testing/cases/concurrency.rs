@@ -22,10 +22,12 @@ async fn run(source: &str) -> api::RunResult {
 async fn run_with_cpu_threads(
     checked: &etas_frontend::CheckedProject,
     threads: usize,
+    minimum_work: u64,
 ) -> (api::RunResult, Vec<api::CpuTaskTelemetry>) {
     let observer = std::sync::Arc::new(CpuTelemetry::default());
     let mut options = RunOptions::default();
     options.cpu_threads = std::num::NonZeroUsize::new(threads).expect("CPU threads are non-zero");
+    options.cpu_min_work = minimum_work;
     options.event_observer = Some(observer.clone());
     let result = Interpreter
         .run_checked(
@@ -70,7 +72,8 @@ flow main() -> Array<i32> {{
 }}
 "#
         ));
-        let (result, telemetry) = run_with_cpu_threads(&checked, 4).await;
+        let (result, telemetry) =
+            run_with_cpu_threads(&checked, 4, RunOptions::default().cpu_min_work).await;
         assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
         assert_eq!(
             result.value(),
@@ -97,7 +100,7 @@ import std.task.{map_concurrent, run, Scheduler};
 
 flow burn(value: i32) -> i32 {
     var index = 0;
-    while index < 20000 limit Iterations(20000) {
+    while index < 20000 {
         index = index + 1;
     }
     return value;
@@ -111,8 +114,8 @@ flow main() -> bool {
 }
 "#,
     );
-    let (inline, _) = run_with_cpu_threads(&checked, 1).await;
-    let (parallel, telemetry) = run_with_cpu_threads(&checked, 4).await;
+    let (inline, _) = run_with_cpu_threads(&checked, 1, 0).await;
+    let (parallel, telemetry) = run_with_cpu_threads(&checked, 4, 0).await;
 
     assert!(inline.diagnostics.is_empty(), "{:#?}", inline.diagnostics);
     assert!(
@@ -142,7 +145,7 @@ flow main() -> bool {
         threads.len() >= 2,
         "OS thread evidence belongs in telemetry"
     );
-    let (repeated, _) = run_with_cpu_threads(&checked, 4).await;
+    let (repeated, _) = run_with_cpu_threads(&checked, 4, 0).await;
     assert_eq!(repeated.value(), parallel.value());
     let mut shapes = Vec::new();
     for result in [&parallel, &repeated] {
@@ -231,6 +234,7 @@ flow main() -> bool ![Console, Error<IOError>] {
     let host = FakeHost::new(availability(&[HostRequirementKind::Console]));
     let mut options = RunOptions::default();
     options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    options.cpu_min_work = 0;
     let result = Interpreter
         .run_checked(
             &checked,
@@ -261,7 +265,7 @@ module app.main;
 import std.task.{map_concurrent, run, Scheduler};
 flow burn(value: i32) -> i32 {
     var index = 0;
-    while index < 10000 limit Iterations(10000) { index = index + 1; }
+    while index < 10000 { index = index + 1; }
     return value;
 }
 flow main() -> Array<i32> {
@@ -271,6 +275,7 @@ flow main() -> Array<i32> {
     );
     let mut options = RunOptions::default();
     options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    options.cpu_min_work = 0;
     options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
     let result = Interpreter
         .run_checked(
@@ -311,7 +316,7 @@ async fn cpu_workers_stop_with_their_parent_execution_scope() {
 module app.main;
 import std.task.{map_concurrent, run, Scheduler};
 flow burn(value: i32) -> i32 {
-    while true limit Iterations(1000000) {}
+    while true {}
     return value;
 }
 flow main() -> Array<i32> {
@@ -322,6 +327,7 @@ flow main() -> Array<i32> {
     let dispatched = std::sync::Arc::new(tokio::sync::Notify::new());
     let mut options = RunOptions::default();
     options.cpu_threads = std::num::NonZeroUsize::new(4).unwrap();
+    options.cpu_min_work = 0;
     options.event_observer = Some(std::sync::Arc::new(CpuDispatchObserver(dispatched.clone())));
     let host = FakeHost::new(HostServiceAvailability::default());
     let invocation = Interpreter.create_run(

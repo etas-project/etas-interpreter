@@ -41,6 +41,7 @@ pub(crate) struct PreparedProgram {
     pub(super) program: etas_frontend::CheckedProject,
     pub(super) known_std_types: crate::eval::KnownStdTypes,
     pub(super) spec_facts: Arc<std::sync::OnceLock<etas_types::SpecFacts>>,
+    pub(super) type_lookup: std::sync::OnceLock<etas_types::ty::TypeLookupIndex>,
     pub(super) slots: Arc<SlotLayoutTable>,
     pub(super) frames: Arc<super::frames::FrameLayoutTable>,
     pub(super) arguments: Arc<super::arguments::CallArgumentTable>,

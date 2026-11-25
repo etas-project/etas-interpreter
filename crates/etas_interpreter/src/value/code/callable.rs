@@ -37,6 +37,11 @@ pub struct ScopedCallableValue {
 }
 
 impl ScopedCallableValue {
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        Rc::ptr_eq(&self.native, &other.native)
+            || (Arc::ptr_eq(&self.native.program.checked, &other.native.program.checked)
+                && self.native.target.same_instance(&other.native.target))
+    }
     pub(crate) fn checked_flow_application(
         program: &CheckedProgram,
         target: &CallTarget,

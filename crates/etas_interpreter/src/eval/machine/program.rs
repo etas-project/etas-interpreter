@@ -37,7 +37,6 @@ impl EvalMachine {
         );
         let args = call.arguments(&source, args).map_err(missing)?;
         if destination.foreign.is_none()
-            && destination.checked.foreign_methods().next().is_some()
             && let Some(projection) = call
                 .action_projections()
                 .map_err(missing)?

@@ -1,7 +1,5 @@
 use super::*;
-use crate::control::ExecutionFault;
 use crate::value::iteration::IterationSource;
-use etas_std::StdLimitKind;
 use std::collections::HashSet;
 
 #[derive(Clone)]
@@ -10,7 +8,6 @@ pub(crate) struct ForLoopResume {
     pub source: Option<IterationSource>,
     pub next_index: usize,
     pub body: HirBlockId,
-    pub iterations: usize,
     pub loop_scope: HashSet<SymbolId>,
     pub span: Span,
 }
@@ -19,64 +16,25 @@ pub(super) struct WhileLoopResume {
     pub value: InterpValue,
     pub cond: HirExprId,
     pub body: HirBlockId,
-    pub iteration: u64,
-    pub max_iterations: u64,
     pub resume_after_body: bool,
     pub span: Span,
 }
 
 impl<'a> EvalContext<'a> {
-    pub(super) fn execute_limited_loop(
+    pub(super) fn execute_loop(
         &mut self,
         stmt: etas_hir::HirStmtId,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let (limits, span) = match &self.checked.hir.stmts[stmt] {
-            etas_hir::HirStmt::For { limits, span, .. }
-            | etas_hir::HirStmt::While { limits, span, .. } => (limits, *span),
-            _ => unreachable!("loop budget entry requires a checked loop statement"),
-        };
-        let argument = match self.loop_limit_argument(limits, span) {
-            Ok(argument) => argument,
-            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-        };
-        match self.eval_expr(argument, frame) {
-            ControlSignal::Value(value) => self.resume_loop_limit(stmt, value, frame),
-            signal => compose_signal_continuation(
-                signal,
-                Continuation::LoopLimit {
-                    stmt,
-                    frame: frame.clone(),
-                },
-            ),
-        }
-    }
-
-    pub(super) fn resume_loop_limit(
-        &mut self,
-        stmt: etas_hir::HirStmtId,
-        value: InterpValue,
-        frame: &mut Frame,
-    ) -> ControlSignal {
-        let span = match &self.checked.hir.stmts[stmt] {
-            etas_hir::HirStmt::For { span, .. } | etas_hir::HirStmt::While { span, .. } => *span,
-            _ => unreachable!("resumed loop budget requires a checked loop statement"),
-        };
-        let Some(iterations) = value
-            .as_number()
-            .and_then(crate::value::NumericValue::as_u64)
-        else {
-            return ControlSignal::invalid_arguments(
-                "Iterations expects a non-negative u64 value",
-                span,
-            );
-        };
-        match &self.checked.hir.stmts[stmt] {
+        match self.checked.hir.stmts[stmt] {
             etas_hir::HirStmt::For {
-                pat, iter, body, ..
-            } => self.execute_for_loop(*pat, *iter, iterations, *body, span, frame),
-            etas_hir::HirStmt::While { cond, body, .. } => {
-                self.continue_while_loop(*cond, *body, 0, iterations, span, frame)
+                pat,
+                iter,
+                body,
+                span,
+            } => self.execute_for_loop(pat, iter, body, span, frame),
+            etas_hir::HirStmt::While { cond, body, span } => {
+                self.continue_while_loop(cond, body, span, frame)
             }
             _ => unreachable!("checked loop statement"),
         }
@@ -86,12 +44,10 @@ impl<'a> EvalContext<'a> {
         &mut self,
         pat: etas_hir::HirPatId,
         iter: HirExprId,
-        iterations: u64,
         body: HirBlockId,
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        let iterations = iterations.min(usize::MAX as u64) as usize;
         let loop_scope = frame.snapshot_symbols();
         if self.plan.records.source_iterator(iter).is_some() {
             let state = super::source_iteration::SourceForLoopResume {
@@ -101,7 +57,6 @@ impl<'a> EvalContext<'a> {
                 awaiting_step: false,
                 next_index: 0,
                 body,
-                iterations,
                 loop_scope,
                 span,
             };
@@ -140,7 +95,6 @@ impl<'a> EvalContext<'a> {
                         source: None,
                         next_index: 0,
                         body,
-                        iterations,
                         loop_scope,
                         span,
                         frame: frame.clone(),
@@ -161,7 +115,6 @@ impl<'a> EvalContext<'a> {
                 source: None,
                 next_index: 0,
                 body,
-                iterations,
                 loop_scope,
                 span,
             },
@@ -192,7 +145,7 @@ impl<'a> EvalContext<'a> {
         source: IterationSource,
         frame: &mut Frame,
     ) -> ControlSignal {
-        if source.is_text_sequence() && state.next_index < state.iterations {
+        if source.is_text_sequence() {
             return ControlSignal::pending_native(
                 crate::intrinsic::pure::PendingNativeWork::start_iteration(
                     state,
@@ -206,12 +159,11 @@ impl<'a> EvalContext<'a> {
             source: _,
             next_index,
             body,
-            iterations,
             loop_scope,
             span,
         } = state;
         let mut index = next_index;
-        while index < iterations {
+        loop {
             let value = match source.get(index) {
                 Ok(Some(value)) => value,
                 Ok(None) => break,
@@ -271,7 +223,6 @@ impl<'a> EvalContext<'a> {
                             source: Some(Box::new(source)),
                             next_index: index,
                             body,
-                            iterations,
                             loop_scope,
                             span,
                             frame: frame.clone(),
@@ -346,7 +297,6 @@ impl<'a> EvalContext<'a> {
                     source: Some(Box::new(source)),
                     next_index: state.next_index,
                     body: state.body,
-                    iterations: state.iterations,
                     loop_scope: state.loop_scope,
                     span: state.span,
                     frame: frame.clone(),
@@ -367,12 +317,10 @@ impl<'a> EvalContext<'a> {
         &mut self,
         cond: HirExprId,
         body: HirBlockId,
-        start_iteration: u64,
-        max_iterations: u64,
         span: Span,
         frame: &mut Frame,
     ) -> ControlSignal {
-        for iteration in start_iteration..max_iterations {
+        loop {
             let condition = match self.eval_expr(cond, frame) {
                 ControlSignal::Value(value) => value,
                 signal @ (ControlSignal::Apply(_)
@@ -395,8 +343,6 @@ impl<'a> EvalContext<'a> {
                         Continuation::WhileLoop {
                             cond,
                             body,
-                            iteration,
-                            max_iterations,
                             resume_after_body: false,
                             span,
                             frame: frame.clone(),
@@ -447,8 +393,6 @@ impl<'a> EvalContext<'a> {
                         Continuation::WhileLoop {
                             cond,
                             body,
-                            iteration,
-                            max_iterations,
                             resume_after_body: true,
                             span,
                             frame: frame.clone(),
@@ -457,7 +401,6 @@ impl<'a> EvalContext<'a> {
                 }
             }
         }
-        ControlSignal::Value(InterpValue::Unit)
     }
 
     pub(super) fn resume_while_loop(
@@ -466,14 +409,7 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         if state.resume_after_body {
-            return self.continue_while_loop(
-                state.cond,
-                state.body,
-                state.iteration.saturating_add(1),
-                state.max_iterations,
-                state.span,
-                frame,
-            );
+            return self.continue_while_loop(state.cond, state.body, state.span, frame);
         }
         let condition = match self.expect_bool(state.value, state.span) {
             Ok(condition) => condition,
@@ -483,14 +419,9 @@ impl<'a> EvalContext<'a> {
             return ControlSignal::Value(InterpValue::Unit);
         }
         match self.execute_block(state.body, frame) {
-            ControlSignal::Value(_) | ControlSignal::Continue => self.continue_while_loop(
-                state.cond,
-                state.body,
-                state.iteration.saturating_add(1),
-                state.max_iterations,
-                state.span,
-                frame,
-            ),
+            ControlSignal::Value(_) | ControlSignal::Continue => {
+                self.continue_while_loop(state.cond, state.body, state.span, frame)
+            }
             ControlSignal::Break => ControlSignal::Value(InterpValue::Unit),
             ControlSignal::Return(value) => ControlSignal::Return(value),
             ControlSignal::Resume(value) => ControlSignal::Resume(value),
@@ -516,41 +447,11 @@ impl<'a> EvalContext<'a> {
                 Continuation::WhileLoop {
                     cond: state.cond,
                     body: state.body,
-                    iteration: state.iteration,
-                    max_iterations: state.max_iterations,
                     resume_after_body: true,
                     span: state.span,
                     frame: frame.clone(),
                 },
             ),
         }
-    }
-
-    pub(super) fn retry_attempts(
-        &self,
-        limits: &[HirExprId],
-        span: Span,
-    ) -> Result<u32, ExecutionFault> {
-        for limit in limits {
-            let limit = self.resolve_limit_expr(*limit)?;
-            if let (
-                StdLimitKind::Attempts,
-                crate::eval::limit::RuntimeLimitValue::Count(attempts),
-            ) = (limit.kind, limit.value)
-            {
-                return u32::try_from(attempts).map_err(|_| {
-                    ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        limit.span,
-                        "Attempts(...) limit exceeds the interpreter retry counter range",
-                    )
-                });
-            }
-        }
-        Err(ExecutionFault::new(
-            AnalysisDiagnosticCode::InvalidArguments,
-            span,
-            "retry execution requires an Attempts(...) limit",
-        ))
     }
 }

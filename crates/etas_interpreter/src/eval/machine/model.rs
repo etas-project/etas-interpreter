@@ -3,11 +3,22 @@ use super::{
     state::{EvalMachine, MachinePoll, PendingBoundary},
 };
 use crate::{
-    control::{Continuation, ControlSignal, ExecutionFault, ModelDecode, PendingModel},
+    control::{
+        CallPurity, Continuation, ControlSignal, ExecutionFault, ModelDecode, PendingCall,
+        PendingModel,
+    },
     eval::EvalContext,
+    value::InterpValue,
 };
 use etas_core::{AnalysisDiagnosticCode, Span};
-use etas_host::{HostError, ModelResponse};
+use etas_host::{HostError, ModelOutput, ModelResponse, ModelUsage};
+
+#[derive(Clone, Debug)]
+pub struct ModelStepProviderData {
+    frame: Box<ModelRequestFrame>,
+    output: ModelOutput,
+    usage: Option<ModelUsage>,
+}
 
 type Transition = Result<ControlSignal, MachinePoll>;
 
@@ -91,9 +102,35 @@ impl EvalMachine {
             ))
         })?;
         let value = match frame.pending.decode {
-            ModelDecode::Step { .. } => ctx
-                .step_result_value(&frame.pending, output, response.usage)
-                .map_err(MachinePoll::Fault)?,
+            ModelDecode::Step { result, .. } => {
+                if let Some((target, entries)) = ctx
+                    .step_provider_data_builder(result, &output.message.provider_data)
+                    .map_err(|error| {
+                        MachinePoll::Fault(ExecutionFault::new(
+                            AnalysisDiagnosticCode::MissingCheckedFact,
+                            span,
+                            error,
+                        ))
+                    })?
+                {
+                    return Ok(ControlSignal::pending_call(PendingCall {
+                        purity: CallPurity::Pure,
+                        site: None,
+                        target,
+                        args: vec![entries],
+                        span,
+                        continuation: Continuation::ModelStepProviderData(Box::new(
+                            ModelStepProviderData {
+                                frame,
+                                output,
+                                usage: response.usage,
+                            },
+                        )),
+                    }));
+                }
+                ctx.step_result_value(&frame.pending, output, response.usage, None)
+                    .map_err(MachinePoll::Fault)?
+            }
             ModelDecode::ModelResponse => ctx
                 .try_model_result_value(&frame.pending, output, response.id, response.usage)
                 .map_err(|error| {
@@ -107,15 +144,41 @@ impl EvalMachine {
                 )));
             }
         };
-        ctx.record_completed_host_boundary(
+        ctx.complete_model_boundary(*frame, value)
+            .map_err(MachinePoll::Fault)
+    }
+}
+
+impl EvalContext<'_> {
+    pub(crate) fn complete_model_step_provider_data(
+        &mut self,
+        state: ModelStepProviderData,
+        provider_data: InterpValue,
+    ) -> ControlSignal {
+        let result = self
+            .step_result_value(
+                &state.frame.pending,
+                state.output,
+                state.usage,
+                Some(provider_data),
+            )
+            .and_then(|value| self.complete_model_boundary(*state.frame, value));
+        result.unwrap_or_else(|fault| ControlSignal::Fault(Box::new(fault)))
+    }
+
+    fn complete_model_boundary(
+        &mut self,
+        frame: ModelRequestFrame,
+        value: InterpValue,
+    ) -> Result<ControlSignal, ExecutionFault> {
+        self.record_completed_host_boundary(
             crate::orchestration::BoundaryOccurrenceId::HostRequest(frame.boundary_request_id),
             "model",
             frame.boundary_key,
             value.clone(),
-            span,
-        )
-        .map_err(MachinePoll::Fault)?;
-        Ok(ctx.apply_continuation(frame.outer_continuation, value))
+            frame.pending.span,
+        )?;
+        Ok(self.apply_continuation(frame.outer_continuation, value))
     }
 }
 

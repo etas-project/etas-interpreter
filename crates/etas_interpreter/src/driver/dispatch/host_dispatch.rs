@@ -78,7 +78,12 @@ impl HostDispatch {
                 trace,
                 started_at_unix_micros,
             }));
-        let call = call(operation.context().clone());
+        let context = operation.context().clone();
+        let context = match &eval.task.host_resource_owner() {
+            Some((_, owner)) => context.retain_resources_in_scope(owner),
+            None => context.retain_resources_in_parent_scope()?,
+        };
+        let call = call(context);
         Ok(PendingHostOperation {
             request_id,
             operation,
@@ -182,7 +187,7 @@ impl HostDispatch {
                 finished_at_unix_micros,
                 duration_micros,
             }));
-        eval.task.execution.signal()?.check()?;
+        eval.task.host_execution().signal()?.check()?;
         result
     }
 
@@ -364,6 +369,8 @@ result_response!(FilesystemResponse);
 result_response!(TcpConnectResponse);
 result_response!(TlsConnectResponse);
 result_response!(SecretResponse);
+result_response!(etas_host::EntropyResponse);
+result_response!(etas_host::ClockResponse);
 result_response!(BrowserProtocolResponse);
 
 impl TraceableHostResponse for etas_host::memory::MemoryWriteResponse {
@@ -500,6 +507,10 @@ impl TraceableHostResponse for StreamResponse {
             Err(StreamFailure::Cancelled) => HostOutcome::Cancelled {
                 reason: "stream operation was cancelled".to_owned(),
             },
+            Err(StreamFailure::Busy) => HostOutcome::Failed(
+                HostError::new(HostErrorCode::InvalidRequest, "byte stream is busy")
+                    .with_detail("stream_failure", "busy"),
+            ),
             Err(StreamFailure::TimedOut) => HostOutcome::Failed(HostError::new(
                 HostErrorCode::TimedOut,
                 "stream operation timed out",

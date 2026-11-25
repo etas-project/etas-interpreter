@@ -9,10 +9,7 @@ use crate::{
     host::HostServices,
 };
 
-use super::{
-    host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation},
-    policy::evaluate_before_boundary,
-};
+use super::host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation};
 
 type ConsoleCall<'host> =
     crate::host::HostFuture<'host, Result<ConsoleResponse, etas_host::HostError>>;
@@ -36,7 +33,7 @@ pub(in crate::driver) struct CompletedConsoleDispatch {
 
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &'host dyn HostServices,
+    _host: &'host dyn HostServices,
     console: PendingConsole,
 ) -> ConsoleDispatchStart<'host> {
     let key = match eval.console_boundary_key(&console) {
@@ -66,20 +63,27 @@ pub(in crate::driver) async fn begin<'host>(
             eval.console_host_error_signal(console, error),
         ));
     }
-    let request_id = console.request.id;
-    let trace_subject = policy_subject(&console.request);
-    if !evaluate_before_boundary(
+    let budget = console.request.budget.clone();
+    let subject = policy_subject(&console.request);
+    ConsoleDispatchStart::Complete(Some(super::authorization::prepare(
         eval,
-        host,
-        eval.boundary_policy_ref(),
-        trace_subject.clone(),
-        console.span,
-        "console",
-    )
-    .await
-    {
-        return ConsoleDispatchStart::Complete(None);
-    }
+        crate::control::NativeBoundaryTarget::Console {
+            pending: console,
+            key,
+        },
+        vec![(eval.boundary_policy_ref(), subject)],
+        budget,
+    )))
+}
+
+pub(in crate::driver) async fn begin_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    mut console: PendingConsole,
+    key: etas_host::replay::ReplayFingerprint,
+) -> ConsoleDispatchStart<'host> {
+    let request_id = console.request.id;
+    console.request.authority = eval.host_authority();
     match HostDispatch::begin(
         eval,
         request_id,

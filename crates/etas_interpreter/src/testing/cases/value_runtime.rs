@@ -235,7 +235,7 @@ module app.main;
 flow main() -> i32 {
   var sum = 0;
 
-  for value in (0, 4] limit Iterations(8) {
+  for value in (0, 4] {
     sum = sum + value;
   }
 
@@ -270,18 +270,18 @@ module app.main;
 flow main() -> i32 {
   var sum = 0;
   let list: List<i32> = [1; 2; 3];
-  for value in list limit Iterations(16) {
+  for value in list {
     sum = sum + value;
   }
 
   let set: Set<i32> = #{4, 5};
-  for value in set limit Iterations(16) {
+  for value in set {
     sum = sum + value;
   }
 
   let array = [6, 7, 8];
   let window = array[1, 3);
-  for value in window limit Iterations(16) {
+  for value in window {
     sum = sum + value;
   }
 
@@ -319,7 +319,7 @@ flow main() -> i32 {
   let right = values(0, 2];
   var sum = 0;
 
-  for value in left limit Iterations(8) {
+  for value in left {
     sum = sum + value;
   }
 
@@ -356,7 +356,7 @@ flow main() -> i32 {
   let window = range[2, 5);
   var sum = 0;
 
-  for value in window limit Iterations(8) {
+  for value in window {
     sum = sum + value;
   }
 

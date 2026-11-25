@@ -11,6 +11,7 @@ pub(super) fn root_local(scope: TaskScopeId) -> TaskLocalState {
         scope,
         etas_host::execution::ExecutionScope::new_owned(),
         ModelExecutionPolicy::default(),
+        Default::default(),
     )
 }
 
@@ -22,6 +23,63 @@ pub(super) fn spawn(
     scheduler
         .spawn(parent, EvalMachine::new(), None, 0, source_index)
         .unwrap()
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn task_completion_waits_for_owned_resource_release_without_holding_a_language_slot() {
+    let scope = TaskScopeId(7);
+    let root = root_local(scope);
+    let mut scheduler = TaskScheduler::new(scope, NonZeroUsize::new(1).unwrap());
+    let owner = spawn(&mut scheduler, &root, 0);
+    let sibling = spawn(&mut scheduler, &root, 1);
+    scheduler
+        .set_scope_owner(scope, owner, TaskIdentity::Root)
+        .unwrap();
+    let resource = scheduler.tasks[&owner.task]
+        .local
+        .execution
+        .register(
+            None,
+            None,
+            etas_host::TraceContext::root(etas_host::TraceId(1)),
+        )
+        .unwrap();
+    resource.begin_dispatch().unwrap();
+    assert_eq!(scheduler.dispatch_ready(), Some(owner));
+    scheduler.complete(owner, InterpValue::Unit).unwrap();
+    assert_eq!(
+        scheduler.tasks[&owner.task].state,
+        TaskState::Waiting(TaskWait::HostDrain)
+    );
+    assert!(scheduler.tasks[&owner.task].outcome.is_none());
+    assert_eq!(scheduler.dispatch_ready(), Some(sibling));
+    scheduler.complete(sibling, InterpValue::Unit).unwrap();
+
+    let mut reactor = TaskHostReactor::new();
+    for (task, execution) in scheduler.take_resource_drains() {
+        reactor.drain_resources(task, execution);
+    }
+    assert!(reactor.poll_ready().await.is_none());
+    resource
+        .complete(etas_host::execution::ExternalOutcome::Confirmed, vec![])
+        .unwrap();
+    let ReadyTaskHost::Cleanup { task, report } = reactor.wait_next().await.unwrap() else {
+        panic!("resource owner completion");
+    };
+    assert_eq!(task, owner);
+    scheduler
+        .finish_resource_drain(task, report.unwrap())
+        .unwrap();
+    assert!(matches!(
+        scheduler.tasks[&owner.task].outcome,
+        Some(TaskOutcome::Completed(InterpValue::Unit))
+    ));
+    let report = scheduler.tasks[&owner.task]
+        .cleanup_report
+        .as_ref()
+        .unwrap();
+    assert_eq!(report.operations().len(), 1);
+    assert!(!reactor.has_pending());
 }
 
 #[test]
@@ -42,6 +100,171 @@ fn fifo_admission_and_waiting_release_concurrency_slots() {
         AwaitDecision::Parked
     ));
     assert_eq!(scheduler.dispatch_ready(), Some(first));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn resource_cleanup_diagnostics_are_returned_as_checked_source_data() {
+    let checked = crate::testing::project::checked_project(
+        r#"
+module app.main;
+type CleanupFailure = { resource_kind: string, code: string, message: string };
+type ScopeReport<T> = { value: T, failures: Array<CleanupFailure> };
+flow main() -> ScopeReport<unit> { return ScopeReport { value= (), failures= [] }; }
+"#,
+    );
+    let etas_types::ItemSignature::Flow(signature) =
+        &checked.types.item_signatures[&checked.entry.unwrap()]
+    else {
+        unreachable!()
+    };
+    let report_type = signature.output;
+    let plan = crate::plan::build_plan(&checked, crate::api::PlanOptions)
+        .plan
+        .unwrap();
+    let scope = TaskScopeId(7);
+    let root = root_local(scope);
+    let mut scheduler = TaskScheduler::new(scope, NonZeroUsize::new(1).unwrap());
+    let owner = spawn(&mut scheduler, &root, 0);
+    scheduler.tasks.get_mut(&owner.task).unwrap().program =
+        Some(crate::value::CheckedExecutionProgram {
+            checked,
+            plan: std::sync::Arc::new(plan),
+            definitions: None,
+            revision: None,
+            foreign: None,
+        });
+    scheduler
+        .set_scope_owner(scope, owner, TaskIdentity::Root)
+        .unwrap();
+    let span = etas_core::Span::empty(etas_core::SourceId(0), etas_core::TextSize::ZERO);
+    scheduler.configure_resource_scope(scope, report_type, span);
+    let resource = scheduler.tasks[&owner.task]
+        .local
+        .execution
+        .register(
+            None,
+            None,
+            etas_host::TraceContext::root(etas_host::TraceId(1)),
+        )
+        .unwrap();
+    resource.begin_dispatch().unwrap();
+    assert_eq!(scheduler.dispatch_ready(), Some(owner));
+    scheduler.complete(owner, InterpValue::Unit).unwrap();
+    let mut reactor = TaskHostReactor::new();
+    for (task, execution) in scheduler.take_resource_drains() {
+        reactor.drain_resources(task, execution);
+    }
+    resource
+        .complete(
+            etas_host::execution::ExternalOutcome::Confirmed,
+            vec![etas_host::HostError::new(
+                etas_host::HostErrorCode::ProviderUnavailable,
+                "private backend detail",
+            )],
+        )
+        .unwrap();
+    let ReadyTaskHost::Cleanup { task, report } = reactor.wait_next().await.unwrap() else {
+        panic!("cleanup completion");
+    };
+    scheduler
+        .finish_resource_drain(task, report.unwrap())
+        .unwrap();
+    let Some(TaskOutcome::Completed(value)) = scheduler.tasks[&owner.task].outcome.as_ref() else {
+        panic!("source cleanup report");
+    };
+    let payload = crate::eval::interp_to_host_value(value).unwrap();
+    assert!(
+        matches!(payload, etas_host::HostValue::Record(ref fields) if fields.iter().any(|(name, value)| name == "failures" && matches!(value, etas_host::HostValue::List(values) if values.len() == 1)))
+    );
+    assert!(!format!("{payload:?}").contains("private backend detail"));
+    // Native completion returns data; the public Etas scope flow owns the
+    // CleanupFailed construction and raise. Existing control stays primary.
+    let report = scheduler.tasks[&owner.task]
+        .cleanup_report
+        .as_ref()
+        .unwrap();
+    let program = scheduler.tasks[&owner.task].program.as_ref().unwrap();
+    let string = program
+        .checked
+        .type_store
+        .iter()
+        .find_map(|(ty, value)| {
+            matches!(
+                value,
+                etas_types::Type::Primitive(etas_types::PrimitiveType::String)
+            )
+            .then_some(ty)
+        })
+        .unwrap();
+    let primary = TaskOutcome::Raised(Box::new(crate::control::PendingPerform::typed_error(
+        string,
+        InterpValue::String("primary".into()),
+        span,
+        crate::control::Continuation::BlockValue,
+    )));
+    let preserved =
+        resource_scope::completion((report_type, span), report, program, primary).unwrap();
+    assert!(
+        matches!(preserved, TaskOutcome::Raised(error) if error.error_type == Some(string) && error.args == [InterpValue::String("primary".into())])
+    );
+
+    // The body error also stays primary while child work is unwinding, even
+    // when that child's declaration precedes the body in source order.
+    let program = program.clone();
+    let scope = TaskScopeId(8);
+    let root = root_local(scope);
+    let mut scheduler = TaskScheduler::new(scope, NonZeroUsize::new(2).unwrap());
+    let owner = spawn(&mut scheduler, &root, 10);
+    scheduler.tasks.get_mut(&owner.task).unwrap().program = Some(program.clone());
+    scheduler
+        .set_scope_owner(scope, owner, TaskIdentity::Root)
+        .unwrap();
+    scheduler.configure_resource_scope(scope, report_type, span);
+    let body = scheduler.tasks.remove(&owner.task).unwrap();
+    let child = spawn(&mut scheduler, &body.local, 0);
+    scheduler.tasks.insert(owner.task, body);
+    assert_eq!(scheduler.dispatch_ready(), Some(owner));
+    assert_eq!(scheduler.dispatch_ready(), Some(child));
+    let error = |message: &str| {
+        crate::control::PendingPerform::typed_error(
+            string,
+            InterpValue::String(message.into()),
+            span,
+            crate::control::Continuation::BlockValue,
+        )
+    };
+    scheduler.raise(owner, error("primary")).unwrap();
+    scheduler
+        .cancel(owner, etas_host::execution::CancellationReason::ChildFailed)
+        .unwrap();
+    scheduler.raise(child, error("secondary")).unwrap();
+    assert!(matches!(
+        scheduler.scope_outcome(scope).unwrap(),
+        Some(TaskOutcome::Raised(error)) if error.args == [InterpValue::String("primary".into())]
+    ));
+
+    let scope = TaskScopeId(9);
+    let root = root_local(scope);
+    let mut scheduler = TaskScheduler::new(scope, NonZeroUsize::new(2).unwrap());
+    let owner = spawn(&mut scheduler, &root, 0);
+    scheduler.tasks.get_mut(&owner.task).unwrap().program = Some(program);
+    scheduler
+        .set_scope_owner(scope, owner, TaskIdentity::Root)
+        .unwrap();
+    scheduler.configure_resource_scope(scope, report_type, span);
+    let body = scheduler.tasks.remove(&owner.task).unwrap();
+    let child = spawn(&mut scheduler, &body.local, 1);
+    scheduler.tasks.insert(owner.task, body);
+    assert_eq!(scheduler.dispatch_ready(), Some(owner));
+    assert_eq!(scheduler.dispatch_ready(), Some(child));
+    scheduler.complete(owner, InterpValue::Unit).unwrap();
+    let reason = etas_host::execution::CancellationReason::Requested;
+    scheduler.cancel(owner, reason.clone()).unwrap();
+    scheduler.cancel(child, reason).unwrap();
+    assert!(matches!(
+        scheduler.scope_outcome(scope).unwrap(),
+        Some(TaskOutcome::Cancelled(_))
+    ));
 }
 
 #[test]

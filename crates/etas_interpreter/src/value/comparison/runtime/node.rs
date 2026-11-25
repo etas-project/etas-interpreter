@@ -273,6 +273,7 @@ pub(super) fn compare_node<'c>(
 fn leaf_equal(a: &V, b: &V) -> bool {
     match (a, b) {
         (V::Unit, V::Unit) | (V::OptionNone, V::OptionNone) => true,
+        (V::Agent(a), V::Agent(b)) => a == b,
         (V::Bool(a), V::Bool(b)) => a == b,
         (V::Number(a), V::Number(b)) => a == b,
         (V::String(a), V::String(b)) => a == b,

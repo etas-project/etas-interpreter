@@ -268,6 +268,9 @@ fn start(value: &InterpValue, cache: &mut CaptureContext) -> Result<Started, Str
             key: None,
             values: Vec::with_capacity(values.len()),
         },
+        InterpValue::Record(values) if values.member_tool_snapshot().is_some() => {
+            return Err("member tool snapshots are scoped to the live Agent request".into());
+        }
         InterpValue::Record(values) => Frame::Record {
             source: values.clone(),
             values: Vec::with_capacity(values.borrow().len()),

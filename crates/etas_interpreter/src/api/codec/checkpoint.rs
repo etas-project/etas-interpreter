@@ -31,6 +31,7 @@ pub(super) fn readable_schema(value: &Value) -> Result<&str, InterpreterCodecErr
     let schema = required_str(value, "schema")?;
     match schema {
         crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
+        | "etas.cli.interpreter-checkpoint.v102"
         | "etas.cli.interpreter-checkpoint.v101"
         | "etas.cli.interpreter-checkpoint.v100" => Ok(schema),
         _ => Err(InterpreterCodecError::new(format!(
@@ -116,6 +117,10 @@ pub fn checkpoint_from_json_with_revisions(
         checked, &slots, &dispatch, &closures, limits,
     )
     .with_revisions(revisions.map(|set| set.as_ref()));
+    let mut boundary_restore = crate::eval::machine::snapshot::RestoreContext::for_program(
+        checked.clone(),
+        revisions.cloned(),
+    );
     let arguments = required_array(checkpoint, "args")?
         .iter()
         .map(|value| value::snapshot_from_json_with_limits(limits, value))
@@ -222,6 +227,8 @@ pub fn checkpoint_from_json_with_revisions(
                         result: completed_host_boundary_result_from_json(
                             limits,
                             required_obj(boundary, "result")?,
+                            &validator,
+                            &mut boundary_restore,
                         )?,
                     })
                 })
@@ -325,6 +332,45 @@ pub fn event_json(event: &WorkflowEvent) -> Result<JsonDocument, InterpreterCode
             "consumed_tokens": consumed_tokens,
             "consumed_cost_micros": consumed_cost_micros.to_string(),
         }),
+        WorkflowEvent::AgentBoundary {
+            action,
+            resource,
+            request,
+            parent_request,
+            instance,
+            method,
+            source,
+            revision,
+        } => {
+            json!({"kind":"agent_boundary", "action":action, "resource":resource, "request":request,
+                "parent_request":parent_request, "instance":instance, "method_symbol":method, "source_id":source, "revision":revision})
+        }
+        WorkflowEvent::AgentCreated { instance, scope } => {
+            json!({"kind":"agent_created", "instance":instance, "scope":scope})
+        }
+        WorkflowEvent::AgentRequestQueued {
+            instance,
+            request,
+            updating,
+        } => {
+            json!({"kind":"agent_request_queued", "instance":instance, "request":request, "updating":updating})
+        }
+        WorkflowEvent::AgentRequestAdmitted {
+            instance,
+            request,
+            updating,
+            version,
+        } => {
+            json!({"kind":"agent_request_admitted", "instance":instance, "request":request, "updating":updating, "version":version})
+        }
+        WorkflowEvent::AgentRequestSettled {
+            instance,
+            request,
+            committed,
+            version,
+        } => {
+            json!({"kind":"agent_request_settled", "instance":instance, "request":request, "committed":committed, "version":version})
+        }
         WorkflowEvent::TaskStarted {
             scope,
             task,
@@ -716,6 +762,8 @@ fn host_request_kind_name(kind: etas_host::HostRequestKind) -> &'static str {
         etas_host::HostRequestKind::Tls => "tls",
         etas_host::HostRequestKind::Filesystem => "filesystem",
         etas_host::HostRequestKind::Secret => "secret",
+        etas_host::HostRequestKind::Random => "random",
+        etas_host::HostRequestKind::Clock => "clock",
         etas_host::HostRequestKind::Browser => "browser",
         etas_host::HostRequestKind::Command => "command",
         etas_host::HostRequestKind::Policy => "policy",
@@ -762,18 +810,19 @@ pub(super) fn checkpoint_json(
         }).collect::<Vec<_>>(),
         "completed_host_boundaries": [],
     }));
+    let mut budget = snapshot::EncodingBudget::default();
     for boundary in &checkpoint.completed_host_boundaries.completed {
         let mut row = JsonDocument::from(json!({
             "occurrence": boundary_occurrence_json(&boundary.occurrence),
             "kind":boundary.kind,"key":boundary.key.to_hex(),"result":null,
         }));
-        row["result"] = completed_host_boundary_result_json(&boundary.result)?.into_value();
+        row["result"] =
+            completed_host_boundary_result_json(&boundary.result, &mut budget)?.into_value();
         artifact["completed_host_boundaries"]
             .as_array_mut()
             .ok_or_else(|| InterpreterCodecError::new("checkpoint boundary array is missing"))?
             .push(row.into_value());
     }
-    let mut budget = snapshot::EncodingBudget::default();
     artifact.value_mut()["args"] = Value::Array(
         checkpoint
             .args
@@ -857,9 +906,17 @@ fn execution_progress_from_json(
 
 fn completed_host_boundary_result_json(
     result: &CompletedHostBoundaryResult,
+    budget: &mut snapshot::EncodingBudget,
 ) -> Result<JsonDocument, InterpreterCodecError> {
     let (kind, value) = match result {
-        CompletedHostBoundaryResult::Runtime(value) => ("runtime", value_json(value)?.into_value()),
+        CompletedHostBoundaryResult::Runtime(value) => {
+            let saved = crate::orchestration::ValueSnapshot::capture(value)
+                .map_err(InterpreterCodecError::new)?;
+            (
+                "runtime_snapshot",
+                snapshot::value_json_with_budget(&saved, budget)?,
+            )
+        }
         CompletedHostBoundaryResult::Host(value) => ("host", host_value_json(value)),
     };
     let mut output = JsonDocument::from(json!({"kind":kind,"value":null}));
@@ -870,8 +927,22 @@ fn completed_host_boundary_result_json(
 fn completed_host_boundary_result_from_json(
     limits: &etas_host::StorageLimits,
     value: &Value,
+    validator: &crate::eval::machine::snapshot::SnapshotValidator<'_>,
+    restore: &mut crate::eval::machine::snapshot::RestoreContext,
 ) -> Result<CompletedHostBoundaryResult, InterpreterCodecError> {
     match required_str(value, "kind")? {
+        "runtime_snapshot" => {
+            let saved =
+                value::snapshot_from_json_with_limits(limits, required_obj(value, "value")?)?;
+            validator
+                .snapshot_value(&saved)
+                .map_err(InterpreterCodecError::new)?;
+            Ok(CompletedHostBoundaryResult::Runtime(
+                saved
+                    .restore_with(restore)
+                    .map_err(InterpreterCodecError::new)?,
+            ))
+        }
         "runtime" => Ok(CompletedHostBoundaryResult::Runtime(
             value_from_json_with_limits(limits, required_obj(value, "value")?)?,
         )),

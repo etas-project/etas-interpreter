@@ -6,8 +6,8 @@ use crate::{
 
 pub(in crate::driver) async fn dispatch(
     eval: &mut EvalContext<'_>,
-    host: &dyn HostServices,
-    mut session: PendingSession,
+    _host: &dyn HostServices,
+    session: PendingSession,
 ) -> ControlSignal {
     let key = match eval.session_boundary_key(&session) {
         Ok(key) => key,
@@ -18,19 +18,33 @@ pub(in crate::driver) async fn dispatch(
         Ok(None) => (),
         Err(fault) => return ControlSignal::Fault(Box::new(fault)),
     }
-    if matches!(session.decode, SessionDecode::SourceValue { .. }) {
-        if let Err(error) = super::policy::authorize_before_boundary(
-            eval,
-            host,
+    let checks = if matches!(session.decode, SessionDecode::SourceValue { .. }) {
+        vec![(
             eval.boundary_policy_ref(),
             policy_subject(&session.request.operation),
-        )
-        .await
-        {
-            return eval.session_host_error_signal(session, error);
-        }
-        session.request.authority = eval.host_authority();
-    }
+        )]
+    } else {
+        Vec::new()
+    };
+    let budget = session.request.budget.clone();
+    super::authorization::prepare(
+        eval,
+        crate::control::NativeBoundaryTarget::Session {
+            pending: session,
+            key,
+        },
+        checks,
+        budget,
+    )
+}
+
+pub(in crate::driver) async fn dispatch_authorized(
+    eval: &mut EvalContext<'_>,
+    host: &dyn HostServices,
+    mut session: PendingSession,
+    key: etas_host::replay::ReplayFingerprint,
+) -> ControlSignal {
+    session.request.authority = eval.host_authority();
     if let Err(error) = session.request.budget.check_time() {
         return eval.session_host_error_signal(session, error);
     }
@@ -79,6 +93,11 @@ pub(in crate::driver) async fn dispatch(
 fn policy_subject(operation: &etas_host::SessionOperation) -> etas_host::PolicySubject {
     use etas_host::{HostValue, SessionOperation};
     let (action, operation, session) = match operation {
+        SessionOperation::Lease(lease) => (
+            "Memory.write",
+            lease.qualified_action(),
+            &lease.session().id,
+        ),
         SessionOperation::Resolve { config } => ("Memory.write", "resolve", &config.id),
         SessionOperation::Append { message } => ("Memory.write", "append", &message.session.id),
         SessionOperation::Load { session, .. } => ("Memory.read", "history_page", &session.id),

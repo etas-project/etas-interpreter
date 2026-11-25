@@ -37,6 +37,12 @@ impl<'a> EvalContext<'a> {
         session: &PendingSession,
         result: &etas_host::SessionResult,
     ) -> Result<Option<InterpValue>, String> {
+        if matches!(
+            session.request.operation,
+            etas_host::SessionOperation::Lease(_)
+        ) {
+            return Ok(None);
+        }
         match (&session.decode, result) {
             (
                 SessionDecode::ReturnMessage { message },
@@ -73,6 +79,16 @@ impl<'a> EvalContext<'a> {
         session: PendingSession,
         result: etas_host::SessionResult,
     ) -> ControlSignal {
+        if let etas_host::SessionOperation::Lease(operation) = &session.request.operation
+            && let SessionDecode::SourceValue { result_type } = session.decode
+        {
+            return match self.decode_session_lease_result(operation, result, result_type) {
+                Ok(value) => self.apply_continuation(session.continuation, value),
+                Err(error) => {
+                    self.storage_error_with_continuation(error, session.span, session.continuation)
+                }
+            };
+        }
         match (session.decode, result) {
             (
                 SessionDecode::ResolveThenAppendMessage { message },
@@ -172,6 +188,7 @@ impl<'a> EvalContext<'a> {
         value: Option<&InterpValue>,
     ) {
         match result {
+            etas_host::SessionResult::Lease(_) => {}
             etas_host::SessionResult::Resolved { session, created } => {
                 self.events.push(WorkflowEvent::SessionResolved {
                     session: session.id.clone(),
@@ -220,7 +237,7 @@ impl<'a> EvalContext<'a> {
         if matches!(session.decode, SessionDecode::SourceValue { .. })
             && matches!(
                 session.request.operation,
-                etas_host::SessionOperation::Load { .. }
+                etas_host::SessionOperation::Load { .. } | etas_host::SessionOperation::Lease(_)
             )
         {
             return self.storage_error_with_continuation(error, session.span, session.continuation);

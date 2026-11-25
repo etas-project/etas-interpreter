@@ -22,10 +22,7 @@ pub(crate) struct CheckedRecordField {
 }
 
 impl CheckedRecordField {
-    pub(crate) fn borrow<'a>(
-        &self,
-        value: &'a RecordValue,
-    ) -> Result<&'a InterpValue, &'static str> {
+    pub(crate) fn borrow<'a>(&self, value: &'a RecordValue) -> Result<&'a InterpValue, String> {
         value.borrow_checked_field(self.slot, &self.names[self.slot], self.names.len())
     }
 
@@ -304,7 +301,11 @@ impl RecordLayoutTable {
                         names.sort();
                         Some(Arc::from(names))
                     } else {
-                        shapes.get(ty)?
+                        let state = project
+                            .types
+                            .agent_state_type(&project.type_store, ty)
+                            .map_err(|error| error.to_string())?;
+                        shapes.get(state.unwrap_or(ty))?
                     };
                     let Some(names) = names else {
                         continue;
@@ -391,7 +392,12 @@ impl RecordLayoutTable {
                         table.native_fields.insert(expr, native);
                         continue;
                     }
-                    let Some(names) = shapes.get(*ty)? else {
+                    let state = project
+                        .types
+                        .agent_state_type(&project.type_store, *ty)
+                        .map_err(|error| error.to_string())?;
+                    let receiver = state.unwrap_or(*ty);
+                    let Some(names) = shapes.get(receiver)? else {
                         continue;
                     };
                     let projections = project
@@ -401,7 +407,7 @@ impl RecordLayoutTable {
                         .ok_or("record field has no checked projection fact")?;
                     if projections.len() != 1
                         || projections[0].field != *field
-                        || projections[0].receiver != *ty
+                        || projections[0].receiver != receiver
                     {
                         return Err(format!(
                             "record field `{field}` differs from checked projection fact"
@@ -447,7 +453,11 @@ impl RecordLayoutTable {
                             "value path length differs from checked projection facts".into()
                         );
                     }
-                    let mut current = *ty;
+                    let mut current = project
+                        .types
+                        .agent_state_type(&project.type_store, *ty)
+                        .map_err(|error| error.to_string())?
+                        .unwrap_or(*ty);
                     let mut fields = Vec::with_capacity(partial.remaining.len());
                     for (name, projection) in partial.remaining.iter().zip(projections) {
                         if projection.receiver != current || projection.field != *name {

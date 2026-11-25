@@ -141,7 +141,7 @@ impl EvalContext<'_> {
         captured: Option<&Frame>,
     ) -> Option<InterpValue> {
         match self.checked.hir.exprs[expr].clone() {
-            HirExpr::Literal(literal) => self.eval_literal(expr, &literal).ok(),
+            HirExpr::Literal(literal) => self.eval_literal(expr, &literal, captured).ok(),
             HirExpr::Path(path) => match path.resolution {
                 ResolveResult::Resolved(symbol) => self.resource_symbol(symbol, locals, captured),
                 ResolveResult::PartiallyResolved(partial) => {

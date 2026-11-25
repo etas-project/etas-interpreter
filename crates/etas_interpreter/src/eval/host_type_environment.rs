@@ -1,4 +1,4 @@
-use etas_types::TypeId;
+use etas_types::{TypeId, TypeStore, TypeSubstitutionEngine, ty::CanonicalTypeParameterIdentity};
 use std::collections::HashMap;
 
 #[cfg(test)]
@@ -8,6 +8,7 @@ mod tests;
 pub(super) struct HostTypeEnvironment<'a> {
     parent: Option<&'a HostTypeEnvironment<'a>>,
     bindings: HashMap<String, TypeId>,
+    parameters: HashMap<CanonicalTypeParameterIdentity, TypeId>,
     enum_layouts: Option<&'a HashMap<TypeId, etas_types::EnumLayoutFact>>,
     json_value: Option<TypeId>,
     pub(super) source_map: Option<TypeId>,
@@ -41,31 +42,51 @@ impl<'a> HostTypeEnvironment<'a> {
         ty: TypeId,
         store: &etas_types::TypeStore,
     ) -> Result<TypeId, String> {
-        let Some(parent) = self.parent else {
+        if self.parent.is_none() {
             return Ok(ty);
-        };
-        let mut bindings = HashMap::new();
-        for (name, arg) in &self.bindings {
-            bindings.insert(name.clone(), parent.concrete_type(*arg, store)?);
         }
-        etas_types::substitute_named_params_in_store(store, ty, &bindings).map_err(|error| {
-            format!("host ABI type was not materialized by the checked pipeline: {error}")
-        })
+        TypeSubstitutionEngine::existing(store, &self.bindings)
+            .with_canonical_parameters(&self.parameters)
+            .substitute(ty)
+            .map_err(|error| {
+                format!("host ABI type was not materialized by the checked pipeline: {error}")
+            })
     }
-    pub(super) fn applied(parent: &'a Self, names: &[String], args: &[TypeId]) -> Self {
-        Self {
+    pub(super) fn applied(
+        parent: &'a Self,
+        store: &TypeStore,
+        owner: TypeId,
+        names: &[String],
+        args: &[TypeId],
+    ) -> Result<Self, String> {
+        let args = args
+            .iter()
+            .map(|arg| parent.concrete_type(*arg, store))
+            .collect::<Result<Vec<_>, _>>()?;
+        let parameters = etas_types::ty::canonical_parameters_for_application(store, owner, &args)
+            .map_err(|error| error.to_string())?;
+        Ok(Self {
             parent: Some(parent),
-            bindings: names.iter().cloned().zip(args.iter().copied()).collect(),
+            bindings: names.iter().cloned().zip(args).collect(),
+            parameters,
             enum_layouts: parent.enum_layouts,
             json_value: parent.json_value,
             source_map: parent.source_map,
-        }
+        })
     }
 
-    pub(super) fn lookup(&self, name: &str) -> Option<(TypeId, &Self)> {
+    pub(super) fn lookup(
+        &self,
+        name: &str,
+        identity: Option<&CanonicalTypeParameterIdentity>,
+    ) -> Option<(TypeId, &Self)> {
         let mut frame = self;
         while let Some(parent) = frame.parent {
-            if let Some(ty) = frame.bindings.get(name) {
+            let binding = match identity {
+                Some(identity) => frame.parameters.get(identity),
+                None => frame.bindings.get(name),
+            };
+            if let Some(ty) = binding {
                 // An argument is interpreted in the caller's scope, never in
                 // the scope of the parameter to which it has just been bound.
                 return Some((*ty, parent));

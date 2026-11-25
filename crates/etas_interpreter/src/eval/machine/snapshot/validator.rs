@@ -895,6 +895,7 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 self.frame(frame, context)
             }
+            ContinuationSnapshot::CompleteRecordConstruction { .. } => Ok(()),
             ContinuationSnapshot::Unary { .. }
             | ContinuationSnapshot::PromptValueMethodArg { .. }
             | ContinuationSnapshot::Return
@@ -1099,46 +1100,12 @@ impl<'a> SnapshotValidator<'a> {
             ContinuationSnapshot::RestoreModelPolicy { .. }
             | ContinuationSnapshot::HandlerDispatch { deferred: None, .. }
             | ContinuationSnapshot::ScopedModelPolicy { .. } => Ok(()),
-            ContinuationSnapshot::LoopLimit { stmt, frame } => {
-                let limits = match self.checked.hir.stmts.get(*stmt) {
-                    Some(
-                        etas_hir::HirStmt::For { limits, .. }
-                        | etas_hir::HirStmt::While { limits, .. },
-                    ) => limits,
-                    _ => return Err(format!("{context} has an invalid loop budget statement")),
-                };
-                let has_iterations = limits.iter().any(|expr| {
-                    let Some(etas_hir::HirExpr::Call { callee, args, .. }) =
-                        self.checked.hir.exprs.get(*expr)
-                    else {
-                        return false;
-                    };
-                    let Some(etas_hir::HirExpr::Path(path)) = self.checked.hir.exprs.get(*callee)
-                    else {
-                        return false;
-                    };
-                    let ResolveResult::Resolved(symbol) = path.resolution else {
-                        return false;
-                    };
-                    args.len() == 1
-                        && etas_types::facts::enums::standard_limit_constructor(
-                            &self.checked.hir,
-                            &self.checked.std_registry,
-                            symbol,
-                        ) == Some(etas_std::StdLimitKind::Iterations)
-                });
-                if !has_iterations {
-                    return Err(format!("{context} has no checked Iterations budget"));
-                }
-                self.frame(frame, context)
-            }
             ContinuationSnapshot::ForLoop {
                 pat,
                 source,
                 text_cursor,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 frame,
                 ..
@@ -1147,10 +1114,6 @@ impl<'a> SnapshotValidator<'a> {
                 self.block(*body, context)?;
                 for symbol in loop_scope {
                     self.symbol(*symbol, context)?;
-                }
-                self.index_at_most(*next_index, *iterations, context)?;
-                if *iterations == 0 {
-                    return Err(format!("{context} has an invalid for-loop iteration limit"));
                 }
                 if let Some(source) = source {
                     self.iteration_source(source, text_cursor.as_ref(), *next_index, context)?;
@@ -1168,7 +1131,6 @@ impl<'a> SnapshotValidator<'a> {
                 awaiting_step,
                 next_index,
                 body,
-                iterations,
                 loop_scope,
                 frame,
                 span,
@@ -1187,10 +1149,6 @@ impl<'a> SnapshotValidator<'a> {
                     None,
                 )?
                 .ok_or("checkpoint source loop has no checked iterator protocol")?;
-                self.index_at_most(*next_index, *iterations, context)?;
-                if *iterations == 0 || (*awaiting_step && *next_index >= *iterations) {
-                    return Err(format!("{context} has invalid source iterator progress"));
-                }
                 for symbol in loop_scope {
                     self.symbol(*symbol, context)?;
                 }
@@ -1214,15 +1172,12 @@ impl<'a> SnapshotValidator<'a> {
             }
             ContinuationSnapshot::RetryAttempt {
                 body,
-                attempts,
-                next_attempt,
                 block,
                 next_stmt_index,
                 frame,
                 ..
             } => {
                 self.block(*body, context)?;
-                self.index_at_most(*next_attempt, *attempts, context)?;
                 self.statement_index(*block, *next_stmt_index, context)?;
                 self.frame(frame, context)
             }
@@ -1278,7 +1233,7 @@ impl<'a> SnapshotValidator<'a> {
         }
     }
 
-    fn snapshot_value(&self, root: &ValueSnapshot) -> Result<(), String> {
+    pub(crate) fn snapshot_value(&self, root: &ValueSnapshot) -> Result<(), String> {
         self.snapshot_value_in(root, call_target::ReferenceScope::NoCheckedSlot)
     }
 
@@ -1411,6 +1366,9 @@ impl<'a> SnapshotValidator<'a> {
                 }
                 ValueSnapshot::ResourceHandle { ty, .. } => {
                     self.type_id(*ty, "checkpoint resource handle type")?
+                }
+                ValueSnapshot::ClockDomain { ty, domain } => {
+                    crate::value::host_handle::validate_clock_domain(self.checked, *ty, domain)?;
                 }
                 ValueSnapshot::MemoryStore {
                     key_type,

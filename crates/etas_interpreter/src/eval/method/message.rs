@@ -78,7 +78,7 @@ impl<'a> EvalContext<'a> {
             created_at,
             payload: payload.clone().into(),
             provenance: Some(crate::value::ProvenanceValue {
-                trace_id: Some(format!("{:?}", self.host_context.trace.trace_id)),
+                trace_id: Some(format!("{:?}", self.task.host_trace().trace_id)),
                 source: Some("Message.new".to_owned()),
             }),
         };

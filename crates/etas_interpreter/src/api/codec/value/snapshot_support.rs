@@ -6,6 +6,10 @@ pub(super) fn decode(
     value: &Value,
 ) -> Result<ValueSnapshot, InterpreterCodecError> {
     match required_str(value, "kind")? {
+        "clock_domain" => Ok(ValueSnapshot::ClockDomain {
+            ty: TypeId(required_u32(value, "ty")?),
+            domain: required_str(value, "domain")?.into(),
+        }),
         "task_runtime" => serde_json::from_value(required_obj(value, "value")?.clone())
             .map(ValueSnapshot::TaskRuntime)
             .map_err(|error| {

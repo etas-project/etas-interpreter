@@ -271,6 +271,13 @@ The interpreter uses those facts to select std intrinsic descriptors, host
 requests, handlers, and dispatch entries. It must not fall back to string-name
 matching such as "if the value looks like a stream, allow it".
 
+Runtime substitution resolves generic result types against the checked type
+store through an immutable `TypeLookupIndex`. `PreparedProgram` initializes the
+index once and shares it across callable roots. Result construction and `try`
+reuse the index rather than scanning the type store on each evaluation. A
+specialized type must already exist in the checked store; lookup does not
+materialize new runtime types.
+
 ### 3.1 Controlled Invocation API
 
 `RunInvocation<'a>` owns one invocation and its single-use execution right. It
@@ -279,6 +286,9 @@ or the resume input reference. It is neither cloneable nor a second evaluator.
 Construction establishes ownership but does not plan, evaluate source, dispatch
 Host work, or spawn a background task. `execute(self)` drives planning/readiness
 or restore validation and then the same checked-HIR execution machinery.
+Its returned future keeps invocation state on the heap, so composing several
+runs with `tokio::join!` does not embed multiple interpreter-sized state machines
+in the caller's stack frame.
 
 ```rust
 let run = interpreter.create_run(project, entry, args, host, options);
@@ -455,6 +465,29 @@ Each sequential execution branch runs on one heap-backed `EvalMachine` for its
 complete lifetime. Rust calls may implement one bounded machine transition,
 but Etas flow, lambda, spec-method, agent, and source-tool calls must never form
 a recursively nested Rust evaluator call chain.
+
+Structural value equality uses the same machine boundary when it reaches a
+source standard collection. Its owned comparison continuation retains the
+outer record/sequence traversal while a pure pending call executes the owning
+Etas `__value_eq` method. Map and set policies, and queue/deque/slice logical
+sequence comparison, stay in Etas; the value walker never compares their
+private storage layouts. These methods are fixed private compiler contracts,
+not user overloads of `==`. Their canonical headers and internal visibility
+travel with the SDK, and type dependency edges retain their executable bodies.
+The native invocation worklist observes concrete types reached by layout
+materialization and prepares these implicit calls alongside ordinary method
+calls. Implementation owner arguments retain their checked binder identities
+across SDK projections, separately from a method's own signature generics.
+Like an in-progress pure ordered comparison, this continuation cannot cross a
+checkpoint boundary.
+
+Language array slicing constructs the checked source `Slice<T>` view with an
+array backing, start offset and length. Slicing a view retains that backing and
+adjusts its bounds. Array updates use the existing value-semantic backing, so
+retained views observe their original snapshot. The checked output type is
+specialized using the current frame, including after a suspended bound resumes.
+Sequence bounds failures use the same typed `IndexError` action as indexing;
+ordinary access, iteration and logical comparison remain Etas methods.
 
 The machine owns an explicit stack:
 
@@ -943,6 +976,52 @@ bound expires, retain pending ownership; do not pretend an uninterruptible
 thread or remote request was killed. The embedding caller must keep the Host
 supervisor alive while pending operations are being observed.
 
+Scheduled task completion also waits for its native execution scope to join.
+Finishing the language body closes body admission once; a pending native
+resource keeps the result private until the Host reactor commits termination.
+That wait releases the language concurrency slot. Memory-selector guards are
+released after the last language/Host operation, before joining owned children,
+so a child needing the same selector can finish. The native resource owner
+remains retained independently. A typed primary error survives cleanup and
+cancellation, and the completed task retains its native cleanup report.
+Checkpoint capture drains these native waits; restored terminal tasks derive
+their finished-body state from the checked terminal snapshot.
+
+The public `std.resource.scope` flow implements error conversion in Etas. Its
+private `Scope.enter` execution role establishes the native owner and returns a
+source-declared `ScopeReport<R>` containing the body value and redacted cleanup
+failures. The Etas body raises `ResourceError.CleanupFailed` on a normally
+completed body with cleanup failures. The VM preserves an existing typed error,
+failure or cancellation rather than replacing it with that report.
+The static summary preserves the same value relation: the report's `value`
+field carries the checked callback return, represented by its scoped
+`CallResult` projection. Returning a function therefore preserves its actual
+code and capture provenance instead of deriving behavior from an arrow type.
+
+The checked interface retains resource-boundary callback slots separately from
+the promise to drain task work. Source forwarding propagates the former only
+when the callback itself is passed as a resource boundary body. A callback
+invoked inside such a body may have its result consumed before owner exit and
+does not acquire that returned-value escape obligation. Package metadata and
+import relocation preserve both contracts using checked item or method
+identities. Identifying that boundary is not a substitute for proving the
+returned resource origins.
+
+Descendants inherit the nearest explicit resource owner for native registration.
+The scope body waits for its language children before closing native admission;
+that wait releases its language slot and Memory selectors. Successful native
+acquisitions release in reverse registration order after child work settles.
+Cancelling an acquisition's task does not prematurely release a resource owned
+by an enclosing explicit scope. Explicit close still invalidates all aliases
+and wakes the resource supervisor immediately.
+
+The report is materialized before publishing the terminal task value, waking
+waiters or taking a completed-task checkpoint. Active explicit resource scopes
+currently reject checkpoint capture; restoring their live ownership graph is
+not implemented. Compile-time resource escape summaries, implicit cleanup
+action/effect accounting, and filesystem-stream ownership also remain required
+before the complete resource contract is accepted.
+
 Deny-by-default behavior is required. If a reachable host boundary lacks a
 checked action fact, active explicit handler, standard host service, action
 grant, active trace-spec allowance, sandbox approval, or budget, the interpreter
@@ -1007,27 +1086,157 @@ host authority into a single opaque runtime call.
 
 ## 12. Agent Execution
 
-An `agent` declaration is one model-inference boundary. Its body is the
-prompt/context harness and must have checked result type `Prompt`.
+An `agent A = { fields };` declaration defines an instance with private state
+and a mailbox. Ordinary `impl A` methods carry checked receiver modes and call
+identities. An external method call submits a request and suspends its caller.
+Aliases and bound methods retain the same instance identity. Model inference
+remains an explicit operation in ordinary source methods and flows.
 
-Calling an agent:
+The scheduler admits read requests with a snapshot of committed state and
+serializes updating requests. An updating turn retains its pending state across
+awaits. Normal completion, including an `Err` value, commits before replying;
+escaping errors, cancellation and outer Handler finish discard pending state.
 
-```text
-Writer.ask(input)
-input ~> Writer
-```
+A request retains the caller's dynamic Handlers and live budget accounts.
+Receiver authority restrictions are conjoined with caller authority. Approval
+grants belong to that request. When a lexical owner executes a delegated Handler
+arm, it borrows the request's Host context: grants, account handles, trace,
+execution scope, native operation counter and resource owner. Native operations
+and new language children therefore remain in the originating request's lifetime
+tree while the lexical machine retains its variables and continuation identity.
+Asynchronous Host replies commit under the context that issued them.
 
-executes:
+Invocation bounds are separate from model configuration. Requests retain the
+caller's and receiver's locked model constraints, output-token bounds and tool
+round limits; these are reapplied after declaration annotations and before
+inference/step dispatch. Receiver and caller model budgets constrain their
+existing live accounts, including time already spent before construction, and
+views sharing an account are charged once. Model/tool policy references are
+checked independently for each retained policy context. Tool schemas and model
+sampling preferences remain configuration; tool execution authority is checked
+through the conjoined authority contexts.
 
-```text
-evaluate agent body/context harness -> Prompt
-Prompt + model config + tools + authority -> ModelRequest
-HostServices::model(request) -> ModelResponse
-decode/validate response -> declared output type
-```
+Cancelling a request cancels its native operations and owned children. A
+delegated arm whose lexical owner remains alive is abandoned by restoring the
+original Handler boundary, suspended frames and scheduler wait. This restoration
+also runs before task/scope wakeups propagate a child cancellation. Native
+supervisors still settle evidence and release resources before the request
+publishes completion; unrelated requests and the lexical owner can continue.
+The restored wait carries a `RestoreHandlerWait` machine input, which must be
+consumed before driving that wait. Other pending inputs do not waive the root's
+structured wait, including a returned scope owner waiting for its children.
+Checkpoint draining retains a completed body's language-child join instead of
+waiting for it while the barrier pauses those same children. Actual native work
+still drains before capture; the saved `WaitingChildren` outcome is published
+only after the restored descendants finish.
 
-Multi-step orchestration, approval gates, persistent memory writes, and
-post-output validation remain ordinary `flow` code around the agent call.
+Callable model-budget annotations enter the body through its existing scoped
+model-policy continuation. The policy is retained across suspension and portable
+checkpoint restore and is restored when the invocation exits. Nested token bounds
+take the smaller ceiling, and Agent requests capture the resulting caller policy.
+
+The installed SDK examples `active_counter.es`, `active_counter_suspend.es` and
+`active_request_context.es` exercise mailbox state and request isolation at O0
+and O3. Managed `Agentic.create<A>` and `Agentic.call<A.method>` use checked
+origins rather than a source action payload ABI. Creation is authorized before
+field evaluation; a method request receives the conjoined caller/receiver
+context and is authorized before mailbox admission. Both boundaries use the
+same residual attempt/outcome monitor as ordinary actions, with construction
+completing only after successful field initialization. Their trace events carry
+the checked source, method symbol, optional code revision and actual request and
+instance identities. These local symbols are not portable method descriptors.
+The CLI executes checked source contracts with static proof and residual
+monitors. It additionally installs their facts as Host policy when a policy
+adapter is explicitly configured; source declarations alone do not select an
+unknown external policy provider. Explicit boundary policy references retain
+their configured enforcement in both run and resume.
+
+Source constructor injection elaborates omitted fields into ordinary checked
+action requests. Explicit fields execute once in source order, then omitted
+providers execute once in declaration order. Solved generic selector types are
+retained in checked facts and used by ordinary Handler matching. The examples
+`active_injection.es` and `active_initialization.es` exercise stored injected
+values, generic aliases, repeated providers and construction interrupted by
+Handler finish.
+
+Authorized construction reserves instance identity, mailbox and an owned native
+execution scope before evaluating any fields. Its publication continuation owns
+the initialization guard; no request can use the instance before its state is
+published. New nested instances attach to that lifetime, including children
+created by a provider or by language tasks running during initialization. Passing
+an existing Agent reference does not change that reference's owner. Abandoning
+the final constructor continuation closes the unfinished scope and its fresh
+descendants. Scope owners stop their instances and wait for active requests;
+scheduler cleanup settles cancelled native work before reporting completion.
+Handler loans retain the issuing task's cancellation identity independently of
+the initialization scope used for native ownership.
+
+Ordinary named records keep a construction guard for newly created Agents. The
+guard is an ownership ledger, not another native execution scope: successfully
+returned file/network resources keep their existing native owner. Fresh Agents
+created through a provider or helper task use the constructor's enclosing owner;
+passing an existing reference does not register it as a fresh child. Completing
+the record publishes its children; abandoning construction stops its fresh
+instances. Record-only Handler context records construction identity separately
+from Host authority, cancellation and live account loans.
+
+Empty construction guards remain checkpointable. The shared snapshot graph
+retains guard identity, owning task scope and delegated record contexts. Restore
+rebuilds their native owner links and task inheritance before executing fields.
+The checkpoint protocol advances to v127 for these fields. A guard already owning
+a live Agent remains subject to the existing live-Agent capture restriction.
+`record_initialization.es` and `record_initialization_checkpoint.es` cover helper
+tasks, borrowed references, interrupted construction and provider resume.
+
+An Agent reference has a physical run/instance identity and a presenting checked
+program/type. A frozen revision type bridge projects only the presentation;
+source-library generic flows carry the same instance instead of decoding it as
+a nominal record. The bridge checks the source program and type, and mailbox
+admission checks the receiver's defining program and canonical presentation.
+Instance state and lifetime remain in the original scheduler. These process-local
+views are not checkpoint descriptors; live Agent capture remains unsupported.
+Native continuation contracts validate the reference's presenting program and
+type. Generic library code does not need the defining program's complete Active
+evidence table to transport an already sealed instance handle. Invocation still
+requires canonical receiver identity and its original scheduler ownership.
+
+Foreign constructor contracts retain declaration order, lexical generic parameters
+and the resolved provider action/selector in checked public metadata. Imported
+omitted fields elaborate into the same ordinary perform expressions as local
+fields. Generic record defaults execute without loading foreign source bodies;
+Agent methods still use the locked source overlay.
+
+An empty-state type with an explicitly public receiver method `run` can be a
+pipeline stage. HIR elaborates each type stage into a closure whose body constructs
+the receiver and invokes its ordinary method. Construction happens on every
+invocation, including repeated invocations of a composed pipeline. Imported types
+use their checked constructor/type and public method contracts for this adapter;
+there is no singleton receiver or generated `run` implementation. Agent creation,
+mailbox requests and method effects retain their normal checked execution paths.
+
+The full initialization escape rules remain unfinished. `Autonomous.main`, erased
+member-tool roles and SessionLease also remain separate unfinished parts of the
+stateful Agent implementation. Managed authorization now uses the Host reactor for each policy
+and approval response. The bound request remains outside the executable ready
+queue and the mailbox until authorization completes; approvals remain in that
+request's ledger. A cancelled or abandoned admission settles its native work
+without executing the method. Console, Command, Memory, Host, Model, Tool, Session
+and ordinary Compiler boundaries now use the same policy cursor through reactor
+waits. Prepared request payloads and original continuations survive these waits;
+only the authorization driver can produce the control that admits the native
+body. Actual dispatch refreshes authority after approval. Multi-permission Host
+operations complete every policy check before dispatch. Cancellation settles the
+policy/approval operation without running the abandoned native body.
+
+The nested compiler execution helper still drives authorization inline. Some
+memory paging, session and storage commit bodies also await their actual I/O
+inline; migrating authorization does not make those bodies independently
+scheduled. Live authorization controls are not checkpoint wire values. Ordinary
+completed native boundaries retain their existing replay and checkpoint protocol.
+Compiler resource scheduling recognizes managed create/call as mailbox-owned
+coordination; their transitive Host actions retain their ordinary resource rules. Checkpoint capture of live Agent
+instances remains unsupported; ordinary language tasks waiting for owned children
+preserve their pending body outcome in the checkpoint.
 
 ## 13. Typed Persistent Memory
 

@@ -212,7 +212,7 @@ async fn priority_queue_comparison_consumes_execution_fuel() {
         r#"
 module app.main;
 import std.runtime.limits.Iterations;
-flow compare(a: i32, b: i32) -> i32 ![] { while true limit Iterations(10000000) {} return 0; }
+flow compare(a: i32, b: i32) -> i32 ![] { while true {} return 0; }
 flow main() -> unit {
     let queue = PriorityQueue.new<string, i32>(compare).push("a", 1).push("b", 2);
     return;
@@ -382,7 +382,7 @@ async fn priority_queue_comparison_yields_to_cancellation_on_current_thread() {
         r#"
 module app.main;
 import std.runtime.limits.Iterations;
-flow compare(a: i32, b: i32) -> i32 ![] { while true limit Iterations(10000000) {} return 0; }
+flow compare(a: i32, b: i32) -> i32 ![] { while true {} return 0; }
 flow main() -> unit {
     let queue = PriorityQueue.new<string, i32>(compare).push("a", 1).push("b", 2);
     return;

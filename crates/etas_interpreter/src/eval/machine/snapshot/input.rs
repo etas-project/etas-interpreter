@@ -205,6 +205,16 @@ impl ControlSignalSnapshot {
                 continuation: context.continuation(&pending.continuation)?,
             },
             ControlSignal::Task(pending) => Self::Task(match &**pending {
+                PendingTaskControl::AgentReply { .. }
+                | PendingTaskControl::ManagedAgent(_)
+                | PendingTaskControl::ManagedAuthorization(_)
+                | PendingTaskControl::NativeAuthorization(_)
+                | PendingTaskControl::AuthorizedNative(_)
+                | PendingTaskControl::RestoreHandlerWait { .. } => {
+                    return Err(
+                        "checkpoint capture of live request authorization is not supported".into(),
+                    );
+                }
                 PendingTaskControl::NextCompletion {
                     scope,
                     result_type,

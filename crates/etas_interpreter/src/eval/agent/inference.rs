@@ -233,6 +233,7 @@ impl EvalContext<'_> {
         let mut trace_plan = Vec::new();
         if let Err(fault) = self.apply_agent_annotations(
             item,
+            fact.owner,
             &mut model_policy,
             &mut native_tools,
             &mut trace_plan,
@@ -248,6 +249,9 @@ impl EvalContext<'_> {
         }
 
         let decode = self.agent_model_decode(output_type);
+        if let Err(fault) = self.constrain_model_policy(&mut model_policy, span) {
+            return ControlSignal::Fault(Box::new(fault));
+        }
         let response_schema = match decode {
             ModelDecode::Typed(expected) => {
                 let schema = match self.host_schema_for_type(expected, span, 0) {

@@ -74,6 +74,10 @@ impl<'a> EvalContext<'a> {
     ) -> ControlSignal {
         if let etas_hir::HirFlowBody::Runtime { role, span } = flow.body {
             return match role {
+                etas_std::StdExecutionRole::ComparatorCapture
+                | etas_std::StdExecutionRole::ComparatorSame => {
+                    self.execute_comparator_identity(item, role, args, span)
+                }
                 etas_std::StdExecutionRole::PayloadConvert => {
                     self.execute_payload_conversion(item, args, &bindings, span)
                 }
@@ -100,6 +104,12 @@ impl<'a> EvalContext<'a> {
                 etas_std::StdExecutionRole::ScopeEnter => {
                     self.execute_runtime_scope(item, args.to_vec(), &bindings, None, span)
                 }
+                etas_std::StdExecutionRole::ResourceScope => {
+                    self.execute_resource_scope(item, args.to_vec(), &bindings, None, span)
+                }
+                etas_std::StdExecutionRole::ReadScopeEnter => {
+                    self.enter_stream_read_scope(item, args, span)
+                }
                 etas_std::StdExecutionRole::Abort => match args {
                     [InterpValue::String(message)] => {
                         ControlSignal::execution_aborted(message.to_string(), span)
@@ -121,12 +131,20 @@ impl<'a> EvalContext<'a> {
                 etas_std::StdExecutionRole::CaptureData => {
                     self.execute_data_capture(item, args, &bindings, span)
                 }
+                etas_std::StdExecutionRole::CaptureStorage
+                | etas_std::StdExecutionRole::RestoreStorage
+                | etas_std::StdExecutionRole::StorageSchema => {
+                    self.execute_storage_transfer(item, role, args, &bindings, span)
+                }
                 etas_std::StdExecutionRole::Requeue | etas_std::StdExecutionRole::Park => {
                     self.execute_runtime_transfer(item, role, args.to_vec(), &bindings, span)
                 }
             };
         }
-        if (flow.receiver_mode == etas_hir::HirReceiverMode::Updating) != update.is_some()
+        let active_receiver = matches!(args.first(), Some(InterpValue::Agent(reference))
+            if self.task.agent_turn.as_ref().is_some_and(|turn| turn.reference == *reference));
+        if !active_receiver
+            && (flow.receiver_mode == etas_hir::HirReceiverMode::Updating) != update.is_some()
             || update.as_ref().is_some_and(|outcome| outcome.slot != 0)
         {
             return ControlSignal::missing_checked_fact(
@@ -143,7 +161,12 @@ impl<'a> EvalContext<'a> {
         }
         let Some(body) = self.item_primary_block(item) else {
             return ControlSignal::missing_checked_fact(
-                "flow body block is missing from checked HIR",
+                format!(
+                    "flow body block is missing from checked HIR: item {item:?}, declaration {:?}, body {:?}, root {:?}",
+                    self.checked.hir.declaration_path(flow.symbol),
+                    flow.body,
+                    self.plan.root
+                ),
                 flow.span,
             );
         };
@@ -190,6 +213,7 @@ impl<'a> EvalContext<'a> {
     pub(crate) fn prepare_source_tool_call(
         &mut self,
         item: HirItemId,
+        receiver: Option<InterpValue>,
         args: HostValue,
         span: Span,
     ) -> Result<(CallTarget, Vec<InterpValue>), ExecutionFault> {
@@ -216,8 +240,17 @@ impl<'a> EvalContext<'a> {
                 "bodyless external tool requires a configured host tool adapter",
             ));
         };
-        let values = self.decode_source_tool_args(tool, &signature.params, args, span)?;
-        Ok((CallTarget::ToolItem(item), values))
+        let start = usize::from(receiver.is_some());
+        let values = self.decode_source_tool_args(
+            &tool.params[start..],
+            &signature.params[start..],
+            args,
+            span,
+        )?;
+        Ok((
+            CallTarget::ToolItem(item),
+            receiver.into_iter().chain(values).collect(),
+        ))
     }
 
     pub(crate) fn execute_source_tool_call(
@@ -285,12 +318,12 @@ impl<'a> EvalContext<'a> {
 
     fn decode_source_tool_args(
         &mut self,
-        tool: &etas_hir::HirToolDecl,
+        params: &[etas_hir::SymbolId],
         input_types: &[etas_types::TypeId],
         args: HostValue,
         span: Span,
     ) -> Result<Vec<InterpValue>, ExecutionFault> {
-        if tool.params.len() != input_types.len() {
+        if params.len() != input_types.len() {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
@@ -303,7 +336,7 @@ impl<'a> EvalContext<'a> {
                 .into_iter()
                 .map(|(name, value)| (name, HostValue::Json(value)))
                 .collect(),
-            HostValue::Unit if tool.params.is_empty() => Vec::new(),
+            HostValue::Unit if params.is_empty() => Vec::new(),
             other => {
                 return Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::InvalidArguments,
@@ -312,9 +345,7 @@ impl<'a> EvalContext<'a> {
                 ));
             }
         };
-        tool.params
-            .iter()
-            .zip(input_types.iter().copied())
+        params.iter().zip(input_types.iter().copied())
             .map(|(param, ty)| {
                 let Some(param_symbol) = self.checked.hir.symbols.get(*param) else {
                     return Err(ExecutionFault::new(

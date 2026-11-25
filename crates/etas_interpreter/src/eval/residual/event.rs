@@ -32,15 +32,34 @@ impl EvalContext<'_> {
         if perform.error_type.is_some() || perform.residual.is_some() {
             return Ok(());
         }
-        let span = perform.span;
+        perform.residual = self.observe_residual_action(
+            perform.checked_action.as_ref(),
+            &mut perform.continuation,
+            perform.span,
+            &format!(
+                "{}.{}",
+                crate::eval::path_name(&perform.action),
+                perform.action.action
+            ),
+        )?;
+        Ok(())
+    }
+
+    pub(crate) fn observe_residual_action(
+        &mut self,
+        proof: Option<&crate::control::CheckedActionInvocation>,
+        continuation: &mut Continuation,
+        span: Span,
+        name: &str,
+    ) -> Result<Option<ResidualAttemptTag>, ExecutionFault> {
         let mut captured = Vec::new();
-        perform.continuation.residual_scopes(&mut captured);
+        continuation.residual_scopes(&mut captured);
         let mirror = self.task.residual.mirror.clone();
         let mirror = mirror.borrow();
         if captured.is_empty() && !mirror.has_scopes() {
-            return Ok(());
+            return Ok(None);
         }
-        let Some(mut proof) = perform.checked_action.clone() else {
+        let Some(mut proof) = proof.cloned() else {
             return Err(violation(
                 span,
                 "governed action has no checked invocation for residual observation",
@@ -124,9 +143,7 @@ impl EvalContext<'_> {
                     return Err(violation(
                         span,
                         format!(
-                            "trace spec residual check rejected action `{}.{}` before dispatch",
-                            crate::eval::path_name(&perform.action),
-                            perform.action.action
+                            "trace spec residual check rejected action `{name}` before dispatch"
                         ),
                     ));
                 }
@@ -134,9 +151,7 @@ impl EvalContext<'_> {
                     return Err(violation(
                         span,
                         format!(
-                            "trace spec residual check for action `{}.{}` requires prior evidence that is still pending",
-                            crate::eval::path_name(&perform.action),
-                            perform.action.action
+                            "trace spec residual check for action `{name}` requires prior evidence that is still pending"
                         ),
                     ));
                 }
@@ -160,12 +175,11 @@ impl EvalContext<'_> {
             &proof.effect,
         );
         let tag = ResidualAttemptTag::new(id, cursor, observed, decision);
-        perform.residual = Some(tag.clone());
-        perform.continuation = compose_continuation(
-            Continuation::ResidualOutcome(tag),
-            std::mem::replace(&mut perform.continuation, Continuation::BlockValue),
+        *continuation = compose_continuation(
+            Continuation::ResidualOutcome(tag.clone()),
+            std::mem::replace(continuation, Continuation::BlockValue),
         );
-        Ok(())
+        Ok(Some(tag))
     }
 
     /// Consumes the single-dispatch permit of an observed action immediately

@@ -107,6 +107,22 @@ pub trait HostServices {
         request: SecretRequest,
     ) -> HostFuture<'a, Result<SecretResponse, etas_host::HostError>>;
 
+    fn entropy<'a>(
+        &'a self,
+        operation: etas_host::execution::OperationContext,
+        request: etas_host::EntropyRequest,
+    ) -> HostFuture<'a, Result<etas_host::EntropyResponse, etas_host::HostError>> {
+        Box::pin(async move { etas_host::random::entropy(request, &operation).await })
+    }
+
+    fn clock<'a>(
+        &'a self,
+        operation: etas_host::execution::OperationContext,
+        request: etas_host::ClockRequest,
+    ) -> HostFuture<'a, Result<etas_host::ClockResponse, etas_host::HostError>> {
+        Box::pin(async move { etas_host::clock::clock(request, &operation).await })
+    }
+
     fn browser<'a>(
         &'a self,
         operation: etas_host::execution::OperationContext,

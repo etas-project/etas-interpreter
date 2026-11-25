@@ -8,16 +8,18 @@ import std.runtime.limits.Tokens;
 agent Writer(input: string) -> string ![] {
     return perform infer(Prompt.new().user(Public(input)));
 }
+@limits([Tokens(11)])
 flow inner(input: string) -> string {
     checkpoint("inner");
     return Writer(input);
 }
+@limits([Tokens(23)])
 flow outer(input: string) -> string {
-    let result = input ~> inner limit Tokens(11);
+    let result = input ~> inner;
     checkpoint("outer");
     return Writer(result);
 }
-flow main() -> string { return "hello" ~> outer limit Tokens(23); }
+flow main() -> string { return "hello" ~> outer; }
 "#;
 
 fn model_host() -> FakeHost {

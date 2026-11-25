@@ -83,6 +83,14 @@ pub(super) fn callable(p: &Projector<'_>, ty: TypeId, key: &CallableId) -> Resul
                         optional(Some(implementation(p, implementation_ty, owner)?)),
                     ),
                     ("name", V::String(method.name().into())),
+                    (
+                        "overload",
+                        optional(
+                            method
+                                .overload()
+                                .map(|signature| V::String(signature.to_string().into())),
+                        ),
+                    ),
                 ],
             )
         }

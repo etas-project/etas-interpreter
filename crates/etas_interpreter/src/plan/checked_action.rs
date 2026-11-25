@@ -4,6 +4,8 @@ use etas_types::TypeId;
 use crate::value::CheckedExecutionProgram;
 
 mod controller;
+mod managed_agent;
+pub(crate) use managed_agent::managed_agent;
 mod source;
 mod standard;
 pub(crate) use controller::controller_step;

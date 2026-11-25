@@ -7,7 +7,7 @@ module app.main;
 import std.task.{{map_concurrent, run, Scheduler}};
 flow keep<T>(value: T) -> T {{
     var index = 0;
-    while index < 20000 limit Iterations(20000) {{ index = index + 1; }}
+    while index < 20000 {{ index = index + 1; }}
     return value;
 }}
 flow main() -> Array<{output}> {{
@@ -26,7 +26,7 @@ type Counter<T> = { fallback: T, valid: bool };
 impl Counter<T> {
     flow keep(self, value: T) -> T {
         var step = 0;
-        while step < 20000 limit Iterations(20000) { step = step + 1; }
+        while step < 20000 { step = step + 1; }
         if self.valid { return value; }
         return self.fallback;
     }
@@ -53,7 +53,7 @@ flow make<T>(fallback: T) -> ((T) -> T ![]) {{
     return (value: T) => {{
         let snapshot = values;
         var step = 0;
-        while step < 20000 limit Iterations(20000) {{ step = step + 1; }}
+        while step < 20000 {{ step = step + 1; }}
         if config.valid {{ return value; }}
         return config.fallback;
     }};
@@ -93,8 +93,8 @@ fn assert_workers_released() {
 }
 
 async fn assert_map_workers(checked: &etas_frontend::CheckedProject, nested: bool) {
-    let (inline, _) = run_with_cpu_threads(checked, 1).await;
-    let (parallel, telemetry) = run_with_cpu_threads(checked, 4).await;
+    let (inline, _) = run_with_cpu_threads(checked, 1, 0).await;
+    let (parallel, telemetry) = run_with_cpu_threads(checked, 4, 0).await;
     assert!(inline.diagnostics.is_empty(), "{:?}", inline.diagnostics);
     assert!(
         parallel.diagnostics.is_empty(),
@@ -166,7 +166,7 @@ flow main() -> Array<i32> { return run((scheduler: Scheduler) => { return map_co
 "#,
     ));
     input.sources.push(SourceInput { id: SourceId(1), path: None,
-        text: "module dependency.jobs; public flow burn(value: i32) -> i32 { var step = 0; while step < 20000 limit Iterations(20000) { step = step + 1; } return value; }".into(),
+        text: "module dependency.jobs; public flow burn(value: i32) -> i32 { var step = 0; while step < 20000 { step = step + 1; } return value; }".into(),
         kind: SourceKind::DependencySourceOverlay { package: dependency, import_root: "dependency".into() } });
     input
         .environment
@@ -207,6 +207,7 @@ async fn frozen_callable_recipes_keep_the_shared_step_limit() {
         for threads in [1, 4] {
             let mut options = RunOptions::default();
             options.cpu_threads = std::num::NonZeroUsize::new(threads).unwrap();
+            options.cpu_min_work = 0;
             options.execution_limits.max_steps = std::num::NonZeroU64::new(2000);
             let result = Interpreter
                 .run_checked(

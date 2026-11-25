@@ -10,6 +10,7 @@ pub(crate) struct HostCompletionContext {
     handler_floor: usize,
     retries: Vec<RetryAttemptRecord>,
     model_policy: ModelExecutionPolicy,
+    host_context: Option<crate::eval::request_context::AgentHostContext>,
 }
 
 impl HostCompletionContext {
@@ -19,6 +20,7 @@ impl HostCompletionContext {
             handler_floor: ctx.handler_floor,
             retries: ctx.task.retry_stack.clone(),
             model_policy: ctx.task.model_policy.clone(),
+            host_context: ctx.task.capture_agent_host_context(),
         }
     }
 
@@ -27,6 +29,10 @@ impl HostCompletionContext {
         ctx: &mut EvalContext<'_>,
         commit: impl FnOnce(&mut EvalContext<'_>) -> T,
     ) -> T {
+        let _request_context = self
+            .host_context
+            .clone()
+            .map(|context| ctx.task.borrow_agent_host_context(context, None));
         let TaskLocalState {
             retry_stack,
             model_policy,

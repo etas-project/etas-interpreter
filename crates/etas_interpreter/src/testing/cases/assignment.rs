@@ -21,7 +21,7 @@ flow main() -> bool {
     values[same] = 30;
     checkpoint("Range-key-after-update");
     var count = 0;
-    for member in members limit Iterations(4) {
+    for member in members {
         if member != a && member != b && member != open { return false; }
         count = count + 1;
     }
@@ -89,7 +89,7 @@ flow main() -> bool {
     values[same] = 30;
     checkpoint("JSON-key-index");
     var member_count = 0;
-    for member in members limit Iterations(4) {
+    for member in members {
         if member != a && member != b { return false; }
         member_count = member_count + 1;
     }
@@ -266,7 +266,7 @@ flow main() -> bool {
     checkpoint("indexed-map");
     var order = "";
     var original_b = false;
-    for (key, value) in values limit Iterations(8) {
+    for (key, value) in values {
         order = order + key;
         values[key] = [9];
         if key == "a" { values["b"] = [99]; checkpoint("map-cursor"); }

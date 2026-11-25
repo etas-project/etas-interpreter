@@ -12,7 +12,7 @@ import std.io.println;
 import std.runtime.limits.Attempts;
 flow main() -> unit ![Console] {
     handle {
-        retry limit Attempts(3) {
+        retry {
             println("inflight");
         }
     } with {
@@ -54,7 +54,7 @@ flow main() -> unit ![Console] {
 #[tokio::test(flavor = "current_thread")]
 async fn cpu_loop_yields_to_external_stop_without_language_error() {
     let checked = checked_project(
-        "module app.main; import std.runtime.limits.Iterations; flow main() -> unit { while true limit Iterations(1000000) {} }",
+        "module app.main; import std.runtime.limits.Iterations; flow main() -> unit { while true {} }",
     );
     let host = FakeHost::new(HostServiceAvailability::default());
     let invocation = Interpreter.create_run(

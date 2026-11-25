@@ -9,7 +9,7 @@ import std.runtime.{checkpoint};
 import std.runtime.limits.Attempts;
 
 flow main() -> unit {
-  retry limit Attempts(2) {
+  retry {
     checkpoint("during-retry");
   }
 
@@ -71,7 +71,7 @@ agent Writer(input: string) -> string {
 }
 
 flow main() -> string {
-  retry limit Attempts(2) {
+  retry {
     return Writer.run("draft");
   }
 
@@ -154,7 +154,7 @@ agent Writer(input: string) -> string {
 
 flow helper() -> string {
   var plan = "";
-  retry limit Attempts(2) {
+  retry {
     plan = Writer.run("draft");
   }
   return plan;
@@ -228,7 +228,7 @@ agent Writer(input: string) -> Review {
 
 flow helper() -> Review ![Error<IOError>] {
   var seed = "";
-  retry limit Attempts(2) {
+  retry {
     seed = "ready";
   }
   let review = Writer.run(seed);
@@ -583,7 +583,7 @@ agent Writer(input: string) -> string {
 }
 
 flow main() -> string {
-  retry limit Attempts(2) {
+  retry {
     return Writer.run("draft");
   }
 
@@ -685,7 +685,7 @@ let ProjectMemory =
   );
 
 flow main() -> string ![Memory.write, Error<MemoryConflict>] {
-  retry limit Attempts(2) {
+  retry {
     ProjectMemory.Papers.put("paper-1", "draft");
     return "written";
   }
@@ -767,7 +767,7 @@ let ProjectMemory =
   );
 
 flow main() -> string ![Memory.write, Error<MemoryConflict>] {
-  retry limit Attempts(2) {
+  retry {
     ProjectMemory.Papers.put("paper-1", "draft");
     return "written";
   }

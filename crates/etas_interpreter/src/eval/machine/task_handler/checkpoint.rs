@@ -223,6 +223,24 @@ impl TaskHandlerContinuation {
                 attempts: saved.retries.clone(),
             },
             model_policy: program::capture_model_policy(&saved.model_policy),
+            record_context: saved
+                .record_context
+                .as_ref()
+                .map(|lease| {
+                    let guards = lease
+                        .0
+                        .guards
+                        .iter()
+                        .filter_map(std::rc::Weak::upgrade)
+                        .filter(|guard| guard.is_pending())
+                        .map(|guard| {
+                            guard.checkpoint()?;
+                            Ok((guard.id, guard.task, guard.owner))
+                        })
+                        .collect::<Result<Vec<_>, String>>()?;
+                    Ok::<_, String>((lease.0.source, lease.0.order, guards))
+                })
+                .transpose()?,
             projection: saved.projection.checkpoint(context)?,
             span: saved.span,
         })
@@ -393,6 +411,17 @@ pub(in crate::eval::machine) fn restore(
             handlers: saved.handlers.handlers.clone(),
             retries: saved.retries.attempts.clone(),
             model_policy: program::restore_model_policy(saved.model_policy.clone()),
+            // Live Agent requests are rejected by the scheduler checkpoint
+            // gate; ordinary restored task handlers have no Agent host loan.
+            host_context: None,
+            record_context: saved
+                .record_context
+                .as_ref()
+                .map(|(source, order, guards)| {
+                    ctx.record_context(owner_task, *source, *order, guards)
+                })
+                .transpose()?,
+            borrowed_handler: None,
             projection,
             calls: TaskCallLease {
                 total: depth.clone(),

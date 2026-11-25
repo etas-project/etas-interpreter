@@ -69,6 +69,7 @@ pub(crate) struct EvalMachine {
     pub(super) stack: Vec<EvalFrame>,
     pub(super) active_call_depth: std::rc::Rc<std::cell::Cell<u32>>,
     pub(super) input: Option<MachineInput>,
+    pub(super) pending_record_constructions: Vec<std::rc::Weak<crate::control::RecordConstruction>>,
     /// Shared with the run's evaluator; mirrors residual scope and revision
     /// boundary frames after every stack mutation.
     pub(super) residual_mirror:
@@ -90,6 +91,10 @@ impl ProgramScope {
 impl EvalMachine {
     pub(crate) fn has_input(&self) -> bool {
         self.input.is_some()
+    }
+    pub(crate) fn is_restoring_handler_wait(&self) -> bool {
+        matches!(&self.input, Some(MachineInput::Signal(ControlSignal::Task(control)))
+            if matches!(**control, crate::control::PendingTaskControl::RestoreHandlerWait { .. }))
     }
     pub(crate) fn program_scope(&self) -> Option<ProgramScope> {
         self.program_scope.clone()
@@ -473,6 +478,14 @@ impl EvalMachine {
     }
 
     pub(super) fn push_frame(&mut self, frame: EvalFrame) {
+        if let EvalFrame::Continuation(frame) = &frame {
+            if let crate::control::Continuation::CompleteRecordConstruction(guard) =
+                &frame.continuation
+            {
+                self.pending_record_constructions
+                    .push(std::rc::Rc::downgrade(guard));
+            }
+        }
         if matches!(frame, EvalFrame::Call(_) | EvalFrame::ProgramReturn(_)) {
             self.active_call_depth.set(
                 self.active_call_depth
@@ -512,6 +525,14 @@ impl EvalMachine {
         let mut mirror = self.residual_mirror.borrow_mut();
         mirror.clear();
         for frame in &self.stack {
+            if let EvalFrame::Continuation(frame) = frame {
+                if let crate::control::Continuation::CompleteRecordConstruction(guard) =
+                    &frame.continuation
+                {
+                    self.pending_record_constructions
+                        .push(std::rc::Rc::downgrade(guard));
+                }
+            }
             if let Some(entry) = residual_mirror_entry(frame) {
                 mirror.push(entry);
             }

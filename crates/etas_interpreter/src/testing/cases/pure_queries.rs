@@ -11,7 +11,7 @@ import std.text.{get_char_slice, len};
 flow main() -> bool {
     var text = "x";
     var index = 0;
-    while index < 17 limit Iterations(17) {
+    while index < 17 {
         text = text + text;
         index = index + 1;
     }
@@ -56,7 +56,7 @@ flow main() -> bool {
     checkpoint("segmented-text-keys");
     let other = "中" + "😀é";
     var count = 0;
-    for item in set limit Iterations(4) {
+    for item in set {
         if item != other { return false; }
         count = count + 1;
     }
@@ -111,7 +111,7 @@ flow main() -> bool {
     let parts = lines(trimmed);
     var line_count = 0;
     var lines_ok = true;
-    for part in parts limit Iterations(4) {
+    for part in parts {
         if line_count == 0 && part != "A" { lines_ok = false; }
         if line_count == 1 && part != "中😀" { lines_ok = false; }
         if line_count == 2 && part != "\ré" { lines_ok = false; }
@@ -172,7 +172,7 @@ import std.text.{len as text_len, char_count, char_get, char_slice, get_char_sli
 import std.runtime.checkpoint;
 flow main() -> bool {
     var text = "start";
-    for _ in Range.closed(1, 1000) limit Iterations(1000) { text = text + "中😀é"; }
+    for _ in Range.closed(1, 1000) { text = text + "中😀é"; }
     let previous = text;
     text = text + "end";
     let numeric_prefix = "000";
@@ -363,27 +363,27 @@ import std.text.{len, char_count, is_empty, is_ascii, chars, char_indices, lines
 
 flow main() -> bool ![Error<TextError>] {
     var scalar_text = "";
-    for scalar in chars("Aé") limit Iterations(3) {
+    for scalar in chars("Aé") {
         scalar_text = scalar_text + from_char(scalar);
     }
     var scalar_offsets = [];
-    for (offset, _) in char_indices("Aé") limit Iterations(3) {
+    for (offset, _) in char_indices("Aé") {
         scalar_offsets = scalar_offsets.push(offset);
     }
     var line_values = [];
-    for line in lines("a\r\n\nb\rc\n") limit Iterations(5) {
+    for line in lines("a\r\n\nb\rc\n") {
         line_values = line_values.push(line);
     }
     var lazy_split = [];
-    for part in split_iter("a,,b,", ",") limit Iterations(5) {
+    for part in split_iter("a,,b,", ",") {
         lazy_split = lazy_split.push(part);
     }
     var whitespace_parts = [];
-    for part in split_whitespace(" a b\n c ") limit Iterations(4) {
+    for part in split_whitespace(" a b\n c ") {
         whitespace_parts = whitespace_parts.push(part);
     }
     var matches = [];
-    for range in find_all("ab", "") limit Iterations(4) {
+    for range in find_all("ab", "") {
         matches = matches.push(range);
     }
     return len("é") == 2 && char_count("é") == 1 && is_empty("") && !is_empty("x")
@@ -485,15 +485,15 @@ flow main() -> bool ![Error<TextError>] {
     let roundtrip = normalize(composed, NFD);
     let folded = casefold("Straße");
     var clusters = [];
-    for cluster in graphemes("A👩‍🚀é") limit Iterations(4) {
+    for cluster in graphemes("A👩‍🚀é") {
         clusters = clusters.push(cluster);
     }
     var cluster_indices = [];
-    for (offset, _) in grapheme_indices("A👩‍🚀é") limit Iterations(4) {
+    for (offset, _) in grapheme_indices("A👩‍🚀é") {
         cluster_indices = cluster_indices.push(offset);
     }
     var words = [];
-    for word in split_whitespace("A B\nC") limit Iterations(3) {
+    for word in split_whitespace("A B\nC") {
         words = words.push(word);
     }
     return composed == "é"

@@ -11,7 +11,7 @@ use crate::{
 
 use super::{
     host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation},
-    policy::{boundary_policy_ref_for, evaluate_before_boundary},
+    policy::boundary_policy_ref_for,
 };
 
 type ToolCall<'host> = crate::host::HostFuture<'host, Result<ToolResponse, etas_host::HostError>>;
@@ -31,31 +31,39 @@ pub(in crate::driver) struct CompletedToolHostDispatch {
 
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &'host dyn HostServices,
+    _host: &'host dyn HostServices,
     pending: PendingTool,
     machine: &mut EvalMachine,
 ) -> ToolDispatchStart<'host> {
     let policy_ref = boundary_policy_ref_for(eval, pending.policy_ref.clone());
-    if !evaluate_before_boundary(
+    let subject = pending.policy_subject.clone();
+    let budget = match &pending.dispatch {
+        PendingToolDispatch::Host(request) => request.budget.clone(),
+        PendingToolDispatch::Source => eval.host_budget(),
+    };
+    machine.resume(super::authorization::prepare(
         eval,
-        host,
-        policy_ref,
-        pending.policy_subject,
-        pending.span,
-        "tool",
-    )
-    .await
-    {
-        return ToolDispatchStart::Complete(false);
-    }
+        crate::control::NativeBoundaryTarget::Tool(pending),
+        vec![(policy_ref, subject)],
+        budget,
+    ));
+    ToolDispatchStart::Complete(true)
+}
 
+pub(in crate::driver) async fn begin_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    pending: PendingTool,
+    machine: &mut EvalMachine,
+) -> ToolDispatchStart<'host> {
     match pending.dispatch {
         PendingToolDispatch::Source => {
             machine.resume_source_tool_approved();
             ToolDispatchStart::Complete(true)
         }
         PendingToolDispatch::Host(request) => {
-            let request = *request;
+            let mut request = *request;
+            request.authority = eval.host_authority();
             if !host.availability().supports(HostRequirementKind::ToolCall) {
                 eval.diagnostics.push(crate::diagnostics::missing_host_handler(
                     pending.span,

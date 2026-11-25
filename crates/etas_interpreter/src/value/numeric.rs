@@ -126,6 +126,29 @@ impl NumericValue {
         };
         let magnitude =
             u128::from_str_radix(digits, radix).map_err(|_| NumericError::InvalidLiteral)?;
+        match primitive {
+            PrimitiveType::F32 => {
+                return Ok(Self::F32(
+                    (if negative {
+                        -(magnitude as f32)
+                    } else {
+                        magnitude as f32
+                    })
+                    .to_bits(),
+                ));
+            }
+            PrimitiveType::F64 => {
+                return Ok(Self::F64(
+                    (if negative {
+                        -(magnitude as f64)
+                    } else {
+                        magnitude as f64
+                    })
+                    .to_bits(),
+                ));
+            }
+            _ => {}
+        }
         if negative {
             return match primitive {
                 PrimitiveType::I128 if magnitude == 1_u128 << 127 => Ok(Self::I128(i128::MIN)),

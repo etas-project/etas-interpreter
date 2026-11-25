@@ -13,11 +13,12 @@ impl<'a> EvalContext<'a> {
         &self,
         expr: HirExprId,
         literal: &HirLiteral,
+        frame: Option<&Frame>,
     ) -> Result<InterpValue, ExecutionFault> {
         match literal {
             HirLiteral::Bool { value, .. } => Ok(InterpValue::Bool(*value)),
             HirLiteral::Int { text, span } => {
-                let primitive = self.numeric_literal_type(expr, false, *span)?;
+                let primitive = self.numeric_literal_type(expr, false, *span, frame)?;
                 crate::value::NumericValue::parse_integer(text, primitive)
                     .map(InterpValue::Number)
                     .map_err(|_| {
@@ -34,7 +35,7 @@ impl<'a> EvalContext<'a> {
             HirLiteral::String { value, .. } => Ok(InterpValue::String(value.clone().into())),
             HirLiteral::Char { value, .. } => Ok(InterpValue::String(value.to_string().into())),
             HirLiteral::Float { text, span } => {
-                let primitive = self.numeric_literal_type(expr, true, *span)?;
+                let primitive = self.numeric_literal_type(expr, true, *span, frame)?;
                 crate::value::NumericValue::parse_float(text, primitive)
                     .map(InterpValue::Number)
                     .map_err(|_| ExecutionFault::new(
@@ -54,6 +55,7 @@ impl<'a> EvalContext<'a> {
         expr: HirExprId,
         is_float: bool,
         span: Span,
+        frame: Option<&Frame>,
     ) -> Result<etas_types::PrimitiveType, ExecutionFault> {
         let Some(ty) = self.checked.types.expression_producer_type(expr) else {
             return Err(ExecutionFault::new(
@@ -61,6 +63,21 @@ impl<'a> EvalContext<'a> {
                 span,
                 "numeric literal is missing its checked type",
             ));
+        };
+        let ty = if let Some(frame) = frame {
+            frame
+                .generic_bindings()
+                .substitution(&self.checked.type_store)
+                .substitute(ty)
+                .map_err(|error| {
+                    ExecutionFault::new(
+                        AnalysisDiagnosticCode::MissingCheckedFact,
+                        span,
+                        error.to_string(),
+                    )
+                })?
+        } else {
+            ty
         };
         match self.checked.type_store.get(ty) {
             Some(etas_types::Type::IntegerLiteral { .. }) if !is_float => {
@@ -87,7 +104,7 @@ impl<'a> EvalContext<'a> {
             }
             Some(etas_types::Type::Primitive(
                 primitive @ (etas_types::PrimitiveType::F32 | etas_types::PrimitiveType::F64),
-            )) if is_float => Ok(*primitive),
+            )) => Ok(*primitive),
             _ => Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
                 span,
@@ -441,7 +458,7 @@ impl<'a> EvalContext<'a> {
             {
                 self.eval_const_source_literal(expr, span)
             }
-            HirExpr::Literal(literal) => self.eval_literal(expr, literal).map_err(Into::into),
+            HirExpr::Literal(literal) => self.eval_literal(expr, literal, None).map_err(Into::into),
             HirExpr::Lambda { .. } => self
                 .capture_lambda_value(expr, span, None)
                 .map_err(Into::into),
@@ -584,7 +601,8 @@ impl<'a> EvalContext<'a> {
                 let base = self.eval_const_expr(*base, *span, visiting)?;
                 let start = self.eval_const_expr(*start, *span, visiting)?;
                 let end = self.eval_const_expr(*end, *span, visiting)?;
-                self.eval_slice_value(expr, base, start, end, *bounds, *span)
+                let frame = Frame::new(std::sync::Arc::default());
+                self.eval_slice_value(expr, base, start, end, *bounds, *span, &frame)
                     .map_err(Into::into)
             }
             _ => Err(ExecutionFault::new(

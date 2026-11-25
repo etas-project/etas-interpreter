@@ -184,7 +184,7 @@ agent Worker() -> i32 { return 1; }
 impl agent Worker { flow apply(action: () -> i32 ![]) -> i32 { return action(); } }
 flow main(worker: Worker) -> i32 {
     var value = 0;
-    while value < 1000 limit Iterations(1000) { value = value + worker.apply(() => 1); }
+    while value < 1000 { value = value + worker.apply(() => 1); }
     return value;
 }
 flow inspect() -> unit { let definition = ^Worker; return; }

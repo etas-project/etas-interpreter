@@ -10,6 +10,13 @@ fn continuation_leaf_from_snapshot(
     kind: &str,
 ) -> Result<ContinuationSnapshot, String> {
     Ok(match kind {
+        "complete_record_construction" => ContinuationSnapshot::CompleteRecordConstruction {
+            id: required_u64(value, "id")?,
+            task: serde_json::from_value(required(value, "task")?.clone())
+                .map_err(|error| error.to_string())?,
+            owner: serde_json::from_value(required(value, "owner")?.clone())
+                .map_err(|error| error.to_string())?,
+        },
         "default_arguments" => {
             let destination = match required(value, "operation")?.as_str() {
                 Some("call") => crate::orchestration::ArgumentDestinationSnapshot::Call {
@@ -478,10 +485,6 @@ fn continuation_leaf_from_snapshot(
             next_index: required_usize(value, "next_index")?,
             span: span_from_snapshot(required(value, "span")?)?,
         },
-        "loop_limit" => ContinuationSnapshot::LoopLimit {
-            stmt: etas_hir::HirStmtId(required_u32(value, "stmt")?),
-            frame: locals_from_snapshot(limits, required(value, "frame")?)?,
-        },
         "for_loop" => ContinuationSnapshot::ForLoop {
             pat: HirPatId(required_u32(value, "pat")?),
             source: optional_value(limits, value, "source")?,
@@ -494,7 +497,6 @@ fn continuation_leaf_from_snapshot(
             },
             next_index: required_usize(value, "next_index")?,
             body: HirBlockId(required_u32(value, "body")?),
-            iterations: required_usize(value, "iterations")?,
             loop_scope: required_u32_array(value, "loop_scope")?
                 .into_iter()
                 .map(SymbolId)
@@ -509,7 +511,6 @@ fn continuation_leaf_from_snapshot(
             awaiting_step: required_bool(value, "awaiting_step")?,
             next_index: required_usize(value, "next_index")?,
             body: HirBlockId(required_u32(value, "body")?),
-            iterations: required_usize(value, "iterations")?,
             loop_scope: required_u32_array(value, "loop_scope")?
                 .into_iter()
                 .map(SymbolId)
@@ -520,8 +521,6 @@ fn continuation_leaf_from_snapshot(
         "while_loop" => ContinuationSnapshot::WhileLoop {
             cond: HirExprId(required_u32(value, "cond")?),
             body: HirBlockId(required_u32(value, "body")?),
-            iteration: required_u64(value, "iteration")?,
-            max_iterations: required_u64(value, "max_iterations")?,
             resume_after_body: required_bool(value, "resume_after_body")?,
             span: span_from_snapshot(required(value, "span")?)?,
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
@@ -532,7 +531,6 @@ fn continuation_leaf_from_snapshot(
                 ordinal: required_u32(value, "retry_ordinal")?,
             },
             body: HirBlockId(required_u32(value, "body")?),
-            attempts: required_usize(value, "attempts")?,
             next_attempt: required_usize(value, "next_attempt")?,
             block: HirBlockId(required_u32(value, "block")?),
             next_stmt_index: required_usize(value, "next_stmt_index")?,

@@ -28,7 +28,7 @@ pub(crate) fn construct(
                 .collect::<Result<Vec<_>, _>>()?
                 .into(),
         ),
-        ("Object", Some(values)) => Json::Object(object_entries(values, checked)?.into()),
+        ("Object", Some(values)) => Json::Object(object_value(values, checked)?),
         (_, value) => {
             return Err(format!(
                 "{}: received {}",
@@ -70,6 +70,9 @@ pub(crate) fn project(value: &Json, checked: &CheckedProject) -> (&'static str, 
             });
             let value = match source_object_map(checked) {
                 Some(ty) => {
+                    if let Some(value) = fields.source(ty) {
+                        return ("Object", vec![Value::Nominal { ty, value }]);
+                    }
                     let entries = Value::List(
                         entries
                             .map(|(key, value)| Value::Tuple(vec![key, value].into()))
@@ -103,18 +106,23 @@ pub(crate) fn project(value: &Json, checked: &CheckedProject) -> (&'static str, 
 }
 
 fn source_object_map(checked: &CheckedProject) -> Option<TypeId> {
+    let map = payload_type(checked, "Object")?;
+    matches!(checked.type_store.get(map), Some(Type::Applied { .. })).then_some(map)
+}
+
+pub(crate) fn payload_type(checked: &CheckedProject, name: &str) -> Option<TypeId> {
     let json = checked.types.known_std_types.json_value?;
-    let object = checked
+    let variant = checked
         .types
         .enum_layouts
         .get(&json)?
         .variants
         .iter()
-        .find(|variant| variant.name == "Object")?;
-    let [map] = object.fields.as_slice() else {
+        .find(|variant| variant.name == name)?;
+    let [payload] = variant.fields.as_slice() else {
         return None;
     };
-    matches!(checked.type_store.get(*map), Some(Type::Applied { .. })).then_some(*map)
+    Some(*payload)
 }
 
 fn source_map_entries_type(store: &etas_types::TypeStore, map: TypeId) -> Option<TypeId> {
@@ -134,14 +142,15 @@ fn source_map_entries_type(store: &etas_types::TypeStore, map: TypeId) -> Option
     .then_some(list)
 }
 
-fn object_entries(value: Value, checked: &CheckedProject) -> Result<Vec<(String, Json)>, String> {
-    let invalid_entry = || "JSON Object map entry requires a string and JsonValue".into();
+fn object_value(value: Value, checked: &CheckedProject) -> Result<super::JsonObject, String> {
+    let invalid_entry = || "JSON Object map entry requires a string and JsonValue".to_owned();
     match value {
         Value::Map(values) => values
             .into_values()
             .into_iter()
             .map(|(key, value)| json_entry(&key, &value))
-            .collect::<Option<_>>()
+            .collect::<Option<Vec<_>>>()
+            .map(super::JsonObject::from)
             .ok_or_else(invalid_entry),
         Value::Nominal { ty, value } => {
             let expected = source_object_map(checked);
@@ -154,6 +163,14 @@ fn object_entries(value: Value, checked: &CheckedProject) -> Result<Vec<(String,
             let Value::Record(fields) = value.as_ref() else {
                 return Err("JSON Object's checked Map is not represented by a record".into());
             };
+            if fields.get_ref("slots").is_some() {
+                let entries = crate::value::source_map::entries(value.as_ref())?
+                    .into_iter()
+                    .map(|(key, value)| json_entry(key, value))
+                    .collect::<Option<Vec<_>>>()
+                    .ok_or_else(invalid_entry)?;
+                return Ok(super::JsonObject::from_source(entries, ty, value));
+            }
             let entries = match fields.get_ref("entries") {
                 Some(Value::Nominal { value, .. }) => Some(value.as_ref()),
                 value => value,
@@ -172,7 +189,8 @@ fn object_entries(value: Value, checked: &CheckedProject) -> Result<Vec<(String,
                     };
                     json_entry(key, value)
                 })
-                .collect::<Option<_>>()
+                .collect::<Option<Vec<_>>>()
+                .map(|entries| super::JsonObject::from_source(entries, ty, value))
                 .ok_or_else(invalid_entry)
         }
         value => Err(format!(

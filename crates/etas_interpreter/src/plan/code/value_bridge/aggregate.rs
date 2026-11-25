@@ -4,6 +4,7 @@ use crate::value::{InterpValue, RangeValue, SetValue};
 pub(super) fn build(
     kind: Build,
     mut values: Vec<InterpValue>,
+    target: &etas_frontend::CheckedProgram,
 ) -> Result<InterpValue, RevisionValueFailure> {
     let single = |values: &mut Vec<_>| {
         if values.len() != 1 {
@@ -12,6 +13,10 @@ pub(super) fn build(
         values.pop().ok_or(RevisionValueFailure::InconsistentLayout)
     };
     Ok(match kind {
+        Build::Json(variant) => InterpValue::Json(
+            crate::value::json::construct(variant, values, target)
+                .map_err(RevisionValueFailure::InvalidField)?,
+        ),
         Build::Existential(mut object) => {
             object.value = single(&mut values)?.into();
             InterpValue::Existential(object)
@@ -44,11 +49,16 @@ pub(super) fn build(
             }
             .into(),
         },
-        Build::Record(names) => {
+        Build::Record { names, member_tool } => {
             if names.len() != values.len() {
                 return Err(RevisionValueFailure::InconsistentLayout);
             }
-            InterpValue::Record(names.into_iter().zip(values).collect::<Vec<_>>().into())
+            let mut record =
+                crate::value::RecordValue::new(names.into_iter().zip(values).collect());
+            if let Some(binding) = member_tool {
+                record.bind_member_tool(binding);
+            }
+            InterpValue::Record(record)
         }
         Build::Map => {
             if values.len() % 2 != 0 {

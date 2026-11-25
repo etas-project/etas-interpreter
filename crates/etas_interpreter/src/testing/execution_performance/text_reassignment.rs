@@ -9,7 +9,7 @@ module app.main;
 flow append(left: string, right: string) -> string {{ return left + right; }}
 flow main(input: Array<i32>, piece: string) -> string {{
     var text = "";
-    for _ in input limit Iterations(5000) {{ text = {expression}; }}
+    for _ in input {{ text = {expression}; }}
     return text;
 }}
 "#

@@ -12,6 +12,49 @@ struct SelectedPolicy {
 }
 
 impl EvalContext<'_> {
+    pub(super) fn execute_resource_scope(
+        &mut self,
+        item: HirItemId,
+        args: Vec<InterpValue>,
+        bindings: &crate::control::GenericBindings,
+        site: Option<crate::control::CallSite>,
+        span: Span,
+    ) -> ControlSignal {
+        let Some(crate::control::CallSite {
+            kind: crate::control::CallSiteKind::Expr { expr },
+            ..
+        }) = site
+        else {
+            return ControlSignal::missing_checked_fact(
+                "resource scope has no checked invocation origin",
+                span,
+            );
+        };
+        let [InterpValue::Callable(body)] = args.as_slice() else {
+            return ControlSignal::missing_checked_fact(
+                "resource scope requires its checked callback",
+                span,
+            );
+        };
+        let etas_types::ItemSignature::Flow(signature) = &self.checked.types.item_signatures[&item]
+        else {
+            unreachable!()
+        };
+        let report_type = match self.materialized_type(signature.output, &bindings, span) {
+            Ok(ty) => ty,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        let plan = match super::task::checked_concurrency_origin(self.checked, expr) {
+            Ok(plan) => plan,
+            Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+        };
+        let policy = self
+            .scheduler
+            .current_source_policy(self.task.task_scope)
+            .cloned();
+        self.enter_owned_scope(body.clone(), plan, None, policy, Some(report_type), span)
+    }
+
     pub(super) fn execute_runtime_scope(
         &mut self,
         item: HirItemId,

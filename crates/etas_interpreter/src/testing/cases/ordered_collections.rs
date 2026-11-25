@@ -214,7 +214,7 @@ async fn ordered_comparison_consumes_execution_fuel() {
         r#"
 module app.main;
 flow compare(a: i32, b: i32) -> i32 ![] {
-    while true limit Iterations(10000000) {}
+    while true {}
     return 0;
 }
 flow main() -> unit {
@@ -257,7 +257,7 @@ async fn ordered_comparison_yields_to_cancellation_on_current_thread() {
         r#"
 module app.main;
 flow compare(a: i32, b: i32) -> i32 ![] {
-    while true limit Iterations(10000000) {}
+    while true {}
     return 0;
 }
 flow main() -> unit {
@@ -309,8 +309,8 @@ flow main() -> bool {
     checkpoint("ordered");
     var map_order = 0;
     var set_order = 0;
-    for (key, value) in map limit Iterations(8) { map_order = map_order * 10 + key; }
-    for key in set limit Iterations(8) { set_order = set_order * 10 + key; }
+    for (key, value) in map { map_order = map_order * 10 + key; }
+    for key in set { set_order = set_order * 10 + key; }
     return map_order == 123 && set_order == 123 && old.get(2) == Some("two") && map.get(2) == Some("changed");
 }
 "#,
@@ -399,8 +399,8 @@ flow main() -> bool {{
     let set = OrderedSet.new<i32>(){set};
     var map_order = 0;
     var set_order = 0;
-    for (key, value) in map limit Iterations(8) {{ map_order = map_order * 10 + key; }}
-    for key in set limit Iterations(8) {{ set_order = set_order * 10 + key; }}
+    for (key, value) in map {{ map_order = map_order * 10 + key; }}
+    for key in set {{ set_order = set_order * 10 + key; }}
     return map_order == 123 && set_order == 123;
 }}
 "#
@@ -423,10 +423,10 @@ flow main() -> bool {
     var old_count = 0;
     var next_count = 0;
     var set_count = 0;
-    for (key, value) in next limit Iterations(8) { order = order * 10 + key; }
-    for (key, value) in old limit Iterations(8) { old_count = old_count + 1; }
-    for (key, value) in next limit Iterations(8) { next_count = next_count + 1; }
-    for key in added limit Iterations(8) { set_count = set_count + 1; }
+    for (key, value) in next { order = order * 10 + key; }
+    for (key, value) in old { old_count = old_count + 1; }
+    for (key, value) in next { next_count = next_count + 1; }
+    for key in added { set_count = set_count + 1; }
     return order == 123 && old.get(2) == Some("old") && next.get(2) == Some("new")
         && old_count == 2 && next_count == 3 && set_count == 3
         && !original.contains(3) && added.contains(3);
@@ -457,11 +457,11 @@ flow main() -> bool {
     let set = OrderedSet.new<Key>(reverse).insert(first).insert(second).insert(same);
     var map_order = 0;
     var set_order = 0;
-    for (key, value) in next limit Iterations(8) {
+    for (key, value) in next {
         let (rank, _) = key.parts;
         map_order = map_order * 10 + rank;
     }
-    for key in set limit Iterations(8) {
+    for key in set {
         let (rank, _) = key.parts;
         set_order = set_order * 10 + rank;
     }
@@ -487,7 +487,7 @@ flow main() -> bool {
     let set = OrderedSet.new<i32>(compare);
     let filled = empty.insert(1, "one").insert(3, "three").insert(2, "two");
     var order = 0;
-    for (key, value) in filled limit Iterations(8) { order = order * 10 + key; }
+    for (key, value) in filled { order = order * 10 + key; }
     return empty.get(1) == None && !empty.contains_key(1) && !set.contains(1) && order == 321;
 }
 "#,

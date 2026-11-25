@@ -43,25 +43,50 @@ impl ForeignExecutionLink {
             Some(etas_types::ItemSignature::Flow(signature)) => signature,
             _ => return Err("foreign method has no checked callable signature".into()),
         };
-        let contract = self
-            .owner
-            .checked
-            .effects
-            .public_contracts
-            .iter()
-            .find(|contract| contract.item == method.item)
-            .ok_or("foreign method has no checked public effect contract")?;
         let parameters = signature
             .generic_params
             .iter()
             .filter(|parameter| parameter.kind == etas_types::CallableGenericParamKind::Effect)
             .map(|parameter| parameter.name.clone())
             .collect::<Vec<_>>();
-        let row = etas_effects::facts::checked_type_effect_row(
-            &contract.public_row,
-            &self.owner.checked.effect_registry,
-            &parameters,
-        )?;
+        let row = if let Some(contract) = self
+            .owner
+            .checked
+            .effects
+            .public_contracts
+            .iter()
+            .find(|contract| contract.item == method.item)
+        {
+            etas_effects::facts::checked_type_effect_row(
+                &contract.public_row,
+                &self.owner.checked.effect_registry,
+                &parameters,
+            )?
+        } else {
+            // A live caller can supply private type-owned helpers as well as
+            // exported methods. Their checked declaration/body defines the ABI;
+            // crossing this code link does not export them or grant authority.
+            let body = self
+                .owner
+                .checked
+                .effects
+                .item_effects
+                .get(&method.item)
+                .ok_or_else(|| {
+                    format!(
+                        "foreign method {} has no checked body behavior",
+                        identity.name()
+                    )
+                })?;
+            match &signature.effects {
+                Some(row) => row.clone(),
+                None => etas_effects::facts::checked_type_effect_row(
+                    &body.escaping_effects,
+                    &self.owner.checked.effect_registry,
+                    &parameters,
+                )?,
+            }
+        };
         let flow = etas_types::FlowType {
             input: signature.params.clone(),
             output: signature.output,

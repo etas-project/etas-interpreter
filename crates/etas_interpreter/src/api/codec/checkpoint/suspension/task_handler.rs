@@ -76,6 +76,7 @@ pub(in crate::api::codec) fn encode(
         })).collect::<Vec<_>>(),
         "retries": node.retries.attempts.iter().map(|retry| json!({"id": retry.id.0, "ordinal": retry.ordinal})).collect::<Vec<_>>(),
         "model_policy": machine::model_policy_snapshot(&node.model_policy),
+        "record_context": node.record_context,
         "span": span_json(node.span),
         "projection": {
             "source": {"origin": null, "projections": node.projection.source.projections},
@@ -204,6 +205,7 @@ pub(crate) fn decode(
     Ok(SuspendedTaskHandlerSnapshot {
         child: field(value, "child")?,
         owner_task: field(value, "owner_task")?,
+        record_context: field(value, "record_context")?,
         handler: field(value, "handler")?,
         owner,
         owner_scoped: field(value, "owner_scoped")?,

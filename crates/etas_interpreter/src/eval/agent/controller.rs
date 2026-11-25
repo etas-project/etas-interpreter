@@ -53,9 +53,16 @@ impl EvalContext<'_> {
         let mut trace = Vec::new();
         request.policy.tools.clear();
         request.policy.tool_choice = ModelToolChoice::Auto;
-        if let Err(fault) =
-            self.apply_agent_annotations(method.agent, &mut request.policy, &mut tools, &mut trace)
-        {
+        if let Err(fault) = self.apply_agent_annotations(
+            method.agent,
+            method.body,
+            &mut request.policy,
+            &mut tools,
+            &mut trace,
+        ) {
+            return ControlSignal::Fault(Box::new(fault));
+        }
+        if let Err(fault) = self.constrain_model_policy(&mut request.policy, span) {
             return ControlSignal::Fault(Box::new(fault));
         }
         if !trace.is_empty() {

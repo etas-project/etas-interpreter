@@ -8,7 +8,6 @@ pub(crate) struct SourceForLoopResume {
     pub awaiting_step: bool,
     pub next_index: usize,
     pub body: HirBlockId,
-    pub iterations: usize,
     pub loop_scope: HashSet<SymbolId>,
     pub span: Span,
 }
@@ -22,7 +21,6 @@ impl SourceForLoopResume {
             awaiting_step: self.awaiting_step,
             next_index: self.next_index,
             body: self.body,
-            iterations: self.iterations,
             loop_scope: self.loop_scope,
             span: self.span,
             frame,
@@ -117,10 +115,6 @@ impl EvalContext<'_> {
             }
         } else if state.source.is_none() {
             state.source = Some(value);
-        }
-        if state.next_index >= state.iterations {
-            frame.cleanup_to(&state.loop_scope);
-            return ControlSignal::Value(InterpValue::Unit);
         }
         let Some(protocol) = self.plan.records.source_iterator(state.iter) else {
             return ControlSignal::missing_checked_fact(

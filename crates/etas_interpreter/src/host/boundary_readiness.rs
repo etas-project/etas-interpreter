@@ -37,6 +37,8 @@ pub(crate) fn validate_boundary_readiness(
                 HostBoundaryRequest::Stream(_) => (available.stream, "Stream"),
                 HostBoundaryRequest::Tls(_) => (available.tls, "Tls"),
                 HostBoundaryRequest::Secret(_) => (available.secret_access, "SecretAccess"),
+                HostBoundaryRequest::Entropy(_) => (true, "Random"),
+                HostBoundaryRequest::Clock(_) => (true, "Clock"),
                 HostBoundaryRequest::Browser(_) => (available.browser, "Browser"),
             };
             (ready, service, pending.span)

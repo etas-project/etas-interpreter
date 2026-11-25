@@ -8,6 +8,7 @@ pub(super) use runtime::{messages_equal, sets_equal, value_equal};
 
 /// Matching continuations retain failed candidates instead of recursing into
 /// equality. Every right member can satisfy at most one left member.
+#[derive(Clone, Debug)]
 pub(crate) struct SetSearch {
     left: usize,
     candidate: usize,

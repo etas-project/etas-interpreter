@@ -10,6 +10,8 @@ use serde_json::Value;
 mod context;
 pub(crate) mod controller;
 mod inference;
+mod instance;
+mod managed;
 mod method;
 mod schema;
 mod step;
@@ -191,6 +193,7 @@ impl<'a> EvalContext<'a> {
     fn apply_agent_annotations(
         &mut self,
         item: HirItemId,
+        method: HirItemId,
         policy: &mut crate::api::ModelExecutionPolicy,
         native_tools: &mut Vec<super::tool::NativeToolBinding>,
         trace_plan: &mut Vec<String>,
@@ -202,22 +205,21 @@ impl<'a> EvalContext<'a> {
             .get(&item)
             .cloned()
             .unwrap_or_default();
+        let annotations = annotations.into_iter().chain(
+            self.checked
+                .hir
+                .item_annotations
+                .get(&method)
+                .cloned()
+                .unwrap_or_default(),
+        );
         for annotation in annotations {
             match annotation_name(&annotation).as_str() {
                 "model" => {
                     self.apply_agent_model_annotation(&annotation, policy)?;
                 }
-                "tools" => {
-                    let (bindings, tool_choice) = self.agent_tools_annotation(&annotation)?;
-                    policy.tools = bindings
-                        .iter()
-                        .map(|binding| binding.schema.clone())
-                        .collect();
-                    policy.tool_choice = tool_choice;
-                    *native_tools = bindings;
-                }
                 "limits" => {
-                    self.apply_agent_limits_annotation(&annotation, policy)?;
+                    self.apply_model_limits_annotation(&annotation, policy)?;
                 }
                 "trace" => {
                     let entries = self.agent_trace_annotation(&annotation)?;
@@ -225,6 +227,20 @@ impl<'a> EvalContext<'a> {
                 }
                 _ => {}
             }
+        }
+        if let Some(annotation) = self
+            .checked
+            .hir
+            .agent_tools_annotation(item, method)
+            .cloned()
+        {
+            let (bindings, tool_choice) = self.agent_tools_annotation(&annotation)?;
+            policy.tools = bindings
+                .iter()
+                .map(|binding| binding.schema.clone())
+                .collect();
+            policy.tool_choice = tool_choice;
+            *native_tools = bindings;
         }
         Ok(())
     }
@@ -347,24 +363,22 @@ impl<'a> EvalContext<'a> {
     pub(in crate::eval) fn agent_tool_surface(
         &mut self,
         agent: HirItemId,
+        method: HirItemId,
     ) -> Result<Vec<super::tool::NativeToolBinding>, ExecutionFault> {
-        let annotations = self
+        match self
             .checked
             .hir
-            .item_annotations
-            .get(&agent)
+            .agent_tools_annotation(agent, method)
             .cloned()
-            .unwrap_or_default();
-        let mut tools = Vec::new();
-        for annotation in annotations {
-            if annotation_name(&annotation) == "tools" {
-                tools = self.agent_tools_annotation(&annotation)?.0;
-            }
+        {
+            Some(annotation) => self
+                .agent_tools_annotation(&annotation)
+                .map(|(tools, _)| tools),
+            None => Ok(Vec::new()),
         }
-        Ok(tools)
     }
 
-    fn apply_agent_limits_annotation(
+    pub(in crate::eval) fn apply_model_limits_annotation(
         &mut self,
         annotation: &etas_hir::HirAnnotation,
         policy: &mut crate::api::ModelExecutionPolicy,
@@ -389,7 +403,7 @@ impl<'a> EvalContext<'a> {
                         return Err(ExecutionFault::new(
                             AnalysisDiagnosticCode::InvalidArguments,
                             limit.span,
-                            "`@limits` on agent only supports model budget limits; use Attempts/Iterations on retry, loop, or pipeline stages",
+                            "this callable's `@limits` supports model budget limits; use Attempts/Iterations on retry or loop scopes",
                         ));
                     }
                     StdLimitKind::Tokens
@@ -753,6 +767,9 @@ impl<'a> EvalContext<'a> {
     }
 
     fn source_tool_qualified_name(&self, item: HirItemId, symbol: SymbolId) -> Option<String> {
+        if self.checked.hir.member_tool_owner(item).is_some() {
+            return Some(self.checked.hir.declaration_path(symbol)?.join("."));
+        }
         let item_name = self.checked.hir.symbols.get(symbol)?.name.as_str();
         for module_id in &self.checked.hir.modules {
             let module = self.checked.hir.modules_arena.get(*module_id)?;
@@ -900,8 +917,9 @@ impl<'a> EvalContext<'a> {
             ));
         }
 
-        let mut fields = Vec::with_capacity(tool.params.len());
-        for (param, ty) in tool.params.iter().zip(signature.params.iter()) {
+        let start = usize::from(self.checked.hir.member_tool_receiver(tool_item).is_some());
+        let mut fields = Vec::with_capacity(tool.params.len() - start);
+        for (param, ty) in tool.params[start..].iter().zip(&signature.params[start..]) {
             let Some(param_symbol) = self.checked.hir.symbols.get(*param) else {
                 return Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::MissingCheckedFact,

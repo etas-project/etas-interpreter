@@ -11,7 +11,6 @@ use crate::{
 use super::{
     error::retry_or_report,
     host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation},
-    policy::evaluate_before_boundary,
 };
 
 type CommandCall<'host> =
@@ -36,8 +35,8 @@ pub(in crate::driver) struct CompletedCommandDispatch {
 
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &'host dyn HostServices,
-    mut command: PendingCommand,
+    _host: &'host dyn HostServices,
+    command: PendingCommand,
     machine: &mut EvalMachine,
 ) -> CommandDispatchStart<'host> {
     let key = match eval.command_boundary_key(&command) {
@@ -71,23 +70,27 @@ pub(in crate::driver) async fn begin<'host>(
             format!("command host boundary failed: {}", error.message),
         ));
     }
-    let request_id = command.request.id;
-    let trace_subject = policy_subject(&command.request);
-    if !evaluate_before_boundary(
+    let budget = command.request.budget.clone();
+    let subject = policy_subject(&command.request);
+    CommandDispatchStart::Complete(Some(super::authorization::prepare(
         eval,
-        host,
-        eval.boundary_policy_ref(),
-        trace_subject.clone(),
-        command.span,
-        "command",
-    )
-    .await
-    {
-        return CommandDispatchStart::Complete(None);
-    }
-    // Policy evaluation may record a scoped approval grant. Dispatch the
-    // boundary with that current authority rather than the snapshot captured
-    // when the pending command was first constructed.
+        crate::control::NativeBoundaryTarget::Command {
+            pending: command,
+            key,
+        },
+        vec![(eval.boundary_policy_ref(), subject)],
+        budget,
+    )))
+}
+
+pub(in crate::driver) async fn begin_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    mut command: PendingCommand,
+    key: etas_host::replay::ReplayFingerprint,
+    machine: &mut EvalMachine,
+) -> CommandDispatchStart<'host> {
+    let request_id = command.request.id;
     command.request.authority = eval.host_authority();
     match HostDispatch::begin(
         eval,

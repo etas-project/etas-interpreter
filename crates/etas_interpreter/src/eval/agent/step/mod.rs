@@ -123,11 +123,18 @@ impl EvalContext<'_> {
         }
         let mut native_tools = Vec::new();
         let mut trace_plan = Vec::new();
-        self.apply_agent_annotations(agent, &mut policy, &mut native_tools, &mut trace_plan)?;
+        self.apply_agent_annotations(
+            agent,
+            method.body,
+            &mut policy,
+            &mut native_tools,
+            &mut trace_plan,
+        )?;
         if controller_round {
             policy.tools = context.policy.tools.clone();
             policy.tool_choice = context.policy.tool_choice.clone();
         }
+        self.constrain_model_policy(&mut policy, span)?;
         let messages = match conversation {
             InterpValue::Conversation(conversation) => {
                 self.step_messages(&conversation, &native_tools, span)?

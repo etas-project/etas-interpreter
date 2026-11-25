@@ -49,6 +49,8 @@ pub(crate) struct FakeHost {
     pub(super) session_context_fault: Option<SessionContextFault>,
     pub(super) storage: Option<TestMemoryBackend>,
     console_gate: Option<Arc<ConsoleGate>>,
+    policy_gate: Option<(String, Arc<AuthorizationGate>)>,
+    approval_gate: Option<Arc<AuthorizationGate>>,
     memory_probe: Option<Arc<MemoryConcurrencyProbe>>,
     availability: HostServiceAvailability,
     approval_calls: Arc<AtomicUsize>,
@@ -68,7 +70,7 @@ pub(crate) struct FakeHost {
     model_responses: Arc<Mutex<VecDeque<ModelResponse>>>,
     preserve_model_response_id: Arc<AtomicBool>,
     policy_requests: Arc<Mutex<Vec<PolicyEvaluationRequest>>>,
-    policy_decisions: Arc<Mutex<VecDeque<PolicyDecision>>>,
+    policy_decisions: Arc<Mutex<VecDeque<(Option<String>, PolicyDecision)>>>,
     policy_decision: Arc<Mutex<PolicyDecision>>,
     tool_requests: Arc<Mutex<Vec<ToolRequest>>>,
     tool_responses: Arc<Mutex<VecDeque<Result<HostValue, HostError>>>>,
@@ -100,6 +102,8 @@ impl FakeHost {
         Self {
             storage: None,
             console_gate: None,
+            policy_gate: None,
+            approval_gate: None,
             memory_probe: None,
             availability,
             approval_calls: Arc::new(AtomicUsize::new(0)),
@@ -159,6 +163,18 @@ impl FakeHost {
 
     pub(super) fn filesystem_requests(&self) -> Vec<FilesystemRequest> {
         self.filesystem_requests.lock().unwrap().clone()
+    }
+
+    pub(super) fn pause_policy_completion(&mut self, action: &str) -> Arc<AuthorizationGate> {
+        let gate = Arc::new(AuthorizationGate::new());
+        self.policy_gate = Some((action.to_owned(), gate.clone()));
+        gate
+    }
+
+    pub(super) fn pause_approval_completion(&mut self) -> Arc<AuthorizationGate> {
+        let gate = Arc::new(AuthorizationGate::new());
+        self.approval_gate = Some(gate.clone());
+        gate
     }
 
     pub(super) fn pause_console_completion(&mut self) -> Arc<ConsoleGate> {
@@ -253,7 +269,14 @@ impl FakeHost {
         self.policy_decisions
             .lock()
             .expect("policy decisions lock")
-            .push_back(decision);
+            .push_back((None, decision));
+    }
+
+    pub(super) fn seed_policy_decision_for(&self, action: &str, decision: PolicyDecision) {
+        self.policy_decisions
+            .lock()
+            .expect("policy decisions lock")
+            .push_back((Some(action.into()), decision));
     }
 
     pub(super) fn tool_requests(&self) -> Vec<ToolRequest> {
@@ -833,7 +856,15 @@ impl HostServices for FakeHost {
                             .map(String::as_str)
                             .collect::<Vec<_>>(),
                     );
-                    let predicate = query.predicate;
+                    let predicate = match query {
+                        etas_host::MemoryQuery::Predicate { predicate, .. } => predicate,
+                        etas_host::MemoryQuery::Encoded { .. } => {
+                            return Err(HostError::new(
+                                HostErrorCode::Unsupported,
+                                "test backend has no encoded query registration",
+                            ));
+                        }
+                    };
                     let mut entries = memory
                         .lock()
                         .expect("memory lock")
@@ -1412,7 +1443,7 @@ impl HostServices for FakeHost {
 
     fn approval<'a>(
         &'a self,
-        _operation: etas_host::execution::OperationContext,
+        operation: etas_host::execution::OperationContext,
         request: ApprovalRequest,
     ) -> HostFuture<'a, Result<ApprovalResponse, HostError>> {
         self.approval_calls.fetch_add(1, Ordering::SeqCst);
@@ -1426,7 +1457,11 @@ impl HostServices for FakeHost {
             .lock()
             .expect("approval decisions lock")
             .pop_front();
+        let gate = self.approval_gate.clone();
         Box::pin(async move {
+            if let Some(gate) = gate {
+                gate.wait(&operation).await?;
+            }
             if let Some(response) = response {
                 return Ok(response);
             }
@@ -1450,7 +1485,7 @@ impl HostServices for FakeHost {
 
     fn policy<'a>(
         &'a self,
-        _operation: etas_host::execution::OperationContext,
+        operation: etas_host::execution::OperationContext,
         request: PolicyEvaluationRequest,
     ) -> HostFuture<'a, Result<PolicyResponse, HostError>> {
         self.policy_calls.fetch_add(1, Ordering::SeqCst);
@@ -1458,23 +1493,80 @@ impl HostServices for FakeHost {
             .lock()
             .expect("policy requests lock")
             .push(request.clone());
-        let decision = self
-            .policy_decisions
-            .lock()
-            .expect("policy decisions lock")
-            .pop_front()
-            .unwrap_or_else(|| {
-                self.policy_decision
-                    .lock()
-                    .expect("policy decision lock")
-                    .clone()
+        let decision = {
+            let action = request.subject.attributes.iter().find_map(|(name, value)| {
+                if name != "qualified_action" {
+                    return None;
+                }
+                match value {
+                    HostValue::String(value) => Some(value.as_str()),
+                    _ => None,
+                }
             });
+            let mut decisions = self.policy_decisions.lock().expect("policy decisions lock");
+            let selected = decisions.iter().position(|(filter, _)| {
+                filter
+                    .as_deref()
+                    .is_none_or(|filter| Some(filter) == action)
+            });
+            selected
+                .and_then(|index| decisions.remove(index))
+                .map(|(_, decision)| decision)
+        }
+        .unwrap_or_else(|| {
+            self.policy_decision
+                .lock()
+                .expect("policy decision lock")
+                .clone()
+        });
+        let gate = self.policy_gate.as_ref().and_then(|(action, gate)| {
+            request
+                .subject
+                .attributes
+                .iter()
+                .any(|(name, value)| {
+                    name == "qualified_action" && value == &HostValue::String(action.clone())
+                })
+                .then(|| gate.clone())
+        });
         Box::pin(async move {
+            if let Some(gate) = gate {
+                gate.wait(&operation).await?;
+            }
             Ok(PolicyResponse {
                 id: request.id,
                 decision,
             })
         })
+    }
+}
+
+pub(super) struct AuthorizationGate {
+    pub started: tokio::sync::Notify,
+    pub release: tokio::sync::Semaphore,
+    remaining: AtomicBool,
+}
+
+impl AuthorizationGate {
+    fn new() -> Self {
+        Self {
+            started: tokio::sync::Notify::new(),
+            release: tokio::sync::Semaphore::new(0),
+            remaining: AtomicBool::new(true),
+        }
+    }
+    async fn wait(
+        &self,
+        operation: &etas_host::execution::OperationContext,
+    ) -> Result<(), HostError> {
+        if self.remaining.swap(false, Ordering::SeqCst) {
+            self.started.notify_one();
+            tokio::select! {
+                permit = self.release.acquire() => permit.expect("authorization gate open").forget(),
+                cause = operation.signal().cancelled() => { cause?; return operation.signal().check(); }
+            }
+        }
+        operation.signal().check()
     }
 }
 

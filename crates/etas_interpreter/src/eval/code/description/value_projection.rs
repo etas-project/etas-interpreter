@@ -33,6 +33,23 @@ pub(super) fn path(
             ValueProjectionStep::MapKey => p.variant(element, "MapKey", Vec::new()),
             ValueProjectionStep::MapValue => p.variant(element, "MapValue", Vec::new()),
             ValueProjectionStep::CallResult => p.variant(element, "CallResult", Vec::new()),
+            ValueProjectionStep::CallWithArguments { inputs } => p.variant(
+                element,
+                "CallWithArguments",
+                vec![V::usize(*inputs as usize)],
+            ),
+            ValueProjectionStep::Invocation { inputs } => {
+                p.variant(element, "Invocation", vec![V::usize(*inputs as usize)])
+            }
+            ValueProjectionStep::Repeat { alternatives } => {
+                let payload = p.variant_payload(element, "Repeat")?;
+                let alternative = p.array_element(payload)?;
+                let values = alternatives
+                    .iter()
+                    .map(|steps| self::path(p, alternative, steps))
+                    .collect::<Result<Vec<_>, _>>()?;
+                p.variant(element, "Repeat", vec![V::Array(values.into())])
+            }
         })
         .collect::<Result<Vec<_>, _>>()
         .map(|steps| V::Array(steps.into()))

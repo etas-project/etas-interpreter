@@ -108,7 +108,7 @@ flow main() -> bool {
     match parse_body("let = ;") {
         Ok(_) => { return false; },
         Err(error) => {
-            for diagnostic in error.diagnostics limit Iterations(32) {
+            for diagnostic in error.diagnostics {
                 match diagnostic.location {
                     Some(location) => {
                         return diagnostic.severity == "error"
@@ -148,7 +148,7 @@ import std.compiler.parse_body;
 flow main() -> (string, string, usize, usize) {
     match parse_body("let = ;") {
         Err(error) => {
-            for diagnostic in error.diagnostics limit Iterations(32) {
+            for diagnostic in error.diagnostics {
                 match diagnostic.location {
                     Some(location) => { return (location.source, location.revision, location.byte_start, location.byte_end); },
                     None => {},

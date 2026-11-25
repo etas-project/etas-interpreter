@@ -22,7 +22,7 @@ impl Number ~ Named {
 flow main() -> usize ![] {
     let values: Array<? ~ Named> = [Label("example"), Number(7)];
     let total: usize = 0;
-    for value in values limit Iterations(2) {
+    for value in values {
         total = total + value.name().len();
     }
     return total;

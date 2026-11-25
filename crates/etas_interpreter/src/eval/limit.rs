@@ -21,6 +21,32 @@ pub enum RuntimeLimitValue {
 }
 
 impl<'a> EvalContext<'a> {
+    pub(in crate::eval) fn declaration_model_policy(
+        &mut self,
+        item: etas_hir::HirItemId,
+    ) -> Result<Option<crate::api::ModelExecutionPolicy>, ExecutionFault> {
+        let annotations = self
+            .checked
+            .hir
+            .item_annotations
+            .get(&item)
+            .into_iter()
+            .flatten()
+            .filter(|annotation| {
+                matches!(annotation.path.segments.as_slice(), [segment] if segment.name == "limits")
+            })
+            .cloned()
+            .collect::<Vec<_>>();
+        if annotations.is_empty() {
+            return Ok(None);
+        }
+        let mut policy = self.task.model_policy.clone();
+        for annotation in annotations {
+            self.apply_model_limits_annotation(&annotation, &mut policy)?;
+        }
+        Ok(Some(policy))
+    }
+
     pub(super) fn resolve_limit_expr(
         &self,
         expr: HirExprId,
@@ -55,24 +81,6 @@ impl<'a> EvalContext<'a> {
             HirArg::Positional(value) | HirArg::Named { value, .. } => *value,
         };
         Ok((kind, value_expr, *span))
-    }
-
-    pub(super) fn loop_limit_argument(
-        &self,
-        limits: &[HirExprId],
-        span: Span,
-    ) -> Result<HirExprId, ExecutionFault> {
-        for limit in limits {
-            let (kind, argument, _) = self.limit_call(*limit)?;
-            if kind == StdLimitKind::Iterations {
-                return Ok(argument);
-            }
-            self.resolve_limit_expr(*limit)?;
-        }
-        Err(invalid_limit(
-            &span,
-            "loop execution requires an Iterations(...) limit",
-        ))
     }
 
     fn resolve_limit_kind(
@@ -148,7 +156,12 @@ impl<'a> EvalContext<'a> {
     ) -> Result<(), ExecutionFault> {
         match (&limit.kind, &limit.value) {
             (StdLimitKind::Tokens, RuntimeLimitValue::Count(value)) => {
-                policy.options.max_output_tokens = Some(*value);
+                policy.options.max_output_tokens = Some(
+                    policy
+                        .options
+                        .max_output_tokens
+                        .map_or(*value, |current| current.min(*value)),
+                );
                 set_token_budget(&mut policy.budget, *value);
             }
             (StdLimitKind::ContextTokens, RuntimeLimitValue::Count(value)) => {
@@ -156,12 +169,30 @@ impl<'a> EvalContext<'a> {
             }
             (StdLimitKind::WallTime, RuntimeLimitValue::DurationMillis(value)) => {
                 let budget = policy.budget.get_or_insert_with(Budget::default);
-                budget.time = Some(TimeBudget { max_millis: *value });
+                budget.time = Some(TimeBudget {
+                    max_millis: budget
+                        .time
+                        .as_ref()
+                        .map_or(*value, |current| current.max_millis.min(*value)),
+                });
             }
             (StdLimitKind::Cost, RuntimeLimitValue::MoneyMicros { amount, currency }) => {
                 let budget = policy.budget.get_or_insert_with(Budget::default);
+                if budget
+                    .cost
+                    .as_ref()
+                    .is_some_and(|current| current.currency != *currency)
+                {
+                    return Err(invalid_limit(
+                        &limit.span,
+                        "cost budget currency conflicts with the enclosing scope",
+                    ));
+                }
                 budget.cost = Some(CostBudget {
-                    max_micros: *amount,
+                    max_micros: budget
+                        .cost
+                        .as_ref()
+                        .map_or(*amount, |current| current.max_micros.min(*amount)),
                     currency: currency.clone(),
                 });
             }
@@ -187,5 +218,10 @@ fn invalid_limit(span: &Span, message: &'static str) -> ExecutionFault {
 
 pub(super) fn set_token_budget(budget: &mut Option<Budget>, max_tokens: u64) {
     let budget = budget.get_or_insert_with(Budget::default);
-    budget.tokens = Some(TokenBudget { max_tokens });
+    budget.tokens = Some(TokenBudget {
+        max_tokens: budget
+            .tokens
+            .as_ref()
+            .map_or(max_tokens, |current| current.max_tokens.min(max_tokens)),
+    });
 }

@@ -90,6 +90,14 @@ fn write<'a>(
         return Ok(());
     }
     match value {
+        InterpValue::Agent(reference) => {
+            if matches!(purpose, ValuePurpose::Lossless) {
+                return Err(InterpreterCodecError::new(
+                    "scoped Agent references require their live runtime",
+                ));
+            }
+            *slot = json!({"kind":"agent", "instance":reference.id});
+        }
         InterpValue::ScopedHandler(_) => {
             if matches!(purpose, ValuePurpose::Lossless) {
                 return Err(InterpreterCodecError::new(
@@ -324,6 +332,11 @@ fn write<'a>(
             }
         }
         InterpValue::HostHandle(handle) => {
+            if handle.clock_domain_id().is_some() && matches!(purpose, ValuePurpose::Lossless) {
+                return Err(InterpreterCodecError::new(
+                    "monotonic clock domains require a runtime checkpoint",
+                ));
+            }
             *slot = json!({"kind":"host_handle","handle_kind":handle.kind_name()})
         }
         InterpValue::Task(_) | InterpValue::Scheduler(_) | InterpValue::Continuation(_) => {

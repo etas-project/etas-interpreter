@@ -38,6 +38,7 @@ pub(in crate::eval) struct ResolvedToolInvocation {
     pub args: etas_host::HostValue,
     pub identity: String,
     pub revision: String,
+    pub member_state: Option<InterpValue>,
 }
 
 #[derive(Debug)]

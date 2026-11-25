@@ -46,7 +46,7 @@ module app.main;
 import std.task.{{run, map_concurrent, Scheduler}};
 flow job(value: i32) -> i32 {{
     var index = 0;
-    while index < {iterations} limit Iterations({iterations}) {{ index = index + 1; }}
+    while index < {iterations} {{ index = index + 1; }}
     return value + 1;
 }}
 flow main(values: Array<i32>) -> Array<i32> {{
@@ -76,6 +76,7 @@ fn options(
     RunOptions {
         runtime: Some(runtime.clone()),
         cpu_threads: NonZeroUsize::new(quota).unwrap(),
+        cpu_min_work: 0,
         event_observer: Some(Arc::new(Probe(tag, progress.clone()))),
         ..RunOptions::default()
     }

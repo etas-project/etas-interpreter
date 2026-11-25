@@ -361,7 +361,7 @@ flow main() -> bool {
     var values = [1; 2; 3];
     let original = values;
     var total = 0;
-    for value in values limit Iterations(8) {
+    for value in values {
         if value == 1 {
             values = values.push(9);
             total = total + value;

@@ -423,7 +423,15 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
-                ControlSignal::Task(task) => return ControlSignal::Task(task),
+                ControlSignal::Task(task) => {
+                    return self.wrap_handler_boundary_signal(
+                        ControlSignal::Task(task),
+                        scope_id,
+                        handler_records,
+                        span,
+                        frame,
+                    );
+                }
                 other => {
                     if let Err(fault) = self.close_handler_scope(scope_id, span) {
                         return ControlSignal::Fault(Box::new(fault));
@@ -532,7 +540,15 @@ impl<'a> EvalContext<'a> {
         ) {
             return Some(ControlSignal::Fault(Box::new(fault)));
         }
-        let guard = match self.compile_handler_result_guard(&perform) {
+        let guard = match self
+            .source_filesystem_result_guard(&perform)
+            .and_then(|guard| {
+                if guard.is_some() {
+                    Ok(guard)
+                } else {
+                    self.compile_handler_result_guard(&perform)
+                }
+            }) {
             Ok(guard) => guard,
             Err(fault) => return Some(ControlSignal::Fault(Box::new(fault))),
         };
@@ -747,7 +763,13 @@ impl<'a> EvalContext<'a> {
                 );
                 ControlSignal::Host(nested)
             }
-            ControlSignal::Task(pending) => ControlSignal::Task(pending),
+            ControlSignal::Task(pending) => compose_signal_continuation(
+                ControlSignal::Task(pending),
+                Continuation::HandlerDispatch {
+                    outer: outer_continuation.into(),
+                    deferred,
+                },
+            ),
         })
     }
 
@@ -910,7 +932,15 @@ impl<'a> EvalContext<'a> {
                         frame,
                     );
                 }
-                ControlSignal::Task(task) => return ControlSignal::Task(task),
+                ControlSignal::Task(task) => {
+                    return self.wrap_handler_boundary_signal(
+                        ControlSignal::Task(task),
+                        scope_id,
+                        handlers,
+                        span,
+                        frame,
+                    );
+                }
                 other => {
                     if let Err(fault) = self.close_handler_scope(scope_id, span) {
                         return ControlSignal::Fault(Box::new(fault));
@@ -1024,6 +1054,10 @@ impl<'a> EvalContext<'a> {
             ControlSignal::Model(pending) => &mut pending.continuation,
             ControlSignal::Host(pending) => &mut pending.continuation,
             ControlSignal::Perform(pending) => &mut pending.continuation,
+            ControlSignal::Task(pending) => match pending.continuation_mut() {
+                Some(continuation) => continuation,
+                None => return signal,
+            },
             _ => return signal,
         };
         match continuation.handler_scope_occurrences(scope_id) {
@@ -1055,6 +1089,7 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<(), ExecutionFault> {
         self.pop_handler_scope(scope_id, span)?;
+        self.task.close_agent_handler_context(scope_id);
         self.scheduler.close_handler(scope_id).map_err(|error| {
             ExecutionFault::new(
                 AnalysisDiagnosticCode::UnhandledRuntimeError,

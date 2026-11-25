@@ -55,7 +55,7 @@ impl ExecutionSafePointScheduler {
     pub(super) fn observe(
         &mut self,
         cancellation: &CancelSignal,
-        budget: &etas_host::ExecutionBudget,
+        budget: impl FnOnce() -> etas_host::ExecutionBudget,
         span: Span,
     ) -> SafePointDecision {
         // The token is the cheap observation path; read the shared scope registry
@@ -76,7 +76,7 @@ impl ExecutionSafePointScheduler {
         if self.quantum_work >= WORK_QUANTUM {
             self.quantum_work = 0;
             // Check on every quantum, including after resuming from a Host wait.
-            if let Err(fault) = Self::check_time(budget, span) {
+            if let Err(fault) = Self::check_time(&budget(), span) {
                 return SafePointDecision::Fault(fault);
             }
             return SafePointDecision::Yield;
@@ -100,7 +100,7 @@ impl ExecutionSafePointScheduler {
     pub(super) fn consume(
         &mut self,
         limits: ExecutionLimits,
-        budget: &etas_host::ExecutionBudget,
+        budget: impl Fn() -> etas_host::ExecutionBudget,
         span: Span,
     ) -> Result<(), ExecutionFault> {
         let mut consumed = self.steps.load(std::sync::atomic::Ordering::Acquire);
@@ -117,7 +117,7 @@ impl ExecutionSafePointScheduler {
                 ));
             }
             if consumed % TIME_BUDGET_CHECK_INTERVAL == 0 {
-                Self::check_time(budget, span)?;
+                Self::check_time(&budget(), span)?;
             }
             match self.steps.compare_exchange_weak(
                 consumed,

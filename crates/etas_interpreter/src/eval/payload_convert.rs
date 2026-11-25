@@ -72,7 +72,8 @@ impl EvalContext<'_> {
 
     fn payload_conversion_control(&self, span: Span) -> Option<ControlSignal> {
         self.cancellation_signal(span).or_else(|| {
-            self.host_context
+            self.task
+                .host_context
                 .budget
                 .check_time()
                 .err()

@@ -49,6 +49,22 @@ struct Dispatches<'a> {
 
 impl<'view, 'hir> HirVisitor<'view, 'hir> for Dispatches<'_> {
     fn enter_expr(&mut self, expr: ExprView<'view, 'hir>) {
+        // A checked source default is dispatched only after scoped Handlers.
+        // Check its concrete service at that escaped boundary; the parent
+        // taxonomy (for example Time) does not identify a host adapter.
+        if self.project.hir.source_standard_types
+            && let HirExpr::Perform { action, .. } = expr.data()
+            && let ResolveResult::Resolved(symbol) = action.action_symbol
+            && self
+                .project
+                .types
+                .action_signatures
+                .get(&symbol)
+                .is_some_and(|signature| signature.default_handler_effects.is_some())
+        {
+            self.late_bound = true;
+            return;
+        }
         if self
             .project
             .types

@@ -245,12 +245,15 @@ async fn explicit_inference_runs_twice_then_executes_agent_postprocessing() {
     let checked = checked_project(
         r#"
 module app.main;
-agent Writer() -> string {
-    let first = perform infer<string>(Prompt.new().user(Public("first")));
-    let second = perform infer<string>(Prompt.new().user(Public(first)));
-    return std.text.uppercase(second);
+agent Writer = {};
+impl Writer {
+    public flow run(self) -> string {
+        let first = perform infer<string>(Prompt.new().user(Public("first")));
+        let second = perform infer<string>(Prompt.new().user(Public(first)));
+        return std.text.uppercase(second);
+    }
 }
-flow main() -> string { return Writer(); }
+flow main() -> string { return (Writer {}).run(); }
 "#,
     );
     let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
@@ -272,7 +275,13 @@ flow main() -> string { return Writer(); }
     assert_eq!(result.value(), Some(&InterpValue::String("DRAFT".into())));
     assert_eq!(host.model_call_count(), 2);
     assert_eq!(checked.types.agent_inferences.len(), 2);
-    let summary = &checked.effects.item_effects[&checked.entry.unwrap()];
+    let method = checked
+        .types
+        .agent_methods
+        .values()
+        .find(|method| method.name == "run")
+        .unwrap();
+    let summary = &checked.effects.item_effects[&method.body];
     assert!(summary.escaping_effects.effects.is_empty());
     let requested_names = summary
         .requested_actions
@@ -294,7 +303,7 @@ flow main() -> string { return Writer(); }
         "{:?}",
         summary.default_actions
     );
-    let etas_effects::ActionTraceDomain::Seq(events) = &summary.action_trace else {
+    let etas_effects::ActionTraceDomain::Seq(events) = summary.action_trace.structure() else {
         panic!(
             "both explicit inference sites must remain in the trace: {:?}",
             summary.action_trace
@@ -302,17 +311,18 @@ flow main() -> string { return Writer(); }
     };
     assert_eq!(events.len(), 4);
     for pair in events.chunks_exact(2) {
-        let etas_effects::ActionTraceDomain::Event(request) = &pair[0] else {
+        let etas_effects::ActionTraceDomain::Event(request) = pair[0].structure() else {
             panic!("inference request: {:?}", pair[0]);
         };
-        let etas_effects::ActionTraceDomain::DefaultHandler { guards, body } = &pair[1] else {
+        let etas_effects::ActionTraceDomain::DefaultHandler { guards, body } = pair[1].structure()
+        else {
             panic!("inference default: {:?}", pair[1]);
         };
         assert_eq!(guards.iter().collect::<Vec<_>>(), [&request.action]);
-        let etas_effects::ActionTraceDomain::Repeat(body) = body.as_ref() else {
+        let etas_effects::ActionTraceDomain::Repeat(body) = body.structure() else {
             panic!("inference step loop: {body:?}");
         };
-        let etas_effects::ActionTraceDomain::Event(step) = body.as_ref() else {
+        let etas_effects::ActionTraceDomain::Event(step) = body.structure() else {
             panic!("inference step: {body:?}");
         };
         for (event, expected) in [(request, "infer"), (step, "step")] {

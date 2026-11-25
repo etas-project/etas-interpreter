@@ -207,12 +207,27 @@ impl RevisionProjection {
         kind: &str,
         execution: &crate::value::CheckedExecutionProgram,
     ) -> String {
-        if let super::RevisionValueBridgeError::Value { source, target, .. } = &error {
+        if let super::RevisionValueBridgeError::Value {
+            source,
+            target,
+            failure,
+        } = &error
+        {
+            use etas_types::ty::display_type;
+            let actual = match failure {
+                super::RevisionValueFailure::WrongNominalIdentity { actual } => {
+                    format!(
+                        ", actual {}",
+                        display_type(&self.source().type_store, *actual)
+                    )
+                }
+                _ => String::new(),
+            };
             return format!(
-                "{error}; source type {:?}, target type {:?}, root value kind {kind}, \
+                "{error}; source type {}, target type {}{actual}, root value kind {kind}, \
                  execution root {:?}, source standard types {}, target standard types {}",
-                self.source().type_store.get(*source),
-                self.target().type_store.get(*target),
+                display_type(&self.source().type_store, *source),
+                display_type(&self.target().type_store, *target),
                 execution.plan.root,
                 self.source().hir.source_standard_types,
                 self.target().hir.source_standard_types,

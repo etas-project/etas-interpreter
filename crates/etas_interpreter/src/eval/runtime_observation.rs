@@ -3,6 +3,51 @@ use super::*;
 use etas_std::StdExecutionRole;
 
 impl EvalContext<'_> {
+    pub(super) fn execute_comparator_identity(
+        &self,
+        item: HirItemId,
+        role: StdExecutionRole,
+        args: &[InterpValue],
+        span: Span,
+    ) -> ControlSignal {
+        match (role, args) {
+            (StdExecutionRole::ComparatorCapture, [InterpValue::Callable(target)]) => {
+                if let Err(reason) = self.validate_collection_comparator(target) {
+                    return ControlSignal::invalid_arguments(reason, span);
+                }
+                let etas_types::ItemSignature::Flow(signature) =
+                    &self.checked.types.item_signatures[&item]
+                else {
+                    unreachable!()
+                };
+                ControlSignal::Value(InterpValue::Nominal {
+                    ty: signature.output,
+                    value: args[0].clone().into(),
+                })
+            }
+            (
+                StdExecutionRole::ComparatorSame,
+                [
+                    InterpValue::Nominal { value: a, .. },
+                    InterpValue::Nominal { value: b, .. },
+                ],
+            ) => {
+                let (InterpValue::Callable(a), InterpValue::Callable(b)) = (a.as_ref(), b.as_ref())
+                else {
+                    return ControlSignal::missing_checked_fact(
+                        "invalid comparator identity payload",
+                        span,
+                    );
+                };
+                ControlSignal::Value(InterpValue::Bool(a.same_instance(b)))
+            }
+            _ => ControlSignal::missing_checked_fact(
+                "comparator identity differs from its checked ABI",
+                span,
+            ),
+        }
+    }
+
     pub(super) fn execute_runtime_observation(
         &self,
         item: HirItemId,
@@ -19,7 +64,7 @@ impl EvalContext<'_> {
         if let Some(signal) = self.cancellation_signal(span) {
             return signal;
         }
-        if let Err(error) = self.host_context.budget.check_time() {
+        if let Err(error) = self.task.host_budget().check_time() {
             return ControlSignal::runtime_fault(error.message, span);
         }
         let etas_types::ItemSignature::Flow(signature) = &self.checked.types.item_signatures[&item]
@@ -50,15 +95,17 @@ impl EvalContext<'_> {
                 },
                 Err(error) => HostValue::Variant {
                     name: "Err".into(),
-                    fields: vec![HostValue::Record(vec![
-                        (
-                            "code".into(),
-                            HostValue::String("provider_unavailable".into()),
-                        ),
-                        ("message".into(), HostValue::String(error.message)),
-                    ])],
+                    fields: vec![etas_host::storage_error_value(error, None)],
                 },
             }
+        } else if role == StdExecutionRole::StreamClock {
+            static EPOCH: std::sync::OnceLock<std::time::Instant> = std::sync::OnceLock::new();
+            HostValue::UInt(
+                EPOCH
+                    .get_or_init(std::time::Instant::now)
+                    .elapsed()
+                    .as_millis(),
+            )
         } else {
             let now = match std::time::SystemTime::now().duration_since(std::time::UNIX_EPOCH) {
                 Ok(now) => now,
@@ -70,7 +117,6 @@ impl EvalContext<'_> {
                 }
             };
             match role {
-                StdExecutionRole::StreamClock => HostValue::UInt(now.as_millis()),
                 StdExecutionRole::StorageContext => {
                     let limits = &self.storage_limits;
                     HostValue::Record(vec![

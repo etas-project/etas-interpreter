@@ -66,8 +66,8 @@ flow main() -> u128 {{
     let all: Range<u128> = [0, {end});
     let window = all[3, 6);
     var sum: u128 = 0;
-    for value in window limit Iterations(10) {{ sum = sum + value; }}
-    for value in all limit Iterations(4294967295) {{ sum = sum + value; break; }}
+    for value in window {{ sum = sum + value; }}
+    for value in all {{ sum = sum + value; break; }}
     return sum;
 }}
 "#
@@ -121,7 +121,7 @@ module app.main;
 flow main() -> u128 {
     let all: Range<u128> = [0, 340282366920938463463374607431768211455);
     var sum: u128 = 0;
-    for value in all limit Iterations(4294967295) { sum = sum + value; }
+    for value in all { sum = sum + value; }
     return sum;
 }
 "#,

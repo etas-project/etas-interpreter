@@ -203,7 +203,7 @@ type Directory = { name: string, entries: Array<Entry> }
 enum Entry { File { name: string, content: string }, Subdirectory(Directory), }
 flow count(directory: Directory) -> i32 {
     var total = 0;
-    for entry in directory.entries limit Iterations(8) {
+    for entry in directory.entries {
         total = total + match entry {
             Entry.File { name: _, content: _ } => 1,
             Entry.Subdirectory(child) => 1 + count(child),

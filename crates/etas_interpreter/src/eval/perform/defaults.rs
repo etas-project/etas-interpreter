@@ -9,6 +9,37 @@ use etas_host::console::{ConsoleOperation, ConsoleRequest};
 use etas_types::{EffectArgRef, PrimitiveType, Type};
 
 impl EvalContext<'_> {
+    fn has_checked_default_action(&self, action: &etas_effects::ActionRef) -> bool {
+        let mut action = action.clone();
+        let mut checked = self.checked;
+        let mut plan = self.plan;
+        let mut foreign = self.foreign.as_deref();
+        loop {
+            if plan.action_mediation.has_default_action(&action) {
+                return true;
+            }
+            // A generic stored callback can outlive its declarative creator's
+            // entry plan. Its caller has already checked the concrete request
+            // footprint. Transport that contract through the checked action
+            // correspondence, without changing run-owned authority or budgets.
+            let Some(link) = foreign else {
+                return false;
+            };
+            if !std::sync::Arc::ptr_eq(link.projection.source(), checked)
+                || !std::sync::Arc::ptr_eq(link.projection.target(), &link.owner.checked)
+            {
+                return false;
+            }
+            let Ok(projected) = link.projection.action(&action) else {
+                return false;
+            };
+            action = projected;
+            checked = &link.owner.checked;
+            plan = &link.owner.plan;
+            foreign = link.owner.foreign.as_deref();
+        }
+    }
+
     pub(crate) fn source_compiler_default(
         &self,
         perform: &PendingPerform,
@@ -29,7 +60,7 @@ impl EvalContext<'_> {
         self.checked.hir.source_standard_types
             && std::sync::Arc::ptr_eq(&proof.program, self.checked)
             && signature.has_default_handler
-            && self.plan.action_mediation.has_default_action(&action)
+            && self.has_checked_default_action(&action)
             && match &proof.effect {
                 etas_effects::Effect::Action(actual) => actual == &action,
                 etas_effects::Effect::AppliedAction(actual) => actual.action == action,
@@ -43,6 +74,8 @@ impl EvalContext<'_> {
             .or_else(|| self.source_network_action(perform))
             .or_else(|| self.source_browser_action(perform))
             .or_else(|| self.source_secret_action(perform))
+            .or_else(|| self.source_random_action(perform))
+            .or_else(|| self.source_clock_action(perform))
             .or_else(|| self.source_command_action(perform))
             .or_else(|| self.source_session_action(perform))
             .or_else(|| self.source_memory_action(perform))
@@ -62,7 +95,7 @@ impl EvalContext<'_> {
         };
         if !self.checked.hir.source_standard_types
             || !std::sync::Arc::ptr_eq(&proof.program, self.checked)
-            || !self.plan.action_mediation.has_default_action(action)
+            || !self.has_checked_default_action(action)
         {
             return None;
         }

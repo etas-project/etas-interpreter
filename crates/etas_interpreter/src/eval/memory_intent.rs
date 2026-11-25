@@ -156,10 +156,10 @@ impl EvalContext<'_> {
         let Some(ty) = self.known_std_types.storage_error else {
             return ControlSignal::missing_checked_fact("missing checked StorageError type", span);
         };
-        let payload = HostValue::Record(vec![
-            ("code".into(), HostValue::String(error.code.as_str().into())),
-            ("message".into(), HostValue::String(error.message)),
-        ]);
+        if let Some(signal) = self.cancellation_signal(span) {
+            return signal;
+        }
+        let payload = etas_host::storage_error_value(error, None);
         let value = match super::host_value::decode_checked_host_value(payload, ty, self.checked) {
             Ok(value) => value,
             Err(error) => return ControlSignal::missing_checked_fact(error, span),

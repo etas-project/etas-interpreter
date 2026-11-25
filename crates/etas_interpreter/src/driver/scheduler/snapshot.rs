@@ -41,6 +41,31 @@ pub(crate) enum TaskWakeupSnapshot {
 }
 
 impl TaskScheduler {
+    /// Language-child joins can be rebuilt from the saved task ancestry. Native
+    /// operations and scopes owned outside that ancestry still require draining.
+    pub(crate) fn checkpoint_waiting_for_children(
+        task: &ScheduledTask,
+        tasks: &BTreeMap<TaskId, ScheduledTask>,
+    ) -> Result<bool, String> {
+        if task.state != TaskState::Waiting(TaskWait::HostDrain)
+            || !task.body_finished
+            || task.pending_outcome.is_none()
+        {
+            return Ok(false);
+        }
+        let pending = task
+            .local
+            .execution
+            .pending()
+            .map_err(|error| error.to_string())?;
+        Ok(pending.operations().is_empty()
+            && pending.scopes().iter().all(|scope| {
+                tasks
+                    .values()
+                    .any(|child| child.local.execution.id() == *scope)
+            }))
+    }
+
     pub(crate) fn checkpoint_tasks(&self) -> &BTreeMap<TaskId, ScheduledTask> {
         assert!(
             self.checkpoint_barrier,
@@ -62,6 +87,18 @@ impl TaskScheduler {
         policies: BTreeMap<TaskScopeId, SourcePolicySnapshot>,
         context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<TaskSchedulerMetadataSnapshot, String> {
+        if self.has_agent_instances() {
+            return Err("checkpoint capture of active Agent instances is not supported".into());
+        }
+        if self
+            .tasks
+            .values()
+            .any(|task| !task.state.is_terminal() && task.local.resource_owner.is_some())
+        {
+            return Err(
+                "checkpoint capture of an active managed resource owner is not supported".into(),
+            );
+        }
         assert!(
             self.checkpoint_barrier,
             "scheduler capture requires a checkpoint barrier"
@@ -164,6 +201,7 @@ impl TaskScheduler {
             })
             .collect();
         let mut scheduler = Self {
+            agents: Default::default(),
             next_scope: snapshot.next_scope,
             next_task: snapshot.next_task,
             groups: snapshot
@@ -405,9 +443,13 @@ impl TaskSchedulerMetadataSnapshot {
                 task.state,
                 TaskState::Running
                     | TaskState::Waiting(
-                        TaskWait::Cpu(_) | TaskWait::Host(_) | TaskWait::HostDrain
+                        TaskWait::Cpu(_)
+                            | TaskWait::Host(_)
+                            | TaskWait::HostDrain
+                            | TaskWait::ResourceChildren
                     )
-            ) {
+            ) && !TaskScheduler::checkpoint_waiting_for_children(task, tasks)?
+            {
                 return Err(
                     "checkpoint task is still running outside the coordinator barrier".into(),
                 );

@@ -99,9 +99,9 @@ flow main() -> List<string> {{
     let second = page(ProjectMemory.Papers, first.cursor, 50);
     let third = ProjectMemory.Papers.page(second.cursor, 50);
     var keys: List<string> = [];
-    for entry in first.entries limit Iterations(50) {{ keys = keys.push(entry.key); }}
-    for entry in second.entries limit Iterations(50) {{ keys = keys.push(entry.key); }}
-    for entry in third.entries limit Iterations(50) {{ keys = keys.push(entry.key); }}
+    for entry in first.entries {{ keys = keys.push(entry.key); }}
+    for entry in second.entries {{ keys = keys.push(entry.key); }}
+    for entry in third.entries {{ keys = keys.push(entry.key); }}
     match third.cursor {{ Some(_) => {{ return []; }}, None => {{}} }}
     match ProjectMemory.Papers.get_entry("key-000") {{
         Some(entry) => {{ ProjectMemory.Papers.put_versioned(entry.key, "updated", entry.version); }},

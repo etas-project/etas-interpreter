@@ -72,8 +72,8 @@ flow main() -> u128 {
     let all: Range<u128> = [0, 340282366920938463463374607431768211455);
     let window = all[3, 6);
     var sum: u128 = 0;
-    for value in window limit Iterations(10) { sum = sum + value; }
-    for value in all limit Iterations(4294967295) { sum = sum + value; break; }
+    for value in window { sum = sum + value; }
+    for value in all { sum = sum + value; break; }
     return sum;
 }
 "#,
@@ -106,7 +106,7 @@ flow main() -> u8 {
     let all: Range<u8> = Range.closed(254, 255);
     let window = all[1, 2);
     var last: u8 = 0;
-    for value in window limit Iterations(8) { last = value; }
+    for value in window { last = value; }
     return last;
 }
 "#,
@@ -152,7 +152,7 @@ flow main() -> u8 {
     values[1] = 99;
     checkpoint("slice");
     var sum = 0;
-    for value in window limit Iterations(8) { sum = sum + value; }
+    for value in window { sum = sum + value; }
     return sum;
 }
 "#,
@@ -196,9 +196,9 @@ async fn lazy_iteration_continue_advances_and_nested_loops_keep_separate_cursors
 module app.main;
 flow main() -> i32 {
     var total = 0;
-    for outer in [1, 2, 3] limit Iterations(10) {
+    for outer in [1, 2, 3] {
         if outer == 1 { continue; }
-        for inner in [10, 20] limit Iterations(10) {
+        for inner in [10, 20] {
             if inner == 10 { continue; }
             total = total + outer + inner;
         }
@@ -235,7 +235,7 @@ import std.text.{chars, find_all};
 flow main() -> usize {
     let matches = find_all("ab", "");
     var first = 0;
-    for (start, _) in matches limit Iterations(4) {
+    for (start, _) in matches {
         first = first * 10 + start;
         if start == 1 {
             println("cursor");
@@ -244,14 +244,14 @@ flow main() -> usize {
     }
 
     var second = 0;
-    for (start, _) in matches limit Iterations(4) {
+    for (start, _) in matches {
         second = second * 10 + start;
     }
 
     let scalars = chars("ab");
     var nested: usize = 0;
-    for _ in scalars limit Iterations(3) {
-        for _ in scalars limit Iterations(3) {
+    for _ in scalars {
+        for _ in scalars {
             nested = nested + 1;
         }
     }
@@ -338,7 +338,7 @@ import std.runtime.checkpoint;
 flow main() -> i32 {
     var values = [1, 2, 3];
     var sum = 0;
-    for value in values limit Iterations(8) {
+    for value in values {
         values = [9, 9, 9];
         if value == 1 { checkpoint("loop"); }
         sum = sum + value;
@@ -374,7 +374,6 @@ flow main() -> i32 {
 
     for (field, value) in [
         ("next_index", serde_json::json!(4)),
-        ("iterations", serde_json::json!(0)),
         ("source", serde_json::Value::Null),
     ] {
         let mut bad = artifact.clone();

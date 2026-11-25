@@ -68,6 +68,19 @@ impl Description<'_, '_, '_> {
             .clone();
         let (variant, values) = match node {
             TraceInfo::Empty => ("Empty", Vec::new()),
+            TraceInfo::Recursive { id, body } => {
+                let body_ty = p.variant_field(ty, "Recursive", "body")?;
+                let body = body
+                    .map(|body| self.trace(p.option(body_ty)?, body))
+                    .transpose()?;
+                (
+                    "Recursive",
+                    vec![
+                        V::String(id.to_string().into()),
+                        p.optional_value(body_ty, body)?,
+                    ],
+                )
+            }
             TraceInfo::Event(effect) => (
                 "Action",
                 vec![self.effect(p.variant_payload(ty, "Action")?, &effect)?],
@@ -355,6 +368,7 @@ impl Description<'_, '_, '_> {
                 TraceInfo::Seq(parts) | TraceInfo::Choice(parts) => {
                     pending.extend(parts.iter().copied())
                 }
+                TraceInfo::Recursive { body, .. } => pending.extend(*body),
                 TraceInfo::Repeat(inner) => pending.push(*inner),
                 TraceInfo::UnknownOrder(_) => {
                     gaps.insert((None, None, "action order is unavailable"));

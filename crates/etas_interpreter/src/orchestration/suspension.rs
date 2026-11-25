@@ -127,6 +127,15 @@ pub(crate) struct SuspendedTaskHandlerSnapshot {
     pub handlers: HandlerSnapshot,
     pub retries: RetrySnapshot,
     pub model_policy: ModelExecutionPolicySnapshot,
+    pub record_context: Option<(
+        crate::driver::scheduler::TaskIdentity,
+        u64,
+        Vec<(
+            u64,
+            crate::driver::scheduler::TaskIdentity,
+            crate::driver::scheduler::TaskScopeId,
+        )>,
+    )>,
     pub projection: ActionProjectionSnapshot,
     pub span: Span,
 }

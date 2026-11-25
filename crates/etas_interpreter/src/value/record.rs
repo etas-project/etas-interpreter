@@ -38,6 +38,7 @@ impl RecordLayout {
 struct RecordData {
     fields: Vec<(String, InterpValue)>,
     layout: OnceCell<Arc<RecordLayout>>,
+    member_tool_snapshot: Option<std::rc::Weak<super::MemberToolSnapshot>>,
 }
 
 impl Drop for RecordData {
@@ -80,6 +81,7 @@ impl RecordValue {
         Self(Rc::new(RecordData {
             fields,
             layout: OnceCell::new(),
+            member_tool_snapshot: None,
         }))
     }
 
@@ -90,7 +92,20 @@ impl RecordValue {
         Self(Rc::new(RecordData {
             fields,
             layout: OnceCell::from(layout),
+            member_tool_snapshot: None,
         }))
+    }
+
+    pub(crate) fn bind_member_tool(&mut self, snapshot: std::rc::Weak<super::MemberToolSnapshot>) {
+        Rc::make_mut(&mut self.0).member_tool_snapshot = Some(snapshot);
+    }
+
+    pub(crate) fn member_tool_snapshot(&self) -> Option<Rc<super::MemberToolSnapshot>> {
+        self.0.member_tool_snapshot.as_ref()?.upgrade()
+    }
+
+    pub(crate) fn member_tool_binding(&self) -> Option<std::rc::Weak<super::MemberToolSnapshot>> {
+        self.0.member_tool_snapshot.clone()
     }
 
     pub fn get(&self, field: &str) -> Option<InterpValue> {
@@ -114,10 +129,13 @@ impl RecordValue {
         slot: usize,
         expected_name: &str,
         arity: usize,
-    ) -> Result<&InterpValue, &'static str> {
+    ) -> Result<&InterpValue, String> {
         let data = &self.0;
         if data.fields.len() != arity {
-            return Err("record field count differs from checked layout");
+            let actual: Vec<_> = data.fields.iter().map(|(name, _)| name.as_str()).collect();
+            return Err(format!(
+                "field `{expected_name}` expects {arity} record fields, received {actual:?}"
+            ));
         }
         let storage = *data
             .layout()
@@ -129,7 +147,9 @@ impl RecordValue {
             .get(storage)
             .is_none_or(|(name, _)| name != expected_name)
         {
-            return Err("record field name differs from checked layout slot");
+            return Err(format!(
+                "checked record slot {slot} does not hold field `{expected_name}`"
+            ));
         }
         Ok(&data.fields[storage].1)
     }

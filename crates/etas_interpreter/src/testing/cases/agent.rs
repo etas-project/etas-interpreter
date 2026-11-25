@@ -1,5 +1,749 @@
 use super::super::*;
 
+#[derive(Debug, Default)]
+struct ManagedAdmissionEvents {
+    events: std::sync::Mutex<Vec<String>>,
+    reads: std::sync::atomic::AtomicUsize,
+    changed: tokio::sync::Notify,
+}
+impl crate::api::RunEventObserver for ManagedAdmissionEvents {
+    fn observe(&self, event: &WorkflowEvent) {
+        match event {
+            WorkflowEvent::AgentRequestSettled {
+                committed: false, ..
+            } => {
+                self.reads.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+            }
+            WorkflowEvent::ScopeSerialized { reason, .. } => {
+                self.events.lock().unwrap().push(reason.clone())
+            }
+            _ => {}
+        }
+        self.changed.notify_one();
+    }
+}
+impl ManagedAdmissionEvents {
+    async fn wait_for_reads(&self, count: usize) {
+        loop {
+            let changed = self.changed.notified();
+            if self.reads.load(std::sync::atomic::Ordering::SeqCst) >= count {
+                return;
+            }
+            changed.await;
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_native_approval_restores_the_handler_and_discards_agent_updates() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.{println, read_line};
+import std.task.{run, race, Scheduler};
+effect Provider { action note() -> unit; }
+agent Counter = { n: i32 };
+impl Counter {
+    public flow increment(var self) -> i32 ![Provider] {
+        self.n = self.n + 1;
+        perform Provider.note();
+        return self.n;
+    }
+    public flow get(self) -> i32 ![] { return self.n; }
+}
+flow main() -> i32 {
+    let counter=Counter { n=0 };
+    let winner=handle {
+        run((scheduler: Scheduler) => race([
+            () => { read_line()?; return 7; },
+            () => counter.increment(),
+        ]))
+    } with {
+        Provider.note()=> { println("pending"); resume (); }
+    };
+    return winner + counter.get();
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    let approval = host.pause_approval_completion();
+    let console = host.pause_console_completion();
+    host.seed_policy_decision_for(
+        "Console.stdout_write",
+        PolicyDecision::RequireApproval {
+            request: ApprovalRequest {
+                id: HostRequestId(1907),
+                reason: "native write approval".into(),
+                requested_grants: vec![HostActionGrant::allow("Console", "stdout_write")],
+                trace: TraceContext::root(TraceId(307)),
+            },
+        },
+    );
+    let mut options = RunOptions::default();
+    options.host_context.trace = TraceContext::root(TraceId(307));
+    options.host_context.authority.grants = vec![
+        HostActionGrant::allow("Console", "stdin_read_line"),
+        HostActionGrant::allow("Console", "stdout_write"),
+    ];
+    options.host_context.authority.policy =
+        boundary_policy_context(HostValue::String("native-policy".into()));
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        options,
+    );
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        tokio::join!(invocation.execute(), async {
+            approval.started.notified().await;
+            console.release.add_permits(1);
+        })
+    })
+    .await
+    .expect("cancelled native authorization must settle and restore the Handler owner");
+    let result = result.unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(7)));
+    assert_eq!(
+        host.console_call_count(),
+        1,
+        "the unapproved stdout write never dispatches"
+    );
+    assert_eq!(host.stdout_text(), "");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn managed_policy_and_approval_waits_allow_peer_requests_to_run() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.task.{run, start, await, Scheduler};
+agent Counter = { n: i32 };
+impl Counter {
+    public flow increment(var self) -> i32 {
+        println("writer");
+        self.n = self.n + 1;
+        return self.n;
+    }
+    public flow get(self) -> i32 ![] { return self.n; }
+}
+flow main() -> i32 {
+    let counter = Counter { n = 0 };
+    let policy_phase = run((scheduler: Scheduler) => {
+        let writer = start(() => counter.increment());
+        let peer = start(() => { return counter.get(); });
+        return await(writer) + await(peer);
+    });
+    let approval_phase = run((scheduler: Scheduler) => {
+        let writer = start(() => counter.increment());
+        let peer = start(() => { return counter.get(); });
+        return await(writer) + await(peer);
+    });
+    return policy_phase + approval_phase;
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    let policy = host.pause_policy_completion("Agentic.call");
+    let approval = host.pause_approval_completion();
+    host.seed_policy_decision_for("Agentic.call", PolicyDecision::Allow);
+    host.seed_policy_decision_for("Agentic.call", PolicyDecision::Allow);
+    host.seed_policy_decision_for(
+        "Agentic.call",
+        PolicyDecision::RequireApproval {
+            request: ApprovalRequest {
+                id: HostRequestId(1903),
+                reason: "approve second update".into(),
+                requested_grants: vec![HostActionGrant::allow("Console", "stdout_write")],
+                trace: TraceContext::root(TraceId(303)),
+            },
+        },
+    );
+    let events = std::sync::Arc::new(ManagedAdmissionEvents::default());
+    let mut options = RunOptions::default();
+    options.event_observer = Some(events.clone());
+    options.host_context.trace = TraceContext::root(TraceId(303));
+    options.host_context.authority.grants = vec![HostActionGrant::allow("Console", "stdout_write")];
+    options.host_context.authority.policy =
+        boundary_policy_context(HostValue::String("managed-policy".into()));
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        options,
+    );
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        tokio::join!(invocation.execute(), async {
+            policy.started.notified().await;
+            events.wait_for_reads(1).await;
+            policy.release.add_permits(1);
+            approval.started.notified().await;
+            events.wait_for_reads(2).await;
+            approval.release.add_permits(1);
+        })
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "managed admission must release the scheduler: stdout={:?}, approvals={}, policy={:?}, events={:?}",
+            host.stdout_text(),
+            host.approval_call_count(),
+            host.policy_requests()
+                .iter()
+                .map(|request| &request.subject)
+                .collect::<Vec<_>>(), events.events.lock().unwrap()
+        )
+    });
+    let result = result.unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(4)));
+    let console = host
+        .policy_requests()
+        .into_iter()
+        .filter(|request| request.subject.kind == "console")
+        .collect::<Vec<_>>();
+    assert_eq!(console.len(), 2);
+    assert!(
+        console[..1]
+            .iter()
+            .all(|request| request.authority.approvals.is_empty())
+    );
+    assert_eq!(console[1].authority.approvals.len(), 1);
+    assert_eq!(console[1].authority.approvals[0].id, HostRequestId(1903));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn native_policy_and_approval_waits_keep_agent_updates_isolated() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.task.{run, start, await, Scheduler};
+agent Counter = { n: i32 };
+impl Counter {
+    public flow increment(var self) -> i32 {
+        self.n = self.n + 1;
+        println("writer");
+        return self.n;
+    }
+    public flow get(self) -> i32 ![] { return self.n; }
+}
+flow main() -> i32 {
+    let counter = Counter { n = 0 };
+    let policy_phase = run((scheduler: Scheduler) => {
+        let writer = start(() => counter.increment());
+        let peer = start(() => { return counter.get(); });
+        return await(writer) + await(peer);
+    });
+    let approval_phase = run((scheduler: Scheduler) => {
+        let writer = start(() => counter.increment());
+        let peer = start(() => { return counter.get(); });
+        return await(writer) + await(peer);
+    });
+    return policy_phase + approval_phase;
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    let policy = host.pause_policy_completion("Console.stdout_write");
+    let approval = host.pause_approval_completion();
+    host.seed_policy_decision_for("Console.stdout_write", PolicyDecision::Allow);
+    host.seed_policy_decision_for(
+        "Console.stdout_write",
+        PolicyDecision::RequireApproval {
+            request: ApprovalRequest {
+                id: HostRequestId(1906),
+                reason: "approve second update".into(),
+                requested_grants: vec![HostActionGrant::allow("Console", "stdout_write")],
+                trace: TraceContext::root(TraceId(306)),
+            },
+        },
+    );
+    let events = std::sync::Arc::new(ManagedAdmissionEvents::default());
+    let mut options = RunOptions::default();
+    options.event_observer = Some(events.clone());
+    options.host_context.trace = TraceContext::root(TraceId(306));
+    options.host_context.authority.grants = vec![HostActionGrant::allow("Console", "stdout_write")];
+    options.host_context.authority.policy =
+        boundary_policy_context(HostValue::String("managed-policy".into()));
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        options,
+    );
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        tokio::join!(invocation.execute(), async {
+            policy.started.notified().await;
+            events.wait_for_reads(1).await;
+            policy.release.add_permits(1);
+            approval.started.notified().await;
+            events.wait_for_reads(2).await;
+            approval.release.add_permits(1);
+        })
+    })
+    .await
+    .unwrap_or_else(|_| {
+        panic!(
+            "managed admission must release the scheduler: stdout={:?}, approvals={}, policy={:?}, events={:?}",
+            host.stdout_text(),
+            host.approval_call_count(),
+            host.policy_requests()
+                .iter()
+                .map(|request| &request.subject)
+                .collect::<Vec<_>>(), events.events.lock().unwrap()
+        )
+    });
+    let result = result.unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(4)));
+    let console = result
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestStarted {
+                kind: etas_host::HostRequestKind::Console,
+                authority,
+                ..
+            }) => Some(authority.as_ref()),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(console.len(), 2);
+    assert!(
+        console[..1]
+            .iter()
+            .all(|request| request.approvals.is_empty())
+    );
+    assert_eq!(console[1].approvals.len(), 1);
+    assert_eq!(console[1].approvals[0].id, HostRequestId(1906));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_managed_approval_does_not_admit_the_request_or_stop_its_peer() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.read_line;
+import std.task.{run, race, Scheduler};
+agent Counter = { n: i32 };
+impl Counter {
+    public flow increment(var self) -> i32 ![] { self.n = self.n + 1; return self.n; }
+    public flow get(self) -> i32 ![] { return self.n; }
+}
+flow main() -> i32 {
+    let counter=Counter { n=0 };
+    let winner=run((scheduler: Scheduler) => race([
+        () => { read_line()?; return 7; },
+        () => counter.increment(),
+    ]));
+    return winner + counter.get();
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    let approval = host.pause_approval_completion();
+    let console = host.pause_console_completion();
+    host.seed_policy_decision_for(
+        "Agentic.call",
+        PolicyDecision::RequireApproval {
+            request: ApprovalRequest {
+                id: HostRequestId(1904),
+                reason: "approval remains pending".into(),
+                requested_grants: vec![],
+                trace: TraceContext::root(TraceId(304)),
+            },
+        },
+    );
+    let mut options = RunOptions::default();
+    options.host_context.trace = TraceContext::root(TraceId(304));
+    options.host_context.authority.grants =
+        vec![HostActionGrant::allow("Console", "stdin_read_line")];
+    options.host_context.authority.policy =
+        boundary_policy_context(HostValue::String("managed-policy".into()));
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        options,
+    );
+    let (result, ()) = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        tokio::join!(invocation.execute(), async {
+            approval.started.notified().await;
+            console.release.add_permits(1);
+        })
+    })
+    .await
+    .expect("a cancelled approval and its native operation must settle");
+    let result = result.unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(7)));
+    let queued = result
+        .events
+        .iter()
+        .filter(|event| matches!(event, WorkflowEvent::AgentRequestQueued { .. }))
+        .count();
+    assert_eq!(
+        queued, 1,
+        "only the surviving read request reaches the mailbox"
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn managed_agent_policy_runs_before_initialization_and_mailbox_admission() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+agent Counter = { n: i32 };
+impl Counter {
+    public flow increment(var self) -> i32 {
+        println("body")?;
+        self.n = self.n + 1;
+        return self.n;
+    }
+}
+flow initial() -> i32 { println("initial")?; return 0; }
+flow main() -> i32 {
+    let counter = Counter { n = initial() };
+    return counter.increment();
+}
+"#,
+    );
+    for (action, writes) in [("Agentic.create", 0), ("Agentic.call", 1)] {
+        let mut availability = availability(&[HostRequirementKind::Console]);
+        availability.policy = true;
+        availability.host_authority = true;
+        let host = FakeHost::new(availability);
+        host.seed_policy_decision_for(
+            action,
+            PolicyDecision::Deny {
+                reason: "managed boundary denied".into(),
+            },
+        );
+        let mut options = RunOptions::default();
+        options.host_context.authority.grants =
+            vec![HostActionGrant::allow("Console", "stdout_write")];
+        options.host_context.authority.policy =
+            boundary_policy_context(HostValue::String("managed-policy".into()));
+        let result = Interpreter
+            .run_checked(
+                &checked,
+                EntryPoint {
+                    item: checked.entry.unwrap(),
+                },
+                vec![],
+                &host,
+                options,
+            )
+            .await
+            .unwrap();
+        assert!(
+            result
+                .diagnostics
+                .iter()
+                .any(|diagnostic| diagnostic.message.contains("managed boundary denied")),
+            "{:?}",
+            result.diagnostics
+        );
+        assert_eq!(host.console_call_count(), writes);
+        assert!(
+            !result
+                .events
+                .iter()
+                .any(|event| matches!(event, WorkflowEvent::AgentRequestQueued { .. }))
+        );
+        let requests = host.policy_requests();
+        let request = requests
+            .iter()
+            .find(|request| {
+                request.subject.attributes.iter().any(|(name, value)| {
+                    name == "qualified_action" && value == &HostValue::String(action.into())
+                })
+            })
+            .unwrap();
+        assert_eq!(request.subject.kind, "agentic");
+        if action == "Agentic.create" {
+            assert!(
+                !result
+                    .events
+                    .iter()
+                    .any(|event| matches!(event, WorkflowEvent::AgentCreated { .. }))
+            );
+        } else {
+            assert!(
+                request
+                    .subject
+                    .attributes
+                    .iter()
+                    .any(|(name, _)| name == "method_symbol")
+            );
+            assert!(
+                request
+                    .subject
+                    .attributes
+                    .iter()
+                    .any(|(name, _)| name == "request")
+            );
+        }
+    }
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn an_agent_model_request_retains_inherited_bounds_after_annotations() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+import std.runtime.limits.Tokens;
+effect Provider { action answer() -> string; }
+agent Writer = {};
+impl Writer {
+    public flow answer(self) -> string {
+        return perform Provider.answer();
+    }
+}
+@limits([Tokens(31)])
+agent Gateway = {};
+impl Gateway {
+    public flow answer(self) -> string {
+        let writer = Writer {};
+        return handle { writer.answer() } with {
+            Provider.answer() => {
+                resume perform infer(Prompt.new().user(Public("hello")));
+            }
+        };
+    }
+}
+flow main() -> string {
+    let gateway = Gateway {};
+    return gateway.answer();
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    host.seed_model_response_text("draft");
+    let mut options = RunOptions::default();
+    options.host_context.authority.grants = vec![
+        HostActionGrant::allow("Agentic", "infer"),
+        HostActionGrant::allow("Agentic", "step"),
+    ];
+    options.model_policy.provider_capabilities = Some(full_model_capabilities());
+    options.model_policy.max_tool_rounds = 0;
+    options.model_policy.options.max_output_tokens = Some(7);
+    options.model_policy.budget = Some(etas_host::Budget {
+        tokens: Some(etas_host::TokenBudget { max_tokens: 9 }),
+        ..Default::default()
+    });
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            options,
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::String("draft".into())));
+    let requests = host.model_requests();
+    assert_eq!(requests.len(), 1);
+    assert_eq!(requests[0].options.max_output_tokens, Some(7));
+    let account = requests[0].budget.account_snapshots().unwrap();
+    assert_eq!(
+        account.len(),
+        1,
+        "caller and owner views of the same account are charged once"
+    );
+    assert_eq!(account[0].consumed_tokens, 2);
+    assert_eq!(requests[0].budget.remaining_tokens().unwrap(), Some(7));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cancelling_an_agent_request_stops_its_delegated_host_operation_and_restores_the_owner() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.{println, read_line};
+import std.task.{run, race, Scheduler, Async};
+effect Provider { action value(id: i32) -> i32; }
+agent Service = {};
+impl Service {
+    public flow answer(self, id: i32) -> i32 ![Provider] {
+        return perform Provider.value(id);
+    }
+}
+flow main() -> i32 {
+    let service = Service {};
+    return handle {
+        run((scheduler: Scheduler) => {
+            let winner = race([
+                () => { read_line()?; return 7; },
+                () => { return service.answer(1); },
+            ]);
+            return winner + service.answer(2) + service.answer(3);
+        })
+    } with {
+        Provider.value(id) => {
+            if id == 1 {
+                println("first")?;
+                while true { perform Async.yield(); }
+            }
+            println("next")?;
+            resume id;
+        }
+    };
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let gate = host.pause_console_completion();
+    gate.pending_calls
+        .store(2, std::sync::atomic::Ordering::SeqCst);
+    let mut options = RunOptions::default();
+    options.host_context.authority.grants = vec![
+        HostActionGrant::allow("Console", "stdin_read_line"),
+        HostActionGrant::allow("Console", "stdout_write"),
+    ];
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        options,
+    );
+    let (result, cancelled) = tokio::time::timeout(std::time::Duration::from_secs(3), async {
+        tokio::join!(invocation.execute(), async {
+            while host.console_call_count() < 2 {
+                gate.started.notified().await;
+            }
+            // The first admitted console wait is the race winner's stdin.
+            // Keep the Handler's stdout reply pending while cancellation runs.
+            gate.release.add_permits(1);
+            let signal = gate.signals.lock().unwrap()[1].clone();
+            let cancelled =
+                tokio::time::timeout(std::time::Duration::from_secs(1), signal.cancelled())
+                    .await
+                    .is_ok();
+            gate.release.add_permits(2);
+            cancelled
+        })
+    })
+    .await
+    .expect("cancelled request and its Host operation must join");
+    let result = result.unwrap();
+    assert!(
+        cancelled,
+        "the delegated native operation belongs to the cancelled request"
+    );
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(12)));
+    assert_eq!(host.stdout_text(), "first\nnext\nnext\n");
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn a_shared_outer_handler_keeps_native_approvals_in_each_agent_request() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.println;
+import std.task.{run, start, await, Scheduler};
+effect Provider { action value(id: i32) -> i32; }
+agent Service = {};
+impl Service {
+    public flow answer(self, id: i32) -> i32 ![Provider] {
+        return perform Provider.value(id);
+    }
+}
+flow main() -> i32 {
+    let service = Service {};
+    return handle {
+        run((scheduler: Scheduler) => {
+            let first = start(() => service.answer(1));
+            let second = start(() => service.answer(2));
+            return await(first) + await(second);
+        })
+    } with {
+        Provider.value(id) => { println("request"); resume id; }
+    };
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Console,
+        HostRequirementKind::Approval,
+    ]));
+    host.seed_policy_decision_for(
+        "Console.stdout_write",
+        PolicyDecision::RequireApproval {
+            request: ApprovalRequest {
+                id: HostRequestId(907),
+                reason: "first request approval".into(),
+                requested_grants: vec![HostActionGrant::allow("Console", "stdout_write")],
+                trace: TraceContext::root(TraceId(94)),
+            },
+        },
+    );
+    let mut options = RunOptions::default();
+    options.host_context.trace = TraceContext::root(TraceId(94));
+    options.host_context.authority.grants = vec![HostActionGrant::allow("Console", "stdout_write")];
+    options.host_context.authority.policy =
+        boundary_policy_context(HostValue::String("request-policy".into()));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            Vec::new(),
+            &host,
+            options,
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(3)));
+    let requests = host
+        .policy_requests()
+        .into_iter()
+        .filter(|request| request.subject.kind == "console")
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 2);
+    assert!(requests[0].authority.approvals.is_empty());
+    assert!(requests[1].authority.approvals.is_empty());
+    assert_eq!(host.console_call_count(), 2);
+}
+
 #[test]
 fn plan_collects_host_requirements_for_agent_entry() {
     let checked = checked_project(
@@ -1070,19 +1814,23 @@ flow main(input: string) -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn run_checked_applies_pipeline_stage_token_limit_to_model_request() {
+async fn run_checked_applies_pipeline_caller_limits_to_model_request() {
     let checked = checked_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
 import std.runtime.limits.Tokens;
 
-agent Writer(input: string) -> string ![] {
-  return perform infer(Prompt.new().user(Public(input)));
+agent Writer = {};
+impl Writer {
+  public flow run(self, input: string) -> string {
+    return perform infer(Prompt.new().user(Public(input)));
+  }
 }
 
+@limits([Tokens(23)])
 flow main(input: string) -> string {
-  return input ~> Writer limit Tokens(23);
+  return input ~> (Writer {}).run;
 }
 "#,
     );
@@ -1113,21 +1861,25 @@ flow main(input: string) -> string {
 }
 
 #[tokio::test(flavor = "current_thread")]
-async fn resumed_pipeline_target_selection_applies_the_checked_limit_to_the_model_request() {
+async fn resumed_pipeline_target_selection_preserves_the_callers_checked_limits() {
     let checked = checked_project(
         r#"
 module app.main;
 import std.agent.prompt.Prompt;
 import std.runtime.checkpoint;
 import std.runtime.limits.Tokens;
-agent Writer(input: string) -> string ![] {
+agent Writer = {};
+impl Writer {
+  public flow run(self, input: string) -> string {
     return perform infer(Prompt.new().user(Public(input)));
+  }
 }
 flow choose() -> string -> string ![] {
     checkpoint("select target");
-    return (input: string) => Writer(input);
+    return (Writer {}).run;
 }
-flow main() -> string { return "hello" ~> choose() limit Tokens(23); }
+@limits([Tokens(23)])
+flow main() -> string { return "hello" ~> choose(); }
 "#,
     );
     let host = FakeHost::new(availability(&[
@@ -1622,4 +2374,154 @@ flow main(input: string) -> Trusted<string> {
     assert!(result.diagnostics.iter().any(|diagnostic| {
         diagnostic.code == DiagnosticCode::Analysis(AnalysisDiagnosticCode::InvalidArguments)
     }));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn type_stages_construct_a_fresh_agent_for_each_pipeline_invocation() {
+    let checked = checked_project(
+        r#"
+module app.main;
+agent Echo = {};
+impl Echo {
+    public flow run<T>(self, value: T) -> T { return value; }
+}
+alias EchoAlias = Echo;
+type Increment = {};
+impl Increment {
+    public flow run(self, value: i32) -> i32 { return value + 1; }
+}
+flow main() -> i32 {
+    let stages = Echo | Increment | EchoAlias;
+    let direct = 42 ~> Echo;
+    return direct + stages(9) + stages(10);
+}
+"#,
+    );
+    let host = FakeHost::new(HostServiceAvailability::default());
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(63)));
+    let instances = result
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            WorkflowEvent::AgentCreated { instance, .. } => Some(*instance),
+            _ => None,
+        })
+        .collect::<std::collections::BTreeSet<_>>();
+    assert_eq!(
+        instances.len(),
+        5,
+        "each Agent stage invocation constructs a fresh instance"
+    );
+    let requests = result
+        .events
+        .iter()
+        .filter_map(|event| match event {
+            WorkflowEvent::AgentRequestQueued { instance, .. } => Some(*instance),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(requests.len(), 5);
+    assert!(requests.iter().all(|instance| instances.contains(instance)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn autonomous_main_starts_once_after_initialization_and_retains_its_update_turn() {
+    let checked = super::super::project::checked_autonomous_project();
+    let entry = EntryPoint {
+        item: checked.entry.unwrap(),
+    };
+    let args = crate::api::entry_args_from_strings(checked, Vec::new());
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let console = host.pause_console_completion();
+    let events = std::sync::Arc::new(ManagedAdmissionEvents::default());
+    let mut options = RunOptions::default();
+    options.event_observer = Some(events.clone());
+    options.host_context.authority.grants = vec![HostActionGrant::allow("Console", "stdout_write")];
+    let invocation = Interpreter.create_run(checked, entry, args, &host, options);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        let run = invocation.execute();
+        tokio::pin!(run);
+        let release = async {
+            console.started.notified().await;
+            events.wait_for_reads(1).await;
+            console.release.add_permits(1);
+        };
+        tokio::select! {
+            result = &mut run => result,
+            () = release => run.await,
+        }
+    })
+    .await
+    .expect("main's pending write permits a snapshot read and resumes its update turn");
+    let result = result.unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(4184)));
+    assert_eq!(host.console_call_count(), 1);
+    assert_eq!(result.events.iter().filter(|event| matches!(event, WorkflowEvent::AgentBoundary { resource, .. } if resource.ends_with("Worker.main"))).count(), 1);
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn autonomous_main_is_cancelled_and_joined_when_its_owner_exits() {
+    let checked = super::super::project::checked_autonomous_project();
+    let entry = EntryPoint {
+        item: checked.entry.unwrap(),
+    };
+    let args = crate::api::entry_args_from_strings(checked, vec!["stop".into()]);
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::Console]));
+    let console = host.pause_console_completion();
+    let mut options = RunOptions::default();
+    options.host_context.authority.grants = vec![
+        HostActionGrant::allow("Console", "stdin_read_line"),
+        HostActionGrant::allow("Console", "stdout_write"),
+    ];
+    let invocation = Interpreter.create_run(checked, entry, args, &host, options);
+    let result = tokio::time::timeout(std::time::Duration::from_secs(4), async {
+        let run = invocation.execute();
+        tokio::pin!(run);
+        let release = async {
+            while host.console_call_count() < 2 {
+                console.started.notified().await;
+            }
+            // The owner is waiting on stdin. Let it leave while the automatic
+            // main's stdout call is still in flight.
+            console.release.add_permits(1);
+            let main_signal = console.signals.lock().unwrap()[1].clone();
+            main_signal.cancelled().await.unwrap();
+            console.release.add_permits(1);
+        };
+        tokio::select! {
+            result = &mut run => result,
+            () = release => run.await,
+        }
+    })
+    .await
+    .expect("owner exit must cancel and join automatic work")
+    .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(41)));
+    assert_eq!(host.console_call_count(), 2);
+    let request = result
+        .events
+        .iter()
+        .find_map(|event| match event {
+            WorkflowEvent::AgentBoundary {
+                resource, request, ..
+            } if resource.ends_with("Worker.main") => *request,
+            _ => None,
+        })
+        .expect("automatic main request");
+    assert!(result.events.iter().any(|event| matches!(event, WorkflowEvent::AgentRequestSettled { request: settled, committed: false, .. } if *settled == request)));
 }

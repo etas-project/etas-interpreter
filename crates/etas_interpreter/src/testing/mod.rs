@@ -162,6 +162,7 @@ fn declared_host_search_environment(
             }],
         }],
         external_public_metadata: vec![ProjectExternalPublicMetadataInput {
+            constructor_contracts: Vec::new(),
             scoped_callbacks: Vec::new(),
             package,
             types: Vec::new(),
@@ -216,6 +217,7 @@ fn declared_host_search_environment(
             callable_spec_satisfactions: Vec::new(),
             trace_spec_conformances: Vec::new(),
             effect_summaries: vec![ProjectExternalEffectSummaryInput {
+                callable_body: None,
                 definition: None,
                 residual_checks: vec![],
                 behavior: None,

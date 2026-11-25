@@ -420,6 +420,10 @@ impl Drop for LocalsSnapshot {
 
 #[derive(Debug, Clone)]
 pub(crate) enum ValueSnapshot {
+    ClockDomain {
+        ty: TypeId,
+        domain: String,
+    },
     ScopedHandler {
         metadata: Box<crate::value::ScopedHandlerMetadata>,
         value: SnapshotBox,
@@ -654,6 +658,11 @@ pub(crate) struct DefaultArgumentsSnapshot {
 #[derive(Clone, Debug)]
 pub(crate) enum ContinuationSnapshot {
     DefaultArguments(Box<DefaultArgumentsSnapshot>),
+    CompleteRecordConstruction {
+        id: u64,
+        task: crate::driver::scheduler::TaskIdentity,
+        owner: crate::driver::scheduler::TaskScopeId,
+    },
     ToolInvocationStart(Box<ToolInvocationSnapshot>),
     ToolInvocationResult(Box<ToolInvocationSnapshot>),
     AgentControllerStep(Box<AgentControllerSnapshot>),
@@ -944,17 +953,12 @@ pub(crate) enum ContinuationSnapshot {
         span: Span,
         outer: ContinuationSnapshotLink,
     },
-    LoopLimit {
-        stmt: etas_hir::HirStmtId,
-        frame: LocalsSnapshot,
-    },
     ForLoop {
         pat: HirPatId,
         source: Option<ValueSnapshot>,
         text_cursor: Option<etas_builtin::text::iteration::TextCursorState>,
         next_index: usize,
         body: HirBlockId,
-        iterations: usize,
         loop_scope: Vec<SymbolId>,
         span: Span,
         frame: LocalsSnapshot,
@@ -966,7 +970,6 @@ pub(crate) enum ContinuationSnapshot {
         awaiting_step: bool,
         next_index: usize,
         body: HirBlockId,
-        iterations: usize,
         loop_scope: Vec<SymbolId>,
         span: Span,
         frame: LocalsSnapshot,
@@ -974,8 +977,6 @@ pub(crate) enum ContinuationSnapshot {
     WhileLoop {
         cond: HirExprId,
         body: HirBlockId,
-        iteration: u64,
-        max_iterations: u64,
         resume_after_body: bool,
         span: Span,
         frame: LocalsSnapshot,
@@ -983,7 +984,6 @@ pub(crate) enum ContinuationSnapshot {
     RetryAttempt {
         retry: RetryAttemptRecord,
         body: HirBlockId,
-        attempts: usize,
         next_attempt: usize,
         block: HirBlockId,
         next_stmt_index: usize,
@@ -1332,4 +1332,10 @@ pub enum BoundaryOccurrenceId {
 pub enum CompletedHostBoundaryResult {
     Runtime(InterpValue),
     Host(etas_host::HostValue),
+}
+
+impl From<InterpValue> for CompletedHostBoundaryResult {
+    fn from(value: InterpValue) -> Self {
+        Self::Runtime(value)
+    }
 }

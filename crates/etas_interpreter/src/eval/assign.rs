@@ -48,6 +48,22 @@ impl<'a> EvalContext<'a> {
             let message = "assignment target is not a mutable local slot".to_owned();
             return Err(Box::new(ControlSignal::invalid_arguments(message, span)));
         }
+        if let Some(InterpValue::Agent(reference)) = frame.get(root_symbol) {
+            let Some(turn) = self
+                .task
+                .agent_turn
+                .as_mut()
+                .filter(|turn| turn.reference == reference && turn.updating)
+            else {
+                return Err(Box::new(ControlSignal::missing_checked_fact(
+                    "Agent mutation requires its exclusive update turn",
+                    span,
+                )));
+            };
+            let state = turn.state.as_mut().expect("admitted update state");
+            return super::assign_nested::commit(state, segments, value, span)
+                .map_err(|fault| Box::new(ControlSignal::Fault(Box::new(fault))));
+        }
         let Some(result) = frame.with_local_mut(root_symbol, |root| {
             super::assign_nested::commit(root, segments, value, span)
         }) else {

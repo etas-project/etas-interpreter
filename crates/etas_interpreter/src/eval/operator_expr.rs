@@ -22,7 +22,7 @@ impl<'a> EvalContext<'a> {
                     text,
                     span: literal_span,
                 }) => Some(
-                    self.numeric_literal_type(expr, false, literal_span)
+                    self.numeric_literal_type(expr, false, literal_span, Some(frame))
                         .and_then(|primitive| {
                             NumericValue::parse_negated_integer(&text, primitive)
                                 .map(InterpValue::Number)
@@ -33,7 +33,7 @@ impl<'a> EvalContext<'a> {
                     text,
                     span: literal_span,
                 }) => Some(
-                    self.numeric_literal_type(expr, true, literal_span)
+                    self.numeric_literal_type(expr, true, literal_span, Some(frame))
                         .and_then(|primitive| {
                             NumericValue::parse_negated_float(&text, primitive)
                                 .map(InterpValue::Number)
@@ -194,10 +194,7 @@ impl<'a> EvalContext<'a> {
             }
             other => return other,
         };
-        match self.eval_binary_values(op, left, right, span) {
-            Ok(value) => ControlSignal::Value(value),
-            Err(fault) => ControlSignal::Fault(Box::new(fault)),
-        }
+        self.eval_binary_with_equality(op, left, right, span)
     }
 
     pub(super) fn eval_binary_values(

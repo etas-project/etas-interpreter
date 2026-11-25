@@ -196,7 +196,7 @@ impl EvalContext<'_> {
             Err(message) => return ControlSignal::missing_checked_fact(message, span),
         };
         let concurrency = concurrency_plan.effective_limit;
-        let parent_scope = self.task.task_scope;
+        let parent_scope = self.task.host_task_scope();
         let scope = self
             .scheduler
             .create_scope_with_policy(parent_scope, concurrency, policy);
@@ -450,8 +450,20 @@ impl EvalContext<'_> {
         policy: Option<crate::driver::scheduler::SourceSchedulingPolicy>,
         span: Span,
     ) -> ControlSignal {
+        self.enter_owned_scope(target, concurrency_plan, callback_site, policy, None, span)
+    }
+
+    pub(super) fn enter_owned_scope(
+        &mut self,
+        target: crate::control::CallTarget,
+        concurrency_plan: CheckedConcurrencyPlan,
+        callback_site: Option<crate::control::CallSite>,
+        policy: Option<crate::driver::scheduler::SourceSchedulingPolicy>,
+        resource_report: Option<etas_types::TypeId>,
+        span: Span,
+    ) -> ControlSignal {
         let concurrency = concurrency_plan.effective_limit;
-        let parent_scope = self.task.task_scope;
+        let parent_scope = self.task.host_task_scope();
         let scope = self.scheduler.create_scope(parent_scope, concurrency);
         if concurrency_plan.resource_guards {
             self.scheduler.guard_scope(scope);
@@ -459,15 +471,19 @@ impl EvalContext<'_> {
         if let Some(policy) = policy {
             self.scheduler.install_source_policy(scope, policy);
         }
-        let scheduler = match crate::value::task::source::scheduler_value(
-            self.checked,
-            crate::value::SchedulerHandleValue::new(scope),
-        ) {
-            Ok(value) => value,
-            Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+        let arguments = if resource_report.is_some() {
+            Vec::new()
+        } else {
+            match crate::value::task::source::scheduler_value(
+                self.checked,
+                crate::value::SchedulerHandleValue::new(scope),
+            ) {
+                Ok(value) => vec![value],
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
+            }
         };
         let resources = if self.scheduler.requires_resource_guards(scope) {
-            match self.task_resource_keys(&target, std::slice::from_ref(&scheduler)) {
+            match self.task_resource_keys(&target, &arguments) {
                 Some(keys) => keys,
                 None => {
                     self.unresolved_resource_scope();
@@ -490,7 +506,7 @@ impl EvalContext<'_> {
             purity: crate::control::CallPurity::Ordinary,
             site: callback_site,
             target,
-            args: vec![scheduler],
+            args: arguments,
             span,
             continuation: Continuation::BlockValue,
         }));
@@ -511,6 +527,9 @@ impl EvalContext<'_> {
             .set_scope_owner(scope, owner, self.task.logical_identity)
         {
             return ControlSignal::runtime_fault(error.to_string(), span);
+        }
+        if let Some(error) = resource_report {
+            self.scheduler.configure_resource_scope(scope, error, span);
         }
         if let Err(error) = self.scheduler.attach_resources(owner, resources) {
             return ControlSignal::runtime_fault(error.to_string(), span);
@@ -746,9 +765,9 @@ impl EvalContext<'_> {
                 entry_item: self.entry_item,
                 storage_limits: self.storage_limits.clone(),
                 syntax_limits: self.syntax_limits,
-                host_context: self.host_context.clone(),
+                host_context: self.task.host_context().clone(),
                 model_policy: self.task.model_policy.clone(),
-                execution: self.task.execution.clone(),
+                execution: self.task.host_execution(),
                 replay_keys: self.replay_keys.clone(),
             },
             cancellation: std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false)),

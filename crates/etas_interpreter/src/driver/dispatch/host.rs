@@ -18,7 +18,6 @@ use crate::{
 use super::{
     error::{format_host_error, retry_or_report},
     host_dispatch::{HostCompletion, HostDispatch, PendingHostOperation, TraceableHostResponse},
-    policy::authorize_before_boundary,
 };
 
 enum HostBoundaryFailure {
@@ -58,14 +57,16 @@ enum HostBoundaryCompletion {
     Stream(HostCompletion<StreamResponse>),
     Tls(HostCompletion<TlsConnectResponse>),
     Secret(HostCompletion<SecretResponse>),
+    Entropy(HostCompletion<etas_host::EntropyResponse>),
+    Clock(HostCompletion<etas_host::ClockResponse>),
     Browser(HostCompletion<BrowserProtocolResponse>),
 }
 
 pub(in crate::driver) async fn begin<'host>(
     eval: &mut EvalContext<'_>,
-    host: &'host dyn HostServices,
-    mut boundary: PendingHostBoundary,
-    machine: &mut EvalMachine,
+    _host: &'host dyn HostServices,
+    boundary: PendingHostBoundary,
+    _machine: &mut EvalMachine,
 ) -> HostBoundaryDispatchStart<'host> {
     let kind = host_boundary_kind(&boundary.request);
     let key = match host_boundary_key(eval, &boundary) {
@@ -89,11 +90,22 @@ pub(in crate::driver) async fn begin<'host>(
         }
     };
     if let Some(key) = &key {
-        match eval.completed_host_boundary_result(&occurrence, kind, key, boundary.span) {
+        let failure_kind = primitive_failure_kind(&boundary.request);
+        let replay_failure = failure_kind.is_some()
+            && eval.completed_host_boundary_kind(&occurrence) == failure_kind;
+        let replay_kind = if replay_failure {
+            failure_kind.unwrap()
+        } else {
+            kind
+        };
+        match eval.completed_host_boundary_result(&occurrence, replay_kind, key, boundary.span) {
             Ok(Some(value)) => {
-                return HostBoundaryDispatchStart::Complete(Some(
-                    eval.resume_host_signal(boundary, value),
-                ));
+                let signal = if replay_failure {
+                    resume_primitive_error(eval, boundary, value)
+                } else {
+                    eval.resume_host_signal(boundary, value)
+                };
+                return HostBoundaryDispatchStart::Complete(Some(signal));
             }
             Ok(None) => (),
             Err(fault) => {
@@ -103,36 +115,61 @@ pub(in crate::driver) async fn begin<'host>(
             }
         }
     }
-    if let Err(error) = authorize_before_boundary(
+    let subjects = host_boundary_admission_subjects(&boundary.request, trace_subject);
+    let budget = host_boundary_budget(&boundary.request).clone();
+    let checks = subjects
+        .into_iter()
+        .map(|subject| (eval.boundary_policy_ref(), subject))
+        .collect();
+    HostBoundaryDispatchStart::Complete(Some(super::authorization::prepare(
         eval,
-        host,
-        eval.boundary_policy_ref(),
-        trace_subject.clone(),
-    )
-    .await
-    {
-        if let Some(signal) = eval.cancellation_signal(boundary.span) {
-            return HostBoundaryDispatchStart::Complete(Some(signal));
-        }
-        if matches!(
-            &boundary.request,
-            HostBoundaryRequest::MemoryWrite(_)
-                | HostBoundaryRequest::SessionHistory(_)
-                | HostBoundaryRequest::SessionContext(_)
-        ) {
-            return HostBoundaryDispatchStart::Complete(Some(
-                eval.storage_error_with_continuation(error, boundary.span, boundary.continuation),
-            ));
-        }
-        eval.diagnostics.push(etas_core::Diagnostic::analysis(
-            etas_core::AnalysisDiagnosticCode::UnhandledRuntimeError,
-            boundary.span,
-            super::policy::policy_failure_message(kind, &error),
-        ));
-        return HostBoundaryDispatchStart::Complete(None);
+        crate::control::NativeBoundaryTarget::Host {
+            pending: boundary,
+            key,
+        },
+        checks,
+        budget,
+    )))
+}
+
+pub(in crate::driver) fn authorization_failure(
+    eval: &mut EvalContext<'_>,
+    boundary: PendingHostBoundary,
+    key: Option<etas_host::replay::ReplayFingerprint>,
+    error: HostError,
+) -> ControlSignal {
+    if primitive_failure_kind(&boundary.request).is_some() {
+        return primitive_failure(eval, boundary, key, error);
     }
+    if matches!(
+        &boundary.request,
+        HostBoundaryRequest::MemoryWrite(_)
+            | HostBoundaryRequest::SessionHistory(_)
+            | HostBoundaryRequest::SessionContext(_)
+    ) {
+        return eval.storage_error_with_continuation(error, boundary.span, boundary.continuation);
+    }
+    ControlSignal::runtime_fault(
+        super::policy::policy_failure_message(host_boundary_kind(&boundary.request), &error),
+        boundary.span,
+    )
+}
+
+pub(in crate::driver) async fn begin_authorized<'host>(
+    eval: &mut EvalContext<'_>,
+    host: &'host dyn HostServices,
+    mut boundary: PendingHostBoundary,
+    key: Option<etas_host::replay::ReplayFingerprint>,
+    machine: &mut EvalMachine,
+) -> HostBoundaryDispatchStart<'host> {
+    let kind = host_boundary_kind(&boundary.request);
     boundary.request.bind_authority(eval.host_authority());
     if let Err(error) = host_boundary_budget(&boundary.request).check_time() {
+        if primitive_failure_kind(&boundary.request).is_some() {
+            return HostBoundaryDispatchStart::Complete(Some(primitive_failure(
+                eval, boundary, key, error,
+            )));
+        }
         if matches!(
             &boundary.request,
             HostBoundaryRequest::MemoryWrite(_)
@@ -279,6 +316,44 @@ pub(in crate::driver) async fn begin<'host>(
                 Err(HostBoundaryFailure::Host(error)),
             )),
         },
+        HostBoundaryRequest::Entropy(request) => match HostDispatch::begin(
+            eval,
+            request.id,
+            HostRequestKind::Random,
+            request.trace_payload(),
+            request.authority.clone(),
+            request.trace.clone(),
+            |operation| host.entropy(operation, request),
+        ) {
+            Ok(pending) => {
+                pending_boundary(boundary, key, pending, HostBoundaryCompletion::Entropy)
+            }
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
+        HostBoundaryRequest::Clock(request) => match HostDispatch::begin(
+            eval,
+            request.id,
+            HostRequestKind::Clock,
+            request.trace_payload(),
+            request.authority.clone(),
+            request.trace.clone(),
+            |operation| host.clock(operation, request),
+        ) {
+            Ok(pending) => pending_boundary(boundary, key, pending, HostBoundaryCompletion::Clock),
+            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                eval,
+                machine,
+                boundary,
+                key,
+                Err(HostBoundaryFailure::Host(error)),
+            )),
+        },
         HostBoundaryRequest::Browser(request) => match HostDispatch::begin(
             eval,
             request.id,
@@ -368,6 +443,20 @@ pub(in crate::driver) fn finish(
                             }
                         };
                         Ok(eval.decode_source_directory_list(result_type, limits, path, entry))
+                    }
+                    (Ok(FilesystemEntry::FileStream(file)), HostBoundaryDecode::SourceFileStream { result_type }) => {
+                        let HostBoundaryRequest::Filesystem(request) = &boundary.request else { unreachable!() };
+                        let FilesystemOperation::Open { path, mode } = &request.operation else { unreachable!() };
+                        Ok(if file.path() != *path || file.mode() != *mode {
+                            Err("Fs.open response has a different region, path or mode".into())
+                        } else {
+                            crate::value::host_handle::source_handle(eval.checked, result_type, "connection", |ty| HostHandleValue::file_stream(ty, file))
+                        })
+                    }
+                    (Ok(FilesystemEntry::Path(path)), HostBoundaryDecode::SourceWorkspacePath { result_type }) => {
+                        let HostBoundaryRequest::Filesystem(request) = &boundary.request else { unreachable!() };
+                        let FilesystemOperation::Canonicalize { path: requested } = &request.operation else { unreachable!() };
+                        Ok(eval.decode_source_workspace_path(result_type, &requested.region, path))
                     }
                     (Ok(entry), HostBoundaryDecode::SourceFilesystemStat { result_type }) => {
                         Ok(eval.decode_source_filesystem_stat(result_type, entry))
@@ -479,6 +568,56 @@ pub(in crate::driver) fn finish(
                 Err(error) => Err(HostBoundaryFailure::Host(error)),
             }
         }
+        HostBoundaryCompletion::Entropy(completion) => HostDispatch::finish(eval, completion)
+            .and_then(|response| response.result)
+            .and_then(|bytes| {
+                let HostBoundaryRequest::Entropy(request) = &boundary.request else {
+                    unreachable!()
+                };
+                if bytes.len() != request.count {
+                    return Err(HostError::new(
+                        etas_host::HostErrorCode::InvalidResponse,
+                        "entropy provider returned a different byte count",
+                    ));
+                }
+                Ok(Ok(InterpValue::Bytes(bytes.into())))
+            })
+            .map_err(HostBoundaryFailure::Host),
+        HostBoundaryCompletion::Clock(completion) => HostDispatch::finish(eval, completion)
+            .and_then(|response| response.result)
+            .and_then(|observation| {
+                let HostBoundaryRequest::Clock(request) = &boundary.request else {
+                    unreachable!("clock completion has a clock request");
+                };
+                let valid = matches!(
+                    (&request.operation, &observation),
+                    (
+                        etas_host::ClockOperation::Now,
+                        etas_host::ClockObservation::Time { .. }
+                    ) | (
+                        etas_host::ClockOperation::Sleep { .. },
+                        etas_host::ClockObservation::Woke
+                    )
+                );
+                let valid = valid || matches!((&request.operation, &observation),
+                    (etas_host::ClockOperation::Monotonic { run }, etas_host::ClockObservation::Instant { domain, .. })
+                        if domain.rsplit_once('/').is_some_and(|(_, actual)| actual == run.to_hex()));
+                if !valid {
+                    return Err(HostError::new(
+                        etas_host::HostErrorCode::InvalidResponse,
+                        "clock provider returned a different observation kind",
+                    ));
+                }
+                let HostBoundaryDecode::Clock { result_type } = boundary.decode else {
+                    unreachable!("checked Clock decode");
+                };
+                eval.clock_observation_value(result_type, observation)
+                    .map(Ok)
+                    .map_err(|message| {
+                        HostError::new(etas_host::HostErrorCode::InvalidResponse, message)
+                    })
+            })
+            .map_err(HostBoundaryFailure::Host),
         HostBoundaryCompletion::Browser(completion) => {
             match HostDispatch::finish(eval, completion) {
                 Ok(response) => response
@@ -560,11 +699,10 @@ fn finish_result(
             }
             Some(eval.resume_host_signal(boundary, value))
         }
-        Ok(Err(message)) => retry_or_report(
+        Ok(Err(message)) => report_boundary_failure(
             eval,
             machine,
-            boundary.continuation,
-            boundary.span,
+            boundary,
             format!("{kind} host boundary failed: {message}"),
         ),
         Err(HostBoundaryFailure::Stream(failure)) => {
@@ -583,8 +721,12 @@ fn finish_result(
             boundary.span,
         )),
         Err(HostBoundaryFailure::Host(error)) => {
+            if primitive_failure_kind(&boundary.request).is_some() {
+                return Some(primitive_failure(eval, boundary, key, error));
+            }
             if matches!(&boundary.request, HostBoundaryRequest::Filesystem(_))
-                && error.code == etas_host::HostErrorCode::IoFailure
+                && (error.code == etas_host::HostErrorCode::IoFailure
+                    || error.details.iter().any(|detail| detail.key == "io_kind"))
             {
                 return Some(eval.filesystem_io_failure_signal(boundary, error));
             }
@@ -594,14 +736,35 @@ fn finish_result(
             if matches!(&boundary.request, HostBoundaryRequest::Stream(_)) {
                 return Some(eval.stream_failure_signal(boundary, StreamFailure::Host(error)));
             }
-            retry_or_report(
+            report_boundary_failure(
                 eval,
                 machine,
-                boundary.continuation,
-                boundary.span,
+                boundary,
                 format!("{kind} host boundary failed: {}", format_host_error(&error)),
             )
         }
+    }
+}
+
+fn report_boundary_failure(
+    eval: &mut EvalContext<'_>,
+    machine: &mut EvalMachine,
+    boundary: PendingHostBoundary,
+    message: String,
+) -> Option<ControlSignal> {
+    if matches!(&boundary.request, HostBoundaryRequest::Filesystem(request) if matches!(
+        request.operation,
+        FilesystemOperation::Open { .. } | FilesystemOperation::Sync { .. }
+            | FilesystemOperation::Write { .. } | FilesystemOperation::AtomicReplace { .. }
+            | FilesystemOperation::Delete { .. } | FilesystemOperation::CreateDir { .. }
+            | FilesystemOperation::Rename { .. } | FilesystemOperation::RemoveFile { .. }
+            | FilesystemOperation::RemoveDir { .. }
+    )) {
+        // The backend may have changed the filesystem before reporting failure.
+        // A retry would repeat an operation whose effects are uncertain.
+        super::error::report_failure(eval, boundary.span, message)
+    } else {
+        retry_or_report(eval, machine, boundary.continuation, boundary.span, message)
     }
 }
 
@@ -644,6 +807,62 @@ impl PendingHostBoundaryDispatch<'_> {
     }
 }
 
+fn primitive_failure(
+    eval: &mut EvalContext<'_>,
+    boundary: PendingHostBoundary,
+    key: Option<etas_host::replay::ReplayFingerprint>,
+    error: HostError,
+) -> ControlSignal {
+    if let Some(signal) = eval.cancellation_signal(boundary.span) {
+        return signal;
+    }
+    let failure_kind = primitive_failure_kind(&boundary.request).expect("typed primitive boundary");
+    let decoded = match &boundary.request {
+        HostBoundaryRequest::Entropy(_) => eval.random_error_value(error, boundary.span),
+        HostBoundaryRequest::Clock(_) => eval.clock_error_value(error, boundary.span),
+        _ => unreachable!("typed primitive boundary"),
+    };
+    let value = match decoded {
+        Ok(value) => value,
+        Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+    };
+    if let Some(key) = key {
+        let occurrence = crate::orchestration::BoundaryOccurrenceId::HostRequest(
+            host_boundary_request_id(&boundary.request),
+        );
+        if let Err(fault) = eval.record_completed_host_boundary(
+            occurrence,
+            failure_kind,
+            key,
+            value.clone(),
+            boundary.span,
+        ) {
+            return ControlSignal::Fault(Box::new(fault));
+        }
+    }
+    resume_primitive_error(eval, boundary, value)
+}
+
+fn primitive_failure_kind(request: &HostBoundaryRequest) -> Option<&'static str> {
+    match request {
+        HostBoundaryRequest::Entropy(_) => Some("random.failure"),
+        HostBoundaryRequest::Clock(_) => Some("clock.failure"),
+        _ => None,
+    }
+}
+
+fn resume_primitive_error(
+    eval: &mut EvalContext<'_>,
+    boundary: PendingHostBoundary,
+    value: InterpValue,
+) -> ControlSignal {
+    match &boundary.request {
+        HostBoundaryRequest::Entropy(_) => eval.resume_random_error(boundary, value),
+        HostBoundaryRequest::Clock(_) => eval.resume_clock_error(boundary, value),
+        _ => unreachable!("typed primitive boundary"),
+    }
+}
+
 fn host_boundary_request_id(request: &HostBoundaryRequest) -> etas_host::HostRequestId {
     match request {
         HostBoundaryRequest::SessionContext(request) => request.id,
@@ -655,6 +874,8 @@ fn host_boundary_request_id(request: &HostBoundaryRequest) -> etas_host::HostReq
         HostBoundaryRequest::Stream(request) => request.id,
         HostBoundaryRequest::Tls(request) => request.id,
         HostBoundaryRequest::Secret(request) => request.id,
+        HostBoundaryRequest::Entropy(request) => request.id,
+        HostBoundaryRequest::Clock(request) => request.id,
         HostBoundaryRequest::Browser(request) => request.id,
     }
 }
@@ -670,6 +891,8 @@ fn host_boundary_budget(request: &HostBoundaryRequest) -> &etas_host::ExecutionB
         HostBoundaryRequest::Stream(request) => &request.budget,
         HostBoundaryRequest::Tls(request) => &request.budget,
         HostBoundaryRequest::Secret(request) => &request.budget,
+        HostBoundaryRequest::Entropy(request) => &request.budget,
+        HostBoundaryRequest::Clock(request) => &request.budget,
         HostBoundaryRequest::Browser(request) => &request.budget,
     }
 }
@@ -685,6 +908,8 @@ pub(in crate::driver) fn host_boundary_kind(request: &HostBoundaryRequest) -> &'
         HostBoundaryRequest::Stream(_) => "stream",
         HostBoundaryRequest::Tls(_) => "tls",
         HostBoundaryRequest::Secret(_) => "secret",
+        HostBoundaryRequest::Entropy(_) => "random",
+        HostBoundaryRequest::Clock(_) => "clock",
         HostBoundaryRequest::Browser(_) => "browser",
     }
 }
@@ -703,6 +928,8 @@ fn host_boundary_key(
         | HostBoundaryRequest::Tls(_) => return Ok(None),
         HostBoundaryRequest::Filesystem(request) => request.trace_payload(),
         HostBoundaryRequest::Secret(request) => request.trace_payload(),
+        HostBoundaryRequest::Entropy(request) => request.trace_payload(),
+        HostBoundaryRequest::Clock(request) => request.trace_payload(),
         HostBoundaryRequest::Browser(request) => request.trace_payload(),
     };
     eval.replay_payload_fingerprint(
@@ -1076,6 +1303,33 @@ pub(in crate::driver) fn host_boundary_policy_subject(
         HostBoundaryRequest::Stream(request) => stream_policy_subject(request),
         HostBoundaryRequest::Tls(request) => tls_policy_subject(request),
         HostBoundaryRequest::Secret(request) => secret_policy_subject(request),
+        HostBoundaryRequest::Entropy(request) => PolicySubject {
+            kind: "random".into(),
+            attributes: vec![
+                ("action_kind".into(), HostValue::String("random".into())),
+                (
+                    "qualified_action".into(),
+                    HostValue::String("Random.entropy".into()),
+                ),
+                ("count".into(), HostValue::UInt(request.count as u128)),
+            ],
+        },
+        HostBoundaryRequest::Clock(request) => {
+            let mut attributes = vec![
+                ("action_kind".into(), HostValue::String("clock".into())),
+                (
+                    "qualified_action".into(),
+                    HostValue::String(format!("Clock.{}", request.operation.action())),
+                ),
+            ];
+            if let etas_host::ClockOperation::Sleep { millis } = request.operation {
+                attributes.push(("millis".into(), HostValue::UInt(millis)));
+            }
+            PolicySubject {
+                kind: "clock".into(),
+                attributes,
+            }
+        }
         HostBoundaryRequest::Browser(request) => browser_policy_subject(request),
     })
 }
@@ -1084,12 +1338,34 @@ pub(in crate::driver) fn filesystem_policy_subject(
     request: &etas_host::FilesystemRequest,
 ) -> PolicySubject {
     let (operation, action, resource) = match &request.operation {
+        FilesystemOperation::Open { path, .. } => ("open", "Fs.open", format!("{path:?}")),
+        FilesystemOperation::Sync { file } => ("sync", "Fs.sync", format!("{:?}", file.path())),
+        FilesystemOperation::Canonicalize { path } => {
+            ("canonicalize", "Fs.canonicalize", format!("{path:?}"))
+        }
         FilesystemOperation::Read { path } | FilesystemOperation::ReadLimited { path, .. } => {
             ("read", "Fs.read", format!("{path:?}"))
         }
         FilesystemOperation::Write { path, .. } => ("write", "Fs.write", format!("{path:?}")),
         FilesystemOperation::Delete { path } => {
             ("delete", "HostFilesystem.delete", format!("{path:?}"))
+        }
+        FilesystemOperation::CreateDir { path, .. } => {
+            ("create_dir", "Fs.create_dir", format!("{path:?}"))
+        }
+        FilesystemOperation::Rename {
+            source,
+            destination,
+        } => (
+            "rename",
+            "Fs.rename",
+            format!("{source:?} -> {destination:?}"),
+        ),
+        FilesystemOperation::RemoveFile { path } => {
+            ("remove_file", "Fs.remove_file", format!("{path:?}"))
+        }
+        FilesystemOperation::RemoveDir { path } => {
+            ("remove_dir", "Fs.remove_dir", format!("{path:?}"))
         }
         FilesystemOperation::ReadDir { path }
         | FilesystemOperation::ReadDirLimited { path, .. } => {
@@ -1100,7 +1376,7 @@ pub(in crate::driver) fn filesystem_policy_subject(
             ("atomic_replace", "Fs.atomic_replace", format!("{path:?}"))
         }
     };
-    PolicySubject {
+    let mut subject = PolicySubject {
         kind: "filesystem".to_owned(),
         attributes: vec![
             (
@@ -1116,6 +1392,80 @@ pub(in crate::driver) fn filesystem_policy_subject(
                 HostValue::String(operation.to_owned()),
             ),
             ("resource".to_owned(), HostValue::String(resource)),
+        ],
+    };
+    if let FilesystemOperation::Open { path, mode } = &request.operation {
+        subject.attributes.extend([
+            (
+                "region".into(),
+                HostValue::String(path.region.as_str().into()),
+            ),
+            ("mode".into(), HostValue::String(format!("{mode:?}"))),
+            (
+                "required_rights".into(),
+                HostValue::List(
+                    mode.rights()
+                        .map(|right| HostValue::String(format!("Fs.{right}")))
+                        .collect(),
+                ),
+            ),
+        ]);
+    }
+    subject
+}
+
+fn host_boundary_admission_subjects(
+    request: &HostBoundaryRequest,
+    actual: PolicySubject,
+) -> Vec<PolicySubject> {
+    let mut subjects = vec![actual];
+    match request {
+        HostBoundaryRequest::Filesystem(request) => {
+            if let FilesystemOperation::Open { path, mode } = &request.operation {
+                subjects.extend(
+                    mode.rights()
+                        .map(|right| filesystem_right_subject(path, right)),
+                );
+            }
+        }
+        HostBoundaryRequest::Stream(request) => {
+            let (stream, right) = match &request.operation {
+                StreamOperation::Read { stream, .. }
+                | StreamOperation::ReadUntilLimit { stream, .. } => (stream, "read"),
+                StreamOperation::WriteAll { stream, .. }
+                | StreamOperation::Flush { stream, .. } => (stream, "write"),
+                StreamOperation::Close { .. } => return subjects,
+            };
+            if let etas_host::ByteStreamOrigin::File { path, region, .. } = stream.origin() {
+                subjects.push(filesystem_right_subject(
+                    &etas_host::WorkspacePathRef {
+                        region: region.clone(),
+                        relative: path.clone(),
+                    },
+                    right,
+                ));
+            }
+        }
+        _ => {}
+    }
+    subjects
+}
+
+fn filesystem_right_subject(path: &etas_host::WorkspacePathRef, right: &str) -> PolicySubject {
+    PolicySubject {
+        kind: "filesystem".into(),
+        attributes: vec![
+            ("action_kind".into(), HostValue::String("filesystem".into())),
+            (
+                "qualified_action".into(),
+                HostValue::String(format!("Fs.{right}")),
+            ),
+            ("operation".into(), HostValue::String(right.into())),
+            ("resource".into(), HostValue::String(format!("{path:?}"))),
+            (
+                "region".into(),
+                HostValue::String(path.region.as_str().into()),
+            ),
         ],
     }
 }
@@ -1183,7 +1533,7 @@ pub(in crate::driver) fn tcp_policy_subject(
     request: &etas_host::TcpConnectRequest,
 ) -> PolicySubject {
     let (operation, resource) = match &request.operation {
-        etas_host::TcpConnectOperation::Connect { endpoint } => {
+        etas_host::TcpConnectOperation::Connect { endpoint, .. } => {
             ("connect", format!("{}:{}", endpoint.host, endpoint.port))
         }
     };
@@ -1229,7 +1579,7 @@ pub(in crate::driver) fn stream_policy_subject(
             stream.handle().identity_fingerprint(),
             stream_origin_label(stream),
         ),
-        StreamOperation::Flush { stream } => (
+        StreamOperation::Flush { stream, .. } => (
             "flush",
             "Stream.flush",
             stream.handle().identity_fingerprint(),
@@ -1274,7 +1624,9 @@ pub(in crate::driver) fn stream_origin_label(stream: &etas_host::ByteStreamRef) 
             "tls:{host}:{port}:{}",
             server_name.as_deref().unwrap_or("<default>")
         ),
-        etas_host::ByteStreamOrigin::File { path } => format!("file:{path}"),
+        etas_host::ByteStreamOrigin::File { path, region, mode } => {
+            format!("file:{}:{mode:?}:{}", region.as_str(), path.display())
+        }
         etas_host::ByteStreamOrigin::Browser { session } => format!("browser:{session}"),
         etas_host::ByteStreamOrigin::Opaque => "opaque".to_owned(),
     }
@@ -1516,6 +1868,7 @@ mod tests {
                     },
                 ),
                 body: b"GET / HTTP/1.1\r\n\r\n".to_vec(),
+                timeout_ms: None,
             },
             authority: etas_host::AuthorityContext::deny_all(),
             trace: etas_host::TraceContext::root(etas_host::TraceId(2)),

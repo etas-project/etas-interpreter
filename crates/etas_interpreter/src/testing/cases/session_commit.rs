@@ -318,7 +318,7 @@ flow main(ticket: SessionId) -> unit {
         retention = Days(90) };
     let message = Message.new("hello");
     checkpoint("before");
-    retry limit Attempts(3) { let _stored = Message.with_session(message, config); }
+    retry { let _stored = Message.with_session(message, config); }
     checkpoint("after");
 }
 "#,

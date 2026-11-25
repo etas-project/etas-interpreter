@@ -48,3 +48,44 @@ impl PartialEq for CallTarget {
     }
 }
 impl Eq for CallTarget {}
+
+impl CallTarget {
+    /// Instance identity never compares captured values or executes user code.
+    pub(crate) fn same_instance(&self, other: &Self) -> bool {
+        match (self, other) {
+            (Self::FlowItem(a), Self::FlowItem(b)) => a == b,
+            (
+                Self::Lambda {
+                    expr: a,
+                    captured: ac,
+                },
+                Self::Lambda {
+                    expr: b,
+                    captured: bc,
+                },
+            ) => a == b && ac.capture_identity() == bc.capture_identity(),
+            (Self::Scoped(a), Self::Scoped(b)) => a.same_instance(b),
+            (
+                Self::BoundMethod {
+                    target: a,
+                    receiver: ar,
+                    slot: ai,
+                },
+                Self::BoundMethod {
+                    target: b,
+                    receiver: br,
+                    slot: bi,
+                },
+            ) => ai == bi && std::ptr::eq(ar.as_ref(), br.as_ref()) && a.same_instance(b),
+            (Self::Specialized { target: a, .. }, Self::Specialized { target: b, .. })
+            | (Self::Limited { target: a, .. }, Self::Limited { target: b, .. }) => {
+                std::ptr::eq(&**a, &**b)
+            }
+            (Self::Composed(a), Self::Composed(b)) => std::ptr::eq(a.as_ptr(), b.as_ptr()),
+            // These targets have a canonical checked identity and no captures.
+            (Self::PureIntrinsic(a), Self::PureIntrinsic(b)) => a == b,
+            (Self::StdIntrinsic(a), Self::StdIntrinsic(b)) => a == b,
+            _ => false,
+        }
+    }
+}

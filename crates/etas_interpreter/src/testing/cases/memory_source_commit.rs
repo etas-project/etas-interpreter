@@ -386,7 +386,7 @@ async fn source_unknown_commit_is_a_typed_outcome_and_never_retried() {
         r#"
         let intent = prepare_put(Region.Items, "key", "payload", Any);
         let op = operation_ref(intent);
-        retry limit Attempts(3) {
+        retry {
             return match commit(intent) {
                 WriteOutcome.Unknown(actual) => actual.key == op.key && actual.fingerprint == op.fingerprint,
                 _ => false,

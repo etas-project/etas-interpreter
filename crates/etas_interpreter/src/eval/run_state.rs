@@ -22,8 +22,8 @@ pub(crate) struct EvalRunState {
 /// State shared by every task in one invocation.
 pub(crate) struct EvalSharedState {
     pub(crate) replay_keys: super::replay::RunReplayKeys,
+    pub(super) consumed_approvals: Vec<HostRequestId>,
     pub storage_limits: etas_host::StorageLimits,
-    pub host_context: HostExecutionContext,
     pub(crate) locked_model: Option<etas_host::ModelName>,
     pub execution_limits: ExecutionLimits,
     // Shared budgets report the invocation site, independent of which task
@@ -36,6 +36,13 @@ pub(crate) struct EvalSharedState {
         std::sync::Arc<crate::driver::cpu::PreparedCpuProgram>,
     >,
     pub(crate) cpu_jobs: std::collections::BTreeMap<crate::driver::cpu::CpuJobId, CpuJobRecord>,
+    pub(crate) storage_layouts: std::collections::HashMap<
+        (usize, etas_types::TypeId),
+        (
+            etas_frontend::CheckedProject,
+            std::sync::Arc<etas_types::storage_layout::StorageLayout>,
+        ),
+    >,
     pub(crate) next_cpu_dispatch: u64,
     pub(crate) next_cpu_completion: u64,
     pub current_session: Option<String>,
@@ -67,15 +74,36 @@ pub(crate) struct CpuJobRecord {
 
 /// Execution stacks owned by one cooperatively scheduled task.
 pub(crate) struct TaskLocalState {
+    // Authority is inherited at task creation; later approvals stay local.
+    // ExecutionBudget::clone retains the same live accounting state.
+    pub(crate) approvals: super::request_context::ApprovalLedger,
+    pub(crate) agent_request_root: Option<crate::driver::scheduler::TaskIdentity>,
+    pub(crate) borrowed_host_contexts:
+        Vec<std::rc::Weak<super::request_context::BorrowedAgentHostContext>>,
+    pub(crate) host_context: HostExecutionContext,
+    pub(crate) authority_constraints: Vec<etas_host::AuthorityContext>,
+    pub(crate) model_restrictions: Vec<super::model_restrictions::AgentModelRestrictions>,
+    pub(crate) agent_turn: Option<crate::driver::scheduler::AgentTurn>,
+    pub(crate) agent_binding: Option<crate::value::AgentReference>,
+    pub(crate) agent_initializations: Vec<std::rc::Weak<crate::control::AgentInitialization>>,
+    pub(crate) record_constructions: Vec<std::rc::Weak<crate::control::RecordConstruction>>,
+    pub(crate) borrowed_record_contexts: Vec<std::rc::Weak<crate::control::RecordContext>>,
+    pub(crate) inherited_record_constructions:
+        Vec<std::rc::Weak<crate::control::RecordConstruction>>,
+    pub(crate) agent_initialization_owner: Option<std::rc::Rc<crate::control::AgentLifetime>>,
     pub(crate) receiver_updates: crate::control::ReceiverAccessSet,
     pub(crate) identity: crate::driver::scheduler::TaskIdentity,
     pub(crate) logical_identity: crate::driver::scheduler::TaskIdentity,
     pub(crate) parent: Option<crate::driver::scheduler::TaskIdentity>,
     pub(crate) task_scope: crate::driver::scheduler::TaskScopeId,
     pub(crate) execution: etas_host::execution::ExecutionScope,
+    pub(crate) resource_owner: Option<(
+        crate::driver::scheduler::TaskHandle,
+        etas_host::execution::ExecutionScope,
+    )>,
     pub(crate) cancellation: Result<etas_host::execution::CancelSignal, etas_host::HostError>,
     pub(crate) model_policy: ModelExecutionPolicy,
-    pub(crate) host_operations: Option<std::rc::Rc<std::cell::Cell<usize>>>,
+    pub(crate) host_operations: std::rc::Rc<std::cell::Cell<usize>>,
     pub(crate) agent_context: Option<Box<crate::control::AgentRequestContext>>,
     pub(super) retry_stack: Vec<RetryAttemptRecord>,
     pub(super) handler_stack: Vec<ActiveHandlerRecord>,
@@ -106,16 +134,33 @@ impl TaskLocalState {
         task_scope: crate::driver::scheduler::TaskScopeId,
         execution: etas_host::execution::ExecutionScope,
         model_policy: ModelExecutionPolicy,
+        host_context: HostExecutionContext,
     ) -> Self {
         Self {
+            approvals: std::rc::Rc::new(std::cell::RefCell::new(
+                host_context.authority.approvals.clone(),
+            )),
+            agent_request_root: None,
+            borrowed_host_contexts: Vec::new(),
+            host_context,
+            authority_constraints: Vec::new(),
+            model_restrictions: Vec::new(),
+            agent_turn: None,
+            agent_binding: None,
+            agent_initializations: Vec::new(),
+            record_constructions: Vec::new(),
+            borrowed_record_contexts: Vec::new(),
+            inherited_record_constructions: Vec::new(),
+            agent_initialization_owner: None,
             identity: crate::driver::scheduler::TaskIdentity::Root,
             logical_identity: crate::driver::scheduler::TaskIdentity::Root,
             parent: None,
             task_scope,
             cancellation: execution.signal(),
             execution,
+            resource_owner: None,
             model_policy,
-            host_operations: None,
+            host_operations: Default::default(),
             receiver_updates: Default::default(),
             agent_context: None,
             retry_stack: Vec::new(),
@@ -133,17 +178,38 @@ impl TaskLocalState {
         task_scope: crate::driver::scheduler::TaskScopeId,
         identity: crate::driver::scheduler::TaskId,
     ) -> Result<Self, etas_host::HostError> {
-        let execution = self.execution.child()?;
+        let execution = self.host_execution().child()?;
         execution.claim_body()?;
+        let host_context = self.host_context();
         Ok(Self {
+            approvals: std::rc::Rc::new(std::cell::RefCell::new(
+                host_context.authority.approvals.clone(),
+            )),
+            agent_request_root: self.agent_request_root(),
+            borrowed_host_contexts: Vec::new(),
+            host_context,
+            authority_constraints: self.authority_constraints(),
+            model_restrictions: self.model_restrictions(),
+            agent_turn: None,
+            agent_binding: None,
+            agent_initializations: Vec::new(),
+            record_constructions: Vec::new(),
+            borrowed_record_contexts: Vec::new(),
+            inherited_record_constructions: self
+                .pending_record_constructions()
+                .iter()
+                .map(std::rc::Rc::downgrade)
+                .collect(),
+            agent_initialization_owner: self.agent_initialization_owner(),
             identity: crate::driver::scheduler::TaskIdentity::Scheduled(identity),
             logical_identity: crate::driver::scheduler::TaskIdentity::Scheduled(identity),
-            parent: Some(self.identity),
+            parent: Some(self.host_task_identity()),
             task_scope,
             cancellation: execution.signal(),
             execution,
+            resource_owner: self.host_resource_owner(),
             model_policy: self.model_policy.clone(),
-            host_operations: None,
+            host_operations: Default::default(),
             receiver_updates: Default::default(),
             agent_context: self.agent_context.clone(),
             retry_stack: self.retry_stack.clone(),
@@ -184,7 +250,12 @@ impl EvalRunState {
             .model_locked
             .then(|| input.model_policy.model.clone());
         let root_scope = crate::driver::scheduler::TaskScopeId(0);
-        let root_task = TaskLocalState::root(root_scope, input.execution, input.model_policy);
+        let root_task = TaskLocalState::root(
+            root_scope,
+            input.execution,
+            input.model_policy,
+            input.host_context,
+        );
         let mut events = crate::api::lifecycle::EventLog::new(input.event_observer);
         let executor = match input.runtime {
             Some(runtime) => Ok(runtime.executor(input.cpu_threads)),
@@ -202,8 +273,8 @@ impl EvalRunState {
         };
         let shared = EvalSharedState {
             replay_keys: input.replay_keys,
+            consumed_approvals: Vec::new(),
             storage_limits: limits,
-            host_context: input.host_context,
             locked_model,
             execution_limits: input.execution_limits,
             limit_span: input.limit_span,
@@ -211,6 +282,7 @@ impl EvalRunState {
             cpu_min_work: input.cpu_min_work,
             cpu_programs: Default::default(),
             cpu_jobs: Default::default(),
+            storage_layouts: Default::default(),
             next_cpu_dispatch: 0,
             next_cpu_completion: 0,
             current_session: input.current_session,

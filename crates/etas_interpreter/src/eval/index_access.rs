@@ -66,6 +66,23 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         }
+        match crate::value::source_slice::SourceSliceView::checked(
+            &base,
+            &self.checked.types.known_std_types,
+            &self.checked.type_store,
+        ) {
+            Ok(Some(view)) => {
+                let Some(index) = self.index_usize(index, span) else {
+                    return self.raise_index_error(expr, None, view.length, "slice", span);
+                };
+                if index >= view.length {
+                    return self.raise_index_error(expr, Some(index), view.length, "slice", span);
+                }
+                return ControlSignal::Value(view.source.borrow()[view.start + index].clone());
+            }
+            Ok(None) => {}
+            Err(message) => return ControlSignal::missing_checked_fact(message, span),
+        }
         match base {
             InterpValue::Array(values) => {
                 let Some(index) = self.index_usize(index, span) else {
@@ -140,7 +157,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn raise_index_error(
+    pub(super) fn raise_index_error(
         &mut self,
         expr: HirExprId,
         index: Option<usize>,

@@ -143,6 +143,8 @@ pub(crate) enum ScheduledTaskStateSnapshot {
     WaitingScope(TaskScopeId),
     WaitingCompletion(TaskScopeId),
     WaitingResource(u64),
+    // The body outcome is retained until its language children have joined.
+    WaitingChildren,
     Completed,
     Raised,
     Failed,

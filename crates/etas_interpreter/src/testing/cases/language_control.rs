@@ -496,7 +496,7 @@ module app.main;
 
 flow main() -> i32 {
   var i = 0;
-  while i < 1000 limit Iterations(2048) {
+  while i < 1000 {
     i = i + 1;
   }
   return i;
@@ -1010,7 +1010,7 @@ flow main() -> i32 {
   var i = 0;
   var sum = 0;
 
-  while i < 4 limit Iterations(8) {
+  while i < 4 {
     sum = sum + i;
     i = i + 1;
   }
@@ -1047,7 +1047,7 @@ flow main() -> i32 {
   var i = 0;
   var seen = 0;
 
-  while i < 5 limit Iterations(8) {
+  while i < 5 {
     i = i + 1;
 
     if i == 2 {
@@ -1093,7 +1093,7 @@ flow main() -> i32 {
   let values = [1, 2, 3];
   var out = [0];
 
-  for value in values limit Iterations(8) {
+  for value in values {
     out = out.push(value + 10);
   }
 

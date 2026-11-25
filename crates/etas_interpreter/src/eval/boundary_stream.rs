@@ -2,6 +2,70 @@ use super::*;
 use etas_host::StreamFailure;
 
 impl<'a> EvalContext<'a> {
+    pub(super) fn enter_stream_read_scope(
+        &self,
+        item: HirItemId,
+        args: &[InterpValue],
+        span: Span,
+    ) -> ControlSignal {
+        let fail = |reason: &str| ControlSignal::missing_checked_fact(reason, span);
+        let etas_types::ItemSignature::Flow(signature) = &self.checked.types.item_signatures[&item]
+        else {
+            return fail("read scope requires its checked source signature");
+        };
+        let (Some(etas_types::Type::Tuple(fields)), [stream]) =
+            (self.checked.type_store.get(signature.output), args)
+        else {
+            return fail("read scope requires a stream and its checked (stream, owner) result");
+        };
+        let [_, owner_option] = fields.as_slice() else {
+            return fail("read scope result has no owner slot");
+        };
+        let Some(owner_type) = etas_types::value_representation::option_parameter(
+            &self.checked.type_store,
+            &self.checked.types.known_std_types,
+            *owner_option,
+        ) else {
+            return fail("read scope requires its checked optional owner type");
+        };
+        let mut scoped = stream.clone();
+        let mut owner = None;
+        if let InterpValue::Nominal { ty, value } = stream
+            && let InterpValue::Record(record) = value.as_ref()
+            && let Some(InterpValue::HostHandle(handle)) = record.get_ref("connection")
+            && let Some(native) = handle.byte_stream_ref()
+        {
+            let scope = etas_host::StreamReadScope::new(
+                &native,
+                format!("{:?}", self.task.logical_identity),
+            );
+            let scoped_handle = handle
+                .with_read_scope(&scope)
+                .expect("checked native byte stream");
+            let mut fields = record.snapshot();
+            fields
+                .iter_mut()
+                .find(|(name, _)| name == "connection")
+                .unwrap()
+                .1 = InterpValue::HostHandle(scoped_handle);
+            scoped = InterpValue::Nominal {
+                ty: *ty,
+                value: InterpValue::Record(fields.into()).into(),
+            };
+            owner = Some(InterpValue::HostHandle(
+                crate::value::HostHandleValue::read_owner(owner_type, scope),
+            ));
+        }
+        let (variant, fields) = match owner {
+            Some(owner) => ("Some", vec![owner]),
+            None => ("None", vec![]),
+        };
+        match crate::value::enum_value::construct(*owner_option, variant, fields, self.checked) {
+            Ok(owner) => ControlSignal::Value(InterpValue::Tuple(vec![scoped, owner].into())),
+            Err(reason) => fail(&reason),
+        }
+    }
+
     pub(crate) fn stream_failure_signal(
         &mut self,
         host: PendingHostBoundary,
@@ -63,6 +127,10 @@ fn stream_error_raise_action(span: Span) -> ResolvedActionRef {
 
 fn stream_error_value(failure: StreamFailure) -> InterpValue {
     match failure {
+        StreamFailure::Busy => InterpValue::Variant {
+            name: "Busy".into(),
+            fields: Vec::new().into(),
+        },
         StreamFailure::LimitExceeded { .. } => InterpValue::Variant {
             name: "LimitExceeded".to_owned().into(),
             fields: Vec::new().into(),
@@ -134,6 +202,7 @@ mod tests {
     #[test]
     fn stream_error_mapping_preserves_all_typed_variants() {
         let cases = [
+            (StreamFailure::Busy, "Busy"),
             (
                 StreamFailure::LimitExceeded { limit_bytes: 1 },
                 "LimitExceeded",

@@ -23,11 +23,6 @@ impl<'a> EvalContext<'a> {
             Err(error) => return ControlSignal::missing_checked_fact(error, span),
         };
         for (index, stage) in stages.iter().enumerate().skip(start_stage_index) {
-            for limit in &stage.limits {
-                if let Err(fault) = self.resolve_limit_expr(*limit) {
-                    return ControlSignal::Fault(Box::new(fault));
-                }
-            }
             let static_target = match self.resolve_static_call_target(stage.expr, frame, stage.span)
             {
                 Ok(target) => target,
@@ -86,38 +81,7 @@ impl<'a> EvalContext<'a> {
                 span,
             );
         }
-        let targets = targets
-            .into_iter()
-            .zip(stages)
-            .map(|(target, stage)| {
-                let limits = stage
-                    .limits
-                    .iter()
-                    .map(|expr| self.resolve_limit_expr(*expr))
-                    .collect::<Result<Vec<_>, _>>()?;
-                Ok(self.call_target_with_limits(target, limits))
-            })
-            .collect::<Result<Vec<_>, crate::control::ExecutionFault>>();
-        let targets = match targets {
-            Ok(targets) => targets,
-            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
-        };
         ControlSignal::Value(InterpValue::Callable(CallTarget::Composed(targets.into())))
-    }
-
-    pub(super) fn call_target_with_limits(
-        &self,
-        target: CallTarget,
-        limits: Vec<crate::eval::limit::RuntimeLimit>,
-    ) -> CallTarget {
-        if limits.is_empty() {
-            target
-        } else {
-            CallTarget::Limited {
-                target: target.into(),
-                limits,
-            }
-        }
     }
 
     pub(super) fn eval_pipeline_expr(

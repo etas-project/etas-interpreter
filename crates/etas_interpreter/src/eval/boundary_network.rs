@@ -138,19 +138,24 @@ impl<'a> EvalContext<'a> {
             Ok(inner) => *handle = inner.clone(),
             Err(reason) => return Some(ControlSignal::invalid_arguments(reason, span)),
         }
-        if matches!(stream, Some(StreamCallable::Read)) {
-            let [_, _, timeout] = args.as_mut_slice() else {
+        let timeout_parameter = match stream {
+            Some(StreamCallable::Read | StreamCallable::WriteAll) => Some(2),
+            Some(StreamCallable::Flush) => Some(1),
+            _ => None,
+        };
+        if let Some(index) = timeout_parameter {
+            let Some(timeout) = args.get_mut(index) else {
                 return Some(ControlSignal::missing_checked_fact(
-                    "stream read requires its checked timeout",
+                    "stream action requires its checked timeout",
                     span,
                 ));
             };
-            *timeout = match self.checked_option_payload(timeout, proof.parameters[2]) {
+            *timeout = match self.checked_option_payload(timeout, proof.parameters[index]) {
                 Some(None) => InterpValue::OptionNone,
                 Some(Some(value)) => InterpValue::OptionSome(value.clone().into()),
                 None => {
                     return Some(ControlSignal::missing_checked_fact(
-                        "stream read timeout differs from its checked Option",
+                        "stream timeout differs from its checked Option",
                         span,
                     ));
                 }
@@ -168,6 +173,11 @@ impl<'a> EvalContext<'a> {
         host: PendingHostBoundary,
         error: HostError,
     ) -> Option<ControlSignal> {
+        let source_code = match &host.request {
+            HostBoundaryRequest::Tcp(_) => Some(network_error_code(&error, false)),
+            HostBoundaryRequest::Tls(_) => Some(network_error_code(&error, true)),
+            _ => None,
+        };
         let (error_type, fact_name) = match &host.request {
             HostBoundaryRequest::Tcp(_) => (
                 self.known_std_types.network_error,
@@ -213,6 +223,7 @@ impl<'a> EvalContext<'a> {
                 error_type,
                 error,
                 self.checked.hir.source_standard_types,
+                source_code,
             )],
             span: host.span,
             continuation: host.continuation,
@@ -239,11 +250,20 @@ fn typed_host_error_value(
     error_type: etas_types::TypeId,
     error: HostError,
     source: bool,
+    source_code: Option<&str>,
 ) -> InterpValue {
     let mut fields = vec![
         (
             "code".into(),
-            InterpValue::String(error.code.as_str().to_owned().into()),
+            InterpValue::String(
+                if source {
+                    source_code.unwrap_or(error.code.as_str())
+                } else {
+                    error.code.as_str()
+                }
+                .to_owned()
+                .into(),
+            ),
         ),
         ("message".into(), InterpValue::String(error.message.into())),
     ];
@@ -266,5 +286,38 @@ fn typed_host_error_value(
     InterpValue::Nominal {
         ty: error_type,
         value: InterpValue::Record(fields.into()).into(),
+    }
+}
+
+fn network_error_code(error: &etas_host::HostError, tls: bool) -> &'static str {
+    use etas_host::HostErrorCode;
+    if tls
+        && error
+            .details
+            .iter()
+            .any(|detail| detail.key == "stream_failure" && detail.value == "busy")
+    {
+        return "busy";
+    }
+    let detail = error
+        .details
+        .iter()
+        .find(|detail| detail.key == if tls { "tls_error" } else { "network_error" });
+    if let Some(detail) = detail {
+        match detail.value.as_str() {
+            "refused" if !tls => return "refused",
+            "resolve_failed" if !tls => return "resolve_failed",
+            "hostname" if tls => return "hostname",
+            "certificate" if tls => return "certificate",
+            "protocol" if tls => return "protocol",
+            _ => {}
+        }
+    }
+    match error.code {
+        HostErrorCode::InvalidRequest if tls => "invalid_config",
+        HostErrorCode::InvalidRequest => "invalid_input",
+        HostErrorCode::TimedOut => "timed_out",
+        HostErrorCode::ProviderUnavailable if !tls => "unavailable",
+        _ => "host",
     }
 }

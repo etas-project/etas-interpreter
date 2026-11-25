@@ -1,12 +1,21 @@
 use super::*;
 
 impl<'a> EvalContext<'a> {
+    pub(crate) fn completed_host_boundary_kind(
+        &self,
+        occurrence: &crate::orchestration::BoundaryOccurrenceId,
+    ) -> Option<&str> {
+        self.completed_host_boundaries
+            .get(occurrence)
+            .map(|boundary| boundary.kind.as_str())
+    }
+
     pub(crate) fn record_completed_host_boundary(
         &mut self,
         occurrence: crate::orchestration::BoundaryOccurrenceId,
         kind: &str,
         key: etas_host::replay::ReplayFingerprint,
-        result: InterpValue,
+        result: impl Into<crate::orchestration::CompletedHostBoundaryResult>,
         span: Span,
     ) -> Result<(), crate::control::ExecutionFault> {
         self.store_completed_boundary(
@@ -14,7 +23,7 @@ impl<'a> EvalContext<'a> {
                 occurrence,
                 kind: kind.to_owned(),
                 key,
-                result: crate::orchestration::CompletedHostBoundaryResult::Runtime(result),
+                result: result.into(),
             },
             span,
         )
@@ -55,7 +64,7 @@ impl<'a> EvalContext<'a> {
         }
     }
 
-    fn checked_completed_boundary(
+    pub(super) fn checked_completed_boundary(
         &self,
         occurrence: &crate::orchestration::BoundaryOccurrenceId,
         kind: &str,

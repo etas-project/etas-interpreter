@@ -15,6 +15,11 @@ use crate::{
 #[derive(Clone, Debug)]
 pub enum Continuation {
     DefaultArguments(Box<crate::eval::arguments::DefaultArguments>),
+    CompleteRecordConstruction(std::rc::Rc<super::RecordConstruction>),
+    PublishAgentConstruction {
+        initialization: std::rc::Rc<super::AgentInitialization>,
+        span: Span,
+    },
     FinishReceiver {
         outcome: super::ReceiverOutcome,
         frame: Frame,
@@ -43,8 +48,16 @@ pub enum Continuation {
         definition: Box<InterpValue>,
         span: Span,
     },
+    ValidateFileOpenResult {
+        result_type: etas_types::TypeId,
+        mode: etas_host::FileMode,
+        span: Span,
+    },
     PriorityQueueUpdate(Box<crate::eval::priority_queue::PriorityQueueUpdate>),
     OrderedSearch(Box<crate::eval::ordered_collection::OrderedSearch>),
+    ValueEquality(Box<crate::eval::value_equality::ValueEquality>),
+    StorageTransfer(Box<crate::eval::storage_transfer::StorageTransfer>),
+    ModelStepProviderData(Box<crate::eval::machine::ModelStepProviderData>),
     StreamReadReduction(Box<super::StreamReadReduction>),
     FileReadReduction(Box<super::FileReadReduction>),
     DirectoryListReduction(Box<super::DirectoryListReduction>),
@@ -300,16 +313,11 @@ pub enum Continuation {
         span: Span,
         outer: ContinuationLink,
     },
-    LoopLimit {
-        stmt: etas_hir::HirStmtId,
-        frame: Frame,
-    },
     ForLoop {
         pat: HirPatId,
         source: Option<Box<crate::value::iteration::IterationSource>>,
         next_index: usize,
         body: HirBlockId,
-        iterations: usize,
         loop_scope: std::collections::HashSet<SymbolId>,
         span: Span,
         frame: Frame,
@@ -321,7 +329,6 @@ pub enum Continuation {
         awaiting_step: bool,
         next_index: usize,
         body: HirBlockId,
-        iterations: usize,
         loop_scope: std::collections::HashSet<SymbolId>,
         span: Span,
         frame: Frame,
@@ -329,8 +336,6 @@ pub enum Continuation {
     WhileLoop {
         cond: HirExprId,
         body: HirBlockId,
-        iteration: u64,
-        max_iterations: u64,
         resume_after_body: bool,
         span: Span,
         frame: Frame,
@@ -338,7 +343,6 @@ pub enum Continuation {
     RetryAttempt {
         retry: RetryAttemptRecord,
         body: HirBlockId,
-        attempts: usize,
         next_attempt: usize,
         block: HirBlockId,
         next_stmt_index: usize,

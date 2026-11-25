@@ -318,7 +318,9 @@ impl MethodDispatchPlan {
                 else {
                     return Err("bound method has no checked function type".into());
                 };
-                let MethodReceiver::Value { slot } = fact.receiver else {
+                let (MethodReceiver::Value { slot } | MethodReceiver::Updating { slot }) =
+                    fact.receiver
+                else {
                     return Err("bound method has no value receiver".into());
                 };
                 let expected = fact
@@ -372,7 +374,7 @@ impl MethodDispatchPlan {
             if let Some(slot) = fact.receiver.value_slot() {
                 slots.insert(slot);
             }
-            if fact.receiver.is_updating() {
+            if fact.receiver.is_updating() && !fact.kind.is_agent() {
                 etas_types::method::updating_receiver_symbol(&project.hir, &project.types, *expr)?;
             }
             if argument_count != fact.argument_slots.len()

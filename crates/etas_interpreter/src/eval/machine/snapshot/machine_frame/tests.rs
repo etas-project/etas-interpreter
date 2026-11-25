@@ -179,7 +179,6 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
     machine.push_frame(EvalFrame::from_continuation(Continuation::RetryAttempt {
         retry: retry.clone(),
         body: HirBlockId(5),
-        attempts: 8,
         next_attempt: 4,
         block: HirBlockId(6),
         next_stmt_index: 7,
@@ -208,7 +207,6 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
             ContinuationSnapshot::RetryAttempt {
                 retry: saved_retry,
                 body,
-                attempts,
                 next_attempt,
                 block,
                 next_stmt_index,
@@ -220,8 +218,8 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
     };
     assert_eq!(*saved_retry, retry);
     assert_eq!(
-        (*body, *attempts, *next_attempt, *block, *next_stmt_index),
-        (HirBlockId(5), 8, 4, HirBlockId(6), 7)
+        (*body, *next_attempt, *block, *next_stmt_index),
+        (HirBlockId(5), 4, HirBlockId(6), 7)
     );
     assert_eq!(handler_locals.id, retry_locals.id);
     assert_eq!(handler_locals, retry_locals);

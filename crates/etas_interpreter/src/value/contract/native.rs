@@ -16,6 +16,23 @@ pub(super) fn validate<'a>(
         .ok_or("native input has no checked type")?;
     let role = checked.types.known_std_types.runtime_role(store, expected);
     match value {
+        Value::Snapshot(S::ClockDomain { ty, domain }) if *ty == expected => {
+            crate::value::host_handle::validate_clock_domain(checked, *ty, domain)
+        }
+        Value::Runtime(R::Agent(reference)) => {
+            // A generic library transports the checked presentation of an
+            // instance without importing its defining program's Active facts.
+            // The sealed handle keeps its physical scheduler identity; only
+            // a checked revision bridge can change this program/type view.
+            if reference.ty != expected
+                || reference.program != std::sync::Arc::as_ptr(checked) as usize
+            {
+                return Err(
+                    "Agent reference has a different checked program or type identity".into(),
+                );
+            }
+            Ok(())
+        }
         Value::Runtime(R::Existential(object)) => {
             if expected != object.object_type {
                 return Err("existential value has a different checked interface".into());

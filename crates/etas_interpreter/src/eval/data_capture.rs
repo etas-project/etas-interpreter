@@ -95,7 +95,7 @@ impl Capture<'_, '_> {
         if let Some(signal) = self.ctx.cancellation_signal(self.span) {
             return Err(CaptureFailure::Signal(Box::new(signal)));
         }
-        self.ctx.host_context.budget.check_time().map_err(|error| {
+        self.ctx.task.host_budget().check_time().map_err(|error| {
             CaptureFailure::Signal(Box::new(ControlSignal::runtime_fault(
                 error.message,
                 self.span,
@@ -422,75 +422,6 @@ pub(super) fn neutral_identity(checked: &etas_frontend::CheckedProject, ty: Type
 }
 fn rejected(message: impl Into<String>) -> CaptureFailure {
     HostError::new(HostErrorCode::SchemaMismatch, message).into()
-}
-
-pub(super) fn source_data_to_host(
-    checked: &CheckedProject,
-    value: &InterpValue,
-    limits: &etas_host::StorageLimits,
-) -> Result<HostValue, String> {
-    let data_type = super::resolve_std_type(checked, &["std", "runtime", "value", "Data"])
-        .ok_or("missing checked source Data type")?;
-    if !matches!(value, InterpValue::Nominal { ty, .. } if *ty == data_type) {
-        return Err("source Data has a different checked identity".into());
-    }
-    let wire = super::host_value::interp_to_bounded_host_value(value, &mut limits.value_budget())
-        .map_err(|error| error.message)?;
-    restore_data(wire, 0, &mut limits.value_budget())
-}
-
-/// Encode neutral host data as the payload of the checked source Data enum.
-/// The caller validates the backend data against its result and storage budget first.
-pub(super) fn source_data_wire(value: HostValue) -> HostValue {
-    let (name, fields) = match value {
-        HostValue::Unit => ("Unit", vec![]),
-        value @ HostValue::Bool(_) => ("Bool", vec![value]),
-        value @ HostValue::Int(_) => ("Int", vec![value]),
-        value @ HostValue::UInt(_) => ("UInt", vec![value]),
-        value @ HostValue::Float(_) => ("Float", vec![value]),
-        value @ HostValue::String(_) => ("String", vec![value]),
-        value @ HostValue::Bytes(_) => ("Bytes", vec![value]),
-        value @ HostValue::Json(_) => ("Json", vec![value]),
-        HostValue::List(items) => (
-            "List",
-            vec![HostValue::List(
-                items.into_iter().map(source_data_wire).collect(),
-            )],
-        ),
-        HostValue::Map(entries) => (
-            "Map",
-            vec![HostValue::List(
-                entries
-                    .into_iter()
-                    .map(|(key, value)| {
-                        HostValue::List(vec![source_data_wire(key), source_data_wire(value)])
-                    })
-                    .collect(),
-            )],
-        ),
-        HostValue::Record(entries) => (
-            "Record",
-            vec![HostValue::List(
-                entries
-                    .into_iter()
-                    .map(|(name, value)| {
-                        HostValue::List(vec![HostValue::String(name), source_data_wire(value)])
-                    })
-                    .collect(),
-            )],
-        ),
-        HostValue::Variant { name, fields } => (
-            "Variant",
-            vec![
-                HostValue::String(name),
-                HostValue::List(fields.into_iter().map(source_data_wire).collect()),
-            ],
-        ),
-    };
-    HostValue::Variant {
-        name: name.into(),
-        fields,
-    }
 }
 
 pub(super) fn restore_data(

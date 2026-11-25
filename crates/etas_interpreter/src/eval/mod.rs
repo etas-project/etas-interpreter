@@ -8,6 +8,7 @@ mod assign_place;
 mod block;
 mod boundary;
 mod boundary_approval;
+mod boundary_clock;
 mod boundary_command;
 mod boundary_console;
 mod boundary_filesystem;
@@ -15,6 +16,7 @@ mod boundary_ledger;
 mod boundary_memory;
 mod boundary_model;
 mod boundary_network;
+mod boundary_random;
 mod boundary_session;
 mod boundary_stream;
 mod branch;
@@ -23,6 +25,7 @@ mod callee;
 mod checked_type;
 mod checkpoint;
 mod code;
+mod network_options;
 pub(crate) mod task_checkpoint;
 pub(crate) mod tool;
 pub(crate) use code::CompilerInvocation;
@@ -40,13 +43,17 @@ pub(crate) mod host_completion;
 mod host_enum;
 mod host_type_environment;
 mod host_value;
+pub(crate) mod model_restrictions;
+pub(crate) mod request_context;
 mod runtime_observation;
+pub(crate) mod storage_transfer;
 pub(crate) mod workspace_discovery;
 pub(crate) use host_value::{
     decode_checked_host_value, host_to_checked_interp_value, host_to_typed_interp_value,
 };
 pub(crate) mod collection_ordering;
 mod index_access;
+mod io_error;
 pub(crate) mod limit;
 mod loop_control;
 pub(crate) mod source_iteration;
@@ -71,6 +78,7 @@ pub(crate) mod replay;
 pub(crate) mod residual;
 mod run_state;
 mod source_memory;
+pub(crate) mod value_equality;
 pub(crate) use run_state::CpuJobRecord;
 pub(crate) use run_state::{EvalRunState, TaskLocalState};
 mod collection_call;
@@ -365,7 +373,7 @@ impl<'a> EvalContext<'a> {
         match self.task.cancellation.as_ref() {
             Ok(signal) => self.runtime.safe_points.observe(
                 signal,
-                &self.runtime.host_context.budget,
+                || self.task.host_budget(),
                 self.runtime.limit_span,
             ),
             Err(error) => {
@@ -436,7 +444,7 @@ impl<'a> EvalContext<'a> {
             current_task: crate::driver::scheduler::TaskIdentity::Root,
             plan_owner: std::cell::OnceCell::new(),
             checked,
-            view: HirTreeView::new(&checked.hir),
+            view: checked.hir.view(),
             plan,
             known_std_types: plan.known_std_types,
             entry_item,
@@ -450,46 +458,41 @@ impl<'a> EvalContext<'a> {
     ) -> Result<(), crate::control::ExecutionFault> {
         self.runtime.safe_points.consume(
             self.runtime.execution_limits,
-            &self.runtime.host_context.budget,
+            || self.task.host_budget(),
             self.runtime.limit_span,
         )
     }
 
     pub(crate) fn host_authority(&self) -> AuthorityContext {
-        let mut authority = self.host_context.authority.clone();
-        for approval in &authority.approvals {
-            for grant in &approval.grants {
-                if !authority.grants.contains(grant) {
-                    authority.grants.push(grant.clone());
-                }
-            }
-        }
-        authority
+        self.task.authority_constraints().iter().fold(
+            self.task.host_context().authority.with_approvals(),
+            |authority, restriction| authority.conjoin(restriction),
+        )
     }
 
     pub(crate) fn record_approval_grant(
         &mut self,
         grant: ApprovalGrant,
     ) -> Result<(), etas_host::HostError> {
-        let approvals = &self.host_context.authority.approvals;
-        if approvals.iter().any(|accepted| accepted.id == grant.id) {
+        if self.runtime.consumed_approvals.contains(&grant.id) {
             return Err(etas_host::HostError::new(
                 etas_host::HostErrorCode::InvalidResponse,
                 "approval request identity was already consumed in this run",
             ));
         }
-        if approvals.len() >= 4096 {
+        if self.runtime.consumed_approvals.len() >= 4096 {
             return Err(etas_host::HostError::new(
                 etas_host::HostErrorCode::BudgetExceeded,
                 "run-scoped approval ledger exceeds its entry limit",
             ));
         }
-        self.host_context.authority.approvals.push(grant);
+        self.runtime.consumed_approvals.push(grant.id);
+        self.task.approval_ledger().borrow_mut().push(grant);
         Ok(())
     }
 
     pub(crate) fn host_trace(&self) -> TraceContext {
-        self.host_context.trace.clone()
+        self.task.host_trace()
     }
 
     pub(crate) fn host_trace_digest_key(
@@ -499,7 +502,7 @@ impl<'a> EvalContext<'a> {
     }
 
     pub(crate) fn host_budget(&self) -> etas_host::ExecutionBudget {
-        self.host_context.budget.clone()
+        self.task.host_budget()
     }
 
     pub(crate) fn item_primary_block(&self, item: HirItemId) -> Option<HirBlockId> {
@@ -515,7 +518,8 @@ impl<'a> EvalContext<'a> {
     }
 
     pub(crate) fn boundary_policy_ref(&self) -> Option<HostValue> {
-        self.host_context
+        self.task
+            .host_context()
             .authority
             .policy
             .boundary_policy_ref
@@ -666,7 +670,15 @@ fn compose_signal_continuation(signal: ControlSignal, continuation: Continuation
             pending.continuation = compose_continuation(pending.continuation, continuation);
             ControlSignal::Host(pending)
         }
-        ControlSignal::Task(pending) => ControlSignal::Task(pending),
+        ControlSignal::Task(mut pending) => {
+            if let Some(inner) = pending.continuation_mut() {
+                *inner = compose_continuation(
+                    std::mem::replace(inner, Continuation::BlockValue),
+                    continuation,
+                );
+            }
+            ControlSignal::Task(pending)
+        }
         signal => signal,
     }
 }

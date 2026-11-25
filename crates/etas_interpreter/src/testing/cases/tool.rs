@@ -814,7 +814,7 @@ effect Gate {
 }
 
 tool Search() -> string ![Gate] {
-  retry limit Attempts(2) {
+  retry {
     return perform Gate.request() with {
       Gate.request() => {
         checkpoint("inside-source-handler-retry");

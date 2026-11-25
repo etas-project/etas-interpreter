@@ -110,7 +110,7 @@ pub async fn execute_entry_from_snapshot(
             eval.plan.slots.clone(),
             &eval.plan.dispatch,
             &eval.plan.closures,
-            &eval.host_context,
+            &eval.task.host_context(),
             crate::eval::machine::snapshot::SnapshotRestoreResources {
                 task: None,
                 locked_model: eval.locked_model.clone(),
@@ -232,7 +232,9 @@ async fn drive_scope<'host>(
     machine: &mut EvalMachine,
     machine_has_input: &mut bool,
 ) -> ScopeOutcome {
-    if machine.root_wait.is_some() {
+    // Handler cancellation can restore its previous wait and queue a control
+    // input together. Consume that input before driving the restored wait.
+    if machine.root_wait.is_some() && !machine.is_restoring_handler_wait() {
         if let Err(outcome) = super::task::resume_root_wait(eval, host, task_hosts, machine).await {
             return ScopeOutcome::Finished(outcome);
         }

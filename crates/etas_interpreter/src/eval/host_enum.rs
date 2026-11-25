@@ -38,7 +38,8 @@ pub(super) fn decode(
             fields.len()
         ));
     }
-    let environment = HostTypeEnvironment::applied(environment, &layout.type_params, args);
+    let environment =
+        HostTypeEnvironment::applied(environment, store, constructor, &layout.type_params, args)?;
     let fields = fields
         .into_iter()
         .zip(&variant.fields)

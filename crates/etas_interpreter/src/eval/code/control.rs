@@ -71,14 +71,14 @@ impl EvalContext<'_> {
         span: Span,
     ) -> Result<CodeSyntaxControl, crate::control::ExecutionFault> {
         Ok(CodeSyntaxControl {
-            signal: self.task.execution.signal().map_err(|error| {
+            signal: self.task.host_execution().signal().map_err(|error| {
                 crate::control::ExecutionFault::new(
                     etas_core::AnalysisDiagnosticCode::MissingCheckedFact,
                     span,
                     error.to_string(),
                 )
             })?,
-            budget: self.host_context.budget.clone(),
+            budget: self.task.host_budget(),
         })
     }
 
