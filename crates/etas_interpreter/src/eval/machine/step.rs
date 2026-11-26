@@ -391,7 +391,7 @@ impl EvalMachine {
                     let pending = *pending;
                     let site = pending.call.site.clone();
                     self.push_continuation_frames(pending.continuation);
-                    if pending.call.is_default() {
+                    if pending.call.is_pure_default() {
                         self.push_frame(EvalFrame::PureBoundary(pending.span));
                     }
                     return self

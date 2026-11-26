@@ -38,6 +38,17 @@ fn continuation_leaf_from_snapshot(
             };
             ContinuationSnapshot::DefaultArguments(Box::new(
                 crate::orchestration::DefaultArgumentsSnapshot {
+                    tool: value
+                        .get("tool")
+                        .filter(|value| !value.is_null())
+                        .map(|value| {
+                            value
+                                .as_u64()
+                                .and_then(|value| u32::try_from(value).ok())
+                                .map(etas_hir::HirItemId)
+                                .ok_or("tool binding owner must be a HIR item")
+                        })
+                        .transpose()?,
                     expr: HirExprId(required_u32(value, "expr")?),
                     parameter_count: required_usize(value, "parameter_count")?,
                     slots: required_u32_array(value, "slots")?,

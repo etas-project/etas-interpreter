@@ -99,7 +99,7 @@ impl EvalMachine {
                 "source approval refers to a host tool",
             ))
         })?;
-        let (target, args) = ctx
+        let (_, args, slots, defaults) = ctx
             .prepare_source_tool_call(
                 source.item,
                 resolved.member_state,
@@ -109,7 +109,7 @@ impl EvalMachine {
             .map_err(MachinePoll::Fault)?;
         let span = invocation.span;
         self.push_continuation_frames(Continuation::ToolInvocationResult(invocation));
-        Ok(ctx.execute_call_target(target, args, span))
+        Ok(ctx.bind_source_tool_arguments(source.item, args, slots, defaults, span))
     }
 
     pub(super) fn resume_native_tool_result(

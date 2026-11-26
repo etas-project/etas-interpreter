@@ -83,6 +83,7 @@ impl<'a> EvalContext<'a> {
                 ),
             };
         self.prepare_default_arguments(super::arguments::DefaultArguments {
+            tool: None,
             expr,
             parameter_count,
             slots,

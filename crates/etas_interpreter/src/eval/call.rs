@@ -203,7 +203,55 @@ impl<'a> EvalContext<'a> {
                 Vec::new(),
             )
         };
-        self.prepare_default_arguments(super::arguments::DefaultArguments {
+        let mut restore = Continuation::BlockValue;
+        let mut target = target;
+        if !defaults.is_empty() {
+            if let Some(selected) = target.take() {
+                match self.prepare_call_target(selected, restore) {
+                    Ok((selected, continuation)) => {
+                        target = Some(selected);
+                        restore = continuation;
+                    }
+                    Err(signal) => return *signal,
+                }
+            }
+            let item = self
+                .plan
+                .dispatch
+                .method(call)
+                .and_then(|method| match method.target {
+                    etas_types::method::MethodTarget::Source { callable, .. }
+                    | etas_types::method::MethodTarget::Agent { callable, .. } => Some(callable),
+                    _ => None,
+                })
+                .or_else(|| {
+                    let mut selected = target.as_ref()?;
+                    while let CallTarget::Specialized { target, .. } = selected {
+                        selected = target;
+                    }
+                    match selected {
+                        CallTarget::FlowItem(item)
+                        | CallTarget::ToolItem(item)
+                        | CallTarget::AgentItem(item) => Some(*item),
+                        _ => None,
+                    }
+                });
+            if let Some(item) = item {
+                match self.declaration_model_policy(item) {
+                    Ok(Some(policy)) => {
+                        let previous = std::mem::replace(&mut self.task.model_policy, policy);
+                        restore = Continuation::RestoreModelPolicy {
+                            previous: Box::new(previous),
+                            inner: restore.into(),
+                        };
+                    }
+                    Ok(None) => (),
+                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+                }
+            }
+        }
+        let signal = self.prepare_default_arguments(super::arguments::DefaultArguments {
+            tool: None,
             expr: call,
             parameter_count,
             slots,
@@ -213,7 +261,8 @@ impl<'a> EvalContext<'a> {
             destination: super::arguments::ArgumentDestination::Call { target },
             span,
             frame: frame.clone(),
-        })
+        });
+        compose_signal_continuation(signal, restore)
     }
 
     pub(super) fn finish_call_arguments(

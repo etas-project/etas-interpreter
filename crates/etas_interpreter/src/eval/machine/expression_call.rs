@@ -52,6 +52,7 @@ pub(crate) enum ExpressionUnit {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExpressionCall {
+    pub(crate) tool: Option<etas_hir::HirItemId>,
     pub(crate) source: CheckedExecutionProgram,
     pub(crate) destination: CheckedExecutionProgram,
     pub(crate) unit: ExpressionUnit,
@@ -65,6 +66,10 @@ pub(crate) struct ExpressionCall {
 impl ExpressionCall {
     pub(crate) fn is_default(&self) -> bool {
         matches!(self.unit, ExpressionUnit::Default(_))
+    }
+
+    pub(crate) fn is_pure_default(&self) -> bool {
+        matches!(&self.unit, ExpressionUnit::Default(reference) if !reference.injected)
     }
 
     pub(crate) fn control(
@@ -134,6 +139,7 @@ impl ExpressionCall {
             site.frame.generic_bindings(),
         )?;
         Ok(Self {
+            tool: None,
             source,
             destination: prepared.destination,
             unit: ExpressionUnit::Default(reference),
@@ -198,6 +204,76 @@ impl ExpressionCall {
             handler_projections: Vec::new(),
             destination,
             bindings,
+            output,
+            projection: None,
+        })
+    }
+
+    pub(crate) fn at_tool(
+        source: CheckedExecutionProgram,
+        reference: ParameterDefaultInfo,
+        site: CallSite,
+        slots: Vec<u32>,
+        item: etas_hir::HirItemId,
+    ) -> Result<Self, String> {
+        let prepared = Self::prepare_tool(
+            &source,
+            &reference,
+            &slots,
+            item,
+            site.frame.generic_bindings(),
+        )?;
+        Ok(Self {
+            tool: Some(item),
+            source,
+            destination: prepared.destination,
+            unit: ExpressionUnit::Default(reference),
+            site,
+            slots,
+            bindings: prepared.bindings,
+            output: prepared.output,
+            projection: None,
+        })
+    }
+
+    pub(crate) fn prepare_tool(
+        source: &CheckedExecutionProgram,
+        reference: &ParameterDefaultInfo,
+        slots: &[u32],
+        item: etas_hir::HirItemId,
+        outer: &GenericBindings,
+    ) -> Result<PreparedExpression, String> {
+        let unit = source
+            .plan
+            .arguments
+            .default_unit(reference)
+            .ok_or("tool binding has no checked expression unit")?;
+        if unit.owner != item
+            || !matches!(
+                source.checked.hir.items.get(item),
+                Some(etas_hir::HirItem::Tool(_))
+            )
+            || slots.iter().any(|slot| *slot >= reference.parameter)
+        {
+            return Err("tool binding differs from its checked declaration".into());
+        }
+        let plan = source
+            .plan
+            .select_callable(
+                &source.checked,
+                etas_frontend::CheckedCallableRoot::ParameterDefault(unit.parameter),
+            )
+            .map_err(|errors| format!("tool binding has no checked execution plan: {errors:?}"))?;
+        let mut destination = source.clone();
+        destination.plan = Arc::new(plan);
+        let output = outer
+            .substitution(&source.checked.type_store)
+            .substitute(unit.output)
+            .map_err(|error| error.to_string())?;
+        Ok(PreparedExpression {
+            handler_projections: Vec::new(),
+            destination,
+            bindings: outer.clone(),
             output,
             projection: None,
         })

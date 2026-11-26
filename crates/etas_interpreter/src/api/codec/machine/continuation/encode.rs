@@ -36,7 +36,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
                 ),
             };
             object! { slot, pending;
-                "kind": json!("default_arguments"), "operation": json!(operation), "expr": json!(state.expr.0),
+                "kind": json!("default_arguments"), "tool": json!(state.tool.map(|item| item.0)), "operation": json!(operation), "expr": json!(state.expr.0),
                 "parameter_count": json!(state.parameter_count), "slots": json!(state.slots), "values": Node::Values(&state.values),
                 "defaults": json!(state.defaults), "next_default": json!(state.next_default),
                 "target": target.map(Node::CallTarget), "action": json!(action),

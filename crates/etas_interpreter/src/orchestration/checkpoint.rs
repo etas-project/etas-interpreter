@@ -644,6 +644,7 @@ pub(crate) enum ArgumentDestinationSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct DefaultArgumentsSnapshot {
+    pub tool: Option<HirItemId>,
     pub expr: HirExprId,
     pub parameter_count: usize,
     pub slots: Vec<u32>,
@@ -1165,6 +1166,7 @@ impl MachineFrameSnapshot {
 
 #[derive(Clone, Debug)]
 pub(crate) struct ExpressionCallSnapshot {
+    pub tool: Option<HirItemId>,
     pub source: super::ExecutionProgramSnapshot,
     pub unit: ExpressionUnitSnapshot,
     pub site: CallSiteSnapshot,

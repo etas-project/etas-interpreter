@@ -235,6 +235,7 @@ pub(in crate::eval::machine) fn capture_expression(
         },
     };
     Ok(ExpressionCallSnapshot {
+        tool: call.tool,
         source: context.execution_identity(&call.source)?,
         unit,
         site: CallSiteSnapshot::capture(&call.site, context)?,
@@ -277,6 +278,15 @@ pub(in crate::eval::machine) fn restore_expression(
     match saved.unit {
         ExpressionUnitSnapshot::Default(reference) => {
             let site = saved.site.restore(context)?;
+            if let Some(tool) = saved.tool {
+                return super::super::expression_call::ExpressionCall::at_tool(
+                    parent.clone(),
+                    reference,
+                    site,
+                    saved.slots,
+                    tool,
+                );
+            }
             super::super::expression_call::ExpressionCall::at_site(
                 parent.clone(),
                 reference,
@@ -385,6 +395,15 @@ fn prepare_expression(
     };
     match &saved.unit {
         crate::orchestration::ExpressionUnitSnapshot::Default(reference) => {
+            if let Some(tool) = saved.tool {
+                return super::super::expression_call::ExpressionCall::prepare_tool(
+                    &source,
+                    reference,
+                    &saved.slots,
+                    tool,
+                    &saved.site.bindings(parent),
+                );
+            }
             super::super::expression_call::ExpressionCall::prepare(
                 &source,
                 reference,

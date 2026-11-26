@@ -297,3 +297,64 @@ flow main() -> i32 ![Agentic, Error<IOError>] {
         vec![ModelContent::Text("\"local evidence\"".into())]
     );
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn model_tool_resolves_hidden_injection_and_visible_default_before_its_body() {
+    let checked = super::parameter_injection::checked(
+        r#"module app.main;
+import std.runtime.checkpoint;
+effect Evidence { action read() -> (() -> string ![]); }
+tool lookup(@inject(Evidence.read) dependency: () -> string ![], suffix: string = "!") -> string ![] {
+    return dependency() + suffix;
+}
+@tools([lookup])
+agent Reader() -> string ![Evidence.read] { return perform infer(Prompt.new()); }
+flow main() -> string ![Agentic] {
+    return Reader.run() with { Evidence.read() => { checkpoint("provider-binding"); () => "provided" }; };
+}"#,
+    );
+    let host = FakeHost::new(availability(&[
+        HostRequirementKind::Agentic,
+        HostRequirementKind::Checkpoint,
+    ]));
+    host.seed_model_response_tool_call("lookup");
+    host.seed_model_response_text("finished");
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            options(&checked),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_tool_result(&host, "provided!");
+    assert_eq!(
+        host.model_requests()[0].tools[0].input,
+        HostSchema::Record(vec![HostFieldSchema {
+            name: "suffix".into(),
+            schema: HostSchema::String,
+            optional: true,
+        }])
+    );
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        api::codec::checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0])
+            .unwrap();
+    let decoded = api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed_host = FakeHost::new(availability(&[
+        HostRequirementKind::Agentic,
+        HostRequirementKind::Checkpoint,
+    ]));
+    resumed_host.seed_model_response_text("finished");
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &decoded, &resumed_host, options(&checked))
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), result.value());
+}

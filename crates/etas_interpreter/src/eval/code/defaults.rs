@@ -48,6 +48,7 @@ pub(super) fn project(
     p.record(
         ty,
         vec![
+            ("injected", V::Bool(default.injected)),
             ("owner", owner),
             (
                 "parameter",

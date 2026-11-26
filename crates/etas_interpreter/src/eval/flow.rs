@@ -216,7 +216,15 @@ impl<'a> EvalContext<'a> {
         receiver: Option<InterpValue>,
         args: HostValue,
         span: Span,
-    ) -> Result<(CallTarget, Vec<InterpValue>), ExecutionFault> {
+    ) -> Result<
+        (
+            CallTarget,
+            Vec<InterpValue>,
+            Vec<u32>,
+            Vec<etas_types::DefaultArgument>,
+        ),
+        ExecutionFault,
+    > {
         let Some(HirItem::Tool(tool)) = self.checked.hir.items.get(item) else {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -241,15 +249,26 @@ impl<'a> EvalContext<'a> {
             ));
         };
         let start = usize::from(receiver.is_some());
-        let values = self.decode_source_tool_args(
+        let (values, mut slots, mut defaults) = self.decode_source_tool_args(
             &tool.params[start..],
             &signature.params[start..],
             args,
             span,
         )?;
+        for slot in &mut slots {
+            *slot += start as u32;
+        }
+        for default in &mut defaults {
+            default.slot += start as u32;
+        }
+        if receiver.is_some() {
+            slots.insert(0, 0);
+        }
         Ok((
             CallTarget::ToolItem(item),
             receiver.into_iter().chain(values).collect(),
+            slots,
+            defaults,
         ))
     }
 
@@ -316,13 +335,70 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    pub(in crate::eval) fn bind_source_tool_arguments(
+        &mut self,
+        item: HirItemId,
+        values: Vec<InterpValue>,
+        slots: Vec<u32>,
+        defaults: Vec<etas_types::DefaultArgument>,
+        span: Span,
+    ) -> ControlSignal {
+        if defaults.is_empty() {
+            return match super::arguments::dense_arguments(values.len(), slots, values) {
+                Ok(values) => self.execute_call_target(CallTarget::ToolItem(item), values, span),
+                Err(reason) => ControlSignal::missing_checked_fact(reason, span),
+            };
+        }
+        let etas_types::ParameterDefaultRef::Source { parameter } = defaults[0].source else {
+            unreachable!("source tool bindings belong to their checked declaration");
+        };
+        let expr = self.checked.hir.parameter_defaults[&parameter];
+        let span = self.checked.hir.exprs[expr].span(&self.checked.hir.blocks);
+        let Some(HirItem::Tool(tool)) = self.checked.hir.items.get(item) else {
+            unreachable!("checked source tool")
+        };
+        let parameter_count = tool.params.len();
+        let frame = match self.callable_frame_with_generics(tool.scope, Default::default(), span) {
+            Ok(frame) => frame,
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        };
+        let previous = self.task.model_policy.clone();
+        match self.declaration_model_policy(item) {
+            Ok(Some(policy)) => self.task.model_policy = policy,
+            Ok(None) => (),
+            Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        }
+        let signal = self.prepare_default_arguments(super::arguments::DefaultArguments {
+            tool: Some(item),
+            expr,
+            parameter_count,
+            slots,
+            values,
+            defaults,
+            next_default: 0,
+            destination: super::arguments::ArgumentDestination::Call {
+                target: Some(CallTarget::ToolItem(item)),
+            },
+            span,
+            frame,
+        });
+        compose_signal_continuation(
+            signal,
+            Continuation::RestoreModelPolicy {
+                previous: Box::new(previous),
+                inner: Continuation::BlockValue.into(),
+            },
+        )
+    }
+
     fn decode_source_tool_args(
         &mut self,
         params: &[etas_hir::SymbolId],
         input_types: &[etas_types::TypeId],
         args: HostValue,
         span: Span,
-    ) -> Result<Vec<InterpValue>, ExecutionFault> {
+    ) -> Result<(Vec<InterpValue>, Vec<u32>, Vec<etas_types::DefaultArgument>), ExecutionFault>
+    {
         if params.len() != input_types.len() {
             return Err(ExecutionFault::new(
                 AnalysisDiagnosticCode::MissingCheckedFact,
@@ -345,42 +421,61 @@ impl<'a> EvalContext<'a> {
                 ));
             }
         };
-        params.iter().zip(input_types.iter().copied())
-            .map(|(param, ty)| {
-                let Some(param_symbol) = self.checked.hir.symbols.get(*param) else {
-                    return Err(ExecutionFault::new(
-                        AnalysisDiagnosticCode::MissingCheckedFact,
-                        span,
-                        "source tool parameter is missing from checked HIR",
-                    ));
-                };
-                let Some((_, value)) = fields.iter().find(|(name, _)| name == &param_symbol.name)
-                else {
+        let interface = params
+            .iter()
+            .map(|parameter| etas_types::ParameterInterface {
+                name: Some(
+                    self.checked
+                        .hir
+                        .symbols
+                        .get(*parameter)
+                        .expect("checked tool parameter")
+                        .name
+                        .clone(),
+                ),
+                default: self
+                    .checked
+                    .hir
+                    .parameter_defaults
+                    .contains_key(parameter)
+                    .then_some(etas_types::ParameterDefaultRef::Source {
+                        parameter: *parameter,
+                    }),
+            })
+            .collect::<Vec<_>>();
+        let names = fields
+            .iter()
+            .map(|(name, _)| Some(name.clone()))
+            .collect::<Vec<_>>();
+        let binding = etas_types::ArgumentBinding::bind(&interface, &names).map_err(|message| {
+            ExecutionFault::new(AnalysisDiagnosticCode::InvalidArguments, span, message)
+        })?;
+        let values = fields
+            .into_iter()
+            .zip(&binding.argument_slots)
+            .map(|((name, value), slot)| {
+                if self
+                    .checked
+                    .hir
+                    .parameter_injections
+                    .contains(&params[*slot as usize])
+                {
                     return Err(ExecutionFault::new(
                         AnalysisDiagnosticCode::InvalidArguments,
                         span,
-                        format!(
-                            "model tool call for source tool is missing argument `{}`",
-                            param_symbol.name
-                        ),
+                        format!("injected tool parameter `{name}` is hidden from model arguments"),
                     ));
-                };
+                }
                 super::host_value::decode_checked_host_value(
-                    value.clone(),
-                    ty,
+                    value,
+                    input_types[*slot as usize],
                     self.checked,
                 )
-                .map_err(|error| {
-                    ExecutionFault::new(
-                        AnalysisDiagnosticCode::InvalidArguments,
-                        span,
-                        format!(
-                            "model tool call argument `{}` did not match the source tool parameter type: {error}",
-                            param_symbol.name,
-                        ),
-                    )
+                .map_err(|message| {
+                    ExecutionFault::new(AnalysisDiagnosticCode::InvalidArguments, span, message)
                 })
             })
-            .collect()
+            .collect::<Result<Vec<_>, _>>()?;
+        Ok((values, binding.argument_slots, binding.defaults))
     }
 }

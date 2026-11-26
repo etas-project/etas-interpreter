@@ -49,6 +49,7 @@ mod model_payload;
 mod native_actions;
 mod ordered_checkpoint;
 mod ordered_collections;
+mod parameter_injection;
 mod priority_queue;
 mod prompt_data;
 mod pure_queries;

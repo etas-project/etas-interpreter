@@ -22,6 +22,7 @@ impl ContinuationSnapshot {
         Ok(match continuation {
             Continuation::DefaultArguments(state) => {
                 Self::DefaultArguments(Box::new(crate::orchestration::DefaultArgumentsSnapshot {
+                    tool: state.tool,
                     expr: state.expr,
                     parameter_count: state.parameter_count,
                     slots: state.slots.clone(),
@@ -728,6 +729,7 @@ impl ContinuationSnapshot {
             Self::DefaultArguments(state) => {
                 let state = *state;
                 Continuation::DefaultArguments(Box::new(crate::eval::arguments::DefaultArguments {
+                    tool: state.tool,
                     expr: state.expr,
                     parameter_count: state.parameter_count,
                     slots: state.slots,

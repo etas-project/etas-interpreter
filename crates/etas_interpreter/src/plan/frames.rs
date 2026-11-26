@@ -40,6 +40,28 @@ impl FrameLayoutTable {
                 HirItem::Flow(flow) => declare(flow.scope, &flow.params)?,
                 HirItem::Tool(tool) => declare(tool.scope, &tool.params)?,
                 HirItem::Agent(agent) => declare(agent.scope, &agent.params)?,
+                HirItem::Spec(spec) => {
+                    for member in &spec.items {
+                        if let etas_hir::HirSpecItem::FlowSignature(signature) = member
+                            && signature.params.iter().any(|parameter| {
+                                project.hir.parameter_defaults.contains_key(parameter)
+                            })
+                        {
+                            declare(signature.scope, &signature.params)?;
+                        }
+                    }
+                }
+                HirItem::Effect(effect) => {
+                    for action in effect.body.actions() {
+                        if action
+                            .params
+                            .iter()
+                            .any(|parameter| project.hir.parameter_defaults.contains_key(parameter))
+                        {
+                            declare(action.scope, &action.params)?;
+                        }
+                    }
+                }
                 HirItem::Impl(decl) => {
                     for member in &decl.items {
                         if let HirImplItem::Flow(flow) = member {

@@ -29,6 +29,57 @@ impl SnapshotValidator<'_> {
     ) -> Result<(), String> {
         self.expr(state.expr, context)?;
         self.frame(&state.frame, context)?;
+        if let Some(item) = state.tool {
+            let Some(etas_hir::HirItem::Tool(tool)) = self.checked.hir.items.get(item) else {
+                return Err("pending tool arguments have no checked tool owner".into());
+            };
+            let Some(etas_types::ItemSignature::Tool(signature)) =
+                self.checked.types.item_signatures.get(&item)
+            else {
+                return Err("pending tool arguments have no checked signature".into());
+            };
+            if state.parameter_count != tool.params.len()
+                || state.next_default == 0
+                || state.next_default > state.defaults.len()
+                || state.slots.len() != state.values.len()
+            {
+                return Err("pending tool arguments have inconsistent binding progress".into());
+            }
+            let mut slots = std::collections::BTreeSet::new();
+            for (slot, value) in state.slots.iter().zip(&state.values) {
+                let ty = *signature
+                    .params
+                    .get(*slot as usize)
+                    .ok_or("pending tool argument exceeds its signature")?;
+                if !slots.insert(*slot) {
+                    return Err("pending tool argument is bound twice".into());
+                }
+                self.reference_value(
+                    value,
+                    ty,
+                    &state
+                        .frame
+                        .bindings_at(self.checked, etas_hir::HirOwner::Expr(state.expr)),
+                )?;
+                self.snapshot_value_in(value, call_target::ReferenceScope::CheckedSlot)?;
+            }
+            for (index, default) in state.defaults.iter().enumerate() {
+                let parameter = *tool
+                    .params
+                    .get(default.slot as usize)
+                    .ok_or("pending tool default exceeds its signature")?;
+                if default.source != (etas_types::ParameterDefaultRef::Source { parameter })
+                    || !self.checked.hir.parameter_defaults.contains_key(&parameter)
+                    || (index >= state.next_default - 1 && !slots.insert(default.slot))
+                {
+                    return Err("pending tool default differs from its checked declaration".into());
+                }
+            }
+            if slots.len() != tool.params.len() {
+                return Err("pending tool argument slots are incomplete".into());
+            }
+            return Ok(());
+        }
         let site = &self.checked.hir.exprs[state.expr];
         let (count, mut slots, defaults) = if let Some(method) = self.dispatch.method(state.expr) {
             let mut slots = Vec::new();

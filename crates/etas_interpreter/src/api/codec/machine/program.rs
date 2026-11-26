@@ -106,7 +106,7 @@ pub(in crate::api::codec) fn expression_call_json(
             "handler":snapshot::value_json_with_budget(handler, budget)?,
         }),
     };
-    let mut value = json!({"source":call.source, "unit":unit, "slots":call.slots, "site":null});
+    let mut value = json!({"source":call.source, "tool":call.tool.map(|item| item.0), "unit":unit, "slots":call.slots, "site":null});
     budget.json_metadata(&value)?;
     value["site"] = snapshot::call_site_json_with_budget(&call.site, budget)?;
     Ok(value)
@@ -123,6 +123,17 @@ pub(in crate::api::codec) fn expression_call_from_json(
         return Err("expression argument positions exceed checkpoint limits".into());
     }
     Ok(ExpressionCallSnapshot {
+        tool: value
+            .get("tool")
+            .filter(|value| !value.is_null())
+            .map(|value| {
+                value
+                    .as_u64()
+                    .and_then(|value| u32::try_from(value).ok())
+                    .map(etas_hir::HirItemId)
+                    .ok_or("tool binding owner must be a HIR item")
+            })
+            .transpose()?,
         source: serde_json::from_value(required(value, "source")?.clone())
             .map_err(|error| error.to_string())?,
         unit: {

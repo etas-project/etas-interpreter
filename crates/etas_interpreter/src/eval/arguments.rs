@@ -16,6 +16,7 @@ pub(crate) enum ArgumentDestination {
 /// Invocation preparation, before any callable body or action dispatch.
 #[derive(Clone, Debug)]
 pub(crate) struct DefaultArguments {
+    pub tool: Option<etas_hir::HirItemId>,
     pub expr: HirExprId,
     pub parameter_count: usize,
     pub slots: Vec<u32>,
@@ -66,12 +67,23 @@ impl<'a> EvalContext<'a> {
                 composition: None,
                 task_callback: None,
             };
-            let call = match super::machine::expression_call::ExpressionCall::at_site(
-                self.checked_execution_program(),
-                reference,
-                site,
-                slots,
-            ) {
+            let prepared = if let Some(tool) = state.tool {
+                super::machine::expression_call::ExpressionCall::at_tool(
+                    self.checked_execution_program(),
+                    reference,
+                    site,
+                    slots,
+                    tool,
+                )
+            } else {
+                super::machine::expression_call::ExpressionCall::at_site(
+                    self.checked_execution_program(),
+                    reference,
+                    site,
+                    slots,
+                )
+            };
+            let call = match prepared {
                 Ok(call) => call,
                 Err(reason) => return ControlSignal::missing_checked_fact(reason, state.span),
             };
@@ -82,6 +94,13 @@ impl<'a> EvalContext<'a> {
                 span: state.span,
                 continuation: Continuation::DefaultArguments(Box::new(state)),
             }));
+        }
+        if let Some(tool) = state.tool {
+            let args = match dense_arguments(state.parameter_count, state.slots, state.values) {
+                Ok(args) => args,
+                Err(reason) => return ControlSignal::missing_checked_fact(reason, state.span),
+            };
+            return self.execute_call_target(CallTarget::ToolItem(tool), args, state.span);
         }
         match state.destination {
             ArgumentDestination::Call { target } => self.finish_call_arguments(

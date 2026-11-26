@@ -920,6 +920,9 @@ impl<'a> EvalContext<'a> {
         let start = usize::from(self.checked.hir.member_tool_receiver(tool_item).is_some());
         let mut fields = Vec::with_capacity(tool.params.len() - start);
         for (param, ty) in tool.params[start..].iter().zip(&signature.params[start..]) {
+            if self.checked.hir.parameter_injections.contains(param) {
+                continue;
+            }
             let Some(param_symbol) = self.checked.hir.symbols.get(*param) else {
                 return Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::MissingCheckedFact,
@@ -933,7 +936,7 @@ impl<'a> EvalContext<'a> {
             fields.push(HostFieldSchema {
                 name: param_symbol.name.clone(),
                 schema: self.host_schema_for_type(*ty, span, 0)?,
-                optional: false,
+                optional: self.checked.hir.parameter_defaults.contains_key(param),
             });
         }
         Ok(HostSchema::Record(fields))
