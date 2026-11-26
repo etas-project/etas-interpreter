@@ -169,3 +169,58 @@ flow main() -> i32 ![] {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     assert_eq!(result.value(), Some(&InterpValue::i32(42)));
 }
+
+#[tokio::test(flavor = "current_thread")]
+async fn handler_tails_resume_once_across_checkpoints_and_explicit_branches() {
+    let checked = checked_project(
+        r#"module app.main;
+import std.runtime.checkpoint;
+effect Choice { action choose(value: i32) -> i32; }
+flow main() -> i32 {
+    var calls = 0;
+    let choose = handler {
+        Choice.choose(value) as k => {
+            calls = calls + 1;
+            if value < 0 { resume 1; }
+            if value == 0 { finish "zero"; }
+            checkpoint("handler-tail");
+            value + 1
+        }
+    };
+    let answer = handle {
+        let first = perform Choice.choose(20);
+        let second = perform Choice.choose(-1);
+        if first + second == 22 { "ok" } else { "wrong" }
+    } with choose;
+    let direct = perform Choice.choose(40) with { Choice.choose(value) => value + 2; };
+    if answer == "ok" && calls == 2 { return direct; }
+    return -1;
+}"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Checkpoint]));
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            RunOptions::default(),
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::i32(42)));
+    assert_eq!(result.checkpoints.len(), 1);
+    let artifact =
+        api::codec::checkpoint_artifact_json(&["main.es".into()], "main", &result.checkpoints[0])
+            .unwrap();
+    let decoded = api::codec::checkpoint_from_json(&artifact, &checked).unwrap();
+    let resumed = Interpreter
+        .resume_checkpoint(&checked, &decoded, &host, RunOptions::default())
+        .await
+        .unwrap();
+    assert!(resumed.diagnostics.is_empty(), "{:?}", resumed.diagnostics);
+    assert_eq!(resumed.value(), Some(&InterpValue::i32(42)));
+}
