@@ -373,6 +373,17 @@ impl<'a> EvalContext<'a> {
         call_args: Vec<InterpValue>,
         span: Span,
     ) -> ControlSignal {
+        if self.checked.hir.source_standard_types {
+            return match crate::value::enum_value::construct(
+                result_type,
+                runtime_limit_constructor_name(kind),
+                call_args,
+                self.checked,
+            ) {
+                Ok(value) => ControlSignal::Value(value),
+                Err(reason) => ControlSignal::missing_checked_fact(reason, span),
+            };
+        }
         if kind == StdLimitKind::Concurrency {
             let Some(value) = call_args
                 .as_slice()

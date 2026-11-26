@@ -35,13 +35,39 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         let HirExpr::Limited {
-            body, target, span, ..
+            ref bounds,
+            body,
+            target,
+            span,
         } = self.checked.hir.exprs[expr]
         else {
             unreachable!("checked local limit scope")
         };
         let mut limits = Vec::new();
-        for value in values {
+        for (bound, value) in bounds.iter().zip(values) {
+            let expected = self
+                .checked
+                .types
+                .expr_types
+                .get(bound)
+                .copied()
+                .and_then(|ty| {
+                    let layout =
+                        etas_types::applied_representation_in_store(&self.checked.type_store, ty)
+                            .ok()
+                            .flatten()
+                            .unwrap_or(ty);
+                    match self.checked.type_store.get(layout) {
+                        Some(etas_types::Type::Array(element)) => Some(*element),
+                        _ => None,
+                    }
+                });
+            let Some(expected) = expected else {
+                return ControlSignal::missing_checked_fact(
+                    "local @limits has no checked array element type",
+                    span,
+                );
+            };
             let InterpValue::Array(values) = value else {
                 return ControlSignal::invalid_arguments(
                     "local @limits requires Array<Limit>",
@@ -49,7 +75,7 @@ impl<'a> EvalContext<'a> {
                 );
             };
             for value in values.snapshot() {
-                match self.runtime_limit_value(&value, span) {
+                match self.runtime_limit_value(&value, expected, span) {
                     Ok(limit) => limits.push(limit),
                     Err(fault) => return ControlSignal::Fault(Box::new(fault)),
                 }
@@ -225,9 +251,9 @@ impl<'a> EvalContext<'a> {
     fn runtime_limit_value(
         &self,
         value: &InterpValue,
+        expected: etas_types::TypeId,
         span: Span,
     ) -> Result<RuntimeLimit, ExecutionFault> {
-        let expected = self.runtime_type(etas_std::RuntimeTypeRole::Limit, span)?;
         let (name, fields) = if self.checked.hir.source_standard_types {
             crate::value::enum_value::payload(value, expected, self.checked).map_err(|reason| {
                 ExecutionFault::new(AnalysisDiagnosticCode::InvalidArguments, span, reason)

@@ -122,6 +122,7 @@ async fn named_providers_select_each_field_before_the_type_fallback() {
     let mut input = etas_frontend::ProjectInput::single_source(
         etas_frontend::SourceInput::anonymous(
             r#"module std.effects;
+import std.runtime.limits.Tokens;
 public effect Inject<T> { action get(name: string) -> T; }
 type Config = { @inject title: string, @inject author: string, @inject footer: string, count: i32 };
 flow main() -> i32 ![] {
@@ -132,16 +133,19 @@ flow main() -> i32 ![] {
         author,
     };
     let revised = config { count = config.count + 2 };
-    if revised.title == "Named" && revised.author == "Ada" && revised.footer == "fallback" && config.count == 40 {
-        return revised.count;
+    @limits([Tokens(100)]) {
+        if revised.title == "Named" && revised.author == "Ada" && revised.footer == "fallback" && config.count == 40 {
+            return revised.count;
+        }
+        return -1;
     }
-    return -1;
 }"#,
         ),
     );
     for (index, text) in [
         "module std.runtime.budget; public type Money = { private amount: f64, private currency: string };",
         "module std.runtime.time; public type Duration = { millis: u128 };",
+        "module std.runtime.limits; import std.runtime.budget.Money; import std.runtime.time.Duration; public enum Limit { Iterations(usize), Tokens(usize), ContextTokens(usize), Cost(Money), WallTime(Duration), Attempts(usize), Concurrency(usize) }",
     ].into_iter().enumerate() {
         let mut source = etas_frontend::SourceInput::anonymous(text);
         source.id = etas_core::SourceId(index as u32 + 1);
