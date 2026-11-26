@@ -2,6 +2,7 @@ use super::*;
 use std::collections::HashSet;
 
 pub(crate) struct SourceForLoopResume {
+    pub max_iterations: Option<usize>,
     pub iter: HirExprId,
     pub pat: etas_hir::HirPatId,
     pub source: Option<InterpValue>,
@@ -15,6 +16,7 @@ pub(crate) struct SourceForLoopResume {
 impl SourceForLoopResume {
     pub(crate) fn continuation(self, frame: Frame) -> Continuation {
         Continuation::SourceForLoop {
+            max_iterations: self.max_iterations,
             iter: self.iter,
             pat: self.pat,
             source: self.source.map(Box::new),
@@ -115,6 +117,13 @@ impl EvalContext<'_> {
             }
         } else if state.source.is_none() {
             state.source = Some(value);
+        }
+        if state
+            .max_iterations
+            .is_some_and(|limit| state.next_index >= limit)
+        {
+            frame.cleanup_to(&state.loop_scope);
+            return ControlSignal::Value(InterpValue::Unit);
         }
         let Some(protocol) = self.plan.records.source_iterator(state.iter) else {
             return ControlSignal::missing_checked_fact(

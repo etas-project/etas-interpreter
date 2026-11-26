@@ -19,6 +19,7 @@ mod concurrency_contract;
 mod concurrency_resources;
 mod container_limits;
 mod conversation;
+mod current_spec_syntax;
 mod entry_validation;
 mod enum_identity;
 mod file_read_limited;

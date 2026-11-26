@@ -61,7 +61,7 @@ impl<'a> EvalContext<'a> {
                 }
             }
             HirStmt::Retry { body, span } => {
-                self.execute_retry_stmt(block, stmt_index, *body, *span, frame)
+                self.execute_retry_stmt(block, stmt_index, *body, *span, None, frame)
             }
             HirStmt::Resume { value, .. } => self.execute_resume_stmt(*value, frame),
             HirStmt::Finish { value, .. } => self.execute_finish_stmt(*value, frame),

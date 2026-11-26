@@ -570,6 +570,7 @@ impl ContinuationSnapshot {
                 span: *span,
             },
             Continuation::ForLoop {
+                max_iterations,
                 pat,
                 source,
                 next_index,
@@ -581,6 +582,7 @@ impl ContinuationSnapshot {
                 let mut loop_scope = loop_scope.iter().copied().collect::<Vec<_>>();
                 loop_scope.sort_by_key(|symbol| symbol.0);
                 Self::ForLoop {
+                    max_iterations: *max_iterations,
                     pat: *pat,
                     source: source
                         .as_ref()
@@ -599,6 +601,7 @@ impl ContinuationSnapshot {
                 }
             }
             Continuation::SourceForLoop {
+                max_iterations,
                 iter,
                 pat,
                 source,
@@ -612,6 +615,7 @@ impl ContinuationSnapshot {
                 let mut loop_scope = loop_scope.iter().copied().collect::<Vec<_>>();
                 loop_scope.sort_by_key(|symbol| symbol.0);
                 Self::SourceForLoop {
+                    max_iterations: *max_iterations,
                     iter: *iter,
                     pat: *pat,
                     source: source
@@ -627,12 +631,14 @@ impl ContinuationSnapshot {
                 }
             }
             Continuation::WhileLoop {
+                iteration_budget,
                 cond,
                 body,
                 resume_after_body,
                 span,
                 frame,
             } => Self::WhileLoop {
+                iteration_budget: *iteration_budget,
                 cond: *cond,
                 body: *body,
                 resume_after_body: *resume_after_body,
@@ -640,6 +646,7 @@ impl ContinuationSnapshot {
                 frame: context.frame(frame)?,
             },
             Continuation::RetryAttempt {
+                max_attempts,
                 retry,
                 body,
                 next_attempt,
@@ -647,6 +654,7 @@ impl ContinuationSnapshot {
                 next_stmt_index,
                 frame,
             } => Self::RetryAttempt {
+                max_attempts: *max_attempts,
                 retry: retry.clone(),
                 body: *body,
                 next_attempt: *next_attempt,
@@ -1252,6 +1260,7 @@ impl ContinuationSnapshot {
                 span,
             },
             Self::ForLoop {
+                max_iterations,
                 pat,
                 source,
                 text_cursor,
@@ -1261,6 +1270,7 @@ impl ContinuationSnapshot {
                 span,
                 frame,
             } => Continuation::ForLoop {
+                max_iterations,
                 pat,
                 source: match (source, text_cursor) {
                     (Some(source), Some(cursor)) => Some(Box::new(
@@ -1287,6 +1297,7 @@ impl ContinuationSnapshot {
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::SourceForLoop {
+                max_iterations,
                 iter,
                 pat,
                 source,
@@ -1297,6 +1308,7 @@ impl ContinuationSnapshot {
                 span,
                 frame,
             } => Continuation::SourceForLoop {
+                max_iterations,
                 iter,
                 pat,
                 source: source
@@ -1310,12 +1322,14 @@ impl ContinuationSnapshot {
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::WhileLoop {
+                iteration_budget,
                 cond,
                 body,
                 resume_after_body,
                 span,
                 frame,
             } => Continuation::WhileLoop {
+                iteration_budget,
                 cond,
                 body,
                 resume_after_body,
@@ -1323,6 +1337,7 @@ impl ContinuationSnapshot {
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::RetryAttempt {
+                max_attempts,
                 retry,
                 body,
                 next_attempt,
@@ -1330,6 +1345,7 @@ impl ContinuationSnapshot {
                 next_stmt_index,
                 frame,
             } => Continuation::RetryAttempt {
+                max_attempts,
                 retry,
                 body,
                 next_attempt,

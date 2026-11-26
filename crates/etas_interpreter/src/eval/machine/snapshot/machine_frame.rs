@@ -98,6 +98,7 @@ impl MachineFrameSnapshot {
             },
             EvalFrame::Retry(frame) => Self::Retry {
                 continuation: ContinuationSnapshot::RetryAttempt {
+                    max_attempts: frame.max_attempts,
                     retry: frame.retry.clone(),
                     body: frame.body,
                     next_attempt: frame.next_attempt,

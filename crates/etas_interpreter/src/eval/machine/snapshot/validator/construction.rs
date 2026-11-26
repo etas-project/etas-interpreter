@@ -23,6 +23,7 @@ impl SnapshotValidator<'_> {
                         | HirExpr::List { elems, .. }
                         | HirExpr::Set { elems, .. },
                     ) => elems,
+                    Some(HirExpr::Limited { bounds, .. }) => bounds,
                     _ => return Err(format!("{context}: missing checked aggregate construction")),
                 };
                 self.index_at_most(*next_index, elems.len(), context)?;
@@ -45,6 +46,21 @@ impl SnapshotValidator<'_> {
                 values,
                 frame,
             } => {
+                let update = match self.checked.hir.exprs.get(*expr) {
+                    Some(HirExpr::Record(record)) => record.base,
+                    _ => None,
+                };
+                if *next_index == 0
+                    && let Some(base) = update
+                {
+                    if nominal_type.is_some() || variant_symbol.is_some() || !values.is_empty() {
+                        return Err(format!(
+                            "{context}: record update base has inconsistent construction state"
+                        ));
+                    }
+                    self.expr(base, context)?;
+                    return self.frame(frame, context);
+                }
                 let fields =
                     self.record_construction(*expr, *nominal_type, *variant_symbol, context)?;
                 if let Some(ty) = nominal_type {
@@ -58,19 +74,41 @@ impl SnapshotValidator<'_> {
                 let pending = next_index.checked_sub(1).ok_or_else(|| {
                     format!("{context}: record continuation has no pending field")
                 })?;
+                let types = self.construction_fields(*expr, *variant_symbol)?;
+                let mut expected_names = if update.is_some() {
+                    let supplied = fields
+                        .iter()
+                        .map(|field| match field {
+                            HirFieldInit::Named { name, .. }
+                            | HirFieldInit::Shorthand { name, .. } => name,
+                        })
+                        .collect::<HashSet<_>>();
+                    let mut retained = types
+                        .keys()
+                        .filter(|name| !supplied.contains(name))
+                        .cloned()
+                        .collect::<Vec<_>>();
+                    retained.sort();
+                    retained
+                } else {
+                    Vec::new()
+                };
+                expected_names.extend(fields.iter().take(pending).map(|field| match field {
+                    HirFieldInit::Named { name, .. } | HirFieldInit::Shorthand { name, .. } => {
+                        name.clone()
+                    }
+                }));
                 if !matches!(fields.get(pending), Some(HirFieldInit::Named { .. }))
-                    || values.len() != pending
-                    || values.iter().zip(fields).any(|((actual, _), field)| {
-                        let (HirFieldInit::Named { name, .. }
-                        | HirFieldInit::Shorthand { name, .. }) = field;
-                        actual != name
-                    })
+                    || values.len() != expected_names.len()
+                    || values
+                        .iter()
+                        .zip(&expected_names)
+                        .any(|((actual, _), expected)| actual != expected)
                 {
                     return Err(format!(
                         "{context}: record continuation has inconsistent evaluated fields"
                     ));
                 }
-                let types = self.construction_fields(*expr, *variant_symbol)?;
                 let bindings = frame.bindings_at(self.checked, etas_hir::HirOwner::Expr(*expr));
                 for (name, value) in values {
                     let ty = *types

@@ -1,6 +1,7 @@
 use super::*;
 
 struct RetryResumeState {
+    max_attempts: Option<usize>,
     retry: RetryAttemptRecord,
     body: HirBlockId,
     next_attempt: usize,
@@ -16,9 +17,10 @@ impl<'a> EvalContext<'a> {
         stmt_index: usize,
         body: HirBlockId,
         _span: Span,
+        max_attempts: Option<usize>,
         frame: &mut Frame,
     ) -> Option<ControlSignal> {
-        self.execute_retry_attempt(block, stmt_index, body, 0, frame)
+        self.execute_retry_attempt(block, stmt_index, body, 0, max_attempts, frame)
     }
 
     pub(crate) fn retry_boundary_failure_signal(
@@ -40,6 +42,7 @@ impl<'a> EvalContext<'a> {
         while let Some(continuation) = work.pop() {
             match continuation {
                 Continuation::RetryAttempt {
+                    max_attempts,
                     retry,
                     body,
                     next_attempt,
@@ -49,6 +52,7 @@ impl<'a> EvalContext<'a> {
                 } => {
                     return Some(self.retry_attempt_failed(
                         RetryResumeState {
+                            max_attempts,
                             retry,
                             body,
                             next_attempt,
@@ -92,6 +96,7 @@ impl<'a> EvalContext<'a> {
             state.next_stmt_index - 1,
             state.body,
             state.next_attempt,
+            state.max_attempts,
             &mut state.frame,
         ) {
             Some(signal) => signal,
@@ -105,8 +110,18 @@ impl<'a> EvalContext<'a> {
         stmt_index: usize,
         body: HirBlockId,
         attempt: usize,
+        max_attempts: Option<usize>,
         frame: &mut Frame,
     ) -> Option<ControlSignal> {
+        if max_attempts.is_some_and(|limit| attempt >= limit) {
+            let span = self.checked.hir.blocks[body].span;
+            return Some(self.raise_limit_exhausted(
+                "attempts",
+                max_attempts.unwrap(),
+                attempt,
+                span,
+            ));
+        }
         let retry = RetryAttemptRecord {
             id: RetryAttemptId(self.next_retry),
             ordinal: attempt as u32,
@@ -134,6 +149,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Task(_)) => Some(self.pending_retry_signal(
                 signal,
                 RetryResumeState {
+                    max_attempts,
                     retry,
                     body,
                     next_attempt: attempt + 1,
@@ -189,6 +205,7 @@ impl<'a> EvalContext<'a> {
         state: RetryResumeState,
     ) -> ControlSignal {
         let continuation = Continuation::RetryAttempt {
+            max_attempts: state.max_attempts,
             retry: state.retry,
             body: state.body,
             next_attempt: state.next_attempt,

@@ -29,6 +29,7 @@ impl<'a> EvalContext<'a> {
             return self.eval_tool_reference(expr, span);
         }
         match &self.checked.hir.exprs[expr] {
+            HirExpr::Limited { .. } => self.eval_sequence_expr(expr, frame),
             HirExpr::Literal(literal) => match self.eval_literal(expr, literal, Some(frame)) {
                 Ok(value) => ControlSignal::Value(value),
                 Err(fault) => ControlSignal::Fault(Box::new(fault)),

@@ -1125,6 +1125,7 @@ impl<'a> SnapshotValidator<'a> {
                 self.frame(frame, context)
             }
             ContinuationSnapshot::SourceForLoop {
+                max_iterations: _,
                 iter,
                 pat,
                 source,
@@ -1759,7 +1760,7 @@ impl<'a> SnapshotValidator<'a> {
         let Some(etas_hir::HirExpr::Record(record)) = self.checked.hir.exprs.get(expr) else {
             return Err(error());
         };
-        let expected_type = if record.path.is_some() {
+        let mut expected_type = if record.path.is_some() {
             Some(
                 self.checked
                     .types
@@ -1769,16 +1770,30 @@ impl<'a> SnapshotValidator<'a> {
         } else {
             None
         };
-        let expected_variant = match record.path.as_ref().map(|path| &path.resolution) {
-            Some(etas_hir::ResolveResult::Resolved(symbol)) => {
-                let symbol = self.checked.symbols.get(*symbol).ok_or_else(error)?;
-                self.checked
-                    .types
-                    .enum_constructor(&self.checked.type_store, symbol)
-                    .map(|_| symbol.id)
+        if record.base.is_some()
+            && expected_type.is_some_and(|ty| {
+                matches!(
+                    self.checked.type_store.get(ty),
+                    Some(etas_types::Type::Record(_))
+                )
+            })
+        {
+            expected_type = None;
+        }
+        let expected_variant = if record.base.is_some() {
+            None
+        } else {
+            match record.path.as_ref().map(|path| &path.resolution) {
+                Some(etas_hir::ResolveResult::Resolved(symbol)) => {
+                    let symbol = self.checked.symbols.get(*symbol).ok_or_else(error)?;
+                    self.checked
+                        .types
+                        .enum_constructor(&self.checked.type_store, symbol)
+                        .map(|_| symbol.id)
+                }
+                None => None,
+                _ => return Err(error()),
             }
-            None => None,
-            _ => return Err(error()),
         };
         if ty != expected_type || variant != expected_variant {
             return Err(error());

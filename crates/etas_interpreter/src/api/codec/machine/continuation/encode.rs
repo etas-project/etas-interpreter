@@ -624,6 +624,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "span": json!(span_snapshot(*span)),
         },
         Continuation::ForLoop {
+            max_iterations,
             pat,
             source,
             text_cursor,
@@ -637,6 +638,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             scope.sort_unstable();
             object! { slot, pending;
             "kind": json!("for_loop"),
+                "max_iterations": json!(max_iterations),
                 "pat": json!(pat.0),
                 "source": source.as_ref().map(Node::Value),
                 "text_cursor": json!(text_cursor.as_ref().map(crate::api::codec::value::text_cursor_json)),
@@ -648,6 +650,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             }
         }
         Continuation::SourceForLoop {
+            max_iterations,
             iter,
             pat,
             source,
@@ -662,6 +665,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             scope.sort_unstable();
             object! { slot, pending;
                 "kind": json!("source_for_loop"),
+                "max_iterations": json!(max_iterations),
                 "iter": json!(iter.0),
                 "pat": json!(pat.0),
                 "source": source.as_ref().map(Node::Value),
@@ -674,6 +678,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             }
         }
         Continuation::WhileLoop {
+            iteration_budget,
             cond,
             body,
             resume_after_body,
@@ -681,6 +686,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             frame,
         } => object! { slot, pending;
             "kind": json!("while_loop"),
+            "iteration_budget": json!(iteration_budget),
             "cond": json!(cond.0),
             "body": json!(body.0),
             "resume_after_body": json!(resume_after_body),
@@ -688,6 +694,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             "frame": Node::Frame(frame),
         },
         Continuation::RetryAttempt {
+            max_attempts,
             retry,
             body,
             next_attempt,
@@ -696,6 +703,7 @@ pub(in crate::api::codec) fn write_continuation<'a>(
             frame,
         } => object! { slot, pending;
             "kind": json!("retry_attempt"),
+            "max_attempts": json!(max_attempts),
             "retry_id": json!(retry.id.0),
             "retry_ordinal": json!(retry.ordinal),
             "body": json!(body.0),

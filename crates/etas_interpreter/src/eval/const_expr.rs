@@ -621,7 +621,17 @@ impl<'a> EvalContext<'a> {
         span: Span,
         visiting: &mut HashSet<SymbolId>,
     ) -> Result<InterpValue, ConstantFailure> {
-        let mut fields = Vec::with_capacity(record.fields.len());
+        let mut fields = if let Some(base) = record.base {
+            let value = self.eval_const_expr(base, span, visiting)?;
+            self.plan
+                .records
+                .retained_update_fields(expr, &value)
+                .map_err(|reason| {
+                    ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, reason)
+                })?
+        } else {
+            Vec::with_capacity(record.fields.len())
+        };
         for field in &record.fields {
             match field {
                 etas_hir::HirFieldInit::Shorthand {
@@ -675,7 +685,16 @@ impl<'a> EvalContext<'a> {
             .map_err(|message| {
                 ExecutionFault::new(AnalysisDiagnosticCode::MissingCheckedFact, span, message)
             })?;
-        if record.path.is_none() || self.plan.records.range_constructor(expr) {
+        if record.path.is_none()
+            || self.plan.records.range_constructor(expr)
+            || (record.base.is_some()
+                && self.checked.types.expr_types.get(&expr).is_some_and(|ty| {
+                    matches!(
+                        self.checked.type_store.get(*ty),
+                        Some(etas_types::Type::Record(_))
+                    )
+                }))
+        {
             return Ok(representation);
         }
         let Some(ty) = self.checked.types.expr_types.get(&expr).copied() else {

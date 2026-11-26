@@ -3,6 +3,7 @@ use crate::control::ExecutionFault;
 use crate::value::{RangeBounds, RangeValue};
 
 enum AggregateKind {
+    Limits,
     Tuple,
     Array,
     List,
@@ -249,6 +250,19 @@ impl<'a> EvalContext<'a> {
         record: &etas_hir::HirRecordExpr,
         frame: &mut Frame,
     ) -> ControlSignal {
+        if let Some(base) = record.base {
+            return compose_signal_continuation(
+                self.eval_expr(base, frame),
+                Continuation::RecordField {
+                    expr,
+                    nominal_type: None,
+                    variant_symbol: None,
+                    next_index: 0,
+                    values: Vec::new(),
+                    frame: frame.clone(),
+                },
+            );
+        }
         if let Some(signal) = self.prepare_managed_agent_construction(expr, frame, record.span) {
             return signal;
         }
@@ -287,7 +301,16 @@ impl<'a> EvalContext<'a> {
                     record.span,
                 );
             };
-            Some(ty)
+            if record.base.is_some()
+                && matches!(
+                    self.checked.type_store.get(ty),
+                    Some(etas_types::Type::Record(_))
+                )
+            {
+                None
+            } else {
+                Some(ty)
+            }
         } else {
             None
         };
@@ -555,6 +578,7 @@ impl<'a> EvalContext<'a> {
             Some(HirExpr::Array { elems, .. }) => (AggregateKind::Array, elems),
             Some(HirExpr::List { elems, .. }) => (AggregateKind::List, elems),
             Some(HirExpr::Set { elems, .. }) => (AggregateKind::Set, elems),
+            Some(HirExpr::Limited { bounds, .. }) => (AggregateKind::Limits, bounds),
             _ => {
                 return ControlSignal::missing_checked_fact(
                     "aggregate continuation is missing its checked construction expression",
@@ -580,7 +604,11 @@ impl<'a> EvalContext<'a> {
                 other => return other,
             }
         }
+        if matches!(kind, AggregateKind::Limits) {
+            return self.execute_local_limits(expr, values, frame);
+        }
         ControlSignal::Value(match kind {
+            AggregateKind::Limits => unreachable!("local scope entered above"),
             AggregateKind::Tuple if values.is_empty() => InterpValue::Unit,
             AggregateKind::Tuple => InterpValue::Tuple(values.into()),
             AggregateKind::Array => InterpValue::Array(ArrayValue::new(values)),

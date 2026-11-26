@@ -954,6 +954,7 @@ pub(crate) enum ContinuationSnapshot {
         outer: ContinuationSnapshotLink,
     },
     ForLoop {
+        max_iterations: Option<usize>,
         pat: HirPatId,
         source: Option<ValueSnapshot>,
         text_cursor: Option<etas_builtin::text::iteration::TextCursorState>,
@@ -964,6 +965,7 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     SourceForLoop {
+        max_iterations: Option<usize>,
         iter: HirExprId,
         pat: HirPatId,
         source: Option<ValueSnapshot>,
@@ -975,6 +977,7 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     WhileLoop {
+        iteration_budget: Option<crate::eval::limit::IterationBudget>,
         cond: HirExprId,
         body: HirBlockId,
         resume_after_body: bool,
@@ -982,6 +985,7 @@ pub(crate) enum ContinuationSnapshot {
         frame: LocalsSnapshot,
     },
     RetryAttempt {
+        max_attempts: Option<usize>,
         retry: RetryAttemptRecord,
         body: HirBlockId,
         next_attempt: usize,

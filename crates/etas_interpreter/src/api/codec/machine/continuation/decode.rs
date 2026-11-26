@@ -486,6 +486,8 @@ fn continuation_leaf_from_snapshot(
             span: span_from_snapshot(required(value, "span")?)?,
         },
         "for_loop" => ContinuationSnapshot::ForLoop {
+            max_iterations: serde_json::from_value(required(value, "max_iterations")?.clone())
+                .map_err(|error| error.to_string())?,
             pat: HirPatId(required_u32(value, "pat")?),
             source: optional_value(limits, value, "source")?,
             text_cursor: match required(value, "text_cursor")? {
@@ -505,6 +507,8 @@ fn continuation_leaf_from_snapshot(
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "source_for_loop" => ContinuationSnapshot::SourceForLoop {
+            max_iterations: serde_json::from_value(required(value, "max_iterations")?.clone())
+                .map_err(|error| error.to_string())?,
             iter: HirExprId(required_u32(value, "iter")?),
             pat: HirPatId(required_u32(value, "pat")?),
             source: optional_value(limits, value, "source")?,
@@ -519,6 +523,8 @@ fn continuation_leaf_from_snapshot(
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "while_loop" => ContinuationSnapshot::WhileLoop {
+            iteration_budget: serde_json::from_value(required(value, "iteration_budget")?.clone())
+                .map_err(|error| error.to_string())?,
             cond: HirExprId(required_u32(value, "cond")?),
             body: HirBlockId(required_u32(value, "body")?),
             resume_after_body: required_bool(value, "resume_after_body")?,
@@ -526,6 +532,8 @@ fn continuation_leaf_from_snapshot(
             frame: locals_from_snapshot(limits, required(value, "frame")?)?,
         },
         "retry_attempt" => ContinuationSnapshot::RetryAttempt {
+            max_attempts: serde_json::from_value(required(value, "max_attempts")?.clone())
+                .map_err(|error| error.to_string())?,
             retry: RetryAttemptRecord {
                 id: RetryAttemptId(required_u32(value, "retry_id")?),
                 ordinal: required_u32(value, "retry_ordinal")?,

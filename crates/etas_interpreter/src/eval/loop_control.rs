@@ -4,6 +4,7 @@ use std::collections::HashSet;
 
 #[derive(Clone)]
 pub(crate) struct ForLoopResume {
+    pub max_iterations: Option<usize>,
     pub pat: etas_hir::HirPatId,
     pub source: Option<IterationSource>,
     pub next_index: usize,
@@ -13,6 +14,7 @@ pub(crate) struct ForLoopResume {
 }
 
 pub(super) struct WhileLoopResume {
+    pub iteration_budget: Option<super::limit::IterationBudget>,
     pub value: InterpValue,
     pub cond: HirExprId,
     pub body: HirBlockId,
@@ -32,9 +34,9 @@ impl<'a> EvalContext<'a> {
                 iter,
                 body,
                 span,
-            } => self.execute_for_loop(pat, iter, body, span, frame),
+            } => self.execute_for_loop(pat, iter, body, span, None, frame),
             etas_hir::HirStmt::While { cond, body, span } => {
-                self.continue_while_loop(cond, body, span, frame)
+                self.continue_while_loop(cond, body, span, None, frame)
             }
             _ => unreachable!("checked loop statement"),
         }
@@ -46,11 +48,13 @@ impl<'a> EvalContext<'a> {
         iter: HirExprId,
         body: HirBlockId,
         span: Span,
+        max_iterations: Option<usize>,
         frame: &mut Frame,
     ) -> ControlSignal {
         let loop_scope = frame.snapshot_symbols();
         if self.plan.records.source_iterator(iter).is_some() {
             let state = super::source_iteration::SourceForLoopResume {
+                max_iterations,
                 iter,
                 pat,
                 source: None,
@@ -91,6 +95,7 @@ impl<'a> EvalContext<'a> {
                 return compose_signal_continuation(
                     signal,
                     Continuation::ForLoop {
+                        max_iterations,
                         pat,
                         source: None,
                         next_index: 0,
@@ -111,6 +116,7 @@ impl<'a> EvalContext<'a> {
         };
         self.resume_for_loop(
             ForLoopResume {
+                max_iterations,
                 pat,
                 source: None,
                 next_index: 0,
@@ -146,6 +152,13 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         if source.is_text_sequence() {
+            if state
+                .max_iterations
+                .is_some_and(|limit| state.next_index >= limit)
+            {
+                frame.cleanup_to(&state.loop_scope);
+                return ControlSignal::Value(InterpValue::Unit);
+            }
             return ControlSignal::pending_native(
                 crate::intrinsic::pure::PendingNativeWork::start_iteration(
                     state,
@@ -155,6 +168,7 @@ impl<'a> EvalContext<'a> {
             );
         }
         let ForLoopResume {
+            max_iterations,
             pat,
             source: _,
             next_index,
@@ -164,6 +178,9 @@ impl<'a> EvalContext<'a> {
         } = state;
         let mut index = next_index;
         loop {
+            if max_iterations.is_some_and(|limit| index >= limit) {
+                break;
+            }
             let value = match source.get(index) {
                 Ok(Some(value)) => value,
                 Ok(None) => break,
@@ -219,6 +236,7 @@ impl<'a> EvalContext<'a> {
                     return self.wrap_loop_body_signal(
                         signal,
                         Continuation::ForLoop {
+                            max_iterations,
                             pat,
                             source: Some(Box::new(source)),
                             next_index: index,
@@ -293,6 +311,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Task(_)) => self.wrap_loop_body_signal(
                 signal,
                 Continuation::ForLoop {
+                    max_iterations: state.max_iterations,
                     pat: state.pat,
                     source: Some(Box::new(source)),
                     next_index: state.next_index,
@@ -313,11 +332,12 @@ impl<'a> EvalContext<'a> {
         compose_signal_continuation(signal, continuation)
     }
 
-    fn continue_while_loop(
+    pub(super) fn continue_while_loop(
         &mut self,
         cond: HirExprId,
         body: HirBlockId,
         span: Span,
+        mut iteration_budget: Option<super::limit::IterationBudget>,
         frame: &mut Frame,
     ) -> ControlSignal {
         loop {
@@ -341,6 +361,7 @@ impl<'a> EvalContext<'a> {
                     return compose_signal_continuation(
                         signal,
                         Continuation::WhileLoop {
+                            iteration_budget,
                             cond,
                             body,
                             resume_after_body: false,
@@ -363,6 +384,9 @@ impl<'a> EvalContext<'a> {
             };
             if !condition {
                 return ControlSignal::Value(InterpValue::Unit);
+            }
+            if let Some(signal) = self.consume_loop_iteration(&mut iteration_budget, span) {
+                return signal;
             }
             match self.execute_block(body, frame) {
                 ControlSignal::Value(_) => {}
@@ -391,6 +415,7 @@ impl<'a> EvalContext<'a> {
                     return self.wrap_loop_body_signal(
                         signal,
                         Continuation::WhileLoop {
+                            iteration_budget,
                             cond,
                             body,
                             resume_after_body: true,
@@ -405,11 +430,17 @@ impl<'a> EvalContext<'a> {
 
     pub(super) fn resume_while_loop(
         &mut self,
-        state: WhileLoopResume,
+        mut state: WhileLoopResume,
         frame: &mut Frame,
     ) -> ControlSignal {
         if state.resume_after_body {
-            return self.continue_while_loop(state.cond, state.body, state.span, frame);
+            return self.continue_while_loop(
+                state.cond,
+                state.body,
+                state.span,
+                state.iteration_budget,
+                frame,
+            );
         }
         let condition = match self.expect_bool(state.value, state.span) {
             Ok(condition) => condition,
@@ -418,10 +449,17 @@ impl<'a> EvalContext<'a> {
         if !condition {
             return ControlSignal::Value(InterpValue::Unit);
         }
+        if let Some(signal) = self.consume_loop_iteration(&mut state.iteration_budget, state.span) {
+            return signal;
+        }
         match self.execute_block(state.body, frame) {
-            ControlSignal::Value(_) | ControlSignal::Continue => {
-                self.continue_while_loop(state.cond, state.body, state.span, frame)
-            }
+            ControlSignal::Value(_) | ControlSignal::Continue => self.continue_while_loop(
+                state.cond,
+                state.body,
+                state.span,
+                state.iteration_budget,
+                frame,
+            ),
             ControlSignal::Break => ControlSignal::Value(InterpValue::Unit),
             ControlSignal::Return(value) => ControlSignal::Return(value),
             ControlSignal::Resume(value) => ControlSignal::Resume(value),
@@ -445,6 +483,7 @@ impl<'a> EvalContext<'a> {
             | ControlSignal::Task(_)) => self.wrap_loop_body_signal(
                 signal,
                 Continuation::WhileLoop {
+                    iteration_budget: state.iteration_budget,
                     cond: state.cond,
                     body: state.body,
                     resume_after_body: true,

@@ -45,15 +45,14 @@ fn json_host_decode_requires_the_checked_std_identity_and_preserves_it_in_generi
         panic!("holder representation");
     };
     assert!(matches!(fields.get("payload"), Some(InterpValue::Json(_))));
-    assert!(
-        host_to_checked_interp_value(
-            value_for_negative(),
-            signature.params[2],
-            &checked,
-            &StorageLimits::default()
-        )
-        .is_err()
-    );
+    let fake = host_to_checked_interp_value(
+        value_for_negative(),
+        signature.params[2],
+        &checked,
+        &StorageLimits::default(),
+    )
+    .unwrap();
+    assert!(matches!(fake, InterpValue::Nominal { ty, .. } if ty == signature.params[2]));
     assert!(
         host_to_typed_interp_value(value_for_negative(), json, &checked.type_store).is_err(),
         "a TypeStore without checked std ABI facts cannot decode an opaque value"

@@ -756,6 +756,12 @@ impl<'a> EvalContext<'a> {
                         item_span(self.checked, self.entry_item),
                     );
                 };
+                if next_index == 0 && record.base.is_some() {
+                    return match self.plan.records.retained_update_fields(expr, &value) {
+                        Ok(values) => self.resume_record_fields(expr, 0, values, &mut frame),
+                        Err(reason) => ControlSignal::missing_checked_fact(reason, record.span),
+                    };
+                }
                 let Some(etas_hir::HirFieldInit::Named { name, .. }) = next_index
                     .checked_sub(1)
                     .and_then(|index| record.fields.get(index))
@@ -1052,6 +1058,7 @@ impl<'a> EvalContext<'a> {
                 self.apply_continuation(outer.into_value(), value)
             }
             Continuation::ForLoop {
+                max_iterations,
                 pat,
                 source,
                 next_index,
@@ -1061,6 +1068,7 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => self.resume_for_loop(
                 crate::eval::loop_control::ForLoopResume {
+                    max_iterations,
                     pat,
                     source: source.map(|source| *source),
                     next_index,
@@ -1072,6 +1080,7 @@ impl<'a> EvalContext<'a> {
                 &mut frame,
             ),
             Continuation::SourceForLoop {
+                max_iterations,
                 iter,
                 pat,
                 source,
@@ -1083,6 +1092,7 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => self.resume_source_for_loop(
                 super::source_iteration::SourceForLoopResume {
+                    max_iterations,
                     iter,
                     pat,
                     source: source.map(|value| *value),
@@ -1096,6 +1106,7 @@ impl<'a> EvalContext<'a> {
                 &mut frame,
             ),
             Continuation::WhileLoop {
+                iteration_budget,
                 cond,
                 body,
                 resume_after_body,
@@ -1103,6 +1114,7 @@ impl<'a> EvalContext<'a> {
                 mut frame,
             } => self.resume_while_loop(
                 crate::eval::loop_control::WhileLoopResume {
+                    iteration_budget,
                     value,
                     cond,
                     body,
@@ -1112,6 +1124,7 @@ impl<'a> EvalContext<'a> {
                 &mut frame,
             ),
             Continuation::RetryAttempt {
+                max_attempts: _,
                 retry,
                 body: _,
                 next_attempt: _,

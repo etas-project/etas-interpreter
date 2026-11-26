@@ -177,6 +177,7 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
         frame: locals.clone(),
     }));
     machine.push_frame(EvalFrame::from_continuation(Continuation::RetryAttempt {
+        max_attempts: None,
         retry: retry.clone(),
         body: HirBlockId(5),
         next_attempt: 4,
@@ -205,6 +206,7 @@ fn handler_retry_capture_preserves_metadata_and_detaches_shared_live_locals() {
     let MachineFrameSnapshot::Retry {
         continuation:
             ContinuationSnapshot::RetryAttempt {
+                max_attempts: _,
                 retry: saved_retry,
                 body,
                 next_attempt,

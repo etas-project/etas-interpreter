@@ -40,6 +40,7 @@ pub(crate) struct RecordPatternField {
 
 #[derive(Clone, Debug)]
 struct RecordConstruction {
+    retained: Option<Vec<CheckedRecordField>>,
     names: Vec<String>,
     layout: Arc<RecordLayout>,
     range: bool,
@@ -84,6 +85,27 @@ pub struct RecordLayoutTable {
 }
 
 impl RecordLayoutTable {
+    pub(crate) fn retained_update_fields(
+        &self,
+        expr: HirExprId,
+        base: &InterpValue,
+    ) -> Result<Vec<(String, InterpValue)>, String> {
+        let plan = self
+            .constructions
+            .get(&expr)
+            .and_then(|plan| plan.retained.as_ref())
+            .ok_or("record update has no checked reconstruction plan")?;
+        let base = match base {
+            InterpValue::Nominal { value, .. } => value.as_ref(),
+            value => value,
+        };
+        let InterpValue::Record(base) = base else {
+            return Err("record update base differs from its checked representation".into());
+        };
+        plan.iter()
+            .map(|field| Ok((field.name().to_owned(), field.borrow(base)?.clone())))
+            .collect()
+    }
     pub(crate) fn range_constructor(&self, expr: HirExprId) -> bool {
         self.constructions
             .get(&expr)
@@ -310,7 +332,7 @@ impl RecordLayoutTable {
                     let Some(names) = names else {
                         continue;
                     };
-                    let source: Vec<_> = record
+                    let mut source: Vec<_> = record
                         .fields
                         .iter()
                         .map(|field| match field {
@@ -318,6 +340,21 @@ impl RecordLayoutTable {
                             | HirFieldInit::Shorthand { name, .. } => name.clone(),
                         })
                         .collect();
+                    let retained = if record.base.is_some() {
+                        let retained = names
+                            .iter()
+                            .filter(|name| !source.contains(name))
+                            .map(|name| checked_field(names.clone(), name))
+                            .collect::<Result<Vec<_>, _>>()?;
+                        source = retained
+                            .iter()
+                            .map(|field| field.name().to_owned())
+                            .chain(source)
+                            .collect();
+                        Some(retained)
+                    } else {
+                        None
+                    };
                     let mut sorted = source.clone();
                     sorted.sort();
                     if sorted.as_slice() != names.as_ref() {
@@ -326,6 +363,7 @@ impl RecordLayoutTable {
                     table.constructions.insert(
                         expr,
                         RecordConstruction {
+                            retained,
                             layout: Arc::new(RecordLayout::from_names(&source)),
                             names: source,
                             range: range.is_some(),
@@ -677,6 +715,7 @@ mod tests {
             table.constructions.insert(
                 expr,
                 RecordConstruction {
+                    retained: None,
                     range: false,
                     layout: Arc::new(RecordLayout::from_names(&source)),
                     names: source.clone(),

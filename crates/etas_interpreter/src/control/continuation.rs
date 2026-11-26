@@ -314,6 +314,7 @@ pub enum Continuation {
         outer: ContinuationLink,
     },
     ForLoop {
+        max_iterations: Option<usize>,
         pat: HirPatId,
         source: Option<Box<crate::value::iteration::IterationSource>>,
         next_index: usize,
@@ -323,6 +324,7 @@ pub enum Continuation {
         frame: Frame,
     },
     SourceForLoop {
+        max_iterations: Option<usize>,
         iter: HirExprId,
         pat: HirPatId,
         source: Option<Box<InterpValue>>,
@@ -334,6 +336,7 @@ pub enum Continuation {
         frame: Frame,
     },
     WhileLoop {
+        iteration_budget: Option<crate::eval::limit::IterationBudget>,
         cond: HirExprId,
         body: HirBlockId,
         resume_after_body: bool,
@@ -341,6 +344,7 @@ pub enum Continuation {
         frame: Frame,
     },
     RetryAttempt {
+        max_attempts: Option<usize>,
         retry: RetryAttemptRecord,
         body: HirBlockId,
         next_attempt: usize,

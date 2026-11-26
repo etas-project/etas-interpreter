@@ -1175,6 +1175,19 @@ impl<'a> EvalContext<'a> {
         frame: Option<&Frame>,
         memory_target: Option<&crate::control::handler_activation::SourceMemoryPlace>,
     ) -> Result<bool, ExecutionFault> {
+        if self
+            .checked
+            .hir
+            .handler_arms
+            .get(handler.arm)
+            .is_some_and(|arm| arm.provider)
+            && let [pattern] = handler.patterns.as_slice()
+            && let Some(etas_hir::HirPat::Literal(HirLiteral::String { value, .. })) =
+                self.checked.hir.pats.get(*pattern)
+            && !matches!(perform.args.as_slice(), [InterpValue::String(name)] if value == name)
+        {
+            return Ok(false);
+        }
         if is_error_raise_perform(perform) || is_error_raise_handler(handler) {
             return self.error_raise_matches_record(perform, handler, frame);
         }

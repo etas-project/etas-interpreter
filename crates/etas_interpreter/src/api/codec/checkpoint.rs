@@ -31,6 +31,7 @@ pub(super) fn readable_schema(value: &Value) -> Result<&str, InterpreterCodecErr
     let schema = required_str(value, "schema")?;
     match schema {
         crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA
+        | "etas.cli.interpreter-checkpoint.v128"
         | "etas.cli.interpreter-checkpoint.v127"
         | "etas.cli.interpreter-checkpoint.v102"
         | "etas.cli.interpreter-checkpoint.v101"
@@ -74,6 +75,36 @@ pub fn checkpoint_from_json_with_revisions(
         .validate()
         .map_err(|e| InterpreterCodecError::new(e.message))?;
     let schema = readable_schema(value)?;
+    let mut legacy;
+    let value = if schema != crate::orchestration::CHECKPOINT_ARTIFACT_SCHEMA {
+        legacy = value.clone();
+        let mut pending = vec![&mut legacy];
+        while let Some(value) = pending.pop() {
+            match value {
+                Value::Object(fields) => {
+                    // Stored JSON is application data, not continuation syntax.
+                    if fields.get("kind").and_then(Value::as_str) == Some("json") {
+                        continue;
+                    }
+                    let field = match fields.get("kind").and_then(Value::as_str) {
+                        Some("for_loop" | "source_for_loop") => Some("max_iterations"),
+                        Some("while_loop") => Some("iteration_budget"),
+                        Some("retry_attempt") => Some("max_attempts"),
+                        _ => None,
+                    };
+                    if let Some(field) = field {
+                        fields.entry(field).or_insert(Value::Null);
+                    }
+                    pending.extend(fields.values_mut());
+                }
+                Value::Array(values) => pending.extend(values),
+                _ => {}
+            }
+        }
+        &legacy
+    } else {
+        value
+    };
     let checkpoint = value
         .get("checkpoint")
         .ok_or_else(|| InterpreterCodecError::new("checkpoint artifact is missing `checkpoint`"))?;

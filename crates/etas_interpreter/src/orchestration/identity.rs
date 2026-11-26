@@ -5,7 +5,7 @@ use etas_hir::{HirItem, HirItemId};
 
 use super::CheckpointCompilationIdentity;
 
-pub(crate) const CHECKPOINT_ARTIFACT_SCHEMA: &str = "etas.cli.interpreter-checkpoint.v128";
+pub(crate) const CHECKPOINT_ARTIFACT_SCHEMA: &str = "etas.cli.interpreter-checkpoint.v129";
 
 impl CheckpointCompilationIdentity {
     pub(crate) fn for_project(
