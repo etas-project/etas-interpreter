@@ -437,6 +437,174 @@ impl api::RunEventObserver for WaitingResource {
 }
 
 #[tokio::test(flavor = "current_thread")]
+async fn resource_guards_coarsen_computed_helper_keys_without_evaluating_payloads() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.task.{map_concurrent, run, Scheduler};
+alias Schema = MemoryRegion<{ Values: Store<string, string> }>;
+let Memory = std.memory.region<Schema>(stable_id = "helper-keys", store = "test");
+flow save(key: string, payload: string) -> string {
+    Memory.Values.put(key, payload);
+    return payload;
+}
+flow payload(value: string) -> string { return value + "-payload"; }
+flow write(key: string) -> string { return save(key + "-key", payload(key)); }
+flow main() -> Array<string> {
+    return run((scheduler: Scheduler) => { return map_concurrent(["a", "b"], write); });
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
+    let probe = host.observe_memory_concurrency(2);
+    let mut options = RunOptions::default();
+    options.event_observer = Some(std::sync::Arc::new(ReleaseOnResourceWait(probe.clone())));
+    let result = tokio::time::timeout(
+        std::time::Duration::from_secs(2),
+        Interpreter.run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            options,
+        ),
+    )
+    .await
+    .unwrap()
+    .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert_eq!(host.memory_call_count(), 2);
+    assert_eq!(probe.peak.load(std::sync::atomic::Ordering::SeqCst), 1);
+    assert!(
+        result
+            .events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::TaskWaitingResource { .. }))
+    );
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ScopeSerialized { .. }))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
+#[cfg(unix)]
+async fn handler_started_collector_reads_native_output_before_ui_input_completes() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.io.read_line;
+import std.task.{run, start, Scheduler};
+import std.host.command.{CommandEvent, CommandHandle, command, read, start as start_process};
+import std.text.from_i32;
+effect Capture { action register(process: CommandHandle) -> unit; }
+alias Schema = MemoryRegion<{ Values: Store<string, bytes> }>;
+let Owner = std.memory.region<Schema>(stable_id = "ui-records", store = "test");
+let Peer = std.memory.region<Schema>(stable_id = "capture-records", store = "test");
+flow describe(event: CommandEvent) -> bytes {
+    return match event {
+        CommandEvent.Output(stdout, _) => stdout,
+        CommandEvent.Exited(_, stdout, _) => stdout,
+        CommandEvent.Stopped(stdout, _) => stdout
+    };
+}
+flow capture(process: CommandHandle) -> i32 {
+    Peer.Values.insert("part-" + from_i32(0), describe(read(process, 65536)));
+    return 0;
+}
+flow main() -> i32 {
+    return run((scheduler: Scheduler) => {
+        Owner.Values.put("ui", std.codec.text.utf8_encode("waiting"));
+        let process = start_process(command("/bin/sh", ["-c", "printf hello"]), DefaultCommandSandbox);
+        handle { perform Capture.register(process); } with {
+            Capture.register(process) => {
+                let child = start(() => capture(process));
+                resume ();
+            }
+        };
+        read_line();
+        return 0;
+    });
+}
+"#,
+    );
+    let mut host = FakeHost::new(availability(&[
+        HostRequirementKind::DurableMemory,
+        HostRequirementKind::Console,
+        HostRequirementKind::Command,
+    ]));
+    let gate = host.pause_console_completion();
+    let options = RunOptions {
+        host_context: api::HostExecutionContext {
+            authority: AuthorityContext {
+                grants: vec![
+                    HostActionGrant::allow("Command", "start"),
+                    HostActionGrant::allow("Command", "read"),
+                ],
+                sandbox: SandboxPolicy::allow_listed(
+                    etas_host::FilesystemPolicy::deny_all(),
+                    etas_host::NetworkPolicy::deny_all(),
+                    etas_host::CommandPolicy::allow_trusted_programs(vec!["/bin/sh".into()]),
+                    etas_host::DestructiveOpPolicy::deny_all(),
+                ),
+                ..AuthorityContext::deny_all()
+            },
+            ..api::HostExecutionContext::default()
+        },
+        ..RunOptions::default()
+    };
+    let invocation = Interpreter.create_run(
+        &checked,
+        EntryPoint {
+            item: checked.entry.unwrap(),
+        },
+        vec![],
+        &host,
+        options,
+    );
+    let (result, collected) = tokio::time::timeout(std::time::Duration::from_secs(5), async {
+        tokio::join!(invocation.execute(), async {
+            gate.started.notified().await;
+            let collected = tokio::time::timeout(std::time::Duration::from_secs(2), async {
+                while host.memory_call_count() < 2 {
+                    tokio::task::yield_now().await;
+                }
+            })
+            .await
+            .is_ok();
+            gate.release.add_permits(1);
+            collected
+        })
+    })
+    .await
+    .unwrap();
+    let result = result.unwrap();
+    assert!(result.diagnostics.is_empty(), "{:#?}", result.diagnostics);
+    assert!(
+        collected,
+        "Command.read and insert must complete while UI input is pending"
+    );
+    assert_eq!(
+        host.memory_value(
+            "capture-records",
+            &["Values"],
+            &HostValue::String("part-0".into())
+        ),
+        Some(HostValue::Bytes(b"hello".to_vec()))
+    );
+    assert!(
+        !result
+            .events
+            .iter()
+            .any(|event| matches!(event, WorkflowEvent::ScopeSerialized { .. }))
+    );
+}
+
+#[tokio::test(flavor = "current_thread")]
 async fn runtime_resource_guards_release_permits_when_the_run_is_cancelled() {
     let checked = memory_tasks("key", "\"a\", \"a\"");
     let mut host = FakeHost::new(availability(&[HostRequirementKind::DurableMemory]));
