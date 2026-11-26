@@ -71,13 +71,16 @@ flow main() -> i32 ![] {
 async fn generic_spec_methods_inherit_injection_at_the_named_call_interface() {
     evaluate(
         r#"module app.main;
-effect Supply { action value<T>() -> T; }
-spec Value { flow read(self, @inject(Supply.value<i32>) fallback: i32) -> i32 ![]; }
-type Box = { n: i32 };
-impl Box ~ Value { flow read(self, fallback: i32) -> i32 ![] { return self.n + fallback; } }
+effect Supply<T> { action value() -> T; }
+type Box<T> = { n: T };
+impl Box<T> { flow read(self, @inject(Supply<T>.value) value: T) -> T ![] { return value; } }
+spec Value<A> { flow read(self, @inject(Supply<A>.value) fallback: A) -> A ![]; }
+type ValueBox<B> = { n: B };
+impl ValueBox<B> ~ Value<B> { flow read(self, fallback: B) -> B ![] { return fallback; } }
 flow main() -> i32 ![] {
-    let box = Box { n = 2 };
-    return box.read() with { Supply.value<i32>() => 40; };
+    let a = Box { n = 0 }.read() with { Supply<i32>.value() => 21; };
+    let b = ValueBox { n = 0 }.read() with { Supply<i32>.value() => 21; };
+    return a + b;
 }"#,
         42,
     )
