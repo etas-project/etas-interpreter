@@ -16,11 +16,11 @@ etas_host = { git = "https://github.com/etas-project/etas-core.git", rev = "44a2
 etas_std = { git = "https://github.com/etas-project/etas-core.git", rev = "44a25f003d996dd89230295f111e617c0a2a3783", package = "etas_std" }
 etas_package_metadata = { git = "https://github.com/etas-project/etas-core.git", rev = "44a25f003d996dd89230295f111e617c0a2a3783", package = "etas_package_metadata" }
 etas_utils = { git = "https://github.com/etas-project/etas-core.git", rev = "44a25f003d996dd89230295f111e617c0a2a3783", package = "etas_utils" }
-etas_frontend = { git = "https://github.com/etas-project/etas-frontend.git", rev = "a2368bb55563255f8b30f90e533bbacecce8435a", package = "etas_frontend" }
-etas_hir = { git = "https://github.com/etas-project/etas-frontend.git", rev = "a2368bb55563255f8b30f90e533bbacecce8435a", package = "etas_hir" }
-etas_hir_analysis = { git = "https://github.com/etas-project/etas-frontend.git", rev = "a2368bb55563255f8b30f90e533bbacecce8435a", package = "etas_hir_analysis" }
-etas_effects = { git = "https://github.com/etas-project/etas-frontend.git", rev = "a2368bb55563255f8b30f90e533bbacecce8435a", package = "etas_effects" }
-etas_types = { git = "https://github.com/etas-project/etas-frontend.git", rev = "a2368bb55563255f8b30f90e533bbacecce8435a", package = "etas_types" }
+etas_frontend = { git = "https://github.com/etas-project/etas-frontend.git", rev = "92a8612a94974c477141cab1cd5ae8b8ef5f7479", package = "etas_frontend" }
+etas_hir = { git = "https://github.com/etas-project/etas-frontend.git", rev = "92a8612a94974c477141cab1cd5ae8b8ef5f7479", package = "etas_hir" }
+etas_hir_analysis = { git = "https://github.com/etas-project/etas-frontend.git", rev = "92a8612a94974c477141cab1cd5ae8b8ef5f7479", package = "etas_hir_analysis" }
+etas_effects = { git = "https://github.com/etas-project/etas-frontend.git", rev = "92a8612a94974c477141cab1cd5ae8b8ef5f7479", package = "etas_effects" }
+etas_types = { git = "https://github.com/etas-project/etas-frontend.git", rev = "92a8612a94974c477141cab1cd5ae8b8ef5f7479", package = "etas_types" }
 blake3 = "1.8.5"
 bincode = { version = "2", features = ["serde"] }
 serde_json = "1"
