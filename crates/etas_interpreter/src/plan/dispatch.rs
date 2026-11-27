@@ -437,7 +437,7 @@ impl IntrinsicDispatchTable {
         self.program.methods.policy_witness(project, object, member)
     }
 
-    pub(super) fn type_lookup(&self, project: &CheckedProject) -> &etas_types::ty::TypeLookupIndex {
+    pub(crate) fn type_lookup(&self, project: &CheckedProject) -> &etas_types::ty::TypeLookupIndex {
         self.program
             .type_lookup
             .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&project.type_store))

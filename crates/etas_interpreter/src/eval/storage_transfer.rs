@@ -346,7 +346,7 @@ impl EvalContext<'_> {
                         .standard_library
                         .as_ref()
                         .ok_or("storage adapter has no executable library")?
-                        .method(identity)?
+                        .method(identity, &mut self.library_targets.borrow_mut())?
                 }
             }
             _ => return Err("storage adapter requires a checked Etas body".into()),

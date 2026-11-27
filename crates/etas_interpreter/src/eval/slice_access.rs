@@ -62,7 +62,7 @@ impl<'a> EvalContext<'a> {
                     Continuation::SliceEnd {
                         eval,
                         base: Box::new(base),
-                        start,
+                        start: Box::new(start),
                         frame: frame.clone(),
                     },
                 );

@@ -76,10 +76,10 @@ fn shared_dag_capture_failure_releases_memoized_nodes() {
         inner: root.into(),
         outer: Continuation::PipelineTarget {
             expr: etas_hir::HirExprId(0),
-            input: InterpValue::HostHandle(HostHandleValue::browser_session(
+            input: Box::new(InterpValue::HostHandle(HostHandleValue::browser_session(
                 etas_types::TypeId(1),
                 "live-session".into(),
-            )),
+            ))),
             span: span(),
             frame: crate::control::Frame::from_snapshot(vec![]).unwrap(),
         }
@@ -447,7 +447,7 @@ fn capture_rejects_late_live_handles_and_releases_completed_deep_subtrees() {
                 inner: inner.into(),
                 outer: Continuation::PipelineTarget {
                     expr: etas_hir::HirExprId(0),
-                    input: handle,
+                    input: Box::new(handle),
                     span: span(),
                     frame: Frame::from_snapshot(vec![]).unwrap(),
                 }

@@ -9,6 +9,10 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
         span: Span,
     ) -> Result<(), ExecutionFault> {
+        if let Some(HirPat::Binding { symbol, .. }) = self.checked.hir.pats.get(pat) {
+            frame.insert(*symbol, value);
+            return Ok(());
+        }
         self.bind_borrowed_pattern(pat, &value, frame, span)
     }
 

@@ -42,7 +42,7 @@ impl<'a> EvalContext<'a> {
                     signal,
                     Continuation::IndexValue {
                         expr,
-                        base,
+                        base: Box::new(base),
                         span,
                         frame: frame.clone(),
                     },

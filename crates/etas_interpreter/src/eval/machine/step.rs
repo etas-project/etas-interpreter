@@ -420,29 +420,26 @@ impl EvalMachine {
                                 self.push_frame(EvalFrame::PureBoundary(pending.span));
                                 continuation = Continuation::BlockValue;
                             }
-                            let target = match super::scoped_call::ProgramCall::select(
-                                target,
-                                ctx.checked,
-                            ) {
-                                Ok(Ok(call)) => Err(call),
-                                Ok(Err(target)) => Ok(target),
-                                Err(reason) => return machine_fault(reason, pending.span),
-                            };
-                            let target = match target {
-                                Err(call) => {
-                                    return self
-                                        .enter_program(
-                                            ctx,
-                                            call,
-                                            pending.args,
-                                            pending.span,
-                                            continuation,
-                                            pending.site,
-                                        )
-                                        .unwrap_or_else(MachinePoll::Fault);
-                                }
-                                Ok(target) => target,
-                            };
+                            if super::scoped_call::ProgramCall::crosses_program(&target) {
+                                let call = match super::scoped_call::ProgramCall::select(
+                                    target,
+                                    ctx.checked,
+                                    Some(ctx.plan),
+                                ) {
+                                    Ok(call) => call,
+                                    Err(reason) => return machine_fault(reason, pending.span),
+                                };
+                                return self
+                                    .enter_program(
+                                        ctx,
+                                        call,
+                                        pending.args,
+                                        pending.span,
+                                        continuation,
+                                        pending.site,
+                                    )
+                                    .unwrap_or_else(MachinePoll::Fault);
+                            }
                             self.push_continuation_frames(continuation);
                             self.push_frame(EvalFrame::Call(CallFrame {
                                 caller: pending

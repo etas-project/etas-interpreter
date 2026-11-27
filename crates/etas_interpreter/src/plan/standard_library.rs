@@ -43,6 +43,37 @@ struct LibraryValue {
     ty: TypeId,
 }
 
+/// Task-local values can contain Rc. Keep projected declarations with the run,
+/// keyed by their owning library and checked identity, before call-site binding.
+#[derive(Default)]
+pub(crate) struct LibraryTargets {
+    owner: Option<Arc<StandardLibraryProgram>>,
+    targets: BTreeMap<etas_code::CallableId, CallTarget>,
+}
+
+impl LibraryTargets {
+    pub(crate) fn project(
+        &mut self,
+        library: &Arc<StandardLibraryProgram>,
+        id: &etas_code::CallableId,
+    ) -> Result<CallTarget, String> {
+        if !self
+            .owner
+            .as_ref()
+            .is_some_and(|owner| Arc::ptr_eq(owner, library))
+        {
+            self.targets.clear();
+            self.owner = Some(library.clone());
+        }
+        if let Some(target) = self.targets.get(id) {
+            return Ok(target.clone());
+        }
+        let target = library.project_uncached(id)?;
+        self.targets.insert(id.clone(), target.clone());
+        Ok(target)
+    }
+}
+
 impl StandardLibraryProgram {
     pub(crate) fn prepared(&self) -> &Arc<PreparedProgram> {
         &self.prepared
@@ -290,19 +321,27 @@ impl StandardLibraryProgram {
         ))
     }
 
-    pub(crate) fn callable(&self, symbol: StdSymbolId) -> Result<CallTarget, String> {
+    pub(crate) fn callable(
+        self: &Arc<Self>,
+        symbol: StdSymbolId,
+        targets: &mut LibraryTargets,
+    ) -> Result<CallTarget, String> {
         let identity = self
             .aliases
             .get(&symbol)
             .ok_or("std artifact has no canonical callable binding")?;
-        self.project(identity)
+        targets.project(self, identity)
     }
 
-    pub(crate) fn method(&self, method: &etas_code::MethodId) -> Result<CallTarget, String> {
-        self.project(&etas_code::CallableId::method(method.clone()))
+    pub(crate) fn method(
+        self: &Arc<Self>,
+        method: &etas_code::MethodId,
+        targets: &mut LibraryTargets,
+    ) -> Result<CallTarget, String> {
+        targets.project(self, &etas_code::CallableId::method(method.clone()))
     }
 
-    pub(crate) fn project(&self, identity: &etas_code::CallableId) -> Result<CallTarget, String> {
+    fn project_uncached(&self, identity: &etas_code::CallableId) -> Result<CallTarget, String> {
         let binding = self
             .callables
             .get(identity)

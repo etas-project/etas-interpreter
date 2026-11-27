@@ -718,12 +718,12 @@ impl<'a> EvalContext<'a> {
                     op,
                     etas_hir::HirBinaryOp::AndAnd | etas_hir::HirBinaryOp::OrOr
                 ) {
-                    match self.finish_binary_right(op, left, value, span) {
+                    match self.finish_binary_right(op, *left, value, span) {
                         Ok(value) => ControlSignal::Value(value),
                         Err(fault) => ControlSignal::Fault(Box::new(fault)),
                     }
                 } else {
-                    self.eval_binary_with_equality(op, left, value, span)
+                    self.eval_binary_with_equality(op, *left, value, span)
                 }
             }
             Continuation::AggregateElement {
@@ -740,13 +740,13 @@ impl<'a> EvalContext<'a> {
                 span,
                 mut frame,
             } => self.resume_list_cons_head(value, tail, span, &mut frame),
-            Continuation::ListConsTail { head, span } => self.finish_list_cons(head, value, span),
+            Continuation::ListConsTail { head, span } => self.finish_list_cons(*head, value, span),
             Continuation::RangeStart {
                 end,
                 bounds,
                 mut frame,
             } => self.resume_range_start(value, end, bounds, &mut frame),
-            Continuation::RangeEnd { start, bounds } => self.finish_range(start, value, bounds),
+            Continuation::RangeEnd { start, bounds } => self.finish_range(*start, value, bounds),
             Continuation::RecordField {
                 expr,
                 nominal_type: _,
@@ -791,7 +791,7 @@ impl<'a> EvalContext<'a> {
                 key,
                 values,
                 mut frame,
-            } => self.resume_map_value(expr, index, values, key, value, &mut frame),
+            } => self.resume_map_value(expr, index, values, *key, value, &mut frame),
             Continuation::IndexBase {
                 expr,
                 index,
@@ -800,7 +800,7 @@ impl<'a> EvalContext<'a> {
             } => self.resume_index_base(expr, value, index, span, &mut frame),
             Continuation::IndexValue {
                 expr, base, span, ..
-            } => self.eval_index_value(expr, base, value, span),
+            } => self.eval_index_value(expr, *base, value, span),
             Continuation::SliceBase { eval, mut frame } => {
                 self.resume_slice_base(eval, value, &mut frame)
             }
@@ -814,7 +814,7 @@ impl<'a> EvalContext<'a> {
                 base,
                 start,
                 frame,
-            } => self.eval_checked_slice_value(eval, *base, start, value, &frame),
+            } => self.eval_checked_slice_value(eval, *base, *start, value, &frame),
             Continuation::MethodReceiver {
                 expr,
                 method,
@@ -1022,7 +1022,7 @@ impl<'a> EvalContext<'a> {
                 InterpValue::Callable(CallTarget::Composed(targets)) => self
                     .execute_call_target_at(
                         CallTarget::Composed(targets),
-                        vec![input],
+                        vec![*input],
                         span,
                         Some(crate::control::CallSite {
                             receiver_update: None,

@@ -34,7 +34,10 @@ impl<'a> EvalContext<'a> {
         let library = self.plan.standard_library.as_ref().ok_or_else(|| {
             missing("standard library artifact is missing its checked body owner".to_owned())
         })?;
-        library.callable(declaration.id).map(Some).map_err(missing)
+        library
+            .callable(declaration.id, &mut self.library_targets.borrow_mut())
+            .map(Some)
+            .map_err(missing)
     }
 
     pub(super) fn eval_std_callable_value(
@@ -49,7 +52,7 @@ impl<'a> EvalContext<'a> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return Ok(None);
         };
-        if frame.get(symbol).is_some()
+        if frame.contains_value(symbol)
             || !matches!(
                 self.checked
                     .types
@@ -237,7 +240,7 @@ impl<'a> EvalContext<'a> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return Ok(None);
         };
-        if frame.get(symbol).is_some() {
+        if frame.contains_value(symbol) {
             return Ok(None);
         }
         let (constructor, alias) = match self.checked.types.symbol_types.get(&symbol) {
@@ -302,12 +305,15 @@ impl<'a> EvalContext<'a> {
             return self.source_flow_call_target(*item, span).map(Some);
         }
         if let Some(selected) = self.checked.types.library_flow_calls.get(&call) {
-            return self
+            let library = self
                 .plan
                 .standard_library
                 .as_ref()
-                .expect("prepared source library overload owner")
-                .project(&selected.callable)
+                .expect("prepared source library overload owner");
+            return self
+                .library_targets
+                .borrow_mut()
+                .project(library, &selected.callable)
                 .map(Some)
                 .map_err(|reason| {
                     crate::control::ExecutionFault::new(
@@ -326,7 +332,7 @@ impl<'a> EvalContext<'a> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return Ok(None);
         };
-        if frame.get(symbol).is_some() {
+        if frame.contains_value(symbol) {
             return Ok(None);
         }
         let Some(symbol_data) = self.checked.symbols.get(symbol) else {
@@ -392,7 +398,7 @@ impl<'a> EvalContext<'a> {
         let ResolveResult::Resolved(symbol) = path.resolution else {
             return Ok(None);
         };
-        if frame.get(symbol).is_some() {
+        if frame.contains_value(symbol) {
             return Ok(None);
         }
         let Some(symbol_data) = self.checked.symbols.get(symbol) else {

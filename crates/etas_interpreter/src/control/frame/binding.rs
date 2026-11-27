@@ -44,8 +44,19 @@ impl SharedBinding {
     }
 
     pub(crate) fn value(&self) -> Option<InterpValue> {
+        self.with_available_value(Clone::clone)
+    }
+
+    pub(super) fn with_available_value<R>(
+        &self,
+        read: impl FnOnce(&InterpValue) -> R,
+    ) -> Option<R> {
         let state = self.state.borrow();
-        (!state.held).then(|| state.value.clone()).flatten()
+        if state.held {
+            None
+        } else {
+            state.value.as_ref().map(read)
+        }
     }
 
     pub(super) fn is_expired(&self) -> bool {

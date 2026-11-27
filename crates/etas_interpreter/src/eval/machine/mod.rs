@@ -15,6 +15,7 @@ pub(crate) use task_handler::WeakTaskHandlerContinuation;
 pub(crate) use task_handler::checkpoint::restore_standalone_for_test as restore_task_handler_segment_for_test;
 mod resume;
 mod scoped_call;
+pub(crate) use scoped_call::ProgramSpecialization;
 pub(crate) mod snapshot;
 mod state;
 mod step;

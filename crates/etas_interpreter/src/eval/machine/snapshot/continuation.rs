@@ -950,7 +950,7 @@ impl ContinuationSnapshot {
             },
             Self::BinaryRight { op, left, span } => Continuation::BinaryRight {
                 op,
-                left: left.restore_with(context)?,
+                left: Box::new(left.restore_with(context)?),
                 span,
             },
             Self::AggregateElement {
@@ -970,7 +970,7 @@ impl ContinuationSnapshot {
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::ListConsTail { head, span } => Continuation::ListConsTail {
-                head: head.restore_with(context)?,
+                head: Box::new(head.restore_with(context)?),
                 span,
             },
             Self::RangeStart { end, bounds, frame } => Continuation::RangeStart {
@@ -979,7 +979,7 @@ impl ContinuationSnapshot {
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::RangeEnd { start, bounds } => Continuation::RangeEnd {
-                start: start.restore_with(context)?,
+                start: Box::new(start.restore_with(context)?),
                 bounds,
             },
             Self::RecordField {
@@ -1020,7 +1020,7 @@ impl ContinuationSnapshot {
             } => Continuation::MapValue {
                 expr,
                 index,
-                key: key.restore_with(context)?,
+                key: Box::new(key.restore_with(context)?),
                 values: restore_pairs(values, context)?,
                 frame: super::frame::restore_frame(frame, context)?,
             },
@@ -1042,7 +1042,7 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::IndexValue {
                 expr,
-                base: base.restore_with(context)?,
+                base: Box::new(base.restore_with(context)?),
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
@@ -1063,7 +1063,7 @@ impl ContinuationSnapshot {
             } => Continuation::SliceEnd {
                 eval: restore_slice_eval(eval),
                 base: Box::new(base.restore_with(context)?),
-                start: start.restore_with(context)?,
+                start: Box::new(start.restore_with(context)?),
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::MethodReceiver {
@@ -1243,7 +1243,7 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::PipelineTarget {
                 expr,
-                input: input.restore_with(context)?,
+                input: Box::new(input.restore_with(context)?),
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },

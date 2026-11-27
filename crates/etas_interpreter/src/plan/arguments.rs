@@ -23,9 +23,10 @@ impl CallArgumentTable {
             .exprs
             .iter()
             .filter_map(|(expr, data)| match data {
-                HirExpr::Call { args, .. } | HirExpr::Perform { args, .. } => {
-                    Some((expr, Arc::from(args.as_slice())))
-                }
+                HirExpr::Call { args, .. }
+                | HirExpr::Perform { args, .. }
+                | HirExpr::MethodCall { args, .. }
+                | HirExpr::SpecMethodCall { args, .. } => Some((expr, Arc::from(args.as_slice()))),
                 _ => None,
             })
             .collect();

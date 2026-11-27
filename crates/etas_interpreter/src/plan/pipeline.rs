@@ -148,6 +148,8 @@ pub(super) fn prepare_program_with_layouts(
     };
     let numeric_literals = super::arithmetic::numeric_literals(project);
     Ok(Arc::new(PreparedProgram {
+        callable_plans: Default::default(),
+        native_applications: Default::default(),
         expression_routes: expression_routes(project),
         materializations: Default::default(),
         sequence_layouts: Default::default(),
@@ -202,6 +204,20 @@ fn expression_routes(
             } else {
                 match expr {
                     HirExpr::Literal(_) => ExpressionRoute::Literal,
+                    HirExpr::Call { .. }
+                    | HirExpr::MethodCall { .. }
+                    | HirExpr::SpecMethodCall { .. }
+                    | HirExpr::Unary { .. }
+                    | HirExpr::Binary { .. }
+                    | HirExpr::Index { .. }
+                    | HirExpr::Field { .. }
+                    | HirExpr::Try { .. }
+                    | HirExpr::Tuple { .. }
+                    | HirExpr::List { .. }
+                    | HirExpr::Array { .. }
+                    | HirExpr::Record(_)
+                    | HirExpr::If { .. }
+                    | HirExpr::Match { .. } => ExpressionRoute::Operand,
                     HirExpr::Path(path) if !project.types.bound_method_values.contains_key(&id) => {
                         let ResolveResult::Resolved(symbol) = path.resolution else {
                             return None;
@@ -277,6 +293,58 @@ impl PreparedProgram {
         self: &Arc<Self>,
         root: CheckedCallableRoot,
     ) -> Result<InterpreterPlan, Vec<Diagnostic>> {
+        let index = match root {
+            CheckedCallableRoot::Item(id) => id.0,
+            CheckedCallableRoot::Lambda(id) | CheckedCallableRoot::StdReference(id) => id.0,
+            CheckedCallableRoot::ParameterDefault(id) => id.0,
+        };
+        let key = (std::mem::discriminant(&root), index);
+        let cached = self
+            .callable_plans
+            .lock()
+            .expect("callable plans")
+            .get(&key)
+            .cloned();
+        let selected = match cached {
+            Some(selected) => selected,
+            None => {
+                let selected = self.prepare_callable(root)?;
+                self.callable_plans
+                    .lock()
+                    .expect("callable plans")
+                    .insert(key, selected.clone());
+                selected
+            }
+        };
+        Ok(InterpreterPlan {
+            standard_library: self.standard_library.clone(),
+            prepared: self.clone(),
+            program: self.program.clone(),
+            root,
+            entry: selected.entry,
+            dispatch: selected.dispatch,
+            host_requirements: selected.host_requirements,
+            action_mediation: selected.action_mediation,
+            residual: self.residual.clone(),
+            residual_installation: selected.installation,
+            diagnostics: selected.diagnostics,
+            known_std_types: self.known_std_types,
+            spec_facts: self.spec_facts.clone(),
+            slots: self.slots.clone(),
+            frames: self.frames.clone(),
+            arguments: self.arguments.clone(),
+            closures: self.closures.clone(),
+            named_variants: self.named_variants.clone(),
+            records: self.records.clone(),
+            globals: self.globals.clone(),
+            resources: self.resources.clone(),
+        })
+    }
+
+    fn prepare_callable(
+        &self,
+        root: CheckedCallableRoot,
+    ) -> Result<super::types::CallablePlan, Vec<Diagnostic>> {
         let project = &self.program;
         let mut context = PlanContext::new(project);
         context.diagnostics.clone_from(&self.diagnostics);
@@ -322,28 +390,13 @@ impl PreparedProgram {
                 "selected callable plan is missing checked entry facts or residual installation evidence",
             )]);
         };
-        Ok(InterpreterPlan {
-            standard_library: self.standard_library.clone(),
-            prepared: self.clone(),
-            program: self.program.clone(),
-            root,
+        Ok(super::types::CallablePlan {
             entry,
             dispatch,
             host_requirements,
             action_mediation,
-            residual: self.residual.clone(),
-            residual_installation,
+            installation: residual_installation,
             diagnostics: context.diagnostics,
-            known_std_types: self.known_std_types,
-            spec_facts: self.spec_facts.clone(),
-            slots: self.slots.clone(),
-            frames: self.frames.clone(),
-            arguments: self.arguments.clone(),
-            closures: self.closures.clone(),
-            named_variants: self.named_variants.clone(),
-            records: self.records.clone(),
-            globals: self.globals.clone(),
-            resources: self.resources.clone(),
         })
     }
 }

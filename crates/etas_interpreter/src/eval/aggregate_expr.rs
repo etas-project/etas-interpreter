@@ -52,7 +52,10 @@ impl<'a> EvalContext<'a> {
             signal if is_pending_host_boundary_signal(&signal) => {
                 return compose_signal_continuation(
                     signal,
-                    Continuation::ListConsTail { head, span },
+                    Continuation::ListConsTail {
+                        head: Box::new(head),
+                        span,
+                    },
                 );
             }
             other => return other,
@@ -105,7 +108,10 @@ impl<'a> EvalContext<'a> {
             signal if is_pending_host_boundary_signal(&signal) => {
                 return compose_signal_continuation(
                     signal,
-                    Continuation::RangeEnd { start, bounds },
+                    Continuation::RangeEnd {
+                        start: Box::new(start),
+                        bounds,
+                    },
                 );
             }
             other => return other,
@@ -455,7 +461,7 @@ impl<'a> EvalContext<'a> {
                         Continuation::MapValue {
                             expr,
                             index,
-                            key,
+                            key: Box::new(key),
                             values,
                             frame: frame.clone(),
                         },
@@ -497,7 +503,7 @@ impl<'a> EvalContext<'a> {
                 Continuation::MapValue {
                     expr,
                     index,
-                    key,
+                    key: Box::new(key),
                     values,
                     frame: frame.clone(),
                 },

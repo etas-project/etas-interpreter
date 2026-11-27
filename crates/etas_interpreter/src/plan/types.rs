@@ -39,9 +39,20 @@ pub struct InterpreterPlan {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Clone, Debug)]
+pub(super) struct CallablePlan {
+    pub entry: EntryPoint,
+    pub dispatch: IntrinsicDispatchTable,
+    pub host_requirements: HostRequirementTable,
+    pub action_mediation: ActionMediationTable,
+    pub installation: super::residual::ResidualInstallationEvidence,
+    pub diagnostics: Vec<Diagnostic>,
+}
+
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ExpressionRoute {
     Literal,
+    Operand,
     Local(etas_hir::SymbolId),
     ToolReference,
 }
@@ -49,6 +60,16 @@ pub(crate) enum ExpressionRoute {
 /// Checked program-wide data has no executable root or invocation authority.
 #[derive(Debug)]
 pub(crate) struct PreparedProgram {
+    pub(super) native_applications: Mutex<HashMap<etas_hir::HirItemId, GenericBindings>>,
+    pub(super) callable_plans: Mutex<
+        HashMap<
+            (
+                std::mem::Discriminant<etas_frontend::CheckedCallableRoot>,
+                u32,
+            ),
+            CallablePlan,
+        >,
+    >,
     // Each checked program owns its type IDs. Keep only the last application per
     // source type, including the full type and effect environment in the key.
     pub(super) materializations: Mutex<HashMap<TypeId, (GenericBindings, TypeId)>>,
@@ -76,6 +97,27 @@ pub(crate) struct PreparedProgram {
 }
 
 impl PreparedProgram {
+    pub(crate) fn verify_native_application(
+        &self,
+        item: etas_hir::HirItemId,
+        bindings: &GenericBindings,
+    ) -> Result<(), String> {
+        if self.native_applications.lock().unwrap().get(&item) == Some(bindings) {
+            return Ok(());
+        }
+        crate::value::ScopedCallableValue::checked_item_application(
+            &self.program,
+            etas_frontend::CheckedCallableRoot::Item(item),
+            bindings,
+        )?
+        .ok_or("specialized method has no checked native application")?;
+        self.native_applications
+            .lock()
+            .unwrap()
+            .insert(item, bindings.clone());
+        Ok(())
+    }
+
     pub(crate) fn construct_enum(
         &self,
         ty: TypeId,

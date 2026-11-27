@@ -7,7 +7,7 @@ use etas_types::{
 };
 
 #[derive(Clone, Debug)]
-pub(super) struct ProgramSpecialization {
+pub(crate) struct ProgramSpecialization {
     pub presented_types: Vec<(String, TypeId)>,
     pub presented_parameters: Vec<(TypeId, TypeId)>,
     pub presented_rows: Vec<(String, EffectRowRef)>,
@@ -22,6 +22,7 @@ impl ProgramSpecialization {
     pub fn new(
         call: &ProgramCall,
         source: &CheckedProgram,
+        plan: Option<&crate::api::InterpreterPlan>,
         types: Vec<(String, TypeId)>,
         parameters: Vec<(TypeId, TypeId)>,
         rows: Vec<(String, EffectRowRef)>,
@@ -161,21 +162,20 @@ impl ProgramSpecialization {
                 }
             }
         }
-        let source_signature = instantiate(source, &source_template, &bindings)
+        let source_signature = instantiate(source, plan, &source_template, &bindings)
             .map_err(|error| format!("generic source signature is not materialized: {error}"))?;
         let destination_signature = instantiate(
             &destination.checked,
+            Some(&destination.plan),
             &destination_template,
             &destination_bindings,
         )
         .map_err(|error| format!("generic destination signature is not materialized: {error}"))?;
         if let Some(item) = native_item {
-            crate::value::ScopedCallableValue::checked_item_application(
-                &destination.checked,
-                etas_frontend::CheckedCallableRoot::Item(item),
-                &destination_bindings,
-            )?
-            .ok_or("specialized method has no checked native application")?;
+            destination
+                .plan
+                .prepared_program()
+                .verify_native_application(item, &destination_bindings)?;
         }
         Ok(Self {
             presented_types: types,
@@ -338,10 +338,16 @@ fn flow(signature: &CallableSignature) -> FlowType {
 
 fn instantiate(
     program: &CheckedProgram,
+    plan: Option<&crate::api::InterpreterPlan>,
     signature: &FlowType,
     bindings: &GenericBindings,
 ) -> Result<FlowType, String> {
-    let mut substitution = bindings.substitution(&program.type_store);
+    let mut substitution = match plan {
+        Some(plan) => {
+            bindings.indexed_substitution(&program.type_store, plan.dispatch.type_lookup(program))
+        }
+        None => bindings.substitution(&program.type_store),
+    };
     Ok(FlowType {
         input: signature
             .input

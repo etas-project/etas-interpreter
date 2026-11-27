@@ -127,60 +127,40 @@ impl MethodDispatchPlan {
         }
         let specs = etas_types::SpecFacts::from(project.types.as_ref());
         let lookup = TypeLookupIndex::new(&project.type_store);
-        for (receiver, _) in project.type_store.iter() {
-            for resolved in project.types.methods.witnesses_for_receiver_indexed(
-                &project.type_store,
-                &lookup,
-                &specs,
-                receiver,
-            )? {
-                let entry = resolved.declaration;
-                if let MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. } =
-                    entry.target
-                    && !project.reachability.analysis_items.contains(&callable)
-                {
-                    continue;
-                }
-                let member = entry
-                    .spec_member
-                    .as_ref()
-                    .ok_or("prepared implementation has no checked spec member")?;
-                let required = requirements
-                    .get(&RequirementKey::from(member))
-                    .ok_or("method witness has no checked requirement declaration")?;
-                let signature = required
-                    .signature_in(&project.types)
-                    .ok_or("method witness has no checked requirement signature")?;
-                let pairs =
-                    required.implementation_generic_parameters(signature, &entry.signature)?;
-                let parameter_types = pairs
-                    .iter()
-                    .map(|(required, provided)| (required.subject, provided.subject))
-                    .collect();
-                let parameters = pairs
-                    .into_iter()
-                    .map(|(required, provided)| (required.name.clone(), provided.name.clone()))
-                    .collect();
-                let key = WitnessKey {
-                    receiver,
-                    member: member.into(),
-                    args: resolved.spec_args,
-                };
-                let mut owner_bindings = resolved.owner_bindings.into_iter().collect::<Vec<_>>();
-                owner_bindings.sort_unstable();
-                let witness = PreparedWitness {
-                    target: entry.target.clone(),
-                    parameters,
-                    parameter_types,
-                    owner_bindings,
-                };
-                if result.witnesses.insert(key, witness).is_some() {
-                    return Err(
-                        "method environment has duplicate implementation witness identities".into(),
+        // Witnesses for one concrete receiver are independent of every other
+        // receiver. Partition large linked programs and merge disjoint keys.
+        let receivers: Vec<_> = project.type_store.iter().map(|(ty, _)| ty).collect();
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(4)
+            .min(receivers.len().div_ceil(256));
+        let prepare = |receivers: &[TypeId]| {
+            Self::prepare_witnesses(project, &requirements, &specs, &lookup, receivers)
+        };
+        result.witnesses = if workers <= 1 {
+            prepare(&receivers)?
+        } else {
+            std::thread::scope(|scope| {
+                let threads: Vec<_> = receivers
+                    .chunks(receivers.len().div_ceil(workers))
+                    .map(|chunk| {
+                        std::thread::Builder::new()
+                            .stack_size(8 << 20)
+                            .spawn_scoped(scope, move || prepare(chunk))
+                            .map_err(|e| e.to_string())
+                    })
+                    .collect::<Result<_, _>>()?;
+                let mut result = HashMap::new();
+                for thread in threads {
+                    result.extend(
+                        thread
+                            .join()
+                            .expect("method witness preparation panicked")?,
                     );
                 }
-            }
-        }
+                Ok::<_, String>(result)
+            })?
+        };
         for (expr, pack) in &project.types.existential_packs {
             if project.types.expr_types.get(expr) != Some(&pack.object_type)
                 || !matches!(
@@ -369,7 +349,7 @@ impl MethodDispatchPlan {
             if fact.receiver != entry.receiver || receiver_type != fact.receiver_type {
                 return Err("checked method receiver differs from its declaration ABI".into());
             }
-            validate_signature(project, entry, fact)?;
+            validate_signature(project, &lookup, entry, fact)?;
             let mut slots = HashSet::new();
             if let Some(slot) = fact.receiver.value_slot() {
                 slots.insert(slot);
@@ -427,6 +407,71 @@ impl MethodDispatchPlan {
             result.calls.insert(*expr, fact.clone());
         }
         Ok(result)
+    }
+
+    fn prepare_witnesses(
+        project: &CheckedProject,
+        requirements: &HashMap<RequirementKey, &etas_types::SpecMethodFact>,
+        specs: &etas_types::SpecFacts,
+        lookup: &TypeLookupIndex,
+        receivers: &[TypeId],
+    ) -> Result<HashMap<WitnessKey, PreparedWitness>, String> {
+        let mut witnesses = HashMap::new();
+        for &receiver in receivers {
+            for resolved in project.types.methods.witnesses_for_receiver_indexed(
+                &project.type_store,
+                lookup,
+                specs,
+                receiver,
+            )? {
+                let entry = resolved.declaration;
+                if let MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. } =
+                    entry.target
+                    && !project.reachability.analysis_items.contains(&callable)
+                {
+                    continue;
+                }
+                let member = entry
+                    .spec_member
+                    .as_ref()
+                    .ok_or("prepared implementation has no checked spec member")?;
+                let required = requirements
+                    .get(&RequirementKey::from(member))
+                    .ok_or("method witness has no checked requirement declaration")?;
+                let signature = required
+                    .signature_in(&project.types)
+                    .ok_or("method witness has no checked requirement signature")?;
+                let pairs =
+                    required.implementation_generic_parameters(signature, &entry.signature)?;
+                let parameter_types = pairs
+                    .iter()
+                    .map(|(required, provided)| (required.subject, provided.subject))
+                    .collect();
+                let parameters = pairs
+                    .into_iter()
+                    .map(|(required, provided)| (required.name.clone(), provided.name.clone()))
+                    .collect();
+                let key = WitnessKey {
+                    receiver,
+                    member: member.into(),
+                    args: resolved.spec_args,
+                };
+                let mut owner_bindings = resolved.owner_bindings.into_iter().collect::<Vec<_>>();
+                owner_bindings.sort_unstable();
+                let witness = PreparedWitness {
+                    target: entry.target.clone(),
+                    parameters,
+                    parameter_types,
+                    owner_bindings,
+                };
+                if witnesses.insert(key, witness).is_some() {
+                    return Err(
+                        "method environment has duplicate implementation witness identities".into(),
+                    );
+                }
+            }
+        }
+        Ok(witnesses)
     }
 
     pub(super) fn call(&self, expr: HirExprId) -> Option<&CheckedMethodCallFact> {
@@ -662,6 +707,7 @@ fn same_evidence_kind(left: &MethodEvidence, right: &MethodEvidence) -> bool {
 
 fn validate_signature(
     project: &CheckedProject,
+    lookup: &TypeLookupIndex,
     entry: &MethodSignatureFact,
     fact: &CheckedMethodCallFact,
 ) -> Result<(), String> {
@@ -687,9 +733,10 @@ fn validate_signature(
             parameters.insert(parameter.subject, *actual);
         }
     }
-    let mut substitute = TypeSubstitutionEngine::existing(&project.type_store, &types)
-        .with_type_parameters(&parameters)
-        .with_effect_arguments(&rows);
+    let mut substitute =
+        TypeSubstitutionEngine::existing_indexed(&project.type_store, lookup, &types)
+            .with_type_parameters(&parameters)
+            .with_effect_arguments(&rows);
     let input = entry
         .signature
         .params

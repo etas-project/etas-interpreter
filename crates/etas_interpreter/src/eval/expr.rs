@@ -12,6 +12,17 @@ impl<'a> EvalContext<'a> {
             && self.can_inline_step()
         {
             match route {
+                // Keep nested HIR evaluation bounded on the Rust stack. Any
+                // unfinished operand returns its ordinary machine continuation.
+                ExpressionRoute::Operand
+                    if self.operand_depth < 3
+                        && !self.task.residual.mirror.borrow().has_scopes() =>
+                {
+                    self.operand_depth += 1;
+                    let signal = self.eval_expr_frame(expr, frame);
+                    self.operand_depth -= 1;
+                    return signal;
+                }
                 ExpressionRoute::Literal => {
                     let HirExpr::Literal(literal) = &self.checked.hir.exprs[expr] else {
                         unreachable!()
@@ -25,9 +36,12 @@ impl<'a> EvalContext<'a> {
                         Err(fault) => ControlSignal::Fault(Box::new(fault)),
                     };
                 }
-                ExpressionRoute::Local(symbol) if !frame.receiver_is_held(symbol) => {
-                    if let Some(value) = frame.get(symbol)
-                        && !matches!(value, InterpValue::Callable(_))
+                ExpressionRoute::Local(symbol) => {
+                    if let Some(value) = frame
+                        .with_value(symbol, |value| {
+                            (!matches!(value, InterpValue::Callable(_))).then(|| value.clone())
+                        })
+                        .flatten()
                     {
                         return match self.consume_execution_step(self.limit_span) {
                             Ok(()) => ControlSignal::Value(value),

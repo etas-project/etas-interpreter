@@ -9,7 +9,6 @@ use etas_hir::{
 };
 use etas_types::{ItemSignature, PrimitiveType, Type};
 
-use crate::control::Frame;
 use crate::value::{InterpValue, NumericValue};
 
 const MAX_NODES: usize = 128;
@@ -28,7 +27,7 @@ enum Output {
 
 #[derive(Debug)]
 pub(crate) struct ArithmeticBody {
-    inputs: Vec<(SymbolId, PrimitiveType)>,
+    inputs: Vec<PrimitiveType>,
     instructions: Vec<Instruction>,
     output: Output,
 }
@@ -89,6 +88,7 @@ pub(super) fn prepare(
                 return None;
             };
             if agent_methods.contains(&id)
+                || project.hir.item_annotations.contains_key(&id)
                 || flow.params.len() != signature.params.len()
                 || !signature.generic_params.is_empty()
                 || !flow.type_params.is_empty()
@@ -164,7 +164,7 @@ pub(super) fn prepare(
             Some((
                 id,
                 ArithmeticBody {
-                    inputs,
+                    inputs: inputs.into_iter().map(|(_, kind)| kind).collect(),
                     instructions: builder.instructions,
                     output,
                 },
@@ -226,16 +226,19 @@ impl Builder<'_> {
 }
 
 impl ArithmeticBody {
-    pub(crate) fn evaluate(&self, frame: &Frame) -> Option<InterpValue> {
+    pub(crate) fn evaluate(&self, args: &[InterpValue]) -> Option<InterpValue> {
         let mut registers = Vec::with_capacity(self.inputs.len() + self.instructions.len());
-        for (symbol, kind) in &self.inputs {
-            let InterpValue::Number(input) = frame.get(*symbol)? else {
+        if args.len() != self.inputs.len() {
+            return None;
+        }
+        for (kind, arg) in self.inputs.iter().zip(args) {
+            let InterpValue::Number(input) = arg else {
                 return None;
             };
             if input.primitive() != *kind {
                 return None;
             }
-            registers.push(input);
+            registers.push(*input);
         }
         for instruction in &self.instructions {
             let result = match *instruction {

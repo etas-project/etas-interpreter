@@ -45,7 +45,7 @@ impl<'a> EvalContext<'a> {
         self.execute_flow_with_generic_bindings(
             item,
             flow,
-            args,
+            args.to_vec(),
             crate::control::GenericBindings {
                 types: type_bindings,
                 parameters: Default::default(),
@@ -58,7 +58,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         item: HirItemId,
         flow: &HirFlowDecl,
-        args: &[InterpValue],
+        args: Vec<InterpValue>,
         bindings: crate::control::GenericBindings,
     ) -> ControlSignal {
         self.execute_flow_with_receiver(item, flow, args, bindings, None)
@@ -68,7 +68,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         item: HirItemId,
         flow: &HirFlowDecl,
-        args: &[InterpValue],
+        args: Vec<InterpValue>,
         bindings: crate::control::GenericBindings,
         update: Option<crate::control::ReceiverOutcome>,
     ) -> ControlSignal {
@@ -76,14 +76,14 @@ impl<'a> EvalContext<'a> {
             return match role {
                 etas_std::StdExecutionRole::ComparatorCapture
                 | etas_std::StdExecutionRole::ComparatorSame => {
-                    self.execute_comparator_identity(item, role, args, span)
+                    self.execute_comparator_identity(item, role, &args, span)
                 }
                 etas_std::StdExecutionRole::PayloadConvert => {
-                    self.execute_payload_conversion(item, args, &bindings, span)
+                    self.execute_payload_conversion(item, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::MessageContextCapture
                 | etas_std::StdExecutionRole::MessageContextRecord => {
-                    self.execute_message_context(item, role, args, span)
+                    self.execute_message_context(item, role, &args, span)
                 }
                 etas_std::StdExecutionRole::ToolReference => ControlSignal::missing_checked_fact(
                     "tool.reference requires its checked declaration operand at the call site",
@@ -92,25 +92,25 @@ impl<'a> EvalContext<'a> {
                 etas_std::StdExecutionRole::ParseBody
                 | etas_std::StdExecutionRole::AgentWithBody
                 | etas_std::StdExecutionRole::CallableWithBody => {
-                    self.execute_source_code_primitive(item, role, args, &bindings, span)
+                    self.execute_source_code_primitive(item, role, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::TaskStart => {
-                    self.execute_source_task_start(item, args.to_vec(), &bindings, span)
+                    self.execute_source_task_start(item, args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::TaskNextCompletion
                 | etas_std::StdExecutionRole::TaskCancel => {
-                    self.execute_source_scheduler_control(item, role, args, &bindings, span)
+                    self.execute_source_scheduler_control(item, role, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::ScopeEnter => {
-                    self.execute_runtime_scope(item, args.to_vec(), &bindings, None, span)
+                    self.execute_runtime_scope(item, args, &bindings, None, span)
                 }
                 etas_std::StdExecutionRole::ResourceScope => {
-                    self.execute_resource_scope(item, args.to_vec(), &bindings, None, span)
+                    self.execute_resource_scope(item, args, &bindings, None, span)
                 }
                 etas_std::StdExecutionRole::ReadScopeEnter => {
-                    self.enter_stream_read_scope(item, args, span)
+                    self.enter_stream_read_scope(item, &args, span)
                 }
-                etas_std::StdExecutionRole::Abort => match args {
+                etas_std::StdExecutionRole::Abort => match args.as_slice() {
                     [InterpValue::String(message)] => {
                         ControlSignal::execution_aborted(message.to_string(), span)
                     }
@@ -120,28 +120,28 @@ impl<'a> EvalContext<'a> {
                     ),
                 },
                 etas_std::StdExecutionRole::Checkpoint => {
-                    self.execute_checkpoint_callable(args.to_vec(), span)
+                    self.execute_checkpoint_callable(args, span)
                 }
                 etas_std::StdExecutionRole::CachedSchemaFingerprint
                 | etas_std::StdExecutionRole::RememberSchemaFingerprint => {
-                    self.schema_fingerprint_cache(role, args, span)
+                    self.schema_fingerprint_cache(role, &args, span)
                 }
                 etas_std::StdExecutionRole::StorageContext
                 | etas_std::StdExecutionRole::StorageNonce
                 | etas_std::StdExecutionRole::StreamClock
                 | etas_std::StdExecutionRole::CurrentSession => {
-                    self.execute_runtime_observation(item, role, args, span)
+                    self.execute_runtime_observation(item, role, &args, span)
                 }
                 etas_std::StdExecutionRole::CaptureData => {
-                    self.execute_data_capture(item, args, &bindings, span)
+                    self.execute_data_capture(item, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::CaptureStorage
                 | etas_std::StdExecutionRole::RestoreStorage
                 | etas_std::StdExecutionRole::StorageSchema => {
-                    self.execute_storage_transfer(item, role, args, &bindings, span)
+                    self.execute_storage_transfer(item, role, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::Requeue | etas_std::StdExecutionRole::Park => {
-                    self.execute_runtime_transfer(item, role, args.to_vec(), &bindings, span)
+                    self.execute_runtime_transfer(item, role, args, &bindings, span)
                 }
             };
         }
@@ -156,14 +156,31 @@ impl<'a> EvalContext<'a> {
                 flow.span,
             );
         }
+        if bindings.is_empty()
+            && self.execution_limits.max_steps.is_none()
+            && let Some(body) = self.plan.prepared_program().arithmetic.get(&item)
+            && self.plan.residual.scope(item).is_none()
+            && let Some(value) = body.evaluate(&args)
+        {
+            let span = self.runtime.limit_span;
+            return match self.runtime.safe_points.consume_work(
+                self.runtime.execution_limits,
+                || self.task.host_budget(),
+                span,
+                body.work(),
+            ) {
+                Ok(()) => ControlSignal::Value(value),
+                Err(fault) => ControlSignal::Fault(Box::new(fault)),
+            };
+        }
         let mut frame = match self.callable_frame_with_generics(flow.scope, bindings, flow.span) {
             Ok(frame) => frame,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        for (symbol, arg) in flow.params.iter().zip(args.iter().cloned()) {
+        for (symbol, arg) in flow.params.iter().zip(args) {
             frame.insert(*symbol, arg);
         }
-        let Some(body) = self.item_primary_block(item) else {
+        let Some(body) = flow.body.as_block() else {
             return ControlSignal::missing_checked_fact(
                 format!(
                     "flow body block is missing from checked HIR: item {item:?}, declaration {:?}, body {:?}, root {:?}",

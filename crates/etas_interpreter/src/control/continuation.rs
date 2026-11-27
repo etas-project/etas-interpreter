@@ -124,7 +124,7 @@ pub enum Continuation {
     },
     BinaryRight {
         op: etas_hir::HirBinaryOp,
-        left: InterpValue,
+        left: Box<InterpValue>,
         span: Span,
     },
     AggregateElement {
@@ -139,7 +139,7 @@ pub enum Continuation {
         frame: Frame,
     },
     ListConsTail {
-        head: InterpValue,
+        head: Box<InterpValue>,
         span: Span,
     },
     RangeStart {
@@ -148,7 +148,7 @@ pub enum Continuation {
         frame: Frame,
     },
     RangeEnd {
-        start: InterpValue,
+        start: Box<InterpValue>,
         bounds: etas_hir::HirRangeBounds,
     },
     RecordField {
@@ -168,7 +168,7 @@ pub enum Continuation {
     MapValue {
         expr: HirExprId,
         index: usize,
-        key: InterpValue,
+        key: Box<InterpValue>,
         values: Vec<(InterpValue, InterpValue)>,
         frame: Frame,
     },
@@ -180,7 +180,7 @@ pub enum Continuation {
     },
     IndexValue {
         expr: HirExprId,
-        base: InterpValue,
+        base: Box<InterpValue>,
         span: Span,
         frame: Frame,
     },
@@ -196,7 +196,7 @@ pub enum Continuation {
     SliceEnd {
         eval: crate::eval::SliceExprEval,
         base: Box<InterpValue>,
-        start: InterpValue,
+        start: Box<InterpValue>,
         frame: Frame,
     },
     MethodReceiver {
@@ -294,7 +294,7 @@ pub enum Continuation {
     },
     PipelineTarget {
         expr: HirExprId,
-        input: InterpValue,
+        input: Box<InterpValue>,
         span: Span,
         frame: Frame,
     },

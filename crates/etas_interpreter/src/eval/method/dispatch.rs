@@ -55,7 +55,11 @@ impl EvalContext<'_> {
                 CallArgsState {
                     call: dispatch.expr,
                     target: None,
-                    args: dispatch.args.into(),
+                    args: self
+                        .plan
+                        .arguments
+                        .get(dispatch.expr)
+                        .unwrap_or_else(|| dispatch.args.into()),
                     start_arg_index: 0,
                     evaluated_args: Vec::new(),
                     span: dispatch.span,
@@ -132,7 +136,7 @@ impl EvalContext<'_> {
             CallArgsState {
                 call,
                 target: Some(target),
-                args: args.into(),
+                args: self.plan.arguments.get(call).unwrap_or_else(|| args.into()),
                 start_arg_index: 0,
                 evaluated_args,
                 span,
@@ -218,7 +222,7 @@ impl EvalContext<'_> {
                         .ok_or_else(|| {
                             missing("external method has no materialized executable body")
                         })?
-                        .method(identity)
+                        .method(identity, &mut self.library_targets.borrow_mut())
                         .map_err(|reason| missing(&reason))?
                 }
             }

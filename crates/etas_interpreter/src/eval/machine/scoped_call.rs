@@ -6,7 +6,7 @@ use crate::{
 };
 
 mod specialization;
-use specialization::ProgramSpecialization;
+pub(crate) use specialization::ProgramSpecialization;
 
 #[derive(Clone, Debug)]
 pub(crate) struct ProgramCall {
@@ -53,30 +53,37 @@ impl ProgramCall {
             specialization: None,
         }
     }
+    pub(super) fn crosses_program(mut target: &CallTarget) -> bool {
+        while let CallTarget::Specialized { target: inner, .. } = target {
+            target = inner;
+        }
+        matches!(target, CallTarget::Scoped(_) | CallTarget::AgentRevision(_))
+    }
+
     pub(super) fn select(
-        target: CallTarget,
+        mut target: CallTarget,
         program: &etas_frontend::CheckedProgram,
-    ) -> Result<Result<Self, CallTarget>, String> {
-        let mut root = &target;
+        plan: Option<&crate::api::InterpreterPlan>,
+    ) -> Result<Self, String> {
         let mut types = Vec::new();
         let mut parameters = Vec::new();
         let mut rows = Vec::new();
         while let CallTarget::Specialized {
-            target,
+            target: inner,
             type_bindings,
             type_parameter_bindings,
             effect_row_bindings,
-        } = root
+        } = target
         {
-            types.extend(type_bindings.iter().cloned());
-            parameters.extend(type_parameter_bindings.iter().copied());
-            rows.extend(effect_row_bindings.iter().cloned());
-            root = target;
+            types.extend(type_bindings);
+            parameters.extend(type_parameter_bindings);
+            rows.extend(effect_row_bindings);
+            target = inner.into_value();
         }
-        let target = match root {
-            CallTarget::AgentRevision(call) => ProgramCallTarget::Agent(call.clone()),
-            CallTarget::Scoped(call) => ProgramCallTarget::Callable(call.clone()),
-            _ => return Ok(Err(target)),
+        let target = match target {
+            CallTarget::AgentRevision(call) => ProgramCallTarget::Agent(call),
+            CallTarget::Scoped(call) => ProgramCallTarget::Callable(call),
+            _ => return Err("program boundary requires a scoped callable".into()),
         };
         let mut call = Self {
             receiver_update: None,
@@ -84,19 +91,46 @@ impl ProgramCall {
             specialization: None,
         };
         if !types.is_empty() || !parameters.is_empty() || !rows.is_empty() {
-            call.specialization = Some(Arc::new(ProgramSpecialization::new(
-                &call, program, types, parameters, rows,
-            )?));
+            let cache = match &call.target {
+                ProgramCallTarget::Callable(callable)
+                    if Arc::ptr_eq(program, callable.presented_program()) =>
+                {
+                    Some(callable.last_specialization())
+                }
+                _ => None,
+            };
+            let cached = cache.and_then(|cache| {
+                cache
+                    .borrow()
+                    .as_ref()
+                    .filter(|last| {
+                        last.presented_types == types
+                            && last.presented_parameters == parameters
+                            && last.presented_rows == rows
+                    })
+                    .cloned()
+            });
+            call.specialization = Some(match cached {
+                Some(last) => last,
+                None => {
+                    let checked = Arc::new(ProgramSpecialization::new(
+                        &call, program, plan, types, parameters, rows,
+                    )?);
+                    if let Some(cache) = cache {
+                        cache.replace(Some(checked.clone()));
+                    }
+                    checked
+                }
+            });
         }
-        Ok(Ok(call))
+        Ok(call)
     }
 
     pub(super) fn restore_target(
         target: CallTarget,
         program: &etas_frontend::CheckedProgram,
     ) -> Result<Self, String> {
-        Self::select(target, program)?
-            .map_err(|_| "checkpoint program boundary restored an unscoped callable".into())
+        Self::select(target, program, None)
     }
 
     pub(super) fn target(&self) -> &ProgramCallTarget {

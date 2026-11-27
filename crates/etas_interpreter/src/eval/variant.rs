@@ -195,7 +195,7 @@ impl<'a> EvalContext<'a> {
                 .symbols
                 .get(symbol)
                 .is_some_and(|symbol| symbol.kind == SymbolKind::EnumVariant))
-            || frame.get(symbol).is_some()
+            || frame.contains_value(symbol)
         {
             return Ok(None);
         }

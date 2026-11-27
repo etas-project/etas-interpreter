@@ -18,25 +18,25 @@ pub(crate) enum FrameComparisonStep<T> {
 impl FrameComparison {
     pub(crate) fn identity(frame: &Frame) -> [usize; 4] {
         [
-            Rc::as_ptr(&frame.slots) as usize,
+            Rc::as_ptr(&frame.storage) as usize,
             frame
                 .restored
                 .as_ref()
                 .map_or(0, |v| Rc::as_ptr(v) as usize),
-            std::sync::Arc::as_ptr(&frame.layout) as usize,
+            std::sync::Arc::as_ptr(&frame.storage.layout) as usize,
             std::sync::Arc::as_ptr(&frame.type_bindings) as usize,
         ]
     }
 
     pub(crate) fn new(left: &Frame, right: &Frame) -> Option<Self> {
-        if left.layout != right.layout
+        if left.storage.layout != right.storage.layout
             || left.type_bindings != right.type_bindings
             || left.parent.is_some() != right.parent.is_some()
         {
             return None;
         }
-        let a = left.slots.try_borrow().ok()?;
-        let b = right.slots.try_borrow().ok()?;
+        let a = left.storage.slots.try_borrow().ok()?;
+        let b = right.storage.slots.try_borrow().ok()?;
         if a.values.len() != b.values.len()
             || a.additional != b.additional
             || a.handler_activations != b.handler_activations
@@ -76,7 +76,10 @@ impl FrameComparison {
         &mut self,
         compare: impl FnOnce(&InterpValue, &InterpValue) -> T,
     ) -> FrameComparisonStep<T> {
-        let (Ok(a), Ok(b)) = (self.left.slots.try_borrow(), self.right.slots.try_borrow()) else {
+        let (Ok(a), Ok(b)) = (
+            self.left.storage.slots.try_borrow(),
+            self.right.storage.slots.try_borrow(),
+        ) else {
             return FrameComparisonStep::Complete(false);
         };
         while self.slot < a.values.len() {

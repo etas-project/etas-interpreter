@@ -19,10 +19,15 @@ pub struct Frame {
     snapshot_id: u64,
     parent: Option<FrameParent>,
     residual_invocation: Option<std::num::NonZeroU64>,
-    layout: Arc<SlotLayoutTable>,
-    slots: Rc<RefCell<SlotStorage>>,
-    restored: Option<Rc<RefCell<RestoredStorage>>>,
+    storage: Rc<FrameStorage>,
     type_bindings: Arc<super::GenericBindings>,
+    restored: Option<Rc<RefCell<RestoredStorage>>>,
+}
+
+#[derive(Debug)]
+struct FrameStorage {
+    layout: Arc<SlotLayoutTable>,
+    slots: RefCell<SlotStorage>,
 }
 
 /// Shared lexical bindings; request-local slots remain in the child frame.
@@ -149,7 +154,7 @@ impl Eq for Frame {}
 impl Frame {
     pub(crate) fn borrow_locals(&self) -> Result<FrameLocals<'_>, String> {
         let conflict = || "runtime frame is mutably borrowed during JSON projection".to_owned();
-        let slots = self.slots.try_borrow().map_err(|_| conflict())?;
+        let slots = self.storage.slots.try_borrow().map_err(|_| conflict())?;
         if !slots.exclusive_receivers.is_empty() {
             return Err("cannot capture a frame while an updating receiver is held".into());
         }
@@ -191,20 +196,22 @@ impl Frame {
             snapshot_id,
             residual_invocation: None,
             parent: None,
-            layout,
-            slots: Rc::new(RefCell::new(SlotStorage {
-                owner: snapshot_id,
-                shared: HashMap::new(),
-                scoped_captures: false,
-                scoped_values: HashSet::new(),
-                values: vec![None; slot_count],
-                additional: HashMap::new(),
-                scope_symbols: None,
-                handler_activations: Default::default(),
-                exclusive_receivers: HashSet::new(),
-            })),
-            restored: None,
             type_bindings,
+            storage: Rc::new(FrameStorage {
+                layout,
+                slots: RefCell::new(SlotStorage {
+                    owner: snapshot_id,
+                    shared: HashMap::new(),
+                    scoped_captures: false,
+                    scoped_values: HashSet::new(),
+                    values: vec![None; slot_count],
+                    additional: HashMap::new(),
+                    scope_symbols: None,
+                    handler_activations: Default::default(),
+                    exclusive_receivers: HashSet::new(),
+                }),
+            }),
+            restored: None,
         }
     }
 
@@ -244,14 +251,15 @@ impl Frame {
     }
 
     pub(crate) fn has_handler_activations(&self) -> bool {
-        !self.slots.borrow().handler_activations.is_empty()
+        !self.storage.slots.borrow().handler_activations.is_empty()
             || self
                 .lexical_parent()
                 .is_some_and(Self::has_handler_activations)
     }
 
     pub(crate) fn handler_activations(&self) -> Vec<super::handler_activation::HandlerActivation> {
-        self.slots
+        self.storage
+            .slots
             .borrow()
             .handler_activations
             .values()
@@ -263,7 +271,8 @@ impl Frame {
         &mut self,
         activation: super::handler_activation::HandlerActivation,
     ) {
-        self.slots
+        self.storage
+            .slots
             .borrow_mut()
             .handler_activations
             .insert(activation.arm, activation);
@@ -282,7 +291,7 @@ impl Frame {
         let arm = super::handler_activation::enclosing_handler(checked, owner);
         let mut current = Some(self);
         while let Some(frame) = current {
-            let slots = frame.slots.borrow();
+            let slots = frame.storage.slots.borrow();
             if let Some(activation) = arm.and_then(|arm| slots.handler_activations.get(&arm)) {
                 return std::borrow::Cow::Owned(
                     super::handler_activation::activation_bindings(
@@ -309,8 +318,9 @@ impl Frame {
         let mut captured = Self::with_shared_type_bindings(layout, self.type_bindings.clone());
         let mut current = Some(self);
         while let Some(frame) = current {
-            for (arm, activation) in &frame.slots.borrow().handler_activations {
+            for (arm, activation) in &frame.storage.slots.borrow().handler_activations {
                 captured
+                    .storage
                     .slots
                     .borrow_mut()
                     .handler_activations
@@ -320,7 +330,7 @@ impl Frame {
             current = frame.lexical_parent();
         }
         for symbol in symbols {
-            if captured.layout.resolve(*symbol).is_none() {
+            if captured.storage.layout.resolve(*symbol).is_none() {
                 return Err(format!(
                     "closure layout is missing captured symbol {symbol:?}"
                 ));
@@ -355,7 +365,7 @@ impl Frame {
     fn shared_binding(&self, symbol: SymbolId) -> Option<SharedBinding> {
         let mut current = Some(self);
         while let Some(frame) = current {
-            if let Some(binding) = frame.slots.borrow().shared.get(&symbol) {
+            if let Some(binding) = frame.storage.slots.borrow().shared.get(&symbol) {
                 return Some(binding.clone());
             }
             current = frame.lexical_parent();
@@ -366,7 +376,7 @@ impl Frame {
     fn share_binding(&self, symbol: SymbolId) -> Result<(), String> {
         let mut current = Some(self);
         while let Some(frame) = current {
-            let mut slots = frame.slots.borrow_mut();
+            let mut slots = frame.storage.slots.borrow_mut();
             if slots.shared.contains_key(&symbol) {
                 return Ok(());
             }
@@ -395,7 +405,7 @@ impl Frame {
     }
 
     pub(crate) fn install_shared_binding(&mut self, symbol: SymbolId, binding: SharedBinding) {
-        let mut slots = self.slots.borrow_mut();
+        let mut slots = self.storage.slots.borrow_mut();
         if let Some(index) = self.resolve(&slots, symbol) {
             slots.values[index] = None;
         }
@@ -408,7 +418,7 @@ impl Frame {
     }
 
     pub(crate) fn shared_bindings(&self) -> Vec<BindingIdentity> {
-        let slots = self.slots.borrow();
+        let slots = self.storage.slots.borrow();
         let mut bindings = slots
             .shared
             .iter()
@@ -423,11 +433,11 @@ impl Frame {
     }
 
     pub(crate) fn may_retain_scoped_bindings(&self) -> bool {
-        self.slots.borrow().scoped_captures
+        self.storage.slots.borrow().scoped_captures
     }
 
     pub(crate) fn mark_scoped_value(&self, symbol: SymbolId) -> bool {
-        let mut slots = self.slots.borrow_mut();
+        let mut slots = self.storage.slots.borrow_mut();
         let changed = !slots.scoped_captures;
         slots.scoped_captures = true;
         if !slots.shared.contains_key(&symbol) {
@@ -437,7 +447,8 @@ impl Frame {
     }
 
     pub(crate) fn has_expired_bindings(&self) -> bool {
-        self.slots
+        self.storage
+            .slots
             .borrow()
             .shared
             .values()
@@ -445,7 +456,7 @@ impl Frame {
     }
 
     pub(crate) fn has_shared_bindings(&self) -> bool {
-        !self.slots.borrow().shared.is_empty()
+        !self.storage.slots.borrow().shared.is_empty()
     }
 
     pub(crate) fn scoped_value_escapes(
@@ -454,6 +465,7 @@ impl Frame {
         keep: &HashSet<SymbolId>,
     ) -> bool {
         let ending = self
+            .storage
             .slots
             .borrow()
             .shared
@@ -471,6 +483,7 @@ impl Frame {
 
     pub(crate) fn scoped_local_escapes(&self, keep: &HashSet<SymbolId>) -> bool {
         if !self
+            .storage
             .slots
             .borrow()
             .shared
@@ -514,20 +527,22 @@ impl Frame {
             snapshot_id,
             residual_invocation: None,
             parent: None,
-            layout: Arc::new(SlotLayoutTable::default()),
-            slots: Rc::new(RefCell::new(SlotStorage {
-                owner: snapshot_id,
-                shared: HashMap::new(),
-                scoped_captures: !scoped_values.is_empty(),
-                scoped_values,
-                values: Vec::new(),
-                additional: HashMap::new(),
-                scope_symbols: None,
-                handler_activations: Default::default(),
-                exclusive_receivers: HashSet::new(),
-            })),
-            restored: Some(Rc::new(RefCell::new(RestoredStorage(restored)))),
             type_bindings: bindings.shared(),
+            storage: Rc::new(FrameStorage {
+                layout: Arc::new(SlotLayoutTable::default()),
+                slots: RefCell::new(SlotStorage {
+                    owner: snapshot_id,
+                    shared: HashMap::new(),
+                    scoped_captures: !scoped_values.is_empty(),
+                    scoped_values,
+                    values: Vec::new(),
+                    additional: HashMap::new(),
+                    scope_symbols: None,
+                    handler_activations: Default::default(),
+                    exclusive_receivers: HashSet::new(),
+                }),
+            }),
+            restored: Some(Rc::new(RefCell::new(RestoredStorage(restored)))),
         })
     }
 
@@ -557,13 +572,13 @@ impl Frame {
     // Frame aliases share slots, restored locals, layout and immutable type bindings.
     // Include the wire identity separately: decoding may assign a different ID.
     pub(crate) fn capture_identity(&self) -> (*const (), u64) {
-        (Rc::as_ptr(&self.slots).cast(), self.snapshot_id)
+        (Rc::as_ptr(&self.storage).cast(), self.snapshot_id)
     }
 
     pub(crate) fn into_unique_values(self) -> FrameValues {
-        let slots = Rc::try_unwrap(self.slots)
+        let slots = Rc::try_unwrap(self.storage)
             .ok()
-            .map(|slots| std::mem::take(&mut slots.into_inner().values))
+            .map(|slots| std::mem::take(&mut slots.slots.into_inner().values))
             .unwrap_or_default();
         let restored = self
             .restored
@@ -585,7 +600,7 @@ impl Frame {
             return Err("snapshot frame identity must be nonzero".into());
         }
         self.snapshot_id = id;
-        self.slots.borrow_mut().owner = id;
+        self.storage.slots.borrow_mut().owner = id;
         NEXT_FRAME_ID.fetch_max(id + 1, std::sync::atomic::Ordering::Relaxed);
         Ok(())
     }
@@ -603,7 +618,7 @@ impl Frame {
     pub(crate) fn receiver_is_held(&self, symbol: SymbolId) -> bool {
         let mut current = Some(self);
         while let Some(frame) = current {
-            let slots = frame.slots.borrow();
+            let slots = frame.storage.slots.borrow();
             if let Some(binding) = slots.shared.get(&symbol) {
                 return binding.held();
             }
@@ -629,7 +644,7 @@ impl Frame {
     ) -> Result<(super::ReceiverLease, InterpValue), String> {
         let mut current = Some(self);
         while let Some(frame) = current {
-            let mut slots = frame.slots.borrow_mut();
+            let mut slots = frame.storage.slots.borrow_mut();
             if let Some(binding) = slots.shared.get(&symbol) {
                 let value = binding.acquire()?;
                 return Ok((super::ReceiverLease::new(frame.clone(), symbol), value));
@@ -655,32 +670,48 @@ impl Frame {
     }
 
     pub(super) fn release_receiver(&self, symbol: SymbolId) {
-        if let Some(binding) = self.slots.borrow().shared.get(&symbol) {
+        if let Some(binding) = self.storage.slots.borrow().shared.get(&symbol) {
             binding.release();
             return;
         }
-        assert!(self.slots.borrow_mut().exclusive_receivers.remove(&symbol));
+        assert!(
+            self.storage
+                .slots
+                .borrow_mut()
+                .exclusive_receivers
+                .remove(&symbol)
+        );
     }
 
     pub fn get(&self, symbol: SymbolId) -> Option<InterpValue> {
+        self.with_value(symbol, Clone::clone)
+    }
+
+    pub(crate) fn contains_value(&self, symbol: SymbolId) -> bool {
+        self.with_value(symbol, |_| ()).is_some()
+    }
+
+    pub(crate) fn with_value<R>(
+        &self,
+        symbol: SymbolId,
+        read: impl FnOnce(&InterpValue) -> R,
+    ) -> Option<R> {
         let mut current = Some(self);
         while let Some(frame) = current {
-            let slots = frame.slots.borrow();
+            let slots = frame.storage.slots.borrow();
             if let Some(binding) = slots.shared.get(&symbol) {
-                return binding.value();
+                return binding.with_available_value(read);
             }
             if slots.exclusive_receivers.contains(&symbol) {
                 return None;
             }
             if let Some(slot) = frame.resolve(&slots, symbol) {
-                return slots.values[slot].clone();
+                return slots.values[slot].as_ref().map(read);
             }
-            if let Some(value) = frame
-                .restored
-                .as_ref()
-                .and_then(|locals| locals.borrow().get(&symbol).cloned())
+            if let Some(locals) = &frame.restored
+                && let Some(value) = locals.borrow().get(&symbol)
             {
-                return Some(value);
+                return Some(read(value));
             }
             current = frame.lexical_parent();
         }
@@ -688,7 +719,7 @@ impl Frame {
     }
 
     pub fn insert(&mut self, symbol: SymbolId, value: InterpValue) {
-        let mut slots = self.slots.borrow_mut();
+        let mut slots = self.storage.slots.borrow_mut();
         if let Some(binding) = slots.shared.get(&symbol) {
             assert!(
                 binding.update(|slot| *slot = value).is_some(),
@@ -719,7 +750,7 @@ impl Frame {
     pub fn set(&mut self, symbol: SymbolId, value: InterpValue) -> bool {
         let mut current = Some(&*self);
         while let Some(frame) = current {
-            let mut slots = frame.slots.borrow_mut();
+            let mut slots = frame.storage.slots.borrow_mut();
             if let Some(binding) = slots.shared.get(&symbol) {
                 return binding.update(|slot| *slot = value).is_some();
             }
@@ -754,7 +785,7 @@ impl Frame {
     ) -> Option<R> {
         let mut current = Some(&*self);
         while let Some(frame) = current {
-            let mut slots = frame.slots.borrow_mut();
+            let mut slots = frame.storage.slots.borrow_mut();
             if let Some(binding) = slots.shared.get(&symbol) {
                 return binding.update(update);
             }
@@ -776,7 +807,7 @@ impl Frame {
     }
 
     pub fn snapshot_symbols(&self) -> HashSet<SymbolId> {
-        let slots = self.slots.borrow();
+        let slots = self.storage.slots.borrow();
         self.collect_symbols(&slots)
     }
 
@@ -795,7 +826,7 @@ impl Frame {
     /// Reassignments preserve scope membership. Frame aliases share invalidation,
     /// while previously returned scope snapshots remain immutable.
     pub(crate) fn scope_symbols(&self) -> Rc<HashSet<SymbolId>> {
-        let mut slots = self.slots.borrow_mut();
+        let mut slots = self.storage.slots.borrow_mut();
         if let Some(cached) = &slots.scope_symbols {
             return cached.clone();
         }
@@ -805,7 +836,7 @@ impl Frame {
     }
 
     pub fn cleanup_to(&mut self, keep: &HashSet<SymbolId>) {
-        let mut slots = self.slots.borrow_mut();
+        let mut slots = self.storage.slots.borrow_mut();
         if slots
             .scope_symbols
             .as_ref()
@@ -830,6 +861,7 @@ impl Frame {
         } = &mut *slots;
         let mut removed = shared_removed;
         for (symbol, index) in self
+            .storage
             .layout
             .symbols()
             .iter()
@@ -857,7 +889,7 @@ impl Frame {
         let mut locals = std::collections::BTreeMap::new();
         let mut current = Some(self);
         while let Some(frame) = current {
-            let slots = frame.slots.borrow();
+            let slots = frame.storage.slots.borrow();
             for (symbol, index) in frame.slot_symbols(&slots) {
                 if let Some(value) = &slots.values[index] {
                     locals.entry(symbol).or_insert_with(|| value.clone());
@@ -882,7 +914,7 @@ impl Frame {
         &self,
         mut map: impl FnMut(SymbolId, bool, &InterpValue) -> Result<T, E>,
     ) -> Result<Vec<(SymbolId, T)>, E> {
-        let slots = self.slots.borrow();
+        let slots = self.storage.slots.borrow();
         let restored = self.restored.as_ref().map(|locals| locals.borrow());
         let count = slots.values.iter().filter(|value| value.is_some()).count()
             + restored.as_ref().map_or(0, |locals| locals.len())
@@ -914,7 +946,7 @@ impl Frame {
         &self,
         mut visit: impl FnMut(&InterpValue) -> Result<(), E>,
     ) -> Result<(), E> {
-        let slots = self.slots.borrow();
+        let slots = self.storage.slots.borrow();
         for (_, index) in self.slot_symbols(&slots) {
             if let Some(value) = &slots.values[index] {
                 visit(value)?;
@@ -935,7 +967,7 @@ impl Frame {
         &self,
         mut visit: impl FnMut(&InterpValue) -> Result<(), E>,
     ) -> Result<(), E> {
-        let slots = self.slots.borrow();
+        let slots = self.storage.slots.borrow();
         for (symbol, index) in self.slot_symbols(&slots) {
             if slots.scoped_values.contains(&symbol)
                 && let Some(value) = &slots.values[index]
@@ -957,7 +989,8 @@ impl Frame {
     }
 
     fn resolve(&self, slots: &SlotStorage, symbol: SymbolId) -> Option<usize> {
-        self.layout
+        self.storage
+            .layout
             .resolve(symbol)
             .map(|slot| slot.0 as usize)
             .or_else(|| slots.additional.get(&symbol).copied())
@@ -967,7 +1000,8 @@ impl Frame {
         &'a self,
         slots: &'a SlotStorage,
     ) -> impl Iterator<Item = (SymbolId, usize)> + 'a {
-        self.layout
+        self.storage
+            .layout
             .symbols()
             .iter()
             .copied()
@@ -990,7 +1024,7 @@ impl Frame {
         if self.restored.is_some() {
             return;
         }
-        let mut slots = self.slots.borrow_mut();
+        let mut slots = self.storage.slots.borrow_mut();
         let missing = layout
             .symbols()
             .iter()

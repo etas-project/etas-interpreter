@@ -128,7 +128,7 @@ impl<'a> EvalContext<'a> {
                     signal,
                     Continuation::PipelineTarget {
                         expr,
-                        input,
+                        input: Box::new(input),
                         span,
                         frame: frame.clone(),
                     },

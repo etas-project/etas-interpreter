@@ -20,6 +20,7 @@ pub(crate) mod residual;
 mod resources;
 mod slots;
 mod standard_library;
+pub(crate) use standard_library::LibraryTargets;
 mod types;
 pub(crate) use types::ExpressionRoute;
 mod validate;

@@ -203,51 +203,60 @@ impl<'a> EvalContext<'a> {
                 Vec::new(),
             )
         };
+        if defaults.is_empty() {
+            return self.finish_call_arguments(
+                call,
+                target,
+                parameter_count,
+                slots,
+                evaluated_args,
+                span,
+                frame,
+            );
+        }
         let mut restore = Continuation::BlockValue;
         let mut target = target;
-        if !defaults.is_empty() {
-            if let Some(selected) = target.take() {
-                match self.prepare_call_target(selected, restore) {
-                    Ok((selected, continuation)) => {
-                        target = Some(selected);
-                        restore = continuation;
-                    }
-                    Err(signal) => return *signal,
+        if let Some(selected) = target.take() {
+            match self.prepare_call_target(selected, restore) {
+                Ok((selected, continuation)) => {
+                    target = Some(selected);
+                    restore = continuation;
                 }
+                Err(signal) => return *signal,
             }
-            let item = self
-                .plan
-                .dispatch
-                .method(call)
-                .and_then(|method| match method.target {
-                    etas_types::method::MethodTarget::Source { callable, .. }
-                    | etas_types::method::MethodTarget::Agent { callable, .. } => Some(callable),
-                    _ => None,
-                })
-                .or_else(|| {
-                    let mut selected = target.as_ref()?;
-                    while let CallTarget::Specialized { target, .. } = selected {
-                        selected = target;
-                    }
-                    match selected {
-                        CallTarget::FlowItem(item)
-                        | CallTarget::ToolItem(item)
-                        | CallTarget::AgentItem(item) => Some(*item),
-                        _ => None,
-                    }
-                });
-            if let Some(item) = item {
-                match self.declaration_model_policy(item) {
-                    Ok(Some(policy)) => {
-                        let previous = std::mem::replace(&mut self.task.model_policy, policy);
-                        restore = Continuation::RestoreModelPolicy {
-                            previous: Box::new(previous),
-                            inner: restore.into(),
-                        };
-                    }
-                    Ok(None) => (),
-                    Err(fault) => return ControlSignal::Fault(Box::new(fault)),
+        }
+        let item = self
+            .plan
+            .dispatch
+            .method(call)
+            .and_then(|method| match method.target {
+                etas_types::method::MethodTarget::Source { callable, .. }
+                | etas_types::method::MethodTarget::Agent { callable, .. } => Some(callable),
+                _ => None,
+            })
+            .or_else(|| {
+                let mut selected = target.as_ref()?;
+                while let CallTarget::Specialized { target, .. } = selected {
+                    selected = target;
                 }
+                match selected {
+                    CallTarget::FlowItem(item)
+                    | CallTarget::ToolItem(item)
+                    | CallTarget::AgentItem(item) => Some(*item),
+                    _ => None,
+                }
+            });
+        if let Some(item) = item {
+            match self.declaration_model_policy(item) {
+                Ok(Some(policy)) => {
+                    let previous = std::mem::replace(&mut self.task.model_policy, policy);
+                    restore = Continuation::RestoreModelPolicy {
+                        previous: Box::new(previous),
+                        inner: restore.into(),
+                    };
+                }
+                Ok(None) => (),
+                Err(fault) => return ControlSignal::Fault(Box::new(fault)),
             }
         }
         let signal = self.prepare_default_arguments(super::arguments::DefaultArguments {
@@ -386,7 +395,7 @@ impl<'a> EvalContext<'a> {
             Some(HirItem::Flow(flow)) => match self.execute_flow_with_receiver(
                 item,
                 flow,
-                &call_args,
+                call_args,
                 Default::default(),
                 update,
             ) {
@@ -752,7 +761,7 @@ impl<'a> EvalContext<'a> {
                         return self.execute_runtime_scope(item, call_args, &bindings, site, span);
                     }
                     let signal =
-                        self.execute_flow_with_receiver(item, flow, &call_args, bindings, update);
+                        self.execute_flow_with_receiver(item, flow, call_args, bindings, update);
                     match signal {
                         ControlSignal::Value(value) | ControlSignal::Return(value) => {
                             ControlSignal::Value(value)

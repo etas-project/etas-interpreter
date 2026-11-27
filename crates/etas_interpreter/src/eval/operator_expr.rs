@@ -141,7 +141,7 @@ impl<'a> EvalContext<'a> {
                             signal,
                             Continuation::BinaryRight {
                                 op,
-                                left: InterpValue::Bool(true),
+                                left: Box::new(InterpValue::Bool(true)),
                                 span,
                             },
                         );
@@ -169,7 +169,7 @@ impl<'a> EvalContext<'a> {
                             signal,
                             Continuation::BinaryRight {
                                 op,
-                                left: InterpValue::Bool(false),
+                                left: Box::new(InterpValue::Bool(false)),
                                 span,
                             },
                         );
@@ -189,7 +189,11 @@ impl<'a> EvalContext<'a> {
             signal if is_pending_host_boundary_signal(&signal) => {
                 return compose_signal_continuation(
                     signal,
-                    Continuation::BinaryRight { op, left, span },
+                    Continuation::BinaryRight {
+                        op,
+                        left: Box::new(left),
+                        span,
+                    },
                 );
             }
             other => return other,

@@ -33,10 +33,22 @@ struct NativeCallable {
 #[derive(Clone, Debug)]
 pub struct ScopedCallableValue {
     native: Rc<NativeCallable>,
+    presentation: Rc<CallablePresentation>,
+}
+
+#[derive(Debug, Default)]
+struct CallablePresentation {
     projections: Vec<Arc<CallableValueProjection>>,
+    specialization: std::cell::RefCell<Option<Arc<crate::eval::machine::ProgramSpecialization>>>,
 }
 
 impl ScopedCallableValue {
+    pub(crate) fn last_specialization(
+        &self,
+    ) -> &std::cell::RefCell<Option<Arc<crate::eval::machine::ProgramSpecialization>>> {
+        &self.presentation.specialization
+    }
+
     pub(crate) fn same_instance(&self, other: &Self) -> bool {
         Rc::ptr_eq(&self.native, &other.native)
             || (Arc::ptr_eq(&self.native.program.checked, &other.native.program.checked)
@@ -70,7 +82,8 @@ impl ScopedCallableValue {
     pub(crate) fn action_projections(
         &self,
     ) -> Result<Vec<crate::plan::code::RevisionProjection>, String> {
-        self.projections
+        self.presentation
+            .projections
             .iter()
             .map(|projection| projection.action_projection())
             .filter_map(Result::transpose)
@@ -78,7 +91,7 @@ impl ScopedCallableValue {
     }
     #[cfg(test)]
     pub(crate) fn projection_count(&self) -> usize {
-        self.projections.len()
+        self.presentation.projections.len()
     }
     pub(crate) fn project(
         execution: &CheckedExecutionProgram,
@@ -119,16 +132,13 @@ impl ScopedCallableValue {
                     projection.signature(),
                     Some(&projection),
                 )?;
-                let plan = execution
-                    .plan
-                    .select_callable(source, root)
-                    .map_err(|diagnostics| {
-                        format!("callable preparation failed: {diagnostics:?}")
-                    })?;
+                let plan = Arc::new(execution.plan.select_callable(source, root).map_err(
+                    |diagnostics| format!("callable preparation failed: {diagnostics:?}"),
+                )?);
                 Self {
                     native: Rc::new(NativeCallable {
                         program: CheckedExecutionProgram {
-                            plan: Arc::new(plan),
+                            plan,
                             ..execution.clone()
                         },
                         application,
@@ -136,20 +146,22 @@ impl ScopedCallableValue {
                         ty,
                         signature: projection.signature().clone(),
                     }),
-                    projections: Vec::new(),
+                    presentation: Rc::default(),
                 }
             }
         };
-        if value
-            .projections
+        // A projection changes the signature presented to the caller. Existing
+        // aliases retain their own path and its most recent checked application.
+        let mut projections = value.presentation.projections.clone();
+        if projections
             .last()
             .is_some_and(|previous| projection.reverses(previous))
         {
-            value.projections.pop();
+            projections.pop();
         } else {
-            value.projections.push(Arc::new(projection));
+            projections.push(Arc::new(projection));
         }
-        if value.projections.is_empty() {
+        if projections.is_empty() {
             if !Arc::ptr_eq(&value.native.program.checked, &destination) {
                 return Err(
                     "cancelled callable projections do not return to the native program".into(),
@@ -157,6 +169,10 @@ impl ScopedCallableValue {
             }
             Ok(value.target())
         } else {
+            value.presentation = Rc::new(CallablePresentation {
+                projections,
+                specialization: Default::default(),
+            });
             Ok(CallTarget::Scoped(value))
         }
     }
@@ -167,14 +183,16 @@ impl ScopedCallableValue {
         (*self.native.target).clone()
     }
     pub(crate) fn presented_program(&self) -> &CheckedProgram {
-        self.projections
+        self.presentation
+            .projections
             .last()
             .map_or(&self.native.program.checked, |projection| {
                 projection.target().0
             })
     }
     pub(crate) fn presented_type(&self) -> TypeId {
-        self.projections
+        self.presentation
+            .projections
             .last()
             .map_or(self.native.ty, |projection| projection.target().1)
     }
@@ -246,7 +264,7 @@ impl ScopedCallableValue {
         args.into_iter()
             .enumerate()
             .map(|(index, mut value)| {
-                for projection in self.projections.iter().rev() {
+                for projection in self.presentation.projections.iter().rev() {
                     value = projection
                         .argument_to_source(index, value, program)
                         .map_err(|error| error.to_string())?;
@@ -263,7 +281,7 @@ impl ScopedCallableValue {
         if !Arc::ptr_eq(&program.checked, &self.native.program.checked) {
             return Err("scoped callable result belongs to a different native program".into());
         }
-        for projection in &self.projections {
+        for projection in &self.presentation.projections {
             value = projection
                 .result_to_target(value, program)
                 .map_err(|error| error.to_string())?;
@@ -280,7 +298,7 @@ impl ScopedCallableValue {
         if !Arc::ptr_eq(&program.checked, &self.native.program.checked) {
             return Err("updated receiver belongs to a different native program".into());
         }
-        for projection in &self.projections {
+        for projection in &self.presentation.projections {
             value = projection
                 .argument_to_target(index, value, program)
                 .map_err(|error| error.to_string())?;
@@ -297,7 +315,7 @@ impl ScopedCallableValue {
         if !Arc::ptr_eq(&program.checked, &self.native.program.checked) {
             return Err("scoped callable error belongs to a different native program".into());
         }
-        for projection in &self.projections {
+        for projection in &self.presentation.projections {
             (ty, value) = projection
                 .error_to_target(ty, value, program)
                 .map_err(|error| error.to_string())?;
@@ -316,11 +334,12 @@ impl Eq for ScopedCallableValue {}
 impl ScopedCallableValue {
     pub(crate) fn equality_header_matches(&self, other: &Self) -> bool {
         Arc::ptr_eq(&self.native.program.checked, &other.native.program.checked)
-            && self.projections.len() == other.projections.len()
+            && self.presentation.projections.len() == other.presentation.projections.len()
             && self
+                .presentation
                 .projections
                 .iter()
-                .zip(&other.projections)
+                .zip(&other.presentation.projections)
                 .all(|(left, right)| {
                     let (a, aty) = left.source();
                     let (b, bty) = right.source();

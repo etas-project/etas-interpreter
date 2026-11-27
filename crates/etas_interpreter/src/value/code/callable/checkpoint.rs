@@ -131,15 +131,15 @@ impl ScopedCallableValue {
         &self,
         context: &mut crate::eval::machine::snapshot::CaptureContext,
     ) -> Result<ScopedCallableMetadata, String> {
-        for projection in &self.projections {
+        for projection in &self.presentation.projections {
             if let Some(owner) = projection.revision_owner() {
                 context.bind_revision(owner);
             }
         }
         context.bind_program(&self.native.program);
         let native_program = context.program_reference(&self.native.program.checked)?;
-        let mut projections = Vec::with_capacity(self.projections.len());
-        for projection in &self.projections {
+        let mut projections = Vec::with_capacity(self.presentation.projections.len());
+        for projection in &self.presentation.projections {
             let edge = projection
                 .action_projection()?
                 .ok_or("checkpoint callable projection has no revision edge")?;
@@ -217,7 +217,10 @@ impl ScopedCallableValue {
                 ty,
                 signature,
             }),
-            projections,
+            presentation: Rc::new(CallablePresentation {
+                projections,
+                specialization: Default::default(),
+            }),
         })
     }
 }
