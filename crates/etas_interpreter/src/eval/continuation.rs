@@ -682,7 +682,7 @@ impl<'a> EvalContext<'a> {
                     components,
                     next_component_index,
                     index_value: value,
-                    new_value,
+                    new_value: *new_value,
                     block,
                     next_stmt_index,
                     span,
@@ -803,13 +803,13 @@ impl<'a> EvalContext<'a> {
                 eval,
                 base,
                 mut frame,
-            } => self.resume_slice_start(eval, base, value, &mut frame),
+            } => self.resume_slice_start(eval, *base, value, &mut frame),
             Continuation::SliceEnd {
                 eval,
                 base,
                 start,
                 frame,
-            } => self.eval_checked_slice_value(eval, base, start, value, &frame),
+            } => self.eval_checked_slice_value(eval, *base, start, value, &frame),
             Continuation::MethodReceiver {
                 expr,
                 method,
@@ -950,7 +950,7 @@ impl<'a> EvalContext<'a> {
                 self.resume_perform_args(
                     PerformArgsResume {
                         expr,
-                        action,
+                        action: *action,
                         type_args,
                         args,
                         start_arg_index: next_arg_index,

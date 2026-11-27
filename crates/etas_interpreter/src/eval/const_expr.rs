@@ -15,6 +15,12 @@ impl<'a> EvalContext<'a> {
         literal: &HirLiteral,
         frame: Option<&Frame>,
     ) -> Result<InterpValue, ExecutionFault> {
+        if matches!(literal, HirLiteral::Int { .. } | HirLiteral::Float { .. })
+            && let Some((ty, value)) = self.plan.prepared_program().numeric_literals.get(&expr)
+            && frame.is_none_or(|frame| !frame.generic_bindings().parameters.contains_key(ty))
+        {
+            return Ok(InterpValue::Number(*value));
+        }
         match literal {
             HirLiteral::Bool { value, .. } => Ok(InterpValue::Bool(*value)),
             HirLiteral::Int { text, span } => {

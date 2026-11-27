@@ -1,3 +1,8 @@
+use std::sync::{
+    Arc,
+    atomic::{AtomicU64, Ordering},
+};
+
 use etas_core::{AnalysisDiagnosticCode, Span};
 
 use crate::{api::ExecutionLimits, control::ExecutionFault};
@@ -17,8 +22,13 @@ pub(crate) enum SafePointDecision {
 #[path = "safe_point_tests.rs"]
 mod tests;
 
+enum StepLedger {
+    Local(u64),
+    Shared(Arc<AtomicU64>),
+}
+
 pub(super) struct ExecutionSafePointScheduler {
-    steps: std::sync::Arc<std::sync::atomic::AtomicU64>,
+    steps: StepLedger,
     local_steps: u64,
     quantum_work: u64,
 }
@@ -26,26 +36,36 @@ pub(super) struct ExecutionSafePointScheduler {
 impl ExecutionSafePointScheduler {
     pub(super) fn new(consumed_steps: u64) -> Self {
         Self {
-            steps: std::sync::Arc::new(std::sync::atomic::AtomicU64::new(consumed_steps)),
+            steps: StepLedger::Local(consumed_steps),
             local_steps: 0,
             quantum_work: 0,
         }
     }
 
-    pub(super) fn with_ledger(steps: std::sync::Arc<std::sync::atomic::AtomicU64>) -> Self {
+    pub(super) fn with_ledger(steps: Arc<AtomicU64>) -> Self {
         Self {
-            steps,
+            steps: StepLedger::Shared(steps),
             local_steps: 0,
             quantum_work: 0,
         }
     }
 
-    pub(super) fn ledger(&self) -> std::sync::Arc<std::sync::atomic::AtomicU64> {
-        self.steps.clone()
+    pub(super) fn ledger(&mut self) -> Arc<AtomicU64> {
+        match &self.steps {
+            StepLedger::Shared(steps) => steps.clone(),
+            StepLedger::Local(consumed) => {
+                let steps = Arc::new(AtomicU64::new(*consumed));
+                self.steps = StepLedger::Shared(steps.clone());
+                steps
+            }
+        }
     }
 
     pub(super) fn consumed_steps(&self) -> u64 {
-        self.steps.load(std::sync::atomic::Ordering::Acquire)
+        match &self.steps {
+            StepLedger::Local(steps) => *steps,
+            StepLedger::Shared(steps) => steps.load(Ordering::Acquire),
+        }
     }
 
     pub(super) fn local_consumed_steps(&self) -> u64 {
@@ -103,10 +123,19 @@ impl ExecutionSafePointScheduler {
         budget: impl Fn() -> etas_host::ExecutionBudget,
         span: Span,
     ) -> Result<(), ExecutionFault> {
-        let mut consumed = self.steps.load(std::sync::atomic::Ordering::Acquire);
-        loop {
+        self.consume_work(limits, budget, span, 1)
+    }
+
+    pub(super) fn consume_work(
+        &mut self,
+        limits: ExecutionLimits,
+        budget: impl Fn() -> etas_host::ExecutionBudget,
+        span: Span,
+        work: u64,
+    ) -> Result<(), ExecutionFault> {
+        let advance = |consumed: u64| {
             if let Some(max_steps) = limits.max_steps
-                && consumed >= max_steps.get()
+                && work > max_steps.get().saturating_sub(consumed)
             {
                 return Err(ExecutionFault::new(
                     AnalysisDiagnosticCode::UnhandledRuntimeError,
@@ -116,21 +145,32 @@ impl ExecutionSafePointScheduler {
                     ),
                 ));
             }
-            if consumed % TIME_BUDGET_CHECK_INTERVAL == 0 {
+            if consumed % TIME_BUDGET_CHECK_INTERVAL == 0
+                || work > TIME_BUDGET_CHECK_INTERVAL - consumed % TIME_BUDGET_CHECK_INTERVAL
+            {
                 Self::check_time(&budget(), span)?;
             }
-            match self.steps.compare_exchange_weak(
-                consumed,
-                consumed.saturating_add(1),
-                std::sync::atomic::Ordering::AcqRel,
-                std::sync::atomic::Ordering::Acquire,
-            ) {
-                Ok(_) => break,
-                Err(actual) => consumed = actual,
+            Ok(consumed.saturating_add(work))
+        };
+        match &mut self.steps {
+            StepLedger::Local(consumed) => *consumed = advance(*consumed)?,
+            StepLedger::Shared(steps) => {
+                let mut consumed = steps.load(Ordering::Acquire);
+                loop {
+                    match steps.compare_exchange_weak(
+                        consumed,
+                        advance(consumed)?,
+                        Ordering::AcqRel,
+                        Ordering::Acquire,
+                    ) {
+                        Ok(_) => break,
+                        Err(actual) => consumed = actual,
+                    }
+                }
             }
         }
-        self.local_steps = self.local_steps.saturating_add(1);
-        self.quantum_work = self.quantum_work.saturating_add(1);
+        self.local_steps = self.local_steps.saturating_add(work);
+        self.quantum_work = self.quantum_work.saturating_add(work);
         Ok(())
     }
 }

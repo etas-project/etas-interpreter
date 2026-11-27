@@ -36,6 +36,8 @@ pub struct IntrinsicDispatchTable {
 
 #[derive(Debug, Default)]
 struct ProgramDispatch {
+    call_bindings: HashMap<HirExprId, std::sync::Mutex<Option<Box<LastCallBindings>>>>,
+    type_lookup: std::sync::OnceLock<etas_types::ty::TypeLookupIndex>,
     methods: Arc<methods::MethodDispatchPlan>,
     compiler_actions: HashMap<etas_effects::ActionRef, forwarded_actions::CheckedCompilerAction>,
     forwarded_actions: HashMap<StdIntrinsicId, forwarded_actions::CheckedForwardedAction>,
@@ -53,6 +55,12 @@ struct ProgramDispatch {
     std_callable_origins: HashSet<HirExprId>,
     map_exprs: HashSet<HirExprId>,
     brace_literals: HashMap<HirExprId, BraceLiteralShape>,
+}
+
+#[derive(Debug)]
+struct LastCallBindings {
+    caller: crate::control::GenericBindings,
+    resolved: crate::control::CheckedCallBindings,
 }
 
 #[derive(Debug, PartialEq, Eq, Hash)]
@@ -323,11 +331,40 @@ impl IntrinsicDispatchTable {
             ),
         };
 
+        let generic_calls =
+            project
+                .types
+                .generic_instantiations
+                .iter()
+                .filter_map(|(expr, fact)| {
+                    (!fact.type_bindings.is_empty() || !fact.effect_row_bindings.is_empty())
+                        .then_some(*expr)
+                });
+        let method_calls = project
+            .types
+            .checked_method_calls
+            .iter()
+            .chain(
+                project
+                    .types
+                    .bound_method_values
+                    .iter()
+                    .map(|(expr, value)| (expr, &value.method)),
+            )
+            .filter_map(|(expr, method)| (!method.owner_bindings.is_empty()).then_some(*expr));
+        // One slot per checked generic call site. Allocate its environment only on first use.
+        let call_bindings = generic_calls
+            .chain(method_calls)
+            .map(|expr| (expr, Default::default()))
+            .collect();
+
         Ok(Self {
             reflection_required: false,
             reachable_intrinsics: HashSet::new(),
             pure_registry: PureIntrinsicRegistry,
             program: Arc::new(ProgramDispatch {
+                call_bindings,
+                type_lookup: Default::default(),
                 methods,
                 compiler_actions,
                 forwarded_actions,
@@ -400,6 +437,39 @@ impl IntrinsicDispatchTable {
         self.program.methods.policy_witness(project, object, member)
     }
 
+    pub(super) fn type_lookup(&self, project: &CheckedProject) -> &etas_types::ty::TypeLookupIndex {
+        self.program
+            .type_lookup
+            .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&project.type_store))
+    }
+
+    pub(crate) fn checked_call_bindings(
+        &self,
+        project: &CheckedProject,
+        call: HirExprId,
+        caller: &crate::control::GenericBindings,
+    ) -> Result<crate::control::CheckedCallBindings, String> {
+        let Some(site) = self.program.call_bindings.get(&call) else {
+            return Ok(Default::default());
+        };
+        let mut last = site.lock().unwrap();
+        if let Some(hit) = last.as_ref()
+            && &hit.caller == caller
+        {
+            return Ok(hit.resolved.clone());
+        }
+        let resolved = crate::control::CheckedCallBindings::resolve_with(
+            project,
+            call,
+            caller.indexed_substitution(&project.type_store, self.type_lookup(project)),
+        )?;
+        *last = Some(Box::new(LastCallBindings {
+            caller: caller.clone(),
+            resolved: resolved.clone(),
+        }));
+        Ok(resolved)
+    }
+
     pub(crate) fn resolve_method(
         &self,
         project: &CheckedProject,
@@ -407,9 +477,14 @@ impl IntrinsicDispatchTable {
         bindings: &crate::control::GenericBindings,
         object: Option<crate::value::ExistentialEvidence<'_>>,
     ) -> Result<methods::ResolvedMethodCall<'_>, String> {
-        self.program
-            .methods
-            .resolve(project, call, bindings, object)
+        self.program.methods.resolve(
+            project,
+            call,
+            bindings,
+            object,
+            self.checked_call_bindings(project, call, bindings)?,
+            self.type_lookup(project),
+        )
     }
 
     pub(crate) fn intrinsic_callable_root(

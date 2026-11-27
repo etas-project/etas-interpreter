@@ -1,5 +1,6 @@
 mod action_mediation;
 mod arguments;
+mod arithmetic;
 #[cfg(test)]
 mod callable_tests;
 mod captures;

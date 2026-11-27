@@ -169,12 +169,11 @@ impl<'a> EvalContext<'a> {
             .expr_types
             .get(&expr)
             .ok_or_else(|| invalid("sequence constructor has no checked owner".to_owned()))?;
-        if etas_types::value_representation::sequence_element_in_store(
-            &self.checked.type_store,
-            owner,
-        )
-        .map_err(|error| invalid(error.to_string()))?
-        .is_none()
+        if !self
+            .plan
+            .prepared_program()
+            .has_sequence_layout(owner)
+            .map_err(|error| invalid(error.to_string()))?
         {
             return Err(invalid(
                 "sequence constructor has no empty/cell layout".to_owned(),

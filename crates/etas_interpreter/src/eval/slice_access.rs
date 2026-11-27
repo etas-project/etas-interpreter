@@ -37,7 +37,7 @@ impl<'a> EvalContext<'a> {
                     signal,
                     Continuation::SliceStart {
                         eval,
-                        base,
+                        base: Box::new(base),
                         frame: frame.clone(),
                     },
                 );
@@ -61,7 +61,7 @@ impl<'a> EvalContext<'a> {
                     signal,
                     Continuation::SliceEnd {
                         eval,
-                        base,
+                        base: Box::new(base),
                         start,
                         frame: frame.clone(),
                     },

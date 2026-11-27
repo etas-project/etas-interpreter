@@ -452,16 +452,17 @@ impl MethodDispatchPlan {
         call: HirExprId,
         current: &crate::control::GenericBindings,
         object: Option<crate::value::ExistentialEvidence<'_>>,
+        mut bindings: crate::control::CheckedCallBindings,
+        lookup: &TypeLookupIndex,
     ) -> Result<ResolvedMethodCall<'_>, String> {
         let fact = self
             .call(call)
             .ok_or("method call has no prepared target")?;
-        let mut bindings = crate::control::CheckedCallBindings::resolve(project, call, current)?;
         let target = if let MethodTarget::BoundSpec { member, .. } = &fact.target {
             let MethodEvidence::Bound { args, .. } = &fact.evidence else {
                 return Err("generic method has no checked witness recipe".into());
             };
-            let mut substitution = current.substitution(&project.type_store);
+            let mut substitution = current.indexed_substitution(&project.type_store, lookup);
             let subject = substitution
                 .substitute(fact.receiver_type)
                 .map_err(|error| error.to_string())?;

@@ -58,6 +58,7 @@ pub(crate) struct GenericBindings {
     pub(crate) rows: EffectRowBindings,
 }
 
+#[derive(Clone, Debug, Default)]
 pub(crate) struct CheckedCallBindings {
     pub types: Vec<(String, TypeId)>,
     pub parameters: Vec<(TypeId, TypeId)>,
@@ -70,8 +71,15 @@ impl CheckedCallBindings {
         call: etas_hir::HirExprId,
         outer: &GenericBindings,
     ) -> Result<Self, String> {
+        Self::resolve_with(checked, call, outer.substitution(&checked.type_store))
+    }
+
+    pub(crate) fn resolve_with(
+        checked: &etas_frontend::CheckedProgram,
+        call: etas_hir::HirExprId,
+        mut substitution: TypeSubstitutionEngine<'_>,
+    ) -> Result<Self, String> {
         let fact = checked.types.generic_instantiations.get(&call);
-        let mut substitution = outer.substitution(&checked.type_store);
         Ok(Self {
             types: fact
                 .into_iter()

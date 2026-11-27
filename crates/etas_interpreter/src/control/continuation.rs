@@ -102,7 +102,7 @@ pub enum Continuation {
         segments: Vec<crate::eval::LocalPlaceSegment>,
         components: Vec<crate::eval::LocalPlaceComponent>,
         next_component_index: usize,
-        new_value: InterpValue,
+        new_value: Box<InterpValue>,
         span: Span,
         frame: Frame,
     },
@@ -190,12 +190,12 @@ pub enum Continuation {
     },
     SliceStart {
         eval: crate::eval::SliceExprEval,
-        base: InterpValue,
+        base: Box<InterpValue>,
         frame: Frame,
     },
     SliceEnd {
         eval: crate::eval::SliceExprEval,
-        base: InterpValue,
+        base: Box<InterpValue>,
         start: InterpValue,
         frame: Frame,
     },
@@ -246,7 +246,7 @@ pub enum Continuation {
     },
     PerformArgs {
         expr: HirExprId,
-        action: ResolvedActionRef,
+        action: Box<ResolvedActionRef>,
         type_args: Vec<etas_hir::HirTypeId>,
         args: std::sync::Arc<[HirArg]>,
         next_arg_index: usize,

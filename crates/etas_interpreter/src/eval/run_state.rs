@@ -36,6 +36,7 @@ pub(crate) struct EvalSharedState {
         std::sync::Arc<crate::driver::cpu::PreparedCpuProgram>,
     >,
     pub(crate) cpu_jobs: std::collections::BTreeMap<crate::driver::cpu::CpuJobId, CpuJobRecord>,
+    pub(super) schema_fingerprints: super::source_memory::SchemaFingerprints,
     pub(crate) storage_layouts: std::collections::HashMap<
         (usize, etas_types::TypeId),
         (
@@ -302,6 +303,7 @@ impl EvalRunState {
             cpu_programs: Default::default(),
             cpu_jobs: Default::default(),
             storage_layouts: Default::default(),
+            schema_fingerprints: Default::default(),
             next_cpu_dispatch: 0,
             next_cpu_completion: 0,
             current_session: input.current_session,

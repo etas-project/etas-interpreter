@@ -122,6 +122,10 @@ impl<'a> EvalContext<'a> {
                 etas_std::StdExecutionRole::Checkpoint => {
                     self.execute_checkpoint_callable(args.to_vec(), span)
                 }
+                etas_std::StdExecutionRole::CachedSchemaFingerprint
+                | etas_std::StdExecutionRole::RememberSchemaFingerprint => {
+                    self.schema_fingerprint_cache(role, args, span)
+                }
                 etas_std::StdExecutionRole::StorageContext
                 | etas_std::StdExecutionRole::StorageNonce
                 | etas_std::StdExecutionRole::StreamClock

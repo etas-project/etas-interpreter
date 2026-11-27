@@ -7,7 +7,62 @@ use etas_host::memory::{
 use etas_host::{HostError, MemoryCursor, MemoryQuery};
 use etas_types::{TypeId, value_representation};
 
+// Derived data for this run and checked revision. Only codec schema inputs enter
+// this table. Mutation payloads and read results never do.
+#[derive(Default)]
+pub(super) struct SchemaFingerprints {
+    owner: std::sync::Weak<etas_frontend::CheckedProgramData>,
+    entries: std::collections::VecDeque<(Box<[u8]>, crate::value::StringValue)>,
+}
+
+impl SchemaFingerprints {
+    fn for_program(&mut self, program: &etas_frontend::CheckedProject) -> &mut Self {
+        if self.owner.as_ptr() != std::sync::Arc::as_ptr(program) {
+            self.entries.clear();
+            self.owner = std::sync::Arc::downgrade(program);
+        }
+        self
+    }
+}
+
 impl EvalContext<'_> {
+    pub(super) fn schema_fingerprint_cache(
+        &mut self,
+        role: etas_std::StdExecutionRole,
+        args: &[V],
+        span: Span,
+    ) -> ControlSignal {
+        use etas_std::StdExecutionRole as R;
+        let table = self.runtime.schema_fingerprints.for_program(self.checked);
+        let result = match (role, args) {
+            (R::CachedSchemaFingerprint, [V::Bytes(key)]) => table
+                .entries
+                .iter()
+                .find(|(bytes, _)| bytes.as_ref() == key.as_ref())
+                .map(|(_, digest)| V::OptionSome(V::String(digest.clone()).into()))
+                .unwrap_or(V::OptionNone),
+            (R::RememberSchemaFingerprint, [V::Bytes(key), V::String(digest)]) => {
+                // At most 256 KiB of schema keys. Larger inputs still use the Etas computation.
+                if key.len() <= 4096 {
+                    if table.entries.len() == 64 {
+                        table.entries.pop_front();
+                    }
+                    table
+                        .entries
+                        .push_back((key.to_vec().into_boxed_slice(), digest.clone()));
+                }
+                V::Unit
+            }
+            _ => {
+                return ControlSignal::missing_checked_fact(
+                    "schema cache differs from its checked ABI",
+                    span,
+                );
+            }
+        };
+        ControlSignal::Value(result)
+    }
+
     pub(super) fn project_source_memory_store(
         &self,
         ty: TypeId,

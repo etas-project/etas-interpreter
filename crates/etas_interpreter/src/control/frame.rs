@@ -274,7 +274,9 @@ impl Frame {
         checked: &etas_frontend::CheckedProgram,
         owner: etas_hir::HirOwner,
     ) -> std::borrow::Cow<'a, super::GenericBindings> {
-        if super::handler_activation::parametric_continuation_call(checked, owner) {
+        if !self.has_handler_activations()
+            || super::handler_activation::parametric_continuation_call(checked, owner)
+        {
             return std::borrow::Cow::Borrowed(&self.type_bindings);
         }
         let arm = super::handler_activation::enclosing_handler(checked, owner);

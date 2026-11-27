@@ -370,21 +370,24 @@ impl EvalMachine {
                 ControlSignal::Expr(pending) => {
                     let mut pending = *pending;
                     self.push_continuation_frames(pending.continuation);
-                    self.push_frame(EvalFrame::Expr(ExprFrame {
-                        continuation: if ctx
-                            .checked
-                            .types
-                            .existential_packs
-                            .contains_key(&pending.expr)
-                        {
-                            Continuation::PackExistential {
+                    if ctx
+                        .checked
+                        .types
+                        .existential_packs
+                        .contains_key(&pending.expr)
+                    {
+                        self.push_frame(EvalFrame::Expr(ExprFrame {
+                            continuation: Continuation::PackExistential {
                                 expr: pending.expr,
                                 frame: pending.frame.clone(),
-                            }
-                        } else {
-                            Continuation::BlockValue
-                        },
-                    }));
+                            },
+                        }));
+                    } else if ctx.execution_limits.max_steps.is_some() {
+                        // Preserve the machine-transition count for metered runs.
+                        self.push_frame(EvalFrame::Expr(ExprFrame {
+                            continuation: Continuation::BlockValue,
+                        }));
+                    }
                     ctx.eval_expr_frame(pending.expr, &mut pending.frame)
                 }
                 ControlSignal::ProgramExpr(pending) => {
@@ -836,6 +839,9 @@ impl EvalMachine {
     }
 
     pub(super) fn push_continuation_frames(&mut self, continuation: Continuation) {
+        if matches!(continuation, Continuation::BlockValue) {
+            return;
+        }
         visit_continuation_stack_order(continuation, |continuation| {
             if !matches!(continuation, Continuation::BlockValue) {
                 self.push_frame(EvalFrame::from_continuation(continuation));
@@ -847,6 +853,9 @@ impl EvalMachine {
         &mut self,
         continuation: Continuation,
     ) -> Option<Continuation> {
+        if !matches!(continuation, Continuation::Chain { .. }) {
+            return Some(continuation);
+        }
         let mut first = None;
         visit_continuation_stack_order(continuation, |continuation| {
             if let Some(outer) = first.replace(continuation) {

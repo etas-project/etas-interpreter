@@ -48,9 +48,9 @@ impl EvalContext<'_> {
         bindings: &crate::control::GenericBindings,
         span: Span,
     ) -> Result<etas_types::TypeId, ExecutionFault> {
-        bindings
-            .indexed_substitution(&self.checked.type_store, self.plan.type_lookup())
-            .substitute(ty)
+        self.plan
+            .prepared_program()
+            .materialized_type(ty, bindings)
             .map_err(|error| {
                 ExecutionFault::new(
                     AnalysisDiagnosticCode::MissingCheckedFact,

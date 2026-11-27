@@ -242,7 +242,7 @@ impl<'a> EvalContext<'a> {
             segments: resume.segments,
             components: resume.components,
             next_component_index: resume.next_component_index,
-            new_value: resume.new_value,
+            new_value: Box::new(resume.new_value),
             span: resume.span,
             frame: resume.frame,
         };

@@ -202,15 +202,17 @@ impl<'a> EvalContext<'a> {
             ),
             other => other,
         };
-        let bindings =
-            crate::control::CheckedCallBindings::resolve(self.checked, call, &request_bindings)
-                .map_err(|error| {
-                    crate::control::ExecutionFault::new(
-                        AnalysisDiagnosticCode::MissingCheckedFact,
-                        span,
-                        format!("checked call bindings cannot be materialized: {error}"),
-                    )
-                })?;
+        let bindings = self
+            .plan
+            .dispatch
+            .checked_call_bindings(self.checked, call, &request_bindings)
+            .map_err(|error| {
+                crate::control::ExecutionFault::new(
+                    AnalysisDiagnosticCode::MissingCheckedFact,
+                    span,
+                    format!("checked call bindings cannot be materialized: {error}"),
+                )
+            })?;
         if bindings.types.is_empty() && bindings.parameters.is_empty() && bindings.rows.is_empty() {
             return Ok(target);
         }

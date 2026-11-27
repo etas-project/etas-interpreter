@@ -1,4 +1,9 @@
-use std::sync::Arc;
+use crate::control::GenericBindings;
+use etas_types::TypeId;
+use std::{
+    collections::{HashMap, HashSet},
+    sync::{Arc, Mutex},
+};
 
 use etas_core::Diagnostic;
 
@@ -37,11 +42,17 @@ pub struct InterpreterPlan {
 /// Checked program-wide data has no executable root or invocation authority.
 #[derive(Debug)]
 pub(crate) struct PreparedProgram {
+    // Each checked program owns its type IDs. Keep only the last application per
+    // source type, including the full type and effect environment in the key.
+    pub(super) materializations: Mutex<HashMap<TypeId, (GenericBindings, TypeId)>>,
+    pub(super) sequence_layouts: Mutex<HashSet<TypeId>>,
+    pub(crate) numeric_literals: super::arithmetic::NumericLiterals,
+    pub(crate) arithmetic:
+        std::collections::HashMap<etas_hir::HirItemId, super::arithmetic::ArithmeticBody>,
     pub(super) standard_library: Option<Arc<super::standard_library::StandardLibraryProgram>>,
     pub(super) program: etas_frontend::CheckedProject,
     pub(super) known_std_types: crate::eval::KnownStdTypes,
     pub(super) spec_facts: Arc<std::sync::OnceLock<etas_types::SpecFacts>>,
-    pub(super) type_lookup: std::sync::OnceLock<etas_types::ty::TypeLookupIndex>,
     pub(super) slots: Arc<SlotLayoutTable>,
     pub(super) frames: Arc<super::frames::FrameLayoutTable>,
     pub(super) arguments: Arc<super::arguments::CallArgumentTable>,
@@ -53,4 +64,48 @@ pub(crate) struct PreparedProgram {
     pub(super) dispatch: IntrinsicDispatchTable,
     pub(super) residual: Arc<super::residual::PreparedResidualPlans>,
     pub(super) diagnostics: Vec<Diagnostic>,
+}
+
+impl PreparedProgram {
+    pub(crate) fn materialized_type(
+        &self,
+        ty: TypeId,
+        bindings: &GenericBindings,
+    ) -> Result<TypeId, etas_types::TypeSubstitutionError> {
+        if let Some((previous, result)) = self.materializations.lock().unwrap().get(&ty)
+            && previous == bindings
+        {
+            return Ok(*result);
+        }
+        let result = bindings
+            .indexed_substitution(
+                &self.program.type_store,
+                self.dispatch.type_lookup(&self.program),
+            )
+            .substitute(ty)?;
+        self.materializations
+            .lock()
+            .unwrap()
+            .insert(ty, (bindings.clone(), result));
+        Ok(result)
+    }
+
+    pub(crate) fn has_sequence_layout(
+        &self,
+        owner: TypeId,
+    ) -> Result<bool, etas_types::TypeSubstitutionError> {
+        if self.sequence_layouts.lock().unwrap().contains(&owner) {
+            return Ok(true);
+        }
+        if etas_types::value_representation::sequence_element_in_store(
+            &self.program.type_store,
+            owner,
+        )?
+        .is_some()
+        {
+            self.sequence_layouts.lock().unwrap().insert(owner);
+            return Ok(true);
+        }
+        Ok(false)
+    }
 }

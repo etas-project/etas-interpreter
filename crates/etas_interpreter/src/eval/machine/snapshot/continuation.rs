@@ -471,7 +471,7 @@ impl ContinuationSnapshot {
                 frame,
             } => Self::PerformArgs {
                 expr: *expr,
-                action: action.clone(),
+                action: action.as_ref().clone(),
                 type_args: type_args.clone(),
                 args: args.clone(),
                 next_arg_index: *next_arg_index,
@@ -921,7 +921,7 @@ impl ContinuationSnapshot {
                     .map(restore_local_component)
                     .collect(),
                 next_component_index,
-                new_value: new_value.restore_with(context)?,
+                new_value: Box::new(new_value.restore_with(context)?),
                 span,
                 frame: super::frame::restore_frame(frame, context)?,
             },
@@ -1052,7 +1052,7 @@ impl ContinuationSnapshot {
             },
             Self::SliceStart { eval, base, frame } => Continuation::SliceStart {
                 eval: restore_slice_eval(eval),
-                base: base.restore_with(context)?,
+                base: Box::new(base.restore_with(context)?),
                 frame: super::frame::restore_frame(frame, context)?,
             },
             Self::SliceEnd {
@@ -1062,7 +1062,7 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::SliceEnd {
                 eval: restore_slice_eval(eval),
-                base: base.restore_with(context)?,
+                base: Box::new(base.restore_with(context)?),
                 start: start.restore_with(context)?,
                 frame: super::frame::restore_frame(frame, context)?,
             },
@@ -1166,7 +1166,7 @@ impl ContinuationSnapshot {
                 frame,
             } => Continuation::PerformArgs {
                 expr,
-                action,
+                action: Box::new(action),
                 type_args,
                 args,
                 next_arg_index,

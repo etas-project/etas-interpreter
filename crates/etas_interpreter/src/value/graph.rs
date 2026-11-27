@@ -42,6 +42,14 @@ pub(crate) fn visit_host_handles(args: &[Value], mut visit: impl FnMut(&super::H
 
 pub(crate) fn has_scoped_bindings(root: Node<'_>) -> bool {
     match root {
+        Node::Value(
+            Value::Number(_)
+            | Value::String(_)
+            | Value::Bytes(_)
+            | Value::Bool(_)
+            | Value::Unit
+            | Value::OptionNone,
+        ) => false,
         Node::Target(CallTarget::Lambda { captured, .. })
         | Node::Value(Value::Callable(CallTarget::Lambda { captured, .. }))
         | Node::Value(Value::Handler {

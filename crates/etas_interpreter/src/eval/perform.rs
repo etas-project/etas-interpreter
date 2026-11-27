@@ -50,7 +50,7 @@ impl<'a> EvalContext<'a> {
                         signal,
                         Continuation::PerformArgs {
                             expr,
-                            action,
+                            action: Box::new(action),
                             type_args,
                             args,
                             next_arg_index: index + 1,

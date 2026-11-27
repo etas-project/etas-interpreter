@@ -58,6 +58,25 @@ impl EvalContext<'_> {
             Ok(None) => crate::control::Continuation::BlockValue,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
+        if residual.is_none()
+            && matches!(continuation, crate::control::Continuation::BlockValue)
+            && self.execution_limits.max_steps.is_none()
+            && frame.generic_bindings().is_empty()
+            && let Some(body) = self.plan.prepared_program().arithmetic.get(&item)
+            && let Some(value) = body.evaluate(frame)
+        {
+            let work = body.work();
+            let span = self.runtime.limit_span;
+            if let Err(fault) = self.runtime.safe_points.consume_work(
+                self.runtime.execution_limits,
+                || self.task.host_budget(),
+                span,
+                work,
+            ) {
+                return ControlSignal::Fault(Box::new(fault));
+            }
+            return ControlSignal::Value(value);
+        }
         ControlSignal::pending_block(PendingBlock {
             agent_context: self
                 .checked
