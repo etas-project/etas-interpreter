@@ -44,8 +44,11 @@ pub(crate) fn construct(
 }
 
 /// Project one layer only. Recursive children retain their shared JSON storage.
-pub(crate) fn project(value: &Json, checked: &CheckedProject) -> (&'static str, Vec<Value>) {
-    match value {
+pub(crate) fn project(
+    value: &Json,
+    checked: &CheckedProject,
+) -> Result<(&'static str, Vec<Value>), String> {
+    Ok(match value {
         Json::Null => ("Null", vec![]),
         Json::Bool(value) => ("Bool", vec![Value::Bool(*value)]),
         Json::NumberBits(bits) => ("Number", vec![Value::Number(NumericValue::F64(*bits))]),
@@ -71,38 +74,15 @@ pub(crate) fn project(value: &Json, checked: &CheckedProject) -> (&'static str, 
             let value = match source_object_map(checked) {
                 Some(ty) => {
                     if let Some(value) = fields.source(ty) {
-                        return ("Object", vec![Value::Nominal { ty, value }]);
+                        return Ok(("Object", vec![Value::Nominal { ty, value }]));
                     }
-                    let entries = Value::List(
-                        entries
-                            .map(|(key, value)| Value::Tuple(vec![key, value].into()))
-                            .collect::<Vec<_>>()
-                            .into(),
-                    );
-                    let entries = match source_map_entries_type(&checked.type_store, ty) {
-                        Some(ty) => Value::Nominal {
-                            ty,
-                            value: entries.into(),
-                        },
-                        None => entries,
-                    };
-                    let fields = vec![
-                        ("entries".into(), entries),
-                        (
-                            "length".into(),
-                            Value::Number(NumericValue::usize(fields.len())),
-                        ),
-                    ];
-                    Value::Nominal {
-                        ty,
-                        value: Value::Record(fields.into()).into(),
-                    }
+                    crate::value::source_map::from_entries(&checked.type_store, ty, entries)?
                 }
                 None => Value::Map(entries.collect::<Vec<_>>().into()),
             };
             ("Object", vec![value])
         }
-    }
+    })
 }
 
 fn source_object_map(checked: &CheckedProject) -> Option<TypeId> {
@@ -125,23 +105,6 @@ pub(crate) fn payload_type(checked: &CheckedProject, name: &str) -> Option<TypeI
     Some(*payload)
 }
 
-fn source_map_entries_type(store: &etas_types::TypeStore, map: TypeId) -> Option<TypeId> {
-    let record = etas_types::ty::applied_representation_in_store(store, map).ok()??;
-    let Type::Record(record) = store.get(record)? else {
-        return None;
-    };
-    let list = record
-        .fields
-        .iter()
-        .find(|field| field.name == "entries")?
-        .ty;
-    matches!(
-        store.get(list),
-        Some(Type::Nominal(_) | Type::Applied { .. })
-    )
-    .then_some(list)
-}
-
 fn object_value(value: Value, checked: &CheckedProject) -> Result<super::JsonObject, String> {
     let invalid_entry = || "JSON Object map entry requires a string and JsonValue".to_owned();
     match value {
@@ -160,38 +123,12 @@ fn object_value(value: Value, checked: &CheckedProject) -> Result<super::JsonObj
                     checked.type_store.get(ty)
                 ));
             }
-            let Value::Record(fields) = value.as_ref() else {
-                return Err("JSON Object's checked Map is not represented by a record".into());
-            };
-            if fields.get_ref("slots").is_some() {
-                let entries = crate::value::source_map::entries(value.as_ref())?
-                    .into_iter()
-                    .map(|(key, value)| json_entry(key, value))
-                    .collect::<Option<Vec<_>>>()
-                    .ok_or_else(invalid_entry)?;
-                return Ok(super::JsonObject::from_source(entries, ty, value));
-            }
-            let entries = match fields.get_ref("entries") {
-                Some(Value::Nominal { value, .. }) => Some(value.as_ref()),
-                value => value,
-            };
-            let Some(Value::List(entries)) = entries else {
-                return Err("JSON Object's checked Map has no entries list".into());
-            };
-            entries
-                .iter()
-                .map(|entry| {
-                    let Value::Tuple(pair) = entry else {
-                        return None;
-                    };
-                    let [key, value] = pair.as_slice() else {
-                        return None;
-                    };
-                    json_entry(key, value)
-                })
+            let entries = crate::value::source_map::entries(value.as_ref())?
+                .into_iter()
+                .map(|(key, value)| json_entry(key, value))
                 .collect::<Option<Vec<_>>>()
-                .map(|entries| super::JsonObject::from_source(entries, ty, value))
-                .ok_or_else(invalid_entry)
+                .ok_or_else(invalid_entry)?;
+            Ok(super::JsonObject::from_source(entries, ty, value))
         }
         value => Err(format!(
             "JSON Object requires Map, received {}",

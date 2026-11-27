@@ -175,7 +175,14 @@ impl<'a> EvalContext<'a> {
                             "JSON pattern has no canonical checked JsonValue identity",
                         ));
                     }
-                    let (name, fields) = crate::value::json::project(value, self.checked);
+                    let (name, fields) =
+                        crate::value::json::project(value, self.checked).map_err(|reason| {
+                            ExecutionFault::new(
+                                AnalysisDiagnosticCode::MissingCheckedFact,
+                                span,
+                                reason,
+                            )
+                        })?;
                     if name != expected_name || args.len() != fields.len() {
                         return Ok(false);
                     }

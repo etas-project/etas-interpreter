@@ -1,5 +1,6 @@
 //! Borrow the live source Map entries in insertion order at runtime boundaries.
-use super::{InterpValue, RecordValue};
+use super::{InterpValue, NumericValue, RecordValue};
+use etas_types::{Type, TypeId, TypeStore};
 
 fn payload(mut value: &InterpValue) -> &InterpValue {
     while let InterpValue::Nominal { value: inner, .. } = value {
@@ -47,4 +48,85 @@ pub(crate) fn entries(
         entries.push((key, value));
     }
     Ok(entries)
+}
+
+/// Keep host entries in insertion order. The Etas Map builds its hash index
+/// on the first mutation, using the actual key type's checked Hash method.
+pub(crate) fn from_entries(
+    store: &TypeStore,
+    ty: TypeId,
+    entries: impl ExactSizeIterator<Item = (InterpValue, InterpValue)>,
+) -> Result<InterpValue, String> {
+    let representation = etas_types::ty::applied_representation_in_store(store, ty)
+        .map_err(|error| error.to_string())?
+        .ok_or("source Map has no checked representation")?;
+    let Some(Type::Record(layout)) = store.get(representation) else {
+        return Err("source Map representation is not a record".into());
+    };
+    let field = |name| {
+        layout
+            .fields
+            .iter()
+            .find(|f| f.name == name)
+            .map(|f| f.ty)
+            .ok_or_else(|| format!("source Map has no checked {name} field"))
+    };
+    let Some(Type::Array(slot)) = store.get(field("slots")?) else {
+        return Err("source Map has no checked slot array".into());
+    };
+    let (entry, source_option) = match store.get(*slot) {
+        Some(Type::Option(entry)) => (*entry, false),
+        Some(Type::Applied { args, .. }) if args.len() == 1 => (args[0], true),
+        _ => return Err("source Map has no checked optional entry type".into()),
+    };
+    let length = entries.len();
+    let slots = entries
+        .map(|(key, value)| {
+            let entry = nominal_record(
+                entry,
+                vec![
+                    ("key".into(), key),
+                    ("value".into(), value),
+                    ("hash".into(), InterpValue::Number(NumericValue::U64(0))),
+                ],
+            );
+            if source_option {
+                InterpValue::Nominal {
+                    ty: *slot,
+                    value: InterpValue::Variant {
+                        name: "Some".into(),
+                        fields: vec![entry].into(),
+                    }
+                    .into(),
+                }
+            } else {
+                InterpValue::OptionSome(entry.into())
+            }
+        })
+        .collect::<Vec<_>>();
+    Ok(nominal_record(
+        ty,
+        vec![
+            ("buckets".into(), InterpValue::Array(Vec::new().into())),
+            ("slots".into(), InterpValue::Array(slots.into())),
+            (
+                "length".into(),
+                InterpValue::Number(NumericValue::usize(length)),
+            ),
+            (
+                "base".into(),
+                nominal_record(
+                    field("base")?,
+                    vec![("state".into(), InterpValue::Number(NumericValue::U64(0)))],
+                ),
+            ),
+        ],
+    ))
+}
+
+fn nominal_record(ty: TypeId, fields: Vec<(String, InterpValue)>) -> InterpValue {
+    InterpValue::Nominal {
+        ty,
+        value: InterpValue::Record(fields.into()).into(),
+    }
 }

@@ -67,7 +67,8 @@ impl Walk<'_> {
         {
             if json.has_source_map() {
                 // Source Map storage contains nominal IDs owned by the producing program.
-                let (variant, fields) = crate::value::json::project(json, self.source);
+                let (variant, fields) = crate::value::json::project(json, self.source)
+                    .map_err(Failure::InvalidField)?;
                 let payload = |project| {
                     crate::value::json::payload_type(project, variant)
                         .ok_or(Failure::InconsistentLayout)

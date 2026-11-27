@@ -333,26 +333,37 @@ pub(super) fn host_to_typed_interp_value_with_substitutions(
                     nominal.name
                 )
             })?;
-            let value = match value {
-                HostValue::Map(entries)
-                    if substitutions.source_map == Some(TypeId(constructor.0)) =>
-                {
-                    let length = entries.len() as u128;
-                    HostValue::Record(vec![
-                        (
-                            "entries".into(),
-                            HostValue::List(
-                                entries
-                                    .into_iter()
-                                    .map(|(key, value)| HostValue::List(vec![key, value]))
-                                    .collect(),
-                            ),
-                        ),
-                        ("length".into(), HostValue::UInt(length)),
-                    ])
-                }
-                value => value,
-            };
+            if substitutions.source_map == Some(TypeId(constructor.0))
+                && let HostValue::Map(entries) = value
+            {
+                let [key_ty, value_ty] = args.as_slice() else {
+                    return Err("source Map requires key and value types".into());
+                };
+                let entries = entries
+                    .into_iter()
+                    .map(|(key, value)| {
+                        Ok((
+                            host_to_typed_interp_value_with_substitutions(
+                                key,
+                                *key_ty,
+                                store,
+                                substitutions,
+                            )?,
+                            host_to_typed_interp_value_with_substitutions(
+                                value,
+                                *value_ty,
+                                store,
+                                substitutions,
+                            )?,
+                        ))
+                    })
+                    .collect::<Result<Vec<_>, String>>()?;
+                return crate::value::source_map::from_entries(
+                    store,
+                    concrete_type,
+                    entries.into_iter(),
+                );
+            }
             host_to_typed_interp_value_with_substitutions(
                 value,
                 representation,
