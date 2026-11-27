@@ -250,8 +250,9 @@ impl<'a> EvalContext<'a> {
         frame: &mut Frame,
     ) -> ControlSignal {
         if let Some(base) = record.base {
-            return compose_signal_continuation(
-                self.eval_expr(base, frame),
+            let base = self.eval_expr(base, frame);
+            return self.continue_chain_signal(
+                base,
                 Continuation::RecordField {
                     expr,
                     nominal_type: None,

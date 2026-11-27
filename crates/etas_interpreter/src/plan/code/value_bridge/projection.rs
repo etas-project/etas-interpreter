@@ -25,12 +25,13 @@ pub(super) fn workspace_path_region(program: &CheckedProject, ty: TypeId) -> Res
     Ok(&region.name)
 }
 
-#[derive(Default)]
+#[derive(Default, Debug)]
 pub(crate) struct CheckedValueTypes {
     representations: HashMap<TypeId, TypeId>,
     variants: HashMap<TypeId, HashMap<String, Variant>>,
 }
 
+#[derive(Debug)]
 pub(crate) struct Variant {
     pub fields: Vec<TypeId>,
     pub names: Option<Vec<String>>,
@@ -42,12 +43,28 @@ impl CheckedValueTypes {
         program: &CheckedProject,
         ty: TypeId,
     ) -> Result<TypeId, Failure> {
+        self.representation_with_lookup(program, None, ty)
+    }
+
+    pub(super) fn representation_with_lookup(
+        &mut self,
+        program: &CheckedProject,
+        lookup: Option<&etas_types::ty::TypeLookupIndex>,
+        ty: TypeId,
+    ) -> Result<TypeId, Failure> {
         if let Some(representation) = self.representations.get(&ty) {
             return Ok(*representation);
         }
-        let representation = applied_representation_in_store(&program.type_store, ty)
-            .map_err(|reason| Failure::UnmaterializedType(reason.to_string()))?
-            .ok_or(Failure::MissingRepresentation)?;
+        let representation = match lookup {
+            Some(index) => etas_types::ty::applied_representation_in_store_indexed(
+                &program.type_store,
+                index,
+                ty,
+            ),
+            None => applied_representation_in_store(&program.type_store, ty),
+        }
+        .map_err(|reason| Failure::UnmaterializedType(reason.to_string()))?
+        .ok_or(Failure::MissingRepresentation)?;
         self.representations.insert(ty, representation);
         Ok(representation)
     }

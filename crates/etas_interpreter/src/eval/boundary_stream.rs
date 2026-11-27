@@ -60,7 +60,11 @@ impl<'a> EvalContext<'a> {
             Some(owner) => ("Some", vec![owner]),
             None => ("None", vec![]),
         };
-        match crate::value::enum_value::construct(*owner_option, variant, fields, self.checked) {
+        match self
+            .plan
+            .prepared_program()
+            .construct_enum(*owner_option, variant, fields)
+        {
             Ok(owner) => ControlSignal::Value(InterpValue::Tuple(vec![scoped, owner].into())),
             Err(reason) => fail(&reason),
         }

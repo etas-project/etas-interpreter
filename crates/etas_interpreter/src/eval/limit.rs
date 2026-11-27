@@ -255,9 +255,12 @@ impl<'a> EvalContext<'a> {
         span: Span,
     ) -> Result<RuntimeLimit, ExecutionFault> {
         let (name, fields) = if self.checked.hir.source_standard_types {
-            crate::value::enum_value::payload(value, expected, self.checked).map_err(|reason| {
-                ExecutionFault::new(AnalysisDiagnosticCode::InvalidArguments, span, reason)
-            })?
+            self.plan
+                .prepared_program()
+                .enum_payload(value, expected)
+                .map_err(|reason| {
+                    ExecutionFault::new(AnalysisDiagnosticCode::InvalidArguments, span, reason)
+                })?
         } else {
             let InterpValue::Nominal { ty, value } = value else {
                 return Err(invalid_limit(&span, "limit has no checked owner identity"));

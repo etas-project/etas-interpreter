@@ -487,15 +487,20 @@ impl EvalMachine {
                         EvalFrame::ProgramReturn(frame) => {
                             return self.return_program(ctx, *frame, value);
                         }
-                        EvalFrame::Block(frame) => ctx
-                            .continue_chain_signal(ControlSignal::Value(value), frame.continuation),
-                        EvalFrame::Call(frame) => ctx.apply_continuation(frame.continuation, value),
-                        EvalFrame::Continuation(frame) => {
-                            ctx.apply_continuation(frame.continuation, value)
+                        EvalFrame::Block(frame) => {
+                            self.continue_value(ctx, frame.continuation, value)
                         }
-                        EvalFrame::Expr(frame) => ctx.apply_continuation(frame.continuation, value),
+                        EvalFrame::Call(frame) => {
+                            self.continue_value(ctx, frame.continuation, value)
+                        }
+                        EvalFrame::Continuation(frame) => {
+                            self.continue_value(ctx, frame.continuation, value)
+                        }
+                        EvalFrame::Expr(frame) => {
+                            self.continue_value(ctx, frame.continuation, value)
+                        }
                         frame @ (EvalFrame::Handler(_) | EvalFrame::Retry(_)) => {
-                            ctx.apply_continuation(local_continuation!(frame, step_span), value)
+                            self.continue_value(ctx, local_continuation!(frame, step_span), value)
                         }
                         EvalFrame::ModelRequest(frame) => {
                             return machine_fault("model request received an evaluator value without a model/tool response".to_owned(), frame.pending.span);
@@ -838,8 +843,34 @@ impl EvalMachine {
         }
     }
 
+    // Apply a popped leaf in this machine turn. Resume and tool entries change
+    // the machine or program, so they still go through the Apply dispatch.
+    fn continue_value(
+        &self,
+        ctx: &mut EvalContext<'_>,
+        continuation: Continuation,
+        value: crate::value::InterpValue,
+    ) -> ControlSignal {
+        if ctx.can_inline_step()
+            && !matches!(
+                continuation,
+                Continuation::Chain { .. }
+                    | Continuation::TaskResume(_)
+                    | Continuation::ProgramResume(_)
+                    | Continuation::ToolInvocationStart(_)
+            )
+        {
+            return ctx.apply_continuation_frame(continuation, value);
+        }
+        ctx.apply_continuation(continuation, value)
+    }
+
     pub(super) fn push_continuation_frames(&mut self, continuation: Continuation) {
         if matches!(continuation, Continuation::BlockValue) {
+            return;
+        }
+        if !matches!(continuation, Continuation::Chain { .. }) {
+            self.push_frame(EvalFrame::from_continuation(continuation));
             return;
         }
         visit_continuation_stack_order(continuation, |continuation| {

@@ -200,7 +200,7 @@ impl EvalContext<'_> {
                                 );
                             }
                         };
-                        match crate::value::enum_value::payload(&value, output, self.checked) {
+                        match self.plan.prepared_program().enum_payload(&value, output) {
                             Ok(("Some", [value])) => value.clone(),
                             Ok(("None", [])) => {
                                 return self.storage_transfer_error(
@@ -369,14 +369,16 @@ impl StorageTransfer {
         name: &str,
         fields: Vec<InterpValue>,
     ) -> TransferResult<InterpValue> {
-        crate::value::enum_value::construct(self.data, name, fields, ctx.checked)
+        ctx.plan
+            .prepared_program()
+            .construct_enum(self.data, name, fields)
     }
     fn read(
         &self,
         ctx: &EvalContext<'_>,
         value: &InterpValue,
     ) -> TransferResult<(String, Vec<InterpValue>)> {
-        let (name, values) = crate::value::enum_value::payload(value, self.data, ctx.checked)?;
+        let (name, values) = ctx.plan.prepared_program().enum_payload(value, self.data)?;
         Ok((name.into(), values.to_vec()))
     }
     fn identity(&self, id: Id) -> String {
@@ -511,8 +513,7 @@ impl StorageTransfer {
                 );
             }
             K::Enum(variants) => {
-                let (name, values) =
-                    crate::value::enum_value::payload(&value, node.ty, ctx.checked)?;
+                let (name, values) = ctx.plan.prepared_program().enum_payload(&value, node.ty)?;
                 let variant = variants
                     .iter()
                     .find(|variant| variant.name == name)
@@ -884,7 +885,9 @@ impl StorageTransfer {
                     fields[position] = value;
                 }
                 if let Some(ty) = ty {
-                    crate::value::enum_value::construct(ty, &name, fields, ctx.checked)?
+                    ctx.plan
+                        .prepared_program()
+                        .construct_enum(ty, &name, fields)?
                 } else {
                     InterpValue::Variant {
                         name: name.into(),

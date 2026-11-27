@@ -64,7 +64,11 @@ impl EvalContext<'_> {
             Some(value) => ("Some", vec![value]),
             None => ("None", Vec::new()),
         };
-        match crate::value::enum_value::construct(output, name, fields, self.checked) {
+        match self
+            .plan
+            .prepared_program()
+            .construct_enum(output, name, fields)
+        {
             Ok(value) => ControlSignal::Value(value),
             Err(reason) => ControlSignal::missing_checked_fact(reason, span),
         }

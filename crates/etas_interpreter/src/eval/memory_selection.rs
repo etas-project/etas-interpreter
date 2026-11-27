@@ -15,7 +15,10 @@ impl<'a> EvalContext<'a> {
             )
         };
         let ty = self.runtime_type(etas_std::RuntimeTypeRole::Limit, span)?;
-        let (name, fields) = crate::value::enum_value::payload(value, ty, self.checked)
+        let (name, fields) = self
+            .plan
+            .prepared_program()
+            .enum_payload(value, ty)
             .map_err(|reason| invalid(&reason))?;
         if !matches!(name, "Iterations" | "Tokens" | "ContextTokens" | "Attempts") {
             return Err(invalid("memory selection limit requires a count limit"));

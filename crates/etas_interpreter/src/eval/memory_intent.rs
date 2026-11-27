@@ -124,7 +124,7 @@ impl EvalContext<'_> {
         value: &InterpValue,
         ty: etas_types::TypeId,
     ) -> Result<WriteCondition, String> {
-        let (name, fields) = crate::value::enum_value::payload(value, ty, self.checked)?;
+        let (name, fields) = self.plan.prepared_program().enum_payload(value, ty)?;
         match (name, fields) {
             ("Any", []) => Ok(WriteCondition::Any),
             ("Missing", []) => Ok(WriteCondition::Missing),

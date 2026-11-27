@@ -39,13 +39,22 @@ pub struct InterpreterPlan {
     pub diagnostics: Vec<Diagnostic>,
 }
 
+#[derive(Debug, Clone, Copy)]
+pub(crate) enum ExpressionRoute {
+    Literal,
+    Local(etas_hir::SymbolId),
+    ToolReference,
+}
+
 /// Checked program-wide data has no executable root or invocation authority.
 #[derive(Debug)]
 pub(crate) struct PreparedProgram {
     // Each checked program owns its type IDs. Keep only the last application per
     // source type, including the full type and effect environment in the key.
     pub(super) materializations: Mutex<HashMap<TypeId, (GenericBindings, TypeId)>>,
+    pub(super) enum_layouts: Mutex<super::code::CheckedValueTypes>,
     pub(super) sequence_layouts: Mutex<HashSet<TypeId>>,
+    pub(crate) expression_routes: HashMap<etas_hir::HirExprId, ExpressionRoute>,
     pub(crate) numeric_literals: super::arithmetic::NumericLiterals,
     pub(crate) arithmetic:
         std::collections::HashMap<etas_hir::HirItemId, super::arithmetic::ArithmeticBody>,
@@ -67,6 +76,34 @@ pub(crate) struct PreparedProgram {
 }
 
 impl PreparedProgram {
+    pub(crate) fn construct_enum(
+        &self,
+        ty: TypeId,
+        name: &str,
+        fields: Vec<crate::value::InterpValue>,
+    ) -> Result<crate::value::InterpValue, String> {
+        crate::value::enum_value::construct_with_layouts(
+            ty,
+            name,
+            fields,
+            &self.program,
+            &mut self.enum_layouts.lock().unwrap(),
+        )
+    }
+
+    pub(crate) fn enum_payload<'a>(
+        &self,
+        value: &'a crate::value::InterpValue,
+        owner: TypeId,
+    ) -> Result<(&'a str, &'a [crate::value::InterpValue]), String> {
+        crate::value::enum_value::payload_with_layouts(
+            value,
+            owner,
+            &self.program,
+            &mut self.enum_layouts.lock().unwrap(),
+        )
+    }
+
     pub(crate) fn materialized_type(
         &self,
         ty: TypeId,

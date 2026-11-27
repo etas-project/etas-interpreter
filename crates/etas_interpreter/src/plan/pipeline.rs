@@ -148,8 +148,10 @@ pub(super) fn prepare_program_with_layouts(
     };
     let numeric_literals = super::arithmetic::numeric_literals(project);
     Ok(Arc::new(PreparedProgram {
+        expression_routes: expression_routes(project),
         materializations: Default::default(),
         sequence_layouts: Default::default(),
+        enum_layouts: Default::default(),
         arithmetic: super::arithmetic::prepare(project, &numeric_literals),
         numeric_literals,
         standard_library: super::standard_library::StandardLibraryProgram::prepare(project)
@@ -174,6 +176,49 @@ pub(super) fn prepare_program_with_layouts(
         residual: Arc::new(residual),
         diagnostics: context.diagnostics,
     }))
+}
+
+fn expression_routes(
+    project: &CheckedProject,
+) -> std::collections::HashMap<etas_hir::HirExprId, super::types::ExpressionRoute> {
+    use super::types::ExpressionRoute;
+    use etas_hir::{HirExpr, ResolveResult, SymbolDef};
+    project
+        .hir
+        .exprs
+        .iter()
+        .filter_map(|(id, expr)| {
+            let route = if project
+                .types
+                .std_intrinsic_calls
+                .get(&id)
+                .is_some_and(|call| call.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
+                || etas_types::source_execution::call_target(&project.hir, &project.types, id)
+                    == Some(etas_std::StdExecutionRole::ToolReference)
+            {
+                ExpressionRoute::ToolReference
+            } else if project.types.existential_packs.contains_key(&id) {
+                return None;
+            } else {
+                match expr {
+                    HirExpr::Literal(_) => ExpressionRoute::Literal,
+                    HirExpr::Path(path) if !project.types.bound_method_values.contains_key(&id) => {
+                        let ResolveResult::Resolved(symbol) = path.resolution else {
+                            return None;
+                        };
+                        match project.hir.symbols.get(symbol)?.def {
+                            SymbolDef::Param { .. }
+                            | SymbolDef::Local { .. }
+                            | SymbolDef::PatternBinding { .. } => ExpressionRoute::Local(symbol),
+                            _ => return None,
+                        }
+                    }
+                    _ => return None,
+                }
+            };
+            Some((id, route))
+        })
+        .collect()
 }
 
 impl PreparedProgram {

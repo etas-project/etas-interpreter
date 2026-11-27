@@ -53,7 +53,7 @@ impl EvalContext<'_> {
                     Ok(step) => step,
                     Err(fault) => return ControlSignal::Fault(Box::new(fault)),
                 };
-                match crate::value::enum_value::payload(&value, step, self.checked) {
+                match self.plan.prepared_program().enum_payload(&value, step) {
                     Ok(("None", [])) => {
                         frame.cleanup_to(&state.loop_scope);
                         return ControlSignal::Value(InterpValue::Unit);

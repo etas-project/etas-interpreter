@@ -545,8 +545,20 @@ impl Walk<'_> {
                 if ty != from {
                     return Err(Failure::WrongNominalIdentity { actual: ty });
                 }
-                let left = self.source_types.representation(self.source, from)?;
-                let right = self.target_types.representation(self.target, to)?;
+                let left = self.source_types.representation_with_lookup(
+                    self.source,
+                    self.revision
+                        .as_ref()
+                        .and_then(|edge| edge.type_lookup(self.source)),
+                    from,
+                )?;
+                let right = self.target_types.representation_with_lookup(
+                    self.target,
+                    self.revision
+                        .as_ref()
+                        .and_then(|edge| edge.type_lookup(self.target)),
+                    to,
+                )?;
                 self.children(
                     from,
                     to,

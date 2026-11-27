@@ -452,6 +452,16 @@ impl<'a> EvalContext<'a> {
         }
     }
 
+    fn can_inline_step(&self) -> bool {
+        self.execution_limits.max_steps.is_none()
+            && self.runtime.safe_points.within_quantum()
+            && self
+                .task
+                .cancellation
+                .as_ref()
+                .is_ok_and(|signal| !signal.is_cancelled())
+    }
+
     pub(crate) fn consume_execution_step(
         &mut self,
         _span: Span,

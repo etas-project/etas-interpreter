@@ -13,6 +13,9 @@ thread_local! {
 pub struct ListValue {
     head: Link,
     len: usize,
+    // Conservative after element mutation or removal. Scalar-only persistent
+    // tails can be captured without walking the same suffix at every iteration.
+    may_contain_frames: bool,
 }
 
 #[derive(Clone, Default)]
@@ -67,6 +70,10 @@ impl ListValue {
         list
     }
 
+    pub(super) fn may_contain_frames(&self) -> bool {
+        self.may_contain_frames && !self.is_empty()
+    }
+
     pub fn len(&self) -> usize {
         self.len
     }
@@ -90,6 +97,7 @@ impl ListValue {
         if index >= self.len {
             return None;
         }
+        self.may_contain_frames = true;
         let mut link = &mut self.head;
         for _ in 0..index {
             link = &mut Rc::make_mut(link.0.as_mut()?).next;
@@ -98,6 +106,7 @@ impl ListValue {
     }
 
     pub fn push_front(&mut self, value: InterpValue) {
+        self.may_contain_frames |= !super::graph::plain_capture_value(&value);
         self.head = Link(Some(Rc::new(Node {
             value,
             next: std::mem::take(&mut self.head),
@@ -117,6 +126,7 @@ impl ListValue {
         if other.is_empty() {
             return;
         }
+        self.may_contain_frames |= other.may_contain_frames;
         let mut link = &mut self.head;
         while let Some(ref mut node) = link.0 {
             link = &mut Rc::make_mut(node).next;

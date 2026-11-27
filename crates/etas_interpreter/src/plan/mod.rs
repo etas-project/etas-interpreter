@@ -21,6 +21,7 @@ mod resources;
 mod slots;
 mod standard_library;
 mod types;
+pub(crate) use types::ExpressionRoute;
 mod validate;
 mod variants;
 

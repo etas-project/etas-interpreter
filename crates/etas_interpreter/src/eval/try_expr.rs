@@ -169,7 +169,11 @@ impl<'a> EvalContext<'a> {
                 fields: vec![value].into(),
             });
         }
-        match crate::value::enum_value::construct(result_type, name, vec![value], self.checked) {
+        match self
+            .plan
+            .prepared_program()
+            .construct_enum(result_type, name, vec![value])
+        {
             Ok(value) => ControlSignal::Value(value),
             Err(message) => ControlSignal::missing_checked_fact(message, span),
         }

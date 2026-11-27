@@ -4,8 +4,8 @@ use std::sync::Arc;
 use etas_builtin::PureIntrinsicRegistry;
 use etas_frontend::{CheckedCallableRoot, CheckedProject};
 use etas_hir::{
-    ExprView, HirExpr, HirExprId, HirTreeView, HirVisitor, ResolveResult, SymbolDef, SymbolId,
-    walk_expr_tree, walk_item,
+    ExprView, HirExpr, HirExprId, HirVisitor, ResolveResult, SymbolDef, SymbolId, walk_expr_tree,
+    walk_item,
 };
 use etas_std::{IntrinsicDispatch, StdIntrinsicId};
 use etas_utils::{Pass, PassContext, PassManager, PassResult};
@@ -622,8 +622,7 @@ fn collect_reachable_intrinsics(
     std_intrinsics: &HashMap<SymbolId, StdIntrinsicIdentity>,
     std_methods: &HashMap<HirExprId, CheckedStdIntrinsicCall>,
 ) -> Result<(HashSet<StdIntrinsicId>, bool), String> {
-    let view = HirTreeView::try_new(&project.hir)
-        .map_err(|error| format!("cannot index checked HIR for intrinsic reachability: {error}"))?;
+    let view = project.hir.view();
     let mut visitor = ReachableIntrinsicVisitor {
         std_intrinsics,
         std_methods,

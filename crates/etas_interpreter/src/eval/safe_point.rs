@@ -72,6 +72,10 @@ impl ExecutionSafePointScheduler {
         self.local_steps
     }
 
+    pub(super) fn within_quantum(&self) -> bool {
+        self.quantum_work < WORK_QUANTUM
+    }
+
     pub(super) fn observe(
         &mut self,
         cancellation: &CancelSignal,

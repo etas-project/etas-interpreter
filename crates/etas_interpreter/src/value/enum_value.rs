@@ -10,7 +10,16 @@ pub(crate) fn construct(
     fields: Vec<InterpValue>,
     checked: &CheckedProject,
 ) -> Result<InterpValue, String> {
-    let mut layouts = crate::plan::code::CheckedValueTypes::default();
+    construct_with_layouts(ty, name, fields, checked, &mut Default::default())
+}
+
+pub(crate) fn construct_with_layouts(
+    ty: TypeId,
+    name: &str,
+    fields: Vec<InterpValue>,
+    checked: &CheckedProject,
+    layouts: &mut crate::plan::code::CheckedValueTypes,
+) -> Result<InterpValue, String> {
     let variant = layouts
         .variant(checked, ty, name)
         .map_err(|error| format!("enum constructor has no checked layout: {error:?}"))?;
@@ -33,6 +42,15 @@ pub(crate) fn payload<'a>(
     expected: TypeId,
     checked: &CheckedProject,
 ) -> Result<(&'a str, &'a [InterpValue]), String> {
+    payload_with_layouts(value, expected, checked, &mut Default::default())
+}
+
+pub(crate) fn payload_with_layouts<'a>(
+    value: &'a InterpValue,
+    expected: TypeId,
+    checked: &CheckedProject,
+    layouts: &mut crate::plan::code::CheckedValueTypes,
+) -> Result<(&'a str, &'a [InterpValue]), String> {
     let InterpValue::Nominal { ty, value } = value else {
         return Err("enum value is missing its checked owner identity".into());
     };
@@ -42,7 +60,6 @@ pub(crate) fn payload<'a>(
     let InterpValue::Variant { name, fields } = value.as_ref() else {
         return Err("checked enum envelope has no constructor payload".into());
     };
-    let mut layouts = crate::plan::code::CheckedValueTypes::default();
     let variant = layouts
         .variant(checked, expected, name)
         .map_err(|error| format!("enum value has no checked constructor layout: {error:?}"))?;

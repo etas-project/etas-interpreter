@@ -79,11 +79,14 @@ impl EvalContext<'_> {
             }
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        let (name, fields) =
-            match crate::value::enum_value::payload(&value, proof.output, self.checked) {
-                Ok(payload) => payload,
-                Err(reason) => return ControlSignal::missing_checked_fact(reason, state.span),
-            };
+        let (name, fields) = match self
+            .plan
+            .prepared_program()
+            .enum_payload(&value, proof.output)
+        {
+            Ok(payload) => payload,
+            Err(reason) => return ControlSignal::missing_checked_fact(reason, state.span),
+        };
         match (name, fields) {
             ("Eof", []) => ControlSignal::Value(InterpValue::Bytes(state.body)),
             ("Data", [InterpValue::Bytes(chunk)]) => {

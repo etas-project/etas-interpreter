@@ -2,6 +2,42 @@ use super::*;
 
 impl<'a> EvalContext<'a> {
     pub(super) fn eval_expr(&mut self, expr: HirExprId, frame: &mut Frame) -> ControlSignal {
+        use crate::plan::ExpressionRoute;
+        if let Some(route) = self
+            .plan
+            .prepared_program()
+            .expression_routes
+            .get(&expr)
+            .copied()
+            && self.can_inline_step()
+        {
+            match route {
+                ExpressionRoute::Literal => {
+                    let HirExpr::Literal(literal) = &self.checked.hir.exprs[expr] else {
+                        unreachable!()
+                    };
+                    let span = self.limit_span;
+                    return match self
+                        .consume_execution_step(span)
+                        .and_then(|()| self.eval_literal(expr, literal, Some(frame)))
+                    {
+                        Ok(value) => ControlSignal::Value(value),
+                        Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                    };
+                }
+                ExpressionRoute::Local(symbol) if !frame.receiver_is_held(symbol) => {
+                    if let Some(value) = frame.get(symbol)
+                        && !matches!(value, InterpValue::Callable(_))
+                    {
+                        return match self.consume_execution_step(self.limit_span) {
+                            Ok(()) => ControlSignal::Value(value),
+                            Err(fault) => ControlSignal::Fault(Box::new(fault)),
+                        };
+                    }
+                }
+                _ => {}
+            }
+        }
         ControlSignal::pending_expr(PendingExpr {
             expr,
             frame: frame.clone(),
@@ -14,18 +50,10 @@ impl<'a> EvalContext<'a> {
         if let Err(fault) = self.consume_execution_step(span) {
             return ControlSignal::Fault(Box::new(fault));
         }
-        if self
-            .checked
-            .types
-            .std_intrinsic_calls
-            .get(&expr)
-            .is_some_and(|fact| fact.intrinsic == etas_std::intrinsic::runtime::TOOL_REFERENCE)
-            || etas_types::source_execution::call_target(
-                &self.checked.hir,
-                &self.checked.types,
-                expr,
-            ) == Some(etas_std::StdExecutionRole::ToolReference)
-        {
+        if matches!(
+            self.plan.prepared_program().expression_routes.get(&expr),
+            Some(crate::plan::ExpressionRoute::ToolReference)
+        ) {
             return self.eval_tool_reference(expr, span);
         }
         match &self.checked.hir.exprs[expr] {

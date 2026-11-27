@@ -298,6 +298,19 @@ impl RevisionTypeBridge {
     ) -> Option<&std::sync::Arc<etas_frontend::StandardLibrary>> {
         self.standard_library.as_ref()
     }
+    pub(super) fn type_lookup(
+        &self,
+        program: &CheckedProgram,
+    ) -> Option<&etas_types::ty::TypeLookupIndex> {
+        if std::sync::Arc::ptr_eq(program, &self.original) {
+            Some(&self.runtime_types.backward.target_types)
+        } else if std::sync::Arc::ptr_eq(program, &self.candidate) {
+            Some(&self.runtime_types.forward.target_types)
+        } else {
+            None
+        }
+    }
+
     pub fn candidate_program(&self) -> &CheckedProgram {
         &self.candidate
     }

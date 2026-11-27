@@ -72,6 +72,14 @@ impl RevisionProjection {
             Self::Candidate(bridge) | Self::Original(bridge) => bridge.standard_library_owner(),
         }
     }
+    pub(super) fn type_lookup(
+        &self,
+        program: &CheckedProgram,
+    ) -> Option<&etas_types::ty::TypeLookupIndex> {
+        match self {
+            Self::Candidate(bridge) | Self::Original(bridge) => bridge.type_lookup(program),
+        }
+    }
     pub(crate) fn source(&self) -> &CheckedProgram {
         match self {
             Self::Candidate(bridge) => bridge.original_program(),

@@ -575,6 +575,11 @@ impl<'a> EvalContext<'a> {
         continuation: Continuation,
         value: InterpValue,
     ) -> ControlSignal {
+        if self.execution_limits.max_steps.is_none()
+            && matches!(continuation, Continuation::BlockValue)
+        {
+            return ControlSignal::Value(value);
+        }
         self.apply_continuation_input(continuation, ContinuationInput::Value(value))
     }
 

@@ -17,7 +17,7 @@ pub(super) struct RuntimeTypeBridge {
 
 pub(super) struct Direction {
     correspondence: NativeTypeCorrespondence,
-    target_types: TypeLookupIndex,
+    pub(super) target_types: TypeLookupIndex,
     checked_types: HashMap<TypeId, Option<TypeId>>,
     relocation_types: HashMap<TypeId, TypeId>,
     scoped_types: BTreeMap<(etas_code::descriptor::GenericOwner, TypeId), Option<TypeId>>,

@@ -1,6 +1,6 @@
 use std::{
     collections::{BTreeMap, BTreeSet},
-    sync::Arc,
+    sync::{Arc, OnceLock},
 };
 
 use etas_frontend::{
@@ -31,6 +31,7 @@ pub(crate) struct StandardLibraryProgram {
 
 #[derive(Debug)]
 struct LibraryCallable {
+    plan: OnceLock<Result<Arc<super::InterpreterPlan>, String>>,
     item: HirItemId,
     ty: TypeId,
 }
@@ -203,7 +204,14 @@ impl StandardLibraryProgram {
             let ty = library_lookup
                 .get(&library.type_store, &Type::Function(flow))
                 .ok_or_else(|| format!("std artifact {id:?} has no checked function type"))?;
-            callables.insert(identity, LibraryCallable { item, ty });
+            callables.insert(
+                identity,
+                LibraryCallable {
+                    item,
+                    ty,
+                    plan: OnceLock::new(),
+                },
+            );
         }
         let value_keys = standard
             .origins
@@ -300,13 +308,18 @@ impl StandardLibraryProgram {
             .get(identity)
             .ok_or("std artifact is missing a checked body binding")?;
         let checked = self.prepared.checked();
-        let plan = self
-            .prepared
-            .select_callable(etas_frontend::CheckedCallableRoot::Item(binding.item))
-            .map_err(|e| format!("std body has no execution plan: {e:?}"))?;
+        let plan = binding
+            .plan
+            .get_or_init(|| {
+                self.prepared
+                    .select_callable(etas_frontend::CheckedCallableRoot::Item(binding.item))
+                    .map(Arc::new)
+                    .map_err(|e| format!("std body has no execution plan: {e:?}"))
+            })
+            .clone()?;
         let execution = CheckedExecutionProgram {
             checked: checked.clone(),
-            plan: Arc::new(plan),
+            plan,
             definitions: None,
             revision: None,
             foreign: None,
