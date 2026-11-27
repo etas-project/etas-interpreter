@@ -205,7 +205,7 @@ impl EvalMachine {
             }
             if let EvalFrame::Handler(handler) = frame {
                 if inherited.iter().any(|record| record.id == handler.scope_id) {
-                    sites.push((index, scope.clone(), handler.clone()));
+                    sites.push((index, scope.clone(), active_handler(ctx, handler)));
                 }
             }
         }
@@ -360,7 +360,7 @@ impl EvalMachine {
                 EvalFrame::ProgramReturn(_) => scope = Some(&scopes[&index]),
                 EvalFrame::Handler(handler) => sites.push((
                     scope.map_or(&root, |s| &s.program).clone(),
-                    handler.clone(),
+                    active_handler(ctx, handler),
                     false,
                 )),
                 _ => {}
@@ -479,6 +479,25 @@ impl EvalMachine {
                 span: saved.span,
             },
         )))
+    }
+}
+
+// A frame may have been captured while its arm was masked. The task record
+// owns the currently enabled arms, including those restored by resume.
+fn active_handler(
+    ctx: &EvalContext<'_>,
+    frame: &super::frame::HandlerFrame,
+) -> super::frame::HandlerFrame {
+    let record = ctx
+        .task
+        .handler_stack
+        .iter()
+        .rev()
+        .find(|record| record.id == frame.scope_id)
+        .expect("active handler frame has a dynamic record");
+    super::frame::HandlerFrame {
+        handlers: record.handlers.clone(),
+        ..frame.clone()
     }
 }
 
