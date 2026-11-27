@@ -14,6 +14,9 @@ impl EvalContext<'_> {
             );
         };
         let signal = self.eval_expr(fact.prompt, frame);
+        if let ControlSignal::Value(prompt) = signal {
+            return self.perform_agent_inference(expr, prompt, span);
+        }
         compose_signal_continuation(
             signal,
             Continuation::AgentInference {

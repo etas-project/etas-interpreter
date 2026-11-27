@@ -351,7 +351,8 @@ async fn inference_output_type_is_inferred_from_ordinary_expected_type() {
         r#"
 module app.main;
 agent Counter() -> i32 {
-    let value: i32 = perform infer(Prompt.new().user(Public("number")));
+    let prompt = Prompt.new().user(Public("number"));
+    let value: i32 = perform infer(prompt);
     return value + 1;
 }
 flow main() -> i32 { return Counter(); }
