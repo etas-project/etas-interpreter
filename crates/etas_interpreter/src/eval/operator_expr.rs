@@ -259,6 +259,13 @@ impl<'a> EvalContext<'a> {
                 "division",
                 NumericValue::checked_div,
             ),
+            HirBinaryOp::BitXor => self.eval_numeric_arithmetic_value(
+                left,
+                right,
+                span,
+                "bitwise XOR",
+                NumericValue::bit_xor,
+            ),
             HirBinaryOp::Rem => self.eval_numeric_arithmetic_value(
                 left,
                 right,

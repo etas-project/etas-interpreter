@@ -335,6 +335,10 @@ impl NumericValue {
         self.checked_binary(rhs, IntegerOp::Div)
     }
 
+    pub fn bit_xor(self, rhs: Self) -> Result<Self, NumericError> {
+        self.checked_binary(rhs, IntegerOp::BitXor)
+    }
+
     pub fn checked_rem(self, rhs: Self) -> Result<Self, NumericError> {
         self.checked_binary(rhs, IntegerOp::Rem)
     }
@@ -394,6 +398,7 @@ impl NumericValue {
                     IntegerOp::Div => $lhs.checked_div($rhs),
                     IntegerOp::Rem if $rhs == 0 => return Err(NumericError::DivisionByZero),
                     IntegerOp::Rem => $lhs.checked_rem($rhs),
+                    IntegerOp::BitXor => Some($lhs ^ $rhs),
                 };
                 value.map(Self::$variant).ok_or(NumericError::Overflow)
             }};
@@ -420,6 +425,7 @@ impl NumericValue {
                         IntegerOp::Mul => lhs * rhs,
                         IntegerOp::Div => lhs / rhs,
                         IntegerOp::Rem => lhs % rhs,
+                        IntegerOp::BitXor => return Err(NumericError::TypeMismatch),
                     }
                     .to_bits(),
                 ))
@@ -433,6 +439,7 @@ impl NumericValue {
                         IntegerOp::Mul => lhs * rhs,
                         IntegerOp::Div => lhs / rhs,
                         IntegerOp::Rem => lhs % rhs,
+                        IntegerOp::BitXor => return Err(NumericError::TypeMismatch),
                     }
                     .to_bits(),
                 ))
@@ -444,6 +451,7 @@ impl NumericValue {
 
 #[derive(Clone, Copy)]
 enum IntegerOp {
+    BitXor,
     Add,
     Sub,
     Mul,

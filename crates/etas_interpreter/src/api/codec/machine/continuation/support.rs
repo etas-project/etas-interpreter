@@ -358,6 +358,7 @@ pub(super) fn binary_op_name(op: etas_hir::HirBinaryOp) -> &'static str {
         etas_hir::HirBinaryOp::Mul => "mul",
         etas_hir::HirBinaryOp::Div => "div",
         etas_hir::HirBinaryOp::Rem => "rem",
+        etas_hir::HirBinaryOp::BitXor => "bit_xor",
         etas_hir::HirBinaryOp::AndAnd => "and",
         etas_hir::HirBinaryOp::OrOr => "or",
     }
@@ -376,6 +377,7 @@ pub(super) fn binary_op_from_name(name: &str) -> Result<etas_hir::HirBinaryOp, S
         "mul" => Ok(etas_hir::HirBinaryOp::Mul),
         "div" => Ok(etas_hir::HirBinaryOp::Div),
         "rem" => Ok(etas_hir::HirBinaryOp::Rem),
+        "bit_xor" => Ok(etas_hir::HirBinaryOp::BitXor),
         "and" => Ok(etas_hir::HirBinaryOp::AndAnd),
         "or" => Ok(etas_hir::HirBinaryOp::OrOr),
         _ => Err(format!("unknown machine binary operator `{name}`")),

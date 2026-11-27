@@ -15,6 +15,8 @@ flow main() -> bool {
   return signed > 0
     && unsigned > 0
     && wide > 0
+    && unsigned ^ 0 == unsigned
+    && signed ^ -1 == -signed - 1
     && small + 2.25 == 3.75
     && precise / -2.0 == 2.0;
 }
