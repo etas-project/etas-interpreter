@@ -156,7 +156,6 @@ use etas_host::{
 };
 
 pub(crate) struct EvalContext<'a> {
-    operand_depth: u8,
     pub(crate) handler_floor: usize,
     pub(crate) revision: Option<&'a std::sync::Arc<crate::api::code::PreparedCodeRevision>>,
     foreign: Option<std::sync::Arc<crate::value::ForeignExecutionLink>>,
@@ -434,7 +433,6 @@ impl<'a> EvalContext<'a> {
                 },
                 |definitions| definitions.definitions().syntax_operations().clone(),
             ),
-            operand_depth: 0,
             handler_floor: 0,
             revision: None,
             foreign: None,

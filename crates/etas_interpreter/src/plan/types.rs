@@ -52,7 +52,7 @@ pub(super) struct CallablePlan {
 #[derive(Debug, Clone, Copy)]
 pub(crate) enum ExpressionRoute {
     Literal,
-    Operand,
+    Shallow,
     Local(etas_hir::SymbolId),
     ToolReference,
 }

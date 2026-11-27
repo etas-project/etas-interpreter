@@ -185,6 +185,12 @@ fn expression_routes(
 ) -> std::collections::HashMap<etas_hir::HirExprId, super::types::ExpressionRoute> {
     use super::types::ExpressionRoute;
     use etas_hir::{HirExpr, ResolveResult, SymbolDef};
+    let leaf = |id| {
+        matches!(
+            project.hir.exprs.get(id),
+            Some(HirExpr::Literal(_) | HirExpr::Path(_))
+        )
+    };
     project
         .hir
         .exprs
@@ -204,20 +210,12 @@ fn expression_routes(
             } else {
                 match expr {
                     HirExpr::Literal(_) => ExpressionRoute::Literal,
-                    HirExpr::Call { .. }
-                    | HirExpr::MethodCall { .. }
-                    | HirExpr::SpecMethodCall { .. }
-                    | HirExpr::Unary { .. }
-                    | HirExpr::Binary { .. }
-                    | HirExpr::Index { .. }
-                    | HirExpr::Field { .. }
-                    | HirExpr::Try { .. }
-                    | HirExpr::Tuple { .. }
-                    | HirExpr::List { .. }
-                    | HirExpr::Array { .. }
-                    | HirExpr::Record(_)
-                    | HirExpr::If { .. }
-                    | HirExpr::Match { .. } => ExpressionRoute::Operand,
+                    // An operand which can itself call or suspend must first
+                    // return to the machine to establish its continuation.
+                    HirExpr::Binary { lhs, rhs, .. } if leaf(*lhs) && leaf(*rhs) => {
+                        ExpressionRoute::Shallow
+                    }
+                    HirExpr::Unary { expr, .. } if leaf(*expr) => ExpressionRoute::Shallow,
                     HirExpr::Path(path) if !project.types.bound_method_values.contains_key(&id) => {
                         let ResolveResult::Resolved(symbol) = path.resolution else {
                             return None;
