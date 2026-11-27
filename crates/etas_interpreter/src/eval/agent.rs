@@ -77,7 +77,12 @@ impl<'a> EvalContext<'a> {
                 );
             };
             self.record_agent_message_handoffs(item, &call_args);
-            return self.execute_flow_with_generic_bindings(method.body, flow, call_args, bindings);
+            return self.execute_flow_with_generic_bindings(
+                method.body,
+                flow,
+                call_args.into(),
+                bindings,
+            );
         }
         let Some(HirItem::Agent(agent)) = self.checked.hir.items.get(item) else {
             return ControlSignal::fault(

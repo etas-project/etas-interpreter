@@ -395,7 +395,7 @@ impl<'a> EvalContext<'a> {
             Some(HirItem::Flow(flow)) => match self.execute_flow_with_receiver(
                 item,
                 flow,
-                call_args,
+                call_args.into(),
                 Default::default(),
                 update,
             ) {
@@ -760,8 +760,13 @@ impl<'a> EvalContext<'a> {
                     ) {
                         return self.execute_runtime_scope(item, call_args, &bindings, site, span);
                     }
-                    let signal =
-                        self.execute_flow_with_receiver(item, flow, call_args, bindings, update);
+                    let signal = self.execute_flow_with_receiver(
+                        item,
+                        flow,
+                        call_args.into(),
+                        bindings,
+                        update,
+                    );
                     match signal {
                         ControlSignal::Value(value) | ControlSignal::Return(value) => {
                             ControlSignal::Value(value)

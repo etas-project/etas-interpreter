@@ -1,5 +1,6 @@
 use super::*;
 use crate::control::ExecutionFault;
+use std::borrow::Cow;
 
 #[cfg(test)]
 mod tests;
@@ -45,7 +46,7 @@ impl<'a> EvalContext<'a> {
         self.execute_flow_with_generic_bindings(
             item,
             flow,
-            args.to_vec(),
+            Cow::Borrowed(args),
             crate::control::GenericBindings {
                 types: type_bindings,
                 parameters: Default::default(),
@@ -58,7 +59,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         item: HirItemId,
         flow: &HirFlowDecl,
-        args: Vec<InterpValue>,
+        args: Cow<'_, [InterpValue]>,
         bindings: crate::control::GenericBindings,
     ) -> ControlSignal {
         self.execute_flow_with_receiver(item, flow, args, bindings, None)
@@ -68,7 +69,7 @@ impl<'a> EvalContext<'a> {
         &mut self,
         item: HirItemId,
         flow: &HirFlowDecl,
-        args: Vec<InterpValue>,
+        args: Cow<'_, [InterpValue]>,
         bindings: crate::control::GenericBindings,
         update: Option<crate::control::ReceiverOutcome>,
     ) -> ControlSignal {
@@ -95,22 +96,22 @@ impl<'a> EvalContext<'a> {
                     self.execute_source_code_primitive(item, role, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::TaskStart => {
-                    self.execute_source_task_start(item, args, &bindings, span)
+                    self.execute_source_task_start(item, args.into_owned(), &bindings, span)
                 }
                 etas_std::StdExecutionRole::TaskNextCompletion
                 | etas_std::StdExecutionRole::TaskCancel => {
                     self.execute_source_scheduler_control(item, role, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::ScopeEnter => {
-                    self.execute_runtime_scope(item, args, &bindings, None, span)
+                    self.execute_runtime_scope(item, args.into_owned(), &bindings, None, span)
                 }
                 etas_std::StdExecutionRole::ResourceScope => {
-                    self.execute_resource_scope(item, args, &bindings, None, span)
+                    self.execute_resource_scope(item, args.into_owned(), &bindings, None, span)
                 }
                 etas_std::StdExecutionRole::ReadScopeEnter => {
                     self.enter_stream_read_scope(item, &args, span)
                 }
-                etas_std::StdExecutionRole::Abort => match args.as_slice() {
+                etas_std::StdExecutionRole::Abort => match args.as_ref() {
                     [InterpValue::String(message)] => {
                         ControlSignal::execution_aborted(message.to_string(), span)
                     }
@@ -120,7 +121,7 @@ impl<'a> EvalContext<'a> {
                     ),
                 },
                 etas_std::StdExecutionRole::Checkpoint => {
-                    self.execute_checkpoint_callable(args, span)
+                    self.execute_checkpoint_callable(args.into_owned(), span)
                 }
                 etas_std::StdExecutionRole::CachedSchemaFingerprint
                 | etas_std::StdExecutionRole::RememberSchemaFingerprint => {
@@ -141,7 +142,7 @@ impl<'a> EvalContext<'a> {
                     self.execute_storage_transfer(item, role, &args, &bindings, span)
                 }
                 etas_std::StdExecutionRole::Requeue | etas_std::StdExecutionRole::Park => {
-                    self.execute_runtime_transfer(item, role, args, &bindings, span)
+                    self.execute_runtime_transfer(item, role, args.into_owned(), &bindings, span)
                 }
             };
         }
@@ -177,8 +178,17 @@ impl<'a> EvalContext<'a> {
             Ok(frame) => frame,
             Err(fault) => return ControlSignal::Fault(Box::new(fault)),
         };
-        for (symbol, arg) in flow.params.iter().zip(args) {
-            frame.insert(*symbol, arg);
+        match args {
+            Cow::Borrowed(values) => {
+                for (&symbol, value) in flow.params.iter().zip(values) {
+                    frame.insert(symbol, value.clone());
+                }
+            }
+            Cow::Owned(values) => {
+                for (&symbol, value) in flow.params.iter().zip(values) {
+                    frame.insert(symbol, value);
+                }
+            }
         }
         let Some(body) = flow.body.as_block() else {
             return ControlSignal::missing_checked_fact(

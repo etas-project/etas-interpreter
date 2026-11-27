@@ -376,7 +376,7 @@ impl SourceSchedulingPolicy {
         let signal = scoped.execute_flow_with_receiver(
             item,
             flow,
-            vec![receiver, snapshot],
+            vec![receiver, snapshot].into(),
             bindings,
             Some(outcome.clone()),
         );
