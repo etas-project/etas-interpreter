@@ -318,6 +318,7 @@ impl StandardLibraryProgram {
                 },
             );
         }
+        drop(_phase);
         let bindings = LibraryBindings {
             aliases,
             callables,
@@ -326,10 +327,13 @@ impl StandardLibraryProgram {
         if let Some(cache) = cache
             && cache.can_write()
             && prepared.diagnostics.is_empty()
-            && let Some(bytes) =
-                super::pipeline::encode(&(&prepared.layouts, &bridge.tables, &bindings))
         {
-            cache.write_plan(true, &bytes);
+            let _store = profile.span("std.runtime.store_plan", "std");
+            if let Some(bytes) =
+                super::pipeline::encode(&(&prepared.layouts, &bridge.tables, &bindings))
+            {
+                cache.write_plan(true, &bytes);
+            }
         }
         Ok(Some(Arc::new(Self {
             prepared,
