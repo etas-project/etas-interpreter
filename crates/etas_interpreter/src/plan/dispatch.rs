@@ -162,7 +162,8 @@ impl IntrinsicDispatchTable {
         }) {
             Some(image) => image.methods.clone(),
             None => Arc::new(
-                methods::MethodDispatchPlan::prepare(project).map_err(|error| vec![error])?,
+                methods::MethodDispatchPlan::prepare(project, installed.is_some())
+                    .map_err(|error| vec![error])?,
             ),
         };
         checked_actions::validate(project).map_err(|error| vec![error])?;
@@ -434,7 +435,9 @@ impl IntrinsicDispatchTable {
         ),
         String,
     > {
-        self.program.methods.policy_witness(project, object, member)
+        self.program
+            .methods
+            .policy_witness(project, self.type_lookup(project), object, member)
     }
 
     pub(crate) fn type_lookup(&self, project: &CheckedProject) -> &etas_types::ty::TypeLookupIndex {

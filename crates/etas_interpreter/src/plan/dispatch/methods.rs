@@ -1,4 +1,8 @@
-use std::collections::{HashMap, HashSet};
+use std::{
+    borrow::Borrow,
+    collections::{HashMap, HashSet},
+    sync::OnceLock,
+};
 
 use etas_frontend::CheckedProject;
 use etas_hir::{HirExpr, HirExprId, SymbolId};
@@ -82,10 +86,23 @@ pub(crate) struct ResolvedMethodCall<'a> {
     pub bindings: crate::control::CheckedCallBindings,
 }
 
+type WitnessTable = HashMap<WitnessKey, PreparedWitness>;
+
+/// A consumer can extend the installed SDK with new types and implementations.
+/// Resolve against that immutable linked revision once per concrete receiver.
+#[derive(Debug)]
+struct LinkedWitnesses {
+    receivers: Vec<OnceLock<Result<WitnessTable, String>>>,
+    requirements: HashMap<RequirementKey, etas_types::SpecMethodFact>,
+    specs: etas_types::SpecFacts,
+}
+
 #[derive(Debug, Default, serde::Serialize, serde::Deserialize)]
 pub(crate) struct MethodDispatchPlan {
     calls: HashMap<HirExprId, CheckedMethodCallFact>,
-    witnesses: HashMap<WitnessKey, PreparedWitness>,
+    witnesses: WitnessTable,
+    #[serde(skip)]
+    linked: Option<Box<LinkedWitnesses>>,
     packs: HashMap<
         HirExprId,
         HashMap<RequirementKey, Vec<etas_types::facts::existentials::ExistentialMethodWitnessFact>>,
@@ -93,7 +110,7 @@ pub(crate) struct MethodDispatchPlan {
 }
 
 impl MethodDispatchPlan {
-    pub(super) fn prepare(project: &CheckedProject) -> Result<Self, String> {
+    pub(super) fn prepare(project: &CheckedProject, linked_sdk: bool) -> Result<Self, String> {
         // Each executable revision owns its dispatch table. Imported method
         // declarations alone do not create a call or an existential witness.
         if project.types.checked_method_calls.is_empty()
@@ -127,40 +144,10 @@ impl MethodDispatchPlan {
         }
         let specs = etas_types::SpecFacts::from(project.types.as_ref());
         let lookup = TypeLookupIndex::new(&project.type_store);
-        // Witnesses for one concrete receiver are independent of every other
-        // receiver. Partition large linked programs and merge disjoint keys.
-        let receivers: Vec<_> = project.type_store.iter().map(|(ty, _)| ty).collect();
-        let workers = std::thread::available_parallelism()
-            .map_or(1, |n| n.get())
-            .min(4)
-            .min(receivers.len().div_ceil(256));
-        let prepare = |receivers: &[TypeId]| {
-            Self::prepare_witnesses(project, &requirements, &specs, &lookup, receivers)
-        };
-        result.witnesses = if workers <= 1 {
-            prepare(&receivers)?
-        } else {
-            std::thread::scope(|scope| {
-                let threads: Vec<_> = receivers
-                    .chunks(receivers.len().div_ceil(workers))
-                    .map(|chunk| {
-                        std::thread::Builder::new()
-                            .stack_size(8 << 20)
-                            .spawn_scoped(scope, move || prepare(chunk))
-                            .map_err(|e| e.to_string())
-                    })
-                    .collect::<Result<_, _>>()?;
-                let mut result = HashMap::new();
-                for thread in threads {
-                    result.extend(
-                        thread
-                            .join()
-                            .expect("method witness preparation panicked")?,
-                    );
-                }
-                Ok::<_, String>(result)
-            })?
-        };
+        if !linked_sdk {
+            result.witnesses =
+                Self::prepare_all_witnesses(project, &requirements, &specs, &lookup)?;
+        }
         for (expr, pack) in &project.types.existential_packs {
             if project.types.expr_types.get(expr) != Some(&pack.object_type)
                 || !matches!(
@@ -406,16 +393,70 @@ impl MethodDispatchPlan {
             }
             result.calls.insert(*expr, fact.clone());
         }
+        if linked_sdk {
+            result.linked = Some(Box::new(LinkedWitnesses {
+                receivers: (0..project.type_store.len())
+                    .map(|_| OnceLock::new())
+                    .collect(),
+                requirements: requirements
+                    .into_iter()
+                    .map(|(key, fact)| (key, fact.clone()))
+                    .collect(),
+                specs,
+            }));
+        }
         Ok(result)
     }
 
-    fn prepare_witnesses(
+    fn prepare_all_witnesses(
         project: &CheckedProject,
         requirements: &HashMap<RequirementKey, &etas_types::SpecMethodFact>,
         specs: &etas_types::SpecFacts,
         lookup: &TypeLookupIndex,
+    ) -> Result<WitnessTable, String> {
+        // Witnesses for one concrete receiver are independent of every other
+        // receiver. Partition large linked programs and merge disjoint keys.
+        let receivers: Vec<_> = project.type_store.iter().map(|(ty, _)| ty).collect();
+        let workers = std::thread::available_parallelism()
+            .map_or(1, |n| n.get())
+            .min(4)
+            .min(receivers.len().div_ceil(256));
+        let prepare = |receivers: &[TypeId]| {
+            Self::prepare_witnesses(project, requirements, specs, lookup, receivers)
+        };
+        if workers <= 1 {
+            prepare(&receivers)
+        } else {
+            std::thread::scope(|scope| {
+                let threads: Vec<_> = receivers
+                    .chunks(receivers.len().div_ceil(workers))
+                    .map(|chunk| {
+                        std::thread::Builder::new()
+                            .stack_size(8 << 20)
+                            .spawn_scoped(scope, move || prepare(chunk))
+                            .map_err(|e| e.to_string())
+                    })
+                    .collect::<Result<_, _>>()?;
+                let mut result = HashMap::new();
+                for thread in threads {
+                    result.extend(
+                        thread
+                            .join()
+                            .expect("method witness preparation panicked")?,
+                    );
+                }
+                Ok::<_, String>(result)
+            })
+        }
+    }
+
+    fn prepare_witnesses(
+        project: &CheckedProject,
+        requirements: &HashMap<RequirementKey, impl Borrow<etas_types::SpecMethodFact>>,
+        specs: &etas_types::SpecFacts,
+        lookup: &TypeLookupIndex,
         receivers: &[TypeId],
-    ) -> Result<HashMap<WitnessKey, PreparedWitness>, String> {
+    ) -> Result<WitnessTable, String> {
         let mut witnesses = HashMap::new();
         let mut lookup_witnesses =
             project
@@ -437,7 +478,8 @@ impl MethodDispatchPlan {
                     .ok_or("prepared implementation has no checked spec member")?;
                 let required = requirements
                     .get(&RequirementKey::from(member))
-                    .ok_or("method witness has no checked requirement declaration")?;
+                    .ok_or("method witness has no checked requirement declaration")?
+                    .borrow();
                 let signature = required
                     .signature_in(&project.types)
                     .ok_or("method witness has no checked requirement signature")?;
@@ -478,17 +520,37 @@ impl MethodDispatchPlan {
         self.calls.get(&expr)
     }
 
-    pub(super) fn witness(
+    fn witness(
         &self,
+        project: &CheckedProject,
+        lookup: &TypeLookupIndex,
         receiver: TypeId,
         args: &[TypeId],
         member: &SpecMethodIdentity,
-    ) -> Option<&PreparedWitness> {
-        self.witnesses.get(&WitnessKey {
+    ) -> Result<Option<&PreparedWitness>, String> {
+        let table = match &self.linked {
+            Some(linked) => linked
+                .receivers
+                .get(receiver.0 as usize)
+                .ok_or("method receiver is outside its checked revision")?
+                .get_or_init(|| {
+                    Self::prepare_witnesses(
+                        project,
+                        &linked.requirements,
+                        &linked.specs,
+                        lookup,
+                        &[receiver],
+                    )
+                })
+                .as_ref()
+                .map_err(Clone::clone)?,
+            None => &self.witnesses,
+        };
+        Ok(table.get(&WitnessKey {
             receiver,
             member: member.into(),
             args: args.to_vec(),
-        })
+        }))
     }
 
     pub(super) fn resolve(
@@ -530,10 +592,10 @@ impl MethodDispatchPlan {
                         "existential receiver differs from its checked method interface".into(),
                     );
                 }
-                self.object_witness(project, object, &args, member)?
+                self.object_witness(project, lookup, object, &args, member)?
             } else {
                 let witness = self
-                    .witness(subject, &args, member)
+                    .witness(project, lookup, subject, &args, member)?
                     .ok_or("generic method has no prepared implementation witness")?;
                 WitnessSelection {
                     target: &witness.target,
@@ -586,10 +648,11 @@ impl MethodDispatchPlan {
     pub(super) fn policy_witness(
         &self,
         project: &CheckedProject,
+        lookup: &TypeLookupIndex,
         object: crate::value::ExistentialEvidence<'_>,
         member: &SpecMethodIdentity,
     ) -> Result<(MethodTarget, crate::control::GenericBindings), String> {
-        let selected = self.object_witness(project, object, &[], member)?;
+        let selected = self.object_witness(project, lookup, object, &[], member)?;
         Ok((
             selected.target.clone(),
             crate::control::GenericBindings {
@@ -603,6 +666,7 @@ impl MethodDispatchPlan {
     fn object_witness(
         &self,
         project: &CheckedProject,
+        lookup: &TypeLookupIndex,
         mut object: crate::value::ExistentialEvidence<'_>,
         args: &[TypeId],
         member: &SpecMethodIdentity,
@@ -621,7 +685,7 @@ impl MethodDispatchPlan {
                     continue;
                 }
                 let prepared = self
-                    .witness(object.source_type(), args, member)
+                    .witness(project, lookup, object.source_type(), args, member)?
                     .ok_or("scoped existential has no checked receiving implementation witness")?;
                 return Ok(WitnessSelection {
                     target: &prepared.target,
@@ -674,7 +738,7 @@ impl MethodDispatchPlan {
                 }
             }
             let prepared = self
-                .witness(object.source_type(), args, member)
+                .witness(project, lookup, object.source_type(), args, member)?
                 .ok_or("existential recipe has no prepared implementation")?;
             if !matches!(witness.target, MethodTarget::BoundSpec { .. })
                 && prepared.target != witness.target
