@@ -29,7 +29,9 @@ pub(super) fn build(
             wrapper,
             value: single(&mut values)?.into(),
         },
-        Build::Array => InterpValue::Array(values.into()),
+        Build::Array(source, ty) => {
+            InterpValue::Array(crate::value::ArrayValue::projected(values, source, ty))
+        }
         Build::List => InterpValue::List(values.into()),
         Build::Slice => InterpValue::Slice(crate::value::SliceValue::new(values)),
         Build::Set => InterpValue::Set(

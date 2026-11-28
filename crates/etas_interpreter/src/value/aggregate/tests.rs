@@ -3,13 +3,27 @@ use super::*;
 use crate::{orchestration::ValueSnapshot, testing::allocation::measure};
 
 #[test]
+fn projected_arrays_share_the_source_index_identity_until_a_write() {
+    let original = ArrayValue::new(vec![InterpValue::i32(1)]);
+    let ty = etas_types::TypeId(7);
+    let (origin, _) = original.index_origin();
+    let mut projected = ArrayValue::projected(original.snapshot(), origin.clone(), ty);
+    let (cached, target) = projected.index_origin();
+    assert!(std::rc::Weak::ptr_eq(&origin, &cached));
+    assert_eq!(target, Some(ty));
+    projected.borrow_mut()[0] = InterpValue::i32(2);
+    assert!(!std::rc::Weak::ptr_eq(&origin, &projected.index_origin().0));
+    assert_eq!(original.borrow()[0], InterpValue::i32(1));
+}
+
+#[test]
 fn empty_array_pop_is_a_noop_even_when_backing_is_shared() {
     for capacity in [0, 4096] {
         let mut values = ArrayValue::new(Vec::with_capacity(capacity));
         let alias = values.clone();
         let (_, cost) = measure(|| assert_eq!(values.pop(), None));
         assert_eq!(cost.count, 0);
-        assert!(Rc::ptr_eq(&values.0, &alias.0));
+        assert!(Rc::ptr_eq(&values.values, &alias.values));
         assert_eq!(
             values.borrow().capacity(),
             capacity,
@@ -149,7 +163,7 @@ fn slice_retention_and_materialization_costs_follow_backing_ownership() {
                 };
                 text.as_ptr()
             });
-            let backing = Rc::downgrade(&values.0);
+            let backing = Rc::downgrade(&values.values);
             let alias = shared.then(|| values.clone());
             let (view, view_cost) = measure(|| SliceValue::from_array(values, 2..5).unwrap());
             assert_eq!(view_cost.count, 0);

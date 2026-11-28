@@ -14,27 +14,34 @@ pub(crate) fn try_map_cloned<T: Clone, U, E>(
 }
 
 #[derive(Clone)]
-pub struct ArrayValue(Rc<Vec<InterpValue>>);
+pub struct ArrayValue {
+    values: Rc<Vec<InterpValue>>,
+    projected_from: Option<(std::rc::Weak<Vec<InterpValue>>, etas_types::TypeId)>,
+}
 
 impl ArrayValue {
     pub(crate) fn shared_capture_identity(&self) -> Option<*const ()> {
-        (Rc::strong_count(&self.0) > 1).then(|| Rc::as_ptr(&self.0).cast())
+        (Rc::strong_count(&self.values) > 1).then(|| Rc::as_ptr(&self.values).cast())
     }
 
     pub(super) fn into_unique_values(self) -> Option<Vec<InterpValue>> {
-        Rc::try_unwrap(self.0).ok()
+        Rc::try_unwrap(self.values).ok()
     }
 
     pub fn new(values: Vec<InterpValue>) -> Self {
-        Self(Rc::new(values))
+        Self {
+            values: Rc::new(values),
+            projected_from: None,
+        }
     }
 
     pub fn borrow(&self) -> &Vec<InterpValue> {
-        &self.0
+        &self.values
     }
 
     pub fn borrow_mut(&mut self) -> &mut Vec<InterpValue> {
-        Rc::make_mut(&mut self.0)
+        self.projected_from = None;
+        Rc::make_mut(&mut self.values)
     }
 
     pub fn snapshot(&self) -> Vec<InterpValue> {
@@ -43,7 +50,7 @@ impl ArrayValue {
 
     /// Reuse unique backing; shared values retain their original snapshot.
     pub fn into_values(self) -> Vec<InterpValue> {
-        match Rc::try_unwrap(self.0) {
+        match Rc::try_unwrap(self.values) {
             Ok(values) => values,
             Err(shared) => shared.as_ref().clone(),
         }
@@ -54,7 +61,7 @@ impl ArrayValue {
         self,
         map: impl FnMut(InterpValue) -> Result<T, E>,
     ) -> Result<Vec<T>, E> {
-        match Rc::try_unwrap(self.0) {
+        match Rc::try_unwrap(self.values) {
             Ok(values) => values.into_iter().map(map).collect(),
             Err(shared) => try_map_cloned(&shared, map),
         }
@@ -62,23 +69,25 @@ impl ArrayValue {
 
     pub(crate) fn push(&mut self, value: InterpValue) {
         self.prepare_growth(1);
-        Rc::make_mut(&mut self.0).push(value);
+        Rc::make_mut(&mut self.values).push(value);
     }
 
     fn prepare_growth(&mut self, additional: usize) {
-        if Rc::strong_count(&self.0) > 1 {
-            let current = self.0.as_ref();
+        self.projected_from = None;
+        if Rc::strong_count(&self.values) > 1 {
+            let current = self.values.as_ref();
             // Clone shared headers directly into the final capacity, rather
             // than cloning a full buffer and immediately growing it again.
             let mut next = Vec::with_capacity(current.len() + additional);
             next.extend(current.iter().cloned());
-            self.0 = Rc::new(next);
+            self.values = Rc::new(next);
         }
     }
 
     pub(crate) fn truncate(mut self, length: usize) -> Self {
         if length < self.borrow().len() {
-            if let Some(values) = Rc::get_mut(&mut self.0) {
+            self.projected_from = None;
+            if let Some(values) = Rc::get_mut(&mut self.values) {
                 values.truncate(length);
             } else {
                 return Self::new(self.borrow()[..length].to_vec());
@@ -87,8 +96,26 @@ impl ArrayValue {
         self
     }
 
-    pub(crate) fn weak_backing(&self) -> std::rc::Weak<Vec<InterpValue>> {
-        Rc::downgrade(&self.0)
+    // Revision projection rebuilds typed elements but preserves their slot order.
+    // Retain the source snapshot's identity without retaining its elements.
+    pub(crate) fn index_origin(
+        &self,
+    ) -> (std::rc::Weak<Vec<InterpValue>>, Option<etas_types::TypeId>) {
+        match &self.projected_from {
+            Some((source, ty)) => (source.clone(), Some(*ty)),
+            None => (Rc::downgrade(&self.values), None),
+        }
+    }
+
+    pub(crate) fn projected(
+        values: Vec<InterpValue>,
+        source: std::rc::Weak<Vec<InterpValue>>,
+        ty: etas_types::TypeId,
+    ) -> Self {
+        Self {
+            values: Rc::new(values),
+            projected_from: Some((source, ty)),
+        }
     }
 
     pub(crate) fn pop(&mut self) -> Option<InterpValue> {
@@ -109,9 +136,9 @@ impl ArrayValue {
             return other;
         }
         self.prepare_growth(right_len);
-        let values = Rc::make_mut(&mut self.0);
+        let values = Rc::make_mut(&mut self.values);
         values.reserve(right_len);
-        match Rc::try_unwrap(other.0) {
+        match Rc::try_unwrap(other.values) {
             Ok(right) => values.extend(right),
             Err(shared) => values.extend(shared.iter().cloned()),
         }
@@ -119,8 +146,8 @@ impl ArrayValue {
     }
 
     pub fn make_unique(&mut self) {
-        if Rc::strong_count(&self.0) > 1 {
-            self.0 = Rc::new(self.snapshot());
+        if Rc::strong_count(&self.values) > 1 {
+            self.values = Rc::new(self.snapshot());
         }
     }
 }
@@ -181,7 +208,7 @@ impl SliceValue {
             return None;
         }
         Some(Self {
-            backing: values.0,
+            backing: values.values,
             range,
         })
     }

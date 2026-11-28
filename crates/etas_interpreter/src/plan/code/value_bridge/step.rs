@@ -317,7 +317,14 @@ impl Walk<'_> {
                 let InterpValue::Array(values) = value else {
                     return Err(wrong("Array", &value));
                 };
-                self.sequence(from, to, *left, *right, Build::Array, values.into_values());
+                self.sequence(
+                    from,
+                    to,
+                    *left,
+                    *right,
+                    Build::Array(values.index_origin().0, to),
+                    values.into_values(),
+                );
             }
             (Type::List(left), Type::List(right)) => {
                 let InterpValue::List(values) = value else {

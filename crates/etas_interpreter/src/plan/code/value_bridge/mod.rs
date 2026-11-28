@@ -263,7 +263,7 @@ enum Build {
     Existential(Box<crate::value::ExistentialValue>),
     Nominal(TypeId),
     Trust(TrustWrapper),
-    Array,
+    Array(std::rc::Weak<Vec<InterpValue>>, TypeId),
     List,
     Slice,
     Set,

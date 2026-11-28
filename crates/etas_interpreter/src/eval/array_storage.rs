@@ -5,7 +5,7 @@ use std::{collections::HashMap, rc::Weak};
 #[derive(Default)]
 pub(super) struct MapIndexes {
     program: std::sync::Weak<etas_frontend::CheckedProgramData>,
-    entries: HashMap<(usize, u64), (Weak<Vec<V>>, ArrayValue)>,
+    entries: HashMap<(usize, Option<etas_types::TypeId>, u64), (Weak<Vec<V>>, ArrayValue)>,
     sweep_at: usize,
 }
 
@@ -20,14 +20,15 @@ impl MapIndexes {
         }
     }
 
-    fn remember(&mut self, slots: Weak<Vec<V>>, seed: u64, index: ArrayValue) {
+    fn remember(&mut self, slots: &ArrayValue, seed: u64, index: ArrayValue) {
         if self.entries.len() >= self.sweep_at {
             self.entries
                 .retain(|_, (backing, _)| backing.strong_count() != 0);
             self.sweep_at = (self.entries.len() * 2).max(16);
         }
+        let (source, ty) = slots.index_origin();
         self.entries
-            .insert((slots.as_ptr() as usize, seed), (slots, index));
+            .insert((source.as_ptr() as usize, ty, seed), (source, index));
     }
 }
 
@@ -59,7 +60,8 @@ impl EvalContext<'_> {
             (R::CachedMapIndex, Some(V::Number(NumericValue::U64(seed))), None) => {
                 let cache = &mut self.runtime.map_indexes;
                 cache.for_program(self.checked);
-                let key = (slots.weak_backing().as_ptr() as usize, seed);
+                let (source, ty) = slots.index_origin();
+                let key = (source.as_ptr() as usize, ty, seed);
                 V::Array(
                     cache
                         .entries
@@ -74,7 +76,7 @@ impl EvalContext<'_> {
             ) => {
                 let cache = &mut self.runtime.map_indexes;
                 cache.for_program(self.checked);
-                cache.remember(slots.weak_backing(), seed, index);
+                cache.remember(&slots, seed, index);
                 V::Unit
             }
             _ => {
