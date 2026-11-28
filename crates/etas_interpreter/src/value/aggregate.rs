@@ -76,6 +76,21 @@ impl ArrayValue {
         }
     }
 
+    pub(crate) fn truncate(mut self, length: usize) -> Self {
+        if length < self.borrow().len() {
+            if let Some(values) = Rc::get_mut(&mut self.0) {
+                values.truncate(length);
+            } else {
+                return Self::new(self.borrow()[..length].to_vec());
+            }
+        }
+        self
+    }
+
+    pub(crate) fn weak_backing(&self) -> std::rc::Weak<Vec<InterpValue>> {
+        Rc::downgrade(&self.0)
+    }
+
     pub(crate) fn pop(&mut self) -> Option<InterpValue> {
         if self.borrow().is_empty() {
             return None;

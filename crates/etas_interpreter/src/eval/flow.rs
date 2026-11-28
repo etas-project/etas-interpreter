@@ -123,6 +123,11 @@ impl<'a> EvalContext<'a> {
                 etas_std::StdExecutionRole::Checkpoint => {
                     self.execute_checkpoint_callable(args.into_owned(), span)
                 }
+                etas_std::StdExecutionRole::ArrayTruncate
+                | etas_std::StdExecutionRole::CachedMapIndex
+                | etas_std::StdExecutionRole::RememberMapIndex => {
+                    self.execute_array_storage(role, args.into_owned(), span)
+                }
                 etas_std::StdExecutionRole::CachedSchemaFingerprint
                 | etas_std::StdExecutionRole::RememberSchemaFingerprint => {
                     self.schema_fingerprint_cache(role, &args, span)

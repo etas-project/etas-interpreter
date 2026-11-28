@@ -37,6 +37,7 @@ pub(crate) struct EvalSharedState {
     >,
     pub(crate) cpu_jobs: std::collections::BTreeMap<crate::driver::cpu::CpuJobId, CpuJobRecord>,
     pub(super) library_targets: std::cell::RefCell<crate::plan::LibraryTargets>,
+    pub(super) map_indexes: super::array_storage::MapIndexes,
     pub(super) schema_fingerprints: super::source_memory::SchemaFingerprints,
     pub(crate) storage_layouts: std::collections::HashMap<
         (usize, etas_types::TypeId),
@@ -305,6 +306,7 @@ impl EvalRunState {
             cpu_jobs: Default::default(),
             storage_layouts: Default::default(),
             library_targets: Default::default(),
+            map_indexes: Default::default(),
             schema_fingerprints: Default::default(),
             next_cpu_dispatch: 0,
             next_cpu_completion: 0,

@@ -58,6 +58,7 @@ pub(crate) mod limit;
 mod loop_control;
 pub(crate) mod source_iteration;
 pub(crate) use loop_control::ForLoopResume;
+mod array_storage;
 pub(crate) mod machine;
 mod memory_commit;
 mod memory_intent;
