@@ -73,6 +73,7 @@ impl Default for ExecutionLimits {
 
 #[derive(Clone, Debug)]
 pub struct RunOptions {
+    pub pty_recording: Option<super::PtyRecording>,
     pub replay_key_provider: std::sync::Arc<dyn etas_host::replay::ReplayKeyProvider>,
     pub code_definitions: Option<std::sync::Arc<crate::api::code::PreparedCodeDefinitions>>,
     /// Native code used to rebind restored values; this grants no Host authority.
@@ -99,6 +100,7 @@ pub struct RunOptions {
 impl Default for RunOptions {
     fn default() -> Self {
         Self {
+            pty_recording: None,
             replay_key_provider: etas_host::replay::default_replay_key_provider(),
             code_definitions: None,
             checkpoint_revisions: None,

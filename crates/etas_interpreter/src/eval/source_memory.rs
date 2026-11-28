@@ -1,5 +1,5 @@
 use super::{host_value, memory_page, storage, *};
-use crate::control::handler_activation::SourceMemoryPlace;
+use crate::control::handler_activation::SourceActionTarget;
 use crate::value::{InterpValue as V, enum_value};
 use etas_host::memory::{
     MemoryMutation, MemoryWriteIntent, MemoryWriteOperation, MemoryWriteRequest,
@@ -248,7 +248,7 @@ impl EvalContext<'_> {
         let etas_effects::Effect::AppliedAction(instance) = &proof.effect else {
             return Ok(());
         };
-        if SourceMemoryPlace::matches_selector(
+        if SourceActionTarget::matches_selector(
             self.checked,
             &instance.args,
             &store.region.stable_id,
@@ -263,14 +263,19 @@ impl EvalContext<'_> {
         Ok(())
     }
 
-    pub(in crate::eval) fn source_memory_handler_target(
+    pub(in crate::eval) fn source_handler_target(
         &self,
         perform: &PendingPerform,
-    ) -> Option<SourceMemoryPlace> {
+    ) -> Option<SourceActionTarget> {
         let proof = perform.checked_action.as_ref()?;
         let etas_effects::Effect::AppliedAction(instance) = &proof.effect else {
             return None;
         };
+        if instance.action.tag == etas_effects::COMMAND_TAG {
+            return self
+                .source_pty_profile(perform)
+                .map(|profile| SourceActionTarget::Pty { profile });
+        }
         if instance.action.tag != etas_effects::MEMORY_TAG
             || instance.args.as_slice() != [etas_types::EffectArgRef::Wildcard]
         {
@@ -278,7 +283,7 @@ impl EvalContext<'_> {
         }
         self.source_memory_store(perform.args.first()?, *proof.parameters.first()?)
             .ok()
-            .map(SourceMemoryPlace::from_store)
+            .map(SourceActionTarget::from_store)
     }
 
     fn source_memory_read(

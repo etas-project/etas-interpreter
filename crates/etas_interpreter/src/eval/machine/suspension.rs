@@ -136,7 +136,7 @@ impl EvalMachine {
         ctx: &EvalContext<'_>,
         pending: &PendingPerform,
         range: std::ops::Range<usize>,
-        memory_target: Option<&crate::control::handler_activation::SourceMemoryPlace>,
+        memory_target: Option<&crate::control::handler_activation::SourceActionTarget>,
     ) -> Result<bool, ExecutionFault> {
         let fail = |reason| {
             ExecutionFault::new(
@@ -202,7 +202,7 @@ impl EvalMachine {
         let mut identity = action_identity(&proof.effect)
             .ok_or_else(|| fail("resumable action has no checked action identity".into()))?
             .clone();
-        let memory_target = ctx.source_memory_handler_target(pending);
+        let memory_target = ctx.source_handler_target(pending);
         let mut edges = Vec::new();
         let mut end = ctx.handler_floor;
         for frame in self.frames().iter().rev() {

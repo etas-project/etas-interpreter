@@ -213,6 +213,7 @@ pub(super) async fn resume(
             );
         }
         let runtime = state.as_mut().ok_or("resume lost its run-owned state")?;
+        runtime.pty_recording = options.pty_recording.clone();
         let mut eval = eval::EvalContext::new(
             eval::EvalProgramInput {
                 code_definitions: options.code_definitions.clone(),

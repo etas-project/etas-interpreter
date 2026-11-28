@@ -38,7 +38,7 @@ pub(crate) async fn resume_source_inner(
             return Err("checkpoint source entry differs from the current checked entry".into());
         }
         let host_context = resume_host_context(&checkpoint.header, &options)?;
-        let (program, runtime) = eval::EvalContextInput {
+        let (program, mut runtime) = eval::EvalContextInput {
             replay_keys,
             code_definitions: options.code_definitions.clone(),
             syntax_limits: options.syntax_limits,
@@ -67,6 +67,7 @@ pub(crate) async fn resume_source_inner(
             entry_args: &[],
         }
         .into_parts();
+        runtime.pty_recording = options.pty_recording.clone();
         state = Some(runtime);
         let runtime = state
             .as_mut()

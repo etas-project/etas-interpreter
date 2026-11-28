@@ -135,7 +135,12 @@ impl<'a> EvalContext<'a> {
         };
         if error_type.is_none() {
             match self.action_invocation(&pending, frame) {
-                Ok(proof) => pending.checked_action = Some(proof),
+                Ok(proof) => {
+                    pending.checked_action = Some(proof);
+                    if let Err(fault) = self.validate_pty_selector(&pending) {
+                        return ControlSignal::Fault(Box::new(fault));
+                    }
+                }
                 Err(reason) => return ControlSignal::missing_checked_fact(reason, span),
             }
         }

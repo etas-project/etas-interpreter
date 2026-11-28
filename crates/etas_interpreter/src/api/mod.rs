@@ -5,6 +5,8 @@ pub mod lifecycle;
 mod blocking;
 mod entry_args;
 mod options;
+mod pty_recording;
+pub use pty_recording::PtyRecording;
 mod result;
 mod runtime;
 

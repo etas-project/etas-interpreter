@@ -51,12 +51,17 @@ pub(super) fn build(
             }
             .into(),
         },
-        Build::Record { names, member_tool } => {
+        Build::Record {
+            names,
+            member_tool,
+            sandbox_selector,
+        } => {
             if names.len() != values.len() {
                 return Err(RevisionValueFailure::InconsistentLayout);
             }
             let mut record =
                 crate::value::RecordValue::new(names.into_iter().zip(values).collect());
+            record.set_sandbox_selector(sandbox_selector);
             if let Some(binding) = member_tool {
                 record.bind_member_tool(binding);
             }

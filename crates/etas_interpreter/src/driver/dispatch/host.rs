@@ -80,6 +80,12 @@ pub(in crate::driver) async fn begin<'host>(
     let occurrence = crate::orchestration::BoundaryOccurrenceId::HostRequest(
         host_boundary_request_id(&boundary.request),
     );
+    if eval.completed_host_boundary_kind(&occurrence) == Some("pty.unavailable") {
+        return HostBoundaryDispatchStart::Complete(Some(ControlSignal::runtime_fault(
+            "terminal replay unavailable: a managed session cannot be re-executed from checkpoint metadata",
+            boundary.span,
+        )));
+    }
     let trace_subject = match host_boundary_policy_subject(&boundary.request) {
         Ok(subject) => subject,
         Err(error) => {
@@ -218,29 +224,67 @@ pub(in crate::driver) async fn begin_authorized<'host>(
                 Err(HostBoundaryFailure::Host(error)),
             )),
         },
-        HostBoundaryRequest::CommandProcess(request) => match HostDispatch::begin(
-            eval,
-            request.id,
-            HostRequestKind::Command,
-            request.trace_payload(),
-            request.authority.clone(),
-            request.trace.clone(),
-            |operation| host.command_process(operation, request),
-        ) {
-            Ok(pending) => pending_boundary(
-                boundary,
-                key,
-                pending,
-                HostBoundaryCompletion::CommandProcess,
-            ),
-            Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+        HostBoundaryRequest::CommandProcess(request) => {
+            let completion_key = if matches!(request.operation, CommandProcessOperation::Pty(_)) {
+                if let Some(key) = key
+                    && let Err(fault) = eval.record_completed_host_boundary(
+                        crate::orchestration::BoundaryOccurrenceId::HostRequest(request.id),
+                        "pty.unavailable",
+                        key,
+                        crate::orchestration::CompletedHostBoundaryResult::Host(HostValue::Unit),
+                        boundary.span,
+                    )
+                {
+                    return HostBoundaryDispatchStart::Complete(Some(ControlSignal::Fault(
+                        Box::new(fault),
+                    )));
+                }
+                None
+            } else {
+                key
+            };
+            let recording = eval.pty_recording.clone();
+            match HostDispatch::begin(
                 eval,
-                machine,
-                boundary,
-                key,
-                Err(HostBoundaryFailure::Host(error)),
-            )),
-        },
+                request.id,
+                HostRequestKind::Command,
+                request.trace_payload(),
+                request.authority.clone(),
+                request.trace.clone(),
+                |operation| async move {
+                    if let Some(recording) = recording
+                        && let CommandProcessOperation::Pty(etas_host::PtyOperation::Write {
+                            process,
+                            bytes,
+                        }) = &request.operation
+                    {
+                        recording
+                            .record(&request, process, "submitted", bytes)
+                            .map_err(|_| {
+                                HostError::new(
+                                    etas_host::HostErrorCode::IoFailure,
+                                    "could not save private PTY recording",
+                                )
+                            })?;
+                    }
+                    host.command_process(operation, request).await
+                },
+            ) {
+                Ok(pending) => pending_boundary(
+                    boundary,
+                    completion_key,
+                    pending,
+                    HostBoundaryCompletion::CommandProcess,
+                ),
+                Err(error) => HostBoundaryDispatchStart::Complete(finish_result(
+                    eval,
+                    machine,
+                    boundary,
+                    completion_key,
+                    Err(HostBoundaryFailure::Host(error)),
+                )),
+            }
+        }
         HostBoundaryRequest::Tcp(request) => match HostDispatch::begin(
             eval,
             request.id,
@@ -470,11 +514,13 @@ pub(in crate::driver) fn finish(
             }
         }
         HostBoundaryCompletion::CommandProcess(completion) => {
-            match HostDispatch::finish(eval, completion) {
+            let HostBoundaryRequest::CommandProcess(request) = &boundary.request else { unreachable!() };
+            match HostDispatch::finish_process(eval, completion, request) {
                 Ok(response) => response
                     .result
                     .map(|payload| {
                         host_boundary_value_from_command_process(
+                            &request.operation,
                             boundary.decode,
                             payload,
                             eval.checked,
@@ -724,6 +770,20 @@ fn finish_result(
             if primitive_failure_kind(&boundary.request).is_some() {
                 return Some(primitive_failure(eval, boundary, key, error));
             }
+            if matches!(&boundary.request, HostBoundaryRequest::CommandProcess(request) if matches!(request.operation, CommandProcessOperation::Pty(_)))
+            {
+                if let Some(signal) = eval.cancellation_signal(boundary.span) {
+                    return Some(signal);
+                }
+                if let Some(code) = error.details.iter().find(|d| d.key == "pty_code") {
+                    return Some(eval.pty_error_signal(boundary, &code.value));
+                }
+                return super::error::report_failure(
+                    eval,
+                    boundary.span,
+                    format!("terminal host boundary failed: {}", error.code.as_str()),
+                );
+            }
             if matches!(&boundary.request, HostBoundaryRequest::Filesystem(_))
                 && (error.code == etas_host::HostErrorCode::IoFailure
                     || error.details.iter().any(|detail| detail.key == "io_kind"))
@@ -752,6 +812,10 @@ fn report_boundary_failure(
     boundary: PendingHostBoundary,
     message: String,
 ) -> Option<ControlSignal> {
+    if matches!(&boundary.request, HostBoundaryRequest::CommandProcess(request) if matches!(request.operation, CommandProcessOperation::Pty(_)))
+    {
+        return super::error::report_failure(eval, boundary.span, message);
+    }
     if matches!(&boundary.request, HostBoundaryRequest::Filesystem(request) if matches!(
         request.operation,
         FilesystemOperation::Open { .. } | FilesystemOperation::Sync { .. }
@@ -922,10 +986,16 @@ fn host_boundary_key(
         HostBoundaryRequest::SessionContext(_)
         | HostBoundaryRequest::SessionHistory(_)
         | HostBoundaryRequest::MemoryWrite(_)
-        | HostBoundaryRequest::CommandProcess(_)
         | HostBoundaryRequest::Tcp(_)
         | HostBoundaryRequest::Stream(_)
         | HostBoundaryRequest::Tls(_) => return Ok(None),
+        HostBoundaryRequest::CommandProcess(request) => {
+            if matches!(request.operation, CommandProcessOperation::Pty(_)) {
+                request.trace_payload()
+            } else {
+                return Ok(None);
+            }
+        }
         HostBoundaryRequest::Filesystem(request) => request.trace_payload(),
         HostBoundaryRequest::Secret(request) => request.trace_payload(),
         HostBoundaryRequest::Entropy(request) => request.trace_payload(),
@@ -1012,12 +1082,65 @@ pub(in crate::driver) fn host_boundary_value_from_filesystem_entry(
 }
 
 pub(in crate::driver) fn host_boundary_value_from_command_process(
+    operation: &CommandProcessOperation,
     decode: HostBoundaryDecode,
     payload: CommandProcessPayload,
     checked: &etas_frontend::CheckedProject,
     limits: &etas_host::StorageLimits,
 ) -> Result<InterpValue, String> {
+    if let CommandProcessPayload::PtyRead(delivery) = payload {
+        let value = host_boundary_value_from_command_process(
+            operation,
+            decode,
+            CommandProcessPayload::PtyEvent(delivery.event().clone()),
+            checked,
+            limits,
+        )?;
+        delivery.commit();
+        return Ok(value);
+    }
     match (decode, payload) {
+        (
+            HostBoundaryDecode::PtyHandle { result_type },
+            CommandProcessPayload::PtyHandle { id },
+        ) => {
+            let CommandProcessOperation::Pty(etas_host::PtyOperation::Start { selector, .. }) =
+                operation
+            else {
+                return Err("PTY handle requires its originating start operation".into());
+            };
+            crate::value::host_handle::source_handle(checked, result_type, "process", |ty| {
+                HostHandleValue::pty(ty, id, selector.clone())
+            })
+        }
+        (HostBoundaryDecode::PtyEvent { result_type }, CommandProcessPayload::PtyEvent(event)) => {
+            use etas_host::{PtyEvent, PtyExitStatus};
+            let variant = |name: &str, fields| HostValue::Variant {
+                name: name.into(),
+                fields,
+            };
+            let value = match event {
+                PtyEvent::Output(bytes) => {
+                    if !matches!(operation, CommandProcessOperation::Pty(etas_host::PtyOperation::Read {max_bytes,..}) if !bytes.is_empty() && bytes.len() <= *max_bytes)
+                    {
+                        return Err("invalid PTY output length".into());
+                    }
+                    variant("Output", vec![HostValue::Bytes(bytes)])
+                }
+                PtyEvent::Stopped => variant("Stopped", vec![]),
+                PtyEvent::Exited(status) => {
+                    let (name, code) = match status {
+                        PtyExitStatus::Code(code) => ("Code", code),
+                        PtyExitStatus::Signal(signal) => ("Signal", signal),
+                    };
+                    variant(
+                        "Exited",
+                        vec![variant(name, vec![HostValue::Int(code.into())])],
+                    )
+                }
+            };
+            crate::eval::host_to_checked_interp_value(value, result_type, checked, limits)
+        }
         (
             HostBoundaryDecode::CommandProcessHandle { result_type },
             CommandProcessPayload::Handle { id },
@@ -1091,9 +1214,8 @@ pub(in crate::driver) fn host_boundary_value_from_command_process(
             )
         }
         (HostBoundaryDecode::Unit, CommandProcessPayload::Unit) => Ok(InterpValue::Unit),
-        (decode, payload) => Err(format!(
-            "command process response payload {:?} does not match decode {:?}",
-            payload, decode
+        (decode, _) => Err(format!(
+            "command process response does not match checked decode {decode:?}"
         )),
     }
 }
@@ -1474,6 +1596,41 @@ pub(in crate::driver) fn command_process_policy_subject(
     request: &etas_host::CommandProcessRequest,
 ) -> PolicySubject {
     let (operation, qualified_action, resource, program, argc) = match &request.operation {
+        CommandProcessOperation::Pty(op) => {
+            use etas_host::PtyOperation;
+            match op {
+                PtyOperation::Start { argv, .. } => {
+                    let program = argv.first().cloned().unwrap_or_default();
+                    (
+                        "start_pty",
+                        "Command.start_pty",
+                        program.clone(),
+                        Some(program),
+                        Some(argv.len()),
+                    )
+                }
+                PtyOperation::Read { process, .. } => {
+                    ("read_pty", "Command.read_pty", process.clone(), None, None)
+                }
+                PtyOperation::Write { process, .. } => (
+                    "write_pty",
+                    "Command.write_pty",
+                    process.clone(),
+                    None,
+                    None,
+                ),
+                PtyOperation::Resize { process, .. } => (
+                    "resize_pty",
+                    "Command.resize_pty",
+                    process.clone(),
+                    None,
+                    None,
+                ),
+                PtyOperation::Stop { process } => {
+                    ("stop_pty", "Command.stop_pty", process.clone(), None, None)
+                }
+            }
+        }
         CommandProcessOperation::Start { argv, .. } => {
             let program = argv.first().cloned().unwrap_or_default();
             (

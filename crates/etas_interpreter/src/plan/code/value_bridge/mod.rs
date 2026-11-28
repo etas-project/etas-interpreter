@@ -272,6 +272,7 @@ enum Build {
     Record {
         names: Vec<String>,
         member_tool: Option<std::rc::Weak<crate::value::MemberToolSnapshot>>,
+        sandbox_selector: Option<std::rc::Rc<[String]>>,
     },
     Variant(StringValue),
     Enum {

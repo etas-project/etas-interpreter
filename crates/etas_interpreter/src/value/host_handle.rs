@@ -13,6 +13,7 @@ pub(crate) enum HostHandleKind {
     SecretValue,
     BrowserSession,
     CommandProcess,
+    Pty,
     ClockDomain,
     ReadOwner,
     SessionLease,
@@ -32,6 +33,10 @@ enum HostHandlePayload {
     SecretValue(SecretRef),
     BrowserSession(String),
     CommandProcess(String),
+    Pty {
+        id: String,
+        selector: Option<Vec<String>>,
+    },
     ClockDomain(String),
     ReadOwner(etas_host::StreamReadScope),
     SessionLease(LeaseHandle),
@@ -170,6 +175,20 @@ impl HostHandleValue {
         }
     }
 
+    pub(crate) fn pty(nominal_type: TypeId, id: String, selector: Option<Vec<String>>) -> Self {
+        Self {
+            nominal_type,
+            payload: HostHandlePayload::Pty { id, selector },
+        }
+    }
+
+    pub(crate) fn pty_session(&self) -> Option<(&str, Option<&[String]>)> {
+        match &self.payload {
+            HostHandlePayload::Pty { id, selector } => Some((id, selector.as_deref())),
+            _ => None,
+        }
+    }
+
     pub(crate) fn clock_domain(nominal_type: TypeId, domain: String) -> Self {
         Self {
             nominal_type,
@@ -203,6 +222,7 @@ impl HostHandleValue {
             HostHandlePayload::SecretValue(_) => HostHandleKind::SecretValue,
             HostHandlePayload::BrowserSession(_) => HostHandleKind::BrowserSession,
             HostHandlePayload::CommandProcess(_) => HostHandleKind::CommandProcess,
+            HostHandlePayload::Pty { .. } => HostHandleKind::Pty,
             HostHandlePayload::ClockDomain(_) => HostHandleKind::ClockDomain,
             HostHandlePayload::ReadOwner(_) => HostHandleKind::ReadOwner,
             HostHandlePayload::SessionLease(_) => HostHandleKind::SessionLease,
@@ -217,6 +237,7 @@ impl HostHandleValue {
             HostHandleKind::SecretValue => "secret_value",
             HostHandleKind::BrowserSession => "browser_session",
             HostHandleKind::CommandProcess => "command_process",
+            HostHandleKind::Pty => "pty",
             HostHandleKind::ClockDomain => "clock_domain",
             HostHandleKind::ReadOwner => "read_owner",
             HostHandleKind::SessionLease => "session_lease",
@@ -231,6 +252,7 @@ impl HostHandleValue {
             HostHandlePayload::SecretValue(_)
             | HostHandlePayload::BrowserSession(_)
             | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::Pty { .. }
             | HostHandlePayload::ClockDomain(_)
             | HostHandlePayload::ReadOwner(_)
             | HostHandlePayload::SessionLease(_) => None,
@@ -245,6 +267,7 @@ impl HostHandleValue {
             | HostHandlePayload::SecretValue(_)
             | HostHandlePayload::BrowserSession(_)
             | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::Pty { .. }
             | HostHandlePayload::ClockDomain(_)
             | HostHandlePayload::ReadOwner(_)
             | HostHandlePayload::SessionLease(_) => None,
@@ -259,6 +282,7 @@ impl HostHandleValue {
             | HostHandlePayload::TlsStream(_)
             | HostHandlePayload::BrowserSession(_)
             | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::Pty { .. }
             | HostHandlePayload::ClockDomain(_)
             | HostHandlePayload::ReadOwner(_)
             | HostHandlePayload::SessionLease(_) => None,
@@ -273,6 +297,7 @@ impl HostHandleValue {
             | HostHandlePayload::TlsStream(_)
             | HostHandlePayload::SecretValue(_)
             | HostHandlePayload::CommandProcess(_)
+            | HostHandlePayload::Pty { .. }
             | HostHandlePayload::ClockDomain(_)
             | HostHandlePayload::ReadOwner(_)
             | HostHandlePayload::SessionLease(_) => None,
@@ -287,6 +312,7 @@ impl HostHandleValue {
             | HostHandlePayload::TlsStream(_)
             | HostHandlePayload::SecretValue(_)
             | HostHandlePayload::BrowserSession(_)
+            | HostHandlePayload::Pty { .. }
             | HostHandlePayload::ClockDomain(_)
             | HostHandlePayload::ReadOwner(_)
             | HostHandlePayload::SessionLease(_) => None,

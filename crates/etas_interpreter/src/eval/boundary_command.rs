@@ -1,3 +1,5 @@
+mod pty;
+
 use super::*;
 use crate::{control::ExecutionFault, value::host_handle::open_source_handle};
 use etas_host::{CommandOutput, WorkspacePathRef};
@@ -18,6 +20,20 @@ impl<'a> EvalContext<'a> {
         let ("Command", action) = self.source_default_signature(perform)? else {
             return None;
         };
+        if matches!(
+            action,
+            "start_pty" | "read_pty" | "write_pty" | "resize_pty" | "stop_pty"
+        ) {
+            return Some(match self.source_pty_operation(perform, action) {
+                Ok((op, decode)) => self.pending_command_process(
+                    CommandProcessOperation::Pty(op),
+                    decode,
+                    perform.span,
+                    perform.continuation.clone(),
+                ),
+                Err(fault) => ControlSignal::Fault(Box::new(fault)),
+            });
+        }
         let operation = match action {
             "run" => CommandCallable::Run,
             "start" => CommandCallable::Start,

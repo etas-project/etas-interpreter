@@ -21,6 +21,7 @@ pub(crate) struct EvalRunState {
 
 /// State shared by every task in one invocation.
 pub(crate) struct EvalSharedState {
+    pub(crate) pty_recording: Option<crate::api::PtyRecording>,
     pub(crate) replay_keys: super::replay::RunReplayKeys,
     pub(super) consumed_approvals: Vec<HostRequestId>,
     pub storage_limits: etas_host::StorageLimits,
@@ -295,6 +296,7 @@ impl EvalRunState {
         };
         let shared = EvalSharedState {
             replay_keys: input.replay_keys,
+            pty_recording: None,
             consumed_approvals: Vec::new(),
             storage_limits: limits,
             locked_model,

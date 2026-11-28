@@ -395,7 +395,7 @@ pub(crate) struct HandlerActivationSnapshot {
     pub rows: Vec<(String, etas_types::EffectRowRef)>,
     pub arm: etas_hir::HirHandlerArmId,
     pub request: ActionEvidenceSnapshot,
-    pub memory_place: Option<crate::control::handler_activation::SourceMemoryPlace>,
+    pub memory_place: Option<crate::control::handler_activation::SourceActionTarget>,
 }
 
 impl HandlerActivationSnapshot {

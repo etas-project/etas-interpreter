@@ -33,6 +33,14 @@ pub(in crate::driver) struct HostCompletion<Response> {
     result: Result<Response, HostError>,
 }
 
+fn command_pty_event(payload: &etas_host::CommandProcessPayload) -> Option<&etas_host::PtyEvent> {
+    match payload {
+        etas_host::CommandProcessPayload::PtyEvent(event) => Some(event),
+        etas_host::CommandProcessPayload::PtyRead(delivery) => Some(delivery.event()),
+        _ => None,
+    }
+}
+
 impl HostDispatch {
     pub(in crate::driver) fn begin<Response, Call, Dispatch>(
         eval: &mut EvalContext<'_>,
@@ -141,6 +149,101 @@ impl HostDispatch {
     where
         Response: TraceableHostResponse,
     {
+        Self::finish_with_pty(eval, completion, None)
+    }
+
+    pub(super) fn finish_process(
+        eval: &mut EvalContext<'_>,
+        completion: HostCompletion<etas_host::CommandProcessResponse>,
+        request: &etas_host::CommandProcessRequest,
+    ) -> Result<etas_host::CommandProcessResponse, HostError> {
+        use etas_host::context::trace::event::PtyTraceResult;
+        use etas_host::{
+            CommandProcessOperation, CommandProcessPayload, PtyEvent, PtyExitStatus, PtyOperation,
+        };
+        let CommandProcessOperation::Pty(op) = &request.operation else {
+            return Self::finish(eval, completion);
+        };
+        let payload = completion
+            .result
+            .as_ref()
+            .ok()
+            .and_then(|r| r.result.as_ref().ok());
+        let (session, result, bytes, code, signal) = match (op, payload) {
+            (PtyOperation::Start { .. }, Some(CommandProcessPayload::PtyHandle { id })) => {
+                (Some(id.to_owned()), "started", None, None, None)
+            }
+            (PtyOperation::Read { process, .. }, Some(payload))
+                if command_pty_event(payload).is_some() =>
+            {
+                let (result, bytes, code, signal) =
+                    match command_pty_event(payload).expect("PTY event") {
+                        PtyEvent::Output(data) => ("output", Some(data.len()), None, None),
+                        PtyEvent::Stopped => ("stopped", None, None, None),
+                        PtyEvent::Exited(PtyExitStatus::Code(code)) => {
+                            ("exited", None, Some(*code), None)
+                        }
+                        PtyEvent::Exited(PtyExitStatus::Signal(code)) => {
+                            ("exited", None, None, Some(*code))
+                        }
+                    };
+                (Some(process.clone()), result, bytes, code, signal)
+            }
+            (PtyOperation::Write { process, bytes }, Some(CommandProcessPayload::Unit)) => (
+                Some(process.clone()),
+                "written",
+                Some(bytes.len()),
+                None,
+                None,
+            ),
+            (PtyOperation::Resize { process, .. }, Some(CommandProcessPayload::Unit)) => {
+                (Some(process.clone()), "resized", None, None, None)
+            }
+            (PtyOperation::Stop { process }, Some(CommandProcessPayload::Unit)) => {
+                (Some(process.clone()), "stop", None, None, None)
+            }
+            (PtyOperation::Start { .. }, _) => (None, "failed", None, None, None),
+            (
+                PtyOperation::Read { process, .. }
+                | PtyOperation::Write { process, .. }
+                | PtyOperation::Resize { process, .. }
+                | PtyOperation::Stop { process },
+                _,
+            ) => (Some(process.clone()), "failed", None, None, None),
+        };
+        let meta = PtyTraceResult {
+            session,
+            result,
+            bytes,
+            code,
+            signal,
+        };
+        let response = Self::finish_with_pty(eval, completion, Some(meta))?;
+        if let Some(recording) = &eval.pty_recording
+            && let PtyOperation::Read { process, .. } = op
+            && let Ok(payload) = &response.result
+            && let Some(PtyEvent::Output(bytes)) = command_pty_event(payload)
+        {
+            recording
+                .record(request, process, "returned", bytes)
+                .map_err(|_| {
+                    HostError::new(
+                        HostErrorCode::IoFailure,
+                        "could not save private PTY recording",
+                    )
+                })?;
+        }
+        Ok(response)
+    }
+
+    fn finish_with_pty<Response>(
+        eval: &mut EvalContext<'_>,
+        completion: HostCompletion<Response>,
+        pty: Option<etas_host::context::trace::event::PtyTraceResult>,
+    ) -> Result<Response, HostError>
+    where
+        Response: TraceableHostResponse,
+    {
         let HostCompletion {
             request_id,
             operation,
@@ -151,6 +254,28 @@ impl HostDispatch {
         let outcome = match &result {
             Ok(response) => response.outcome(),
             Err(error) => HostOutcome::Failed(error.clone()),
+        };
+        let outcome = match (&pty, outcome) {
+            (Some(_), HostOutcome::Failed(error)) => {
+                let mut public_error = HostError::new(error.code, "terminal operation failed");
+                if let Some(detail) = error.details.iter().find(|d| {
+                    d.key == "pty_code"
+                        && matches!(
+                            d.value.as_str(),
+                            "busy"
+                                | "closed"
+                                | "io"
+                                | "invalid_input"
+                                | "unsupported"
+                                | "output_incomplete"
+                                | "cleanup_failed"
+                        )
+                }) {
+                    public_error = public_error.with_detail("pty_code", detail.value.clone());
+                }
+                HostOutcome::Failed(public_error)
+            }
+            (_, other) => other,
         };
         let external = match &result {
             Ok(response) => response.external_outcome(),
@@ -178,6 +303,7 @@ impl HostDispatch {
         })?;
         eval.events
             .push(WorkflowEvent::HostTrace(TraceEvent::HostRequestFinished {
+                pty,
                 id: request_id,
                 outcome,
                 command_isolation: result

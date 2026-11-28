@@ -525,6 +525,12 @@ pub enum HostBoundaryDecode {
     CommandProcessHandle {
         result_type: etas_types::TypeId,
     },
+    PtyHandle {
+        result_type: etas_types::TypeId,
+    },
+    PtyEvent {
+        result_type: etas_types::TypeId,
+    },
     SourceCommandHandle {
         result_type: etas_types::TypeId,
     },

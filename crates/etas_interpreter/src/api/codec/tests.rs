@@ -173,6 +173,7 @@ fn checkpoint_codec_rejects_v18_saved_invocation_authority() {
 #[test]
 fn command_trace_reports_trusted_execution_as_unconfined() {
     let event = WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
+        pty: None,
         id: HostRequestId(1),
         outcome: etas_host::HostOutcome::Succeeded,
         finished_at_unix_micros: 12,
@@ -1598,6 +1599,7 @@ fn run_report_json_preserves_structured_host_trace_events() {
                     started_at_unix_micros: 100,
                 }),
                 WorkflowEvent::HostTrace(etas_host::TraceEvent::HostRequestFinished {
+                    pty: None,
                     command_isolation: None,
                     id: HostRequestId(7),
                     outcome: etas_host::HostOutcome::Failed(etas_host::HostError::new(

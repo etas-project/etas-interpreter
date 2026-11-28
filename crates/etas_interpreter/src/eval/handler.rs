@@ -469,7 +469,7 @@ impl<'a> EvalContext<'a> {
         scope_id: HandlerScopeId,
         frame: &Frame,
     ) -> Option<ControlSignal> {
-        let memory_target = self.source_memory_handler_target(&perform);
+        let memory_target = self.source_handler_target(&perform);
         let scope = self
             .task
             .handler_stack
@@ -1173,7 +1173,7 @@ impl<'a> EvalContext<'a> {
         perform: &PendingPerform,
         handler: &ActiveHandlerArmRecord,
         frame: Option<&Frame>,
-        memory_target: Option<&crate::control::handler_activation::SourceMemoryPlace>,
+        memory_target: Option<&crate::control::handler_activation::SourceActionTarget>,
     ) -> Result<bool, ExecutionFault> {
         if self
             .checked
@@ -1223,7 +1223,7 @@ impl<'a> EvalContext<'a> {
             }
             let local_target = memory_target
                 .is_none()
-                .then(|| self.source_memory_handler_target(perform))
+                .then(|| self.source_handler_target(perform))
                 .flatten();
             return Ok(memory_target
                 .or(local_target.as_ref())

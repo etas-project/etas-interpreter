@@ -165,6 +165,7 @@ pub(crate) async fn run_checked_inner(
         entry_args: &args,
     }
     .into_parts();
+    run_state.pty_recording = options.pty_recording;
     let mut eval = eval::EvalContext::new(program, &mut run_state);
     eval.revision = prepared;
     prepare_span.finish_ok();

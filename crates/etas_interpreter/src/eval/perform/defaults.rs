@@ -85,8 +85,19 @@ impl EvalContext<'_> {
 
     pub(in crate::eval) fn source_default_signature<'a>(
         &'a self,
-        perform: &PendingPerform,
+        perform: &'a PendingPerform,
     ) -> Option<(&'a str, &'a str)> {
+        let (action, owner, name) = self.source_action_signature(perform)?;
+        self.has_checked_default_action(action)
+            .then_some((owner, name))
+    }
+
+    /// A handled source action can have no reachable runtime default. Its
+    /// declaration still identifies the request for matching an explicit arm.
+    pub(in crate::eval) fn source_action_signature<'a>(
+        &'a self,
+        perform: &'a PendingPerform,
+    ) -> Option<(&'a etas_effects::ActionRef, &'a str, &'a str)> {
         let proof = perform.checked_action.as_ref()?;
         let action = match &proof.effect {
             etas_effects::Effect::Action(action) => action,
@@ -95,7 +106,6 @@ impl EvalContext<'_> {
         };
         if !self.checked.hir.source_standard_types
             || !std::sync::Arc::ptr_eq(&proof.program, self.checked)
-            || !self.has_checked_default_action(action)
         {
             return None;
         }
@@ -116,7 +126,7 @@ impl EvalContext<'_> {
         {
             return None;
         }
-        Some((owner, name))
+        Some((action, owner, name))
     }
 
     pub(crate) fn source_console_action(

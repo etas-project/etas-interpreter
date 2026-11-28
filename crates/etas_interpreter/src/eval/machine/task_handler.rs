@@ -524,7 +524,7 @@ fn match_task_action(
     let mut seen = std::collections::HashSet::new();
     while let Some((cursor, identity, path)) = routes.pop() {
         if Arc::ptr_eq(&cursor, &owner.checked) {
-            let memory_target = ctx.source_memory_handler_target(pending);
+            let memory_target = ctx.source_handler_target(pending);
             let owner_ctx = ctx.scoped_context(owner, floor);
             if !has_action_family(&owner_ctx, &handler.handlers, &identity)? {
                 return Ok(None);

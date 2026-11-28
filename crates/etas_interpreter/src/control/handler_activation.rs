@@ -14,20 +14,21 @@ pub(crate) struct HandlerActivation {
     pub arm: HirHandlerArmId,
     pub request: CheckedActionInvocation,
     pub bindings: GenericBindings,
-    pub memory_place: Option<SourceMemoryPlace>,
+    pub memory_place: Option<SourceActionTarget>,
 }
 
-/// The resource selected by an installed source Store request whose shared
-/// action ABI has a wildcard selector. This does not change the action origin.
+/// A wildcard in a shared SDK body can acquire a concrete selector from the
+/// evaluated resource. The checked action identity remains in the original proof.
 #[derive(Clone, Debug, PartialEq, serde::Serialize, serde::Deserialize)]
-pub(crate) struct SourceMemoryPlace {
-    region: String,
-    path: Vec<String>,
+#[serde(untagged)]
+pub(crate) enum SourceActionTarget {
+    Memory { region: String, path: Vec<String> },
+    Pty { profile: Vec<String> },
 }
 
-impl SourceMemoryPlace {
+impl SourceActionTarget {
     pub fn from_store(store: etas_host::StoreRef) -> Self {
-        Self {
+        Self::Memory {
             region: store.region.stable_id,
             path: store.path,
         }
@@ -46,10 +47,31 @@ impl SourceMemoryPlace {
         else {
             return false;
         };
-        arm.action == request.action
-            && request.action.tag == etas_effects::MEMORY_TAG
-            && request.args.as_slice() == [EffectArgRef::Wildcard]
-            && Self::matches_selector(checked, &arm.args, &self.region, &self.path) == Some(true)
+        if arm.action != request.action || request.args.as_slice() != [EffectArgRef::Wildcard] {
+            return false;
+        }
+        match self {
+            Self::Memory { region, path } => {
+                request.action.tag == etas_effects::MEMORY_TAG
+                    && Self::matches_selector(checked, &arm.args, region, path) == Some(true)
+            }
+            Self::Pty { profile } => {
+                request.action.tag == etas_effects::COMMAND_TAG
+                    && checked
+                        .effect_registry
+                        .action_signature(&request.action)
+                        .is_some_and(|signature| {
+                            matches!(
+                                signature.name.as_str(),
+                                "start_pty" | "read_pty" | "write_pty" | "resize_pty" | "stop_pty"
+                            )
+                        })
+                    && match arm.args.as_slice() {
+                        [EffectArgRef::Path(path)] => path == profile,
+                        _ => false,
+                    }
+            }
+        }
     }
 
     pub fn matches_selector(
@@ -86,7 +108,7 @@ impl HandlerActivation {
         arm: HirHandlerArmId,
         request: CheckedActionInvocation,
         outer: &GenericBindings,
-        memory_place: Option<SourceMemoryPlace>,
+        memory_place: Option<SourceActionTarget>,
     ) -> Result<Self, String> {
         request.validate_origin()?;
         if !std::sync::Arc::ptr_eq(checked, &request.program) {

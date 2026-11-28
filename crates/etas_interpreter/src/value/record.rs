@@ -38,6 +38,7 @@ impl RecordLayout {
 struct RecordData {
     fields: Vec<(String, InterpValue)>,
     layout: OnceCell<Arc<RecordLayout>>,
+    sandbox_selector: Option<Rc<[String]>>,
     member_tool_snapshot: Option<std::rc::Weak<super::MemberToolSnapshot>>,
 }
 
@@ -81,6 +82,7 @@ impl RecordValue {
         Self(Rc::new(RecordData {
             fields,
             layout: OnceCell::new(),
+            sandbox_selector: None,
             member_tool_snapshot: None,
         }))
     }
@@ -92,8 +94,17 @@ impl RecordValue {
         Self(Rc::new(RecordData {
             fields,
             layout: OnceCell::from(layout),
+            sandbox_selector: None,
             member_tool_snapshot: None,
         }))
+    }
+
+    pub(crate) fn sandbox_selector(&self) -> Option<Rc<[String]>> {
+        self.0.sandbox_selector.clone()
+    }
+
+    pub(crate) fn set_sandbox_selector(&mut self, path: Option<Rc<[String]>>) {
+        Rc::make_mut(&mut self.0).sandbox_selector = path;
     }
 
     pub(crate) fn bind_member_tool(&mut self, snapshot: std::rc::Weak<super::MemberToolSnapshot>) {
@@ -121,6 +132,7 @@ impl RecordValue {
     pub(crate) fn field_mut(&mut self, field: &str) -> Option<&mut InterpValue> {
         let storage = self.0.field_storage(field)?;
         let data = Rc::make_mut(&mut self.0);
+        data.sandbox_selector = None;
         Some(&mut data.fields[storage].1)
     }
 
@@ -161,6 +173,7 @@ impl RecordValue {
     pub fn borrow_mut(&mut self) -> &mut Vec<(String, InterpValue)> {
         let data = Rc::make_mut(&mut self.0);
         // Public mutation can change field names/order as well as values.
+        data.sandbox_selector = None;
         data.layout.take();
         &mut data.fields
     }

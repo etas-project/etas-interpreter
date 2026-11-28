@@ -396,6 +396,7 @@ impl Walk<'_> {
                 let mut children = Vec::with_capacity(left.fields.len());
                 let mut names = Vec::with_capacity(left.fields.len());
                 let member_tool = values.member_tool_binding();
+                let sandbox_selector = values.sandbox_selector();
                 for (name, value) in values.into_values() {
                     let source = source_fields
                         .remove(name.as_str())
@@ -406,7 +407,16 @@ impl Walk<'_> {
                     names.push(name);
                     children.push((source, to, value));
                 }
-                self.children(from, to, Build::Record { names, member_tool }, children);
+                self.children(
+                    from,
+                    to,
+                    Build::Record {
+                        names,
+                        member_tool,
+                        sandbox_selector,
+                    },
+                    children,
+                );
             }
             (Type::Option(left), Type::Option(right)) => match value {
                 InterpValue::OptionNone => self.values.push(InterpValue::OptionNone),

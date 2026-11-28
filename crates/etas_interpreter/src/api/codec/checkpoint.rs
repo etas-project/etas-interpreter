@@ -717,6 +717,7 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
             },
         }),
         etas_host::TraceEvent::HostRequestFinished {
+            pty,
             command_isolation,
             id,
             outcome,
@@ -730,6 +731,9 @@ fn host_trace_event_json(event: &etas_host::TraceEvent) -> Value {
             "finished_at_unix_micros": finished_at_unix_micros,
             "duration_micros": duration_micros,
             });
+            if let Some(pty) = pty {
+                value["pty"] = json!(pty);
+            }
             if let Some(report) = command_isolation {
                 let guarantees = |value: etas_host::IsolationRequirements| {
                     json!({

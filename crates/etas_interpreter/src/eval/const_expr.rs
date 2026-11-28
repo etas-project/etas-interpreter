@@ -237,7 +237,21 @@ impl<'a> EvalContext<'a> {
                     ..
                 } => match classification {
                     TopLevelLetClassification::Const => {
-                        self.eval_const_expr(*initializer, symbol_data.definition_span, visiting)
+                        let mut value = self.eval_const_expr(
+                            *initializer,
+                            symbol_data.definition_span,
+                            visiting,
+                        )?;
+                        if let InterpValue::Nominal { ty, value } = &mut value
+                            && let Some(etas_types::Type::Nominal(nominal)) = self.checked.type_store.get(*ty)
+                            && nominal.name == "std.host.sandbox.SandboxProfile"
+                            && let InterpValue::Record(record) = value.make_mut()
+                            && record.sandbox_selector().is_none()
+                        {
+                            let selector = self.checked.hir.declaration_path(symbol);
+                            record.set_sandbox_selector(selector.map(Into::into));
+                        }
+                        Ok(value)
                     }
                     TopLevelLetClassification::Handler => {
                         self.eval_top_level_handler(*initializer, symbol_data.definition_span)
