@@ -92,12 +92,12 @@ pub(super) fn prepare_program_with_layouts(
     installed: Option<super::installed::InstalledLayouts>,
 ) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
     if let Some(cache) = etas_frontend::RunPreparationCache::for_owner(project) {
-        let profile = &project
+        let profile = project
             .standard_library
             .as_ref()
-            .expect("cache owner")
-            .profile;
-        if let Some(layouts) = cache.read_plan(false).and_then(|bytes| decode(&bytes)) {
+            .map(|std| std.profile.clone())
+            .unwrap_or_else(etas_utils::ProfileHandle::disabled);
+        if let Some(layouts) = cache.decode_plan(false, decode) {
             profile.counter("interpreter.entry_plan_cache_hit", 1);
             return restore_layouts(project, layouts, residual_binding);
         }

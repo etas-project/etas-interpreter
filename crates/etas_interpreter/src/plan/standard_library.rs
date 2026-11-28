@@ -126,9 +126,8 @@ impl StandardLibraryProgram {
         let cache = etas_frontend::RunPreparationCache::for_owner(program);
         if let Some(cache) = cache {
             let _span = profile.span("std.runtime.restore_plan", "std");
-            if let Some((layouts, tables, bindings)) = cache
-                .read_plan(true)
-                .and_then(|bytes| super::pipeline::decode(&bytes))
+            if let Some((layouts, tables, bindings)) =
+                cache.decode_plan(true, super::pipeline::decode)
             {
                 let prepared = super::pipeline::restore_layouts(
                     library,
