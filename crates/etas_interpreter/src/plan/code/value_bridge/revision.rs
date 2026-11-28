@@ -72,6 +72,13 @@ impl RevisionProjection {
             Self::Candidate(bridge) | Self::Original(bridge) => bridge.standard_library_owner(),
         }
     }
+    pub(super) fn comparator_identity(&self) -> Option<(TypeId, TypeId)> {
+        match self {
+            Self::Candidate(bridge) => bridge.comparator_identity(),
+            Self::Original(bridge) => bridge.comparator_identity().map(|(from, to)| (to, from)),
+        }
+    }
+
     pub(super) fn type_lookup(
         &self,
         program: &CheckedProgram,

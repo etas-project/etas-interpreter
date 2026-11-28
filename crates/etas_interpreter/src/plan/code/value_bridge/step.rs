@@ -86,13 +86,15 @@ impl Walk<'_> {
             }
             return Ok(());
         }
-        if crate::eval::resolve_std_type(self.source, &["std", "collections", "ComparatorIdentity"])
-            == Some(from)
-            && crate::eval::resolve_std_type(
-                self.target,
-                &["std", "collections", "ComparatorIdentity"],
-            ) == Some(to)
-        {
+        let comparator_identity = match &self.revision {
+            Some(revision) => revision.comparator_identity(),
+            None => {
+                let path = &["std", "collections", "ComparatorIdentity"];
+                crate::eval::resolve_std_type(self.source, path)
+                    .zip(crate::eval::resolve_std_type(self.target, path))
+            }
+        };
+        if comparator_identity == Some((from, to)) {
             let InterpValue::Nominal { ty, value } = value else {
                 return Err(wrong("Nominal", &value));
             };

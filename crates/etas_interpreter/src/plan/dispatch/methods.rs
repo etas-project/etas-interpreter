@@ -417,13 +417,13 @@ impl MethodDispatchPlan {
         receivers: &[TypeId],
     ) -> Result<HashMap<WitnessKey, PreparedWitness>, String> {
         let mut witnesses = HashMap::new();
+        let mut lookup_witnesses =
+            project
+                .types
+                .methods
+                .indexed_witness_lookup(&project.type_store, lookup, specs);
         for &receiver in receivers {
-            for resolved in project.types.methods.witnesses_for_receiver_indexed(
-                &project.type_store,
-                lookup,
-                specs,
-                receiver,
-            )? {
+            for resolved in lookup_witnesses(receiver)? {
                 let entry = resolved.declaration;
                 if let MethodTarget::Source { callable, .. } | MethodTarget::Agent { callable, .. } =
                     entry.target

@@ -51,6 +51,7 @@ pub struct RevisionTypeBridge {
     candidate_callables: BTreeMap<etas_code::CallableId, etas_hir::HirItemId>,
     original_agents: BTreeMap<TypeId, etas_hir::HirItemId>,
     candidate_agents: BTreeMap<TypeId, etas_hir::HirItemId>,
+    comparator_identity: Option<(TypeId, TypeId)>,
     runtime_types: runtime::RuntimeTypeBridge,
     actions: actions::ActionBridge,
 }
@@ -255,9 +256,19 @@ impl RevisionTypeBridge {
                 .collect(),
             original_agents: agent_items(original)?,
             candidate_agents: agent_items(compiled)?,
+            comparator_identity: {
+                let path = &["std", "collections", "ComparatorIdentity"];
+                crate::eval::resolve_std_type(original.checked_program(), path).zip(
+                    crate::eval::resolve_std_type(compiled.checked_program(), path),
+                )
+            },
             runtime_types,
             actions,
         })
+    }
+
+    pub(super) fn comparator_identity(&self) -> Option<(TypeId, TypeId)> {
+        self.comparator_identity
     }
 
     pub fn original_program(&self) -> &CheckedProgram {
