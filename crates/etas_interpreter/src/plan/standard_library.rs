@@ -24,19 +24,25 @@ use crate::{
 pub(crate) struct StandardLibraryProgram {
     prepared: Arc<PreparedProgram>,
     bridge: Arc<RevisionTypeBridge>,
+    bindings: LibraryBindings,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+struct LibraryBindings {
     aliases: BTreeMap<StdSymbolId, etas_code::CallableId>,
     callables: BTreeMap<etas_code::CallableId, LibraryCallable>,
     values: BTreeMap<etas_code::DefinitionKey, LibraryValue>,
 }
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct LibraryCallable {
+    #[serde(skip)]
     plan: OnceLock<Result<Arc<super::InterpreterPlan>, String>>,
     item: HirItemId,
     ty: TypeId,
 }
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct LibraryValue {
     item: HirItemId,
     symbol: etas_hir::SymbolId,
@@ -117,6 +123,31 @@ impl StandardLibraryProgram {
             return Ok(None);
         }
         let profile = &standard.profile;
+        let cache = etas_frontend::RunPreparationCache::for_owner(program);
+        if let Some(cache) = cache {
+            let _span = profile.span("std.runtime.restore_plan", "std");
+            if let Some((layouts, tables, bindings)) = cache
+                .read_plan(true)
+                .and_then(|bytes| super::pipeline::decode(&bytes))
+            {
+                let prepared = super::pipeline::restore_layouts(
+                    library,
+                    layouts,
+                    library.residual_plans().binding(),
+                )
+                .map_err(|errors| format!("std body preparation failed: {errors:?}"))?;
+                let bridge = Arc::new(RevisionTypeBridge::from_installed_tables(
+                    program, standard, tables,
+                ));
+                profile.counter("std.runtime.plan_cache_hit", 1);
+                return Ok(Some(Arc::new(Self {
+                    prepared,
+                    bridge,
+                    bindings,
+                })));
+            }
+            profile.counter("std.runtime.plan_cache_hit", 0);
+        }
         let (caller, bodies) = {
             let _phase = profile.span("std.runtime.catalogs", "std");
             (catalog(program)?, catalog(library)?)
@@ -287,12 +318,23 @@ impl StandardLibraryProgram {
                 },
             );
         }
-        Ok(Some(Arc::new(Self {
-            prepared,
-            bridge,
+        let bindings = LibraryBindings {
             aliases,
             callables,
             values,
+        };
+        if let Some(cache) = cache
+            && cache.can_write()
+            && prepared.diagnostics.is_empty()
+            && let Some(bytes) =
+                super::pipeline::encode(&(&prepared.layouts, &bridge.tables, &bindings))
+        {
+            cache.write_plan(true, &bytes);
+        }
+        Ok(Some(Arc::new(Self {
+            prepared,
+            bridge,
+            bindings,
         })))
     }
 
@@ -301,6 +343,7 @@ impl StandardLibraryProgram {
         identity: &etas_code::DefinitionKey,
     ) -> Result<(etas_hir::SymbolId, TypeId, CheckedExecutionProgram), String> {
         let value = self
+            .bindings
             .values
             .get(identity)
             .ok_or("std value has no checked initializer")?;
@@ -327,6 +370,7 @@ impl StandardLibraryProgram {
         targets: &mut LibraryTargets,
     ) -> Result<CallTarget, String> {
         let identity = self
+            .bindings
             .aliases
             .get(&symbol)
             .ok_or("std artifact has no canonical callable binding")?;
@@ -343,6 +387,7 @@ impl StandardLibraryProgram {
 
     fn project_uncached(&self, identity: &etas_code::CallableId) -> Result<CallTarget, String> {
         let binding = self
+            .bindings
             .callables
             .get(identity)
             .ok_or("std artifact is missing a checked body binding")?;

@@ -15,7 +15,7 @@ use etas_utils::{Pass, PassContext, PassManager, PassResult};
 use super::context::{PlanContext, plan_pass};
 use crate::value::{InterpValue, RecordValue, record::RecordLayout};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckedRecordField {
     names: Arc<[String]>,
     slot: usize,
@@ -31,14 +31,14 @@ impl CheckedRecordField {
     }
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub(crate) struct RecordPatternField {
     pub field: CheckedRecordField,
     pub pat: Option<HirPatId>,
     pub span: Span,
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 struct RecordConstruction {
     retained: Option<Vec<CheckedRecordField>>,
     names: Vec<String>,
@@ -56,10 +56,10 @@ pub(crate) enum FieldAccessSite<'a> {
     },
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 struct PathField {
     field: Option<CheckedRecordField>,
-    native: Option<etas_std::RuntimeField>,
+    native: Option<etas_std::RuntimeFieldRole>,
     value: Option<etas_types::value_representation::ValueProjection>,
     output: TypeId,
 }
@@ -72,13 +72,13 @@ fn source_memory_field(project: &CheckedProject, field: &etas_types::FieldProjec
         && source_memory_store_parameters(&project.type_store, field.output).is_some()
 }
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct RecordLayoutTable {
     source_iterators: HashMap<HirExprId, super::iteration::SourceIteratorProtocol>,
     constructions: HashMap<HirExprId, RecordConstruction>,
     primitives: HashMap<HirExprId, TypeId>,
     fields: HashMap<HirExprId, CheckedRecordField>,
-    native_fields: HashMap<HirExprId, etas_std::RuntimeField>,
+    native_fields: HashMap<HirExprId, etas_std::RuntimeFieldRole>,
     value_fields: HashMap<HirExprId, etas_types::value_representation::ValueProjection>,
     patterns: HashMap<HirPatId, Vec<RecordPatternField>>,
     paths: PathFields,
@@ -136,14 +136,19 @@ impl RecordLayoutTable {
     }
 
     pub(crate) fn native_field(&self, site: FieldAccessSite<'_>) -> Option<etas_std::RuntimeField> {
-        match site {
+        let role = match site {
             FieldAccessSite::Expr(expr) => self.native_fields.get(&expr).copied(),
             FieldAccessSite::Path {
                 prefix,
                 remaining,
                 index,
             } => self.paths.get(&prefix)?.get(remaining)?.get(index)?.native,
-        }
+        }?;
+        etas_std::RuntimeTypeRole::CommandResult
+            .fields()
+            .iter()
+            .copied()
+            .find(|field| field.role == role)
     }
 
     pub(crate) fn field(&self, site: FieldAccessSite<'_>) -> Option<&CheckedRecordField> {
@@ -591,7 +596,7 @@ fn native_field(
     receiver: TypeId,
     name: &str,
     output: TypeId,
-) -> Result<Option<etas_std::RuntimeField>, String> {
+) -> Result<Option<etas_std::RuntimeFieldRole>, String> {
     if Some(receiver)
         != project
             .types
@@ -613,7 +618,7 @@ fn native_field(
     if project.type_store.get(output) != Some(&Type::Primitive(expected)) {
         return Err("native field output differs from its canonical runtime ABI".into());
     }
-    Ok(Some(*descriptor))
+    Ok(Some(descriptor.role))
 }
 
 fn checked_field(names: Arc<[String]>, name: &str) -> Result<CheckedRecordField, String> {

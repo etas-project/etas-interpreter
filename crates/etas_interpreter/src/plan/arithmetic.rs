@@ -13,19 +13,19 @@ use crate::value::{InterpValue, NumericValue};
 
 const MAX_NODES: usize = 128;
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 enum Instruction {
     Literal(NumericValue),
     Binary(HirBinaryOp, usize, usize),
 }
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 enum Output {
     Number(usize),
     Tuple(Vec<usize>),
 }
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub(crate) struct ArithmeticBody {
     inputs: Vec<PrimitiveType>,
     instructions: Vec<Instruction>,

@@ -132,7 +132,7 @@ fn same_text_and_native_indices_do_not_bridge_different_package_owners() {
         bridge.to_candidate(second.checked_program(), &owner(package, "A"), a),
         Err(RevisionTypeBridgeError::WrongProgram)
     ));
-    assert!(bridge.forward.values().all(Option::is_none));
+    assert!(bridge.tables.forward.values().all(Option::is_none));
 }
 
 #[test]
@@ -203,7 +203,7 @@ fn recursive_nominal_origins_are_finite_and_keep_generic_declaration_scope() {
         package,
     );
     let bridge = bridge(&first, &second);
-    assert!(!bridge.forward.is_empty());
-    assert!(bridge.forward.values().all(Option::is_some));
-    assert!(bridge.forward.len() < 128);
+    assert!(!bridge.tables.forward.is_empty());
+    assert!(bridge.tables.forward.values().all(Option::is_some));
+    assert!(bridge.tables.forward.len() < 128);
 }

@@ -91,6 +91,18 @@ pub(super) fn prepare_program_with_layouts(
     residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
     installed: Option<super::installed::InstalledLayouts>,
 ) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
+    if let Some(cache) = etas_frontend::RunPreparationCache::for_owner(project) {
+        let profile = &project
+            .standard_library
+            .as_ref()
+            .expect("cache owner")
+            .profile;
+        if let Some(layouts) = cache.read_plan(false).and_then(|bytes| decode(&bytes)) {
+            profile.counter("interpreter.entry_plan_cache_hit", 1);
+            return restore_layouts(project, layouts, residual_binding);
+        }
+        profile.counter("interpreter.entry_plan_cache_hit", 0);
+    }
     let mut context = PlanContext::new(project);
     context.residual_binding = residual_binding.cloned();
     // Layout/ABI preparation must not select main or require analysis of a
@@ -147,15 +159,88 @@ pub(super) fn prepare_program_with_layouts(
         )]);
     };
     let numeric_literals = super::arithmetic::numeric_literals(project);
+    let layouts = Arc::new(super::types::PreparedLayouts {
+        expression_routes: expression_routes(project),
+        arithmetic: super::arithmetic::prepare(project, &numeric_literals),
+        numeric_literals,
+        slots: Arc::new(slots),
+        frames: Arc::new(frames),
+        arguments: Arc::new(arguments),
+        closures: Arc::new(closures),
+        named_variants: Arc::new(named_variants),
+        records: Arc::new(records),
+        globals: Arc::new(globals),
+        resources: Arc::new(resources),
+        dispatch,
+    });
+    let prepared = bind_layouts(project, layouts, residual, context.diagnostics)?;
+    if let Some(cache) = etas_frontend::RunPreparationCache::for_owner(project)
+        && cache.can_write()
+        && prepared.diagnostics.is_empty()
+        && let Some(bytes) = encode(&prepared.layouts)
+    {
+        cache.write_plan(false, &bytes);
+    }
+    Ok(prepared)
+}
+
+pub(super) fn encode<T: serde::Serialize>(value: &T) -> Option<Vec<u8>> {
+    bincode::serde::encode_to_vec(value, bincode::config::standard()).ok()
+}
+
+pub(super) fn decode<T: serde::de::DeserializeOwned>(bytes: &[u8]) -> Option<T> {
+    let (value, used) = bincode::serde::decode_from_slice(
+        bytes,
+        bincode::config::standard().with_limit::<536870912>(),
+    )
+    .ok()?;
+    (used == bytes.len()).then_some(value)
+}
+
+pub(super) fn restore_layouts(
+    project: &CheckedProject,
+    mut layouts: super::types::PreparedLayouts,
+    residual_binding: Option<&etas_frontend::CheckedResidualBinding>,
+) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
+    layouts.dispatch.restore(project).map_err(|reason| {
+        vec![diagnostics::missing_checked_fact(
+            diagnostics::primary_span(project),
+            reason,
+        )]
+    })?;
+    let mut context = PlanContext::new(project);
+    context.requested_root = None;
+    context.residual_binding = residual_binding.cloned();
+    run_pipeline(
+        &mut Pipeline::new("interpreter.plan.bind_cached_layouts")
+            .pass(ValidateResidualPlansPass)
+            .pass(BindResidualSitesPass),
+        &mut context,
+    );
+    if context
+        .diagnostics
+        .iter()
+        .any(|d| d.severity == Severity::Error)
+    {
+        return Err(context.diagnostics);
+    }
+    let residual = context.residual.expect("residual binding completed");
+    bind_layouts(project, Arc::new(layouts), residual, context.diagnostics)
+}
+
+fn bind_layouts(
+    project: &CheckedProject,
+    layouts: Arc<super::types::PreparedLayouts>,
+    residual: super::residual::PreparedResidualPlans,
+    diagnostics: Vec<Diagnostic>,
+) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {
     Ok(Arc::new(PreparedProgram {
+        layouts,
         callable_plans: Default::default(),
         native_applications: Default::default(),
-        expression_routes: expression_routes(project),
         materializations: Default::default(),
         sequence_layouts: Default::default(),
         enum_layouts: Default::default(),
-        arithmetic: super::arithmetic::prepare(project, &numeric_literals),
-        numeric_literals,
         standard_library: super::standard_library::StandardLibraryProgram::prepare(project)
             .map_err(|reason| {
                 vec![diagnostics::missing_checked_fact(
@@ -166,17 +251,8 @@ pub(super) fn prepare_program_with_layouts(
         program: project.clone(),
         known_std_types: crate::eval::KnownStdTypes::from_checked(project),
         spec_facts: Arc::new(std::sync::OnceLock::new()),
-        slots: Arc::new(slots),
-        frames: Arc::new(frames),
-        arguments: Arc::new(arguments),
-        closures: Arc::new(closures),
-        named_variants: Arc::new(named_variants),
-        records: Arc::new(records),
-        globals: Arc::new(globals),
-        resources: Arc::new(resources),
-        dispatch,
         residual: Arc::new(residual),
-        diagnostics: context.diagnostics,
+        diagnostics,
     }))
 }
 

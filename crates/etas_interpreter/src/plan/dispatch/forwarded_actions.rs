@@ -6,7 +6,7 @@ use etas_std::{IntrinsicDispatch, LoweringHint, StdDecl, StdIntrinsicId};
 
 use crate::intrinsic::dispatch::{StdCallable, StdIntrinsicIdentity};
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub(crate) struct CheckedForwardedAction {
     pub action: ActionRef,
     pub owner_path: Vec<String>,

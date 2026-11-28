@@ -8,20 +8,20 @@ pub struct CheckedPureIntrinsicCall {
     pub result_type: TypeId,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub struct StdIntrinsicIdentity {
     pub intrinsic: StdIntrinsicId,
     pub dispatch: IntrinsicDispatch,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct IntrinsicSubstitutionStep {
     pub types: Vec<(String, TypeId)>,
     pub parameters: Vec<(TypeId, TypeId)>,
     pub rows: Vec<(String, etas_types::EffectRowRef)>,
 }
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub struct CheckedStdIntrinsicCall {
     pub identity: StdIntrinsicIdentity,
     pub origin: etas_hir::HirExprId,

@@ -45,6 +45,11 @@ pub struct RevisionTypeBridge {
     standard_library: Option<std::sync::Arc<etas_frontend::StandardLibrary>>,
     original: CheckedProgram,
     candidate: CheckedProgram,
+    pub(crate) tables: std::sync::Arc<BridgeTables>,
+}
+
+#[derive(serde::Serialize, serde::Deserialize)]
+pub(crate) struct BridgeTables {
     forward: BTreeMap<(GenericOwner, TypeId), Option<TypeId>>,
     backward: BTreeMap<(GenericOwner, TypeId), Option<TypeId>>,
     original_callables: BTreeMap<etas_code::CallableId, etas_hir::HirItemId>,
@@ -59,15 +64,32 @@ pub struct RevisionTypeBridge {
 impl std::fmt::Debug for RevisionTypeBridge {
     fn fmt(&self, out: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         out.debug_struct("RevisionTypeBridge")
-            .field("forward_types", &self.forward.len())
-            .field("backward_types", &self.backward.len())
-            .field("original_callables", &self.original_callables.len())
-            .field("candidate_callables", &self.candidate_callables.len())
+            .field("forward_types", &self.tables.forward.len())
+            .field("backward_types", &self.tables.backward.len())
+            .field("original_callables", &self.tables.original_callables.len())
+            .field(
+                "candidate_callables",
+                &self.tables.candidate_callables.len(),
+            )
             .finish_non_exhaustive()
     }
 }
 
 impl RevisionTypeBridge {
+    pub(crate) fn from_installed_tables(
+        owner: &CheckedProgram,
+        library: &std::sync::Arc<etas_frontend::StandardLibrary>,
+        tables: std::sync::Arc<BridgeTables>,
+    ) -> Self {
+        Self {
+            original: owner.clone(),
+            candidate: library.program.clone(),
+            standard_library: Some(library.clone()),
+            tables,
+            runtime_owner: Default::default(),
+        }
+    }
+
     pub(crate) fn for_standard_library(
         original: &DefinitionCatalog,
         library: &DefinitionCatalog,
@@ -244,31 +266,33 @@ impl RevisionTypeBridge {
             standard_library: None,
             original: original.checked_program().clone(),
             candidate: compiled.checked_program().clone(),
-            forward,
-            backward,
-            original_callables: original
-                .native_callables()
-                .map(|(id, item)| (id.clone(), item))
-                .collect(),
-            candidate_callables: compiled
-                .native_callables()
-                .map(|(id, item)| (id.clone(), item))
-                .collect(),
-            original_agents: agent_items(original)?,
-            candidate_agents: agent_items(compiled)?,
-            comparator_identity: {
-                let path = &["std", "collections", "ComparatorIdentity"];
-                crate::eval::resolve_std_type(original.checked_program(), path).zip(
-                    crate::eval::resolve_std_type(compiled.checked_program(), path),
-                )
-            },
-            runtime_types,
-            actions,
+            tables: std::sync::Arc::new(BridgeTables {
+                forward,
+                backward,
+                original_callables: original
+                    .native_callables()
+                    .map(|(id, item)| (id.clone(), item))
+                    .collect(),
+                candidate_callables: compiled
+                    .native_callables()
+                    .map(|(id, item)| (id.clone(), item))
+                    .collect(),
+                original_agents: agent_items(original)?,
+                candidate_agents: agent_items(compiled)?,
+                comparator_identity: {
+                    let path = &["std", "collections", "ComparatorIdentity"];
+                    crate::eval::resolve_std_type(original.checked_program(), path).zip(
+                        crate::eval::resolve_std_type(compiled.checked_program(), path),
+                    )
+                },
+                runtime_types,
+                actions,
+            }),
         })
     }
 
     pub(super) fn comparator_identity(&self) -> Option<(TypeId, TypeId)> {
-        self.comparator_identity
+        self.tables.comparator_identity
     }
 
     pub fn original_program(&self) -> &CheckedProgram {
@@ -281,9 +305,9 @@ impl RevisionTypeBridge {
         candidate: bool,
     ) -> Option<&etas_code::MethodId> {
         let callables = if candidate {
-            &self.candidate_callables
+            &self.tables.candidate_callables
         } else {
-            &self.original_callables
+            &self.tables.original_callables
         };
         callables
             .iter()
@@ -314,9 +338,21 @@ impl RevisionTypeBridge {
         program: &CheckedProgram,
     ) -> Option<&etas_types::ty::TypeLookupIndex> {
         if std::sync::Arc::ptr_eq(program, &self.original) {
-            Some(&self.runtime_types.backward.target_types)
+            Some(
+                self.tables
+                    .runtime_types
+                    .backward
+                    .target_types
+                    .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&program.type_store)),
+            )
         } else if std::sync::Arc::ptr_eq(program, &self.candidate) {
-            Some(&self.runtime_types.forward.target_types)
+            Some(
+                self.tables
+                    .runtime_types
+                    .forward
+                    .target_types
+                    .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&program.type_store)),
+            )
         } else {
             None
         }
@@ -334,7 +370,10 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.original) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.runtime_types.forward.get(source, &self.candidate, ty)
+        self.tables
+            .runtime_types
+            .forward
+            .get(source, &self.candidate, ty)
     }
 
     pub(crate) fn runtime_to_original(
@@ -345,7 +384,10 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.candidate) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.runtime_types.backward.get(source, &self.original, ty)
+        self.tables
+            .runtime_types
+            .backward
+            .get(source, &self.original, ty)
     }
 
     /// Callable snapshots may retain a checked generic declaration template.
@@ -360,15 +402,15 @@ impl RevisionTypeBridge {
             (
                 &self.original,
                 &self.candidate,
-                &self.original_callables,
-                &self.runtime_types.forward,
+                &self.tables.original_callables,
+                &self.tables.runtime_types.forward,
             )
         } else {
             (
                 &self.candidate,
                 &self.original,
-                &self.candidate_callables,
-                &self.runtime_types.backward,
+                &self.tables.candidate_callables,
+                &self.tables.runtime_types.backward,
             )
         };
         if !std::sync::Arc::ptr_eq(source, expected) {
@@ -390,7 +432,8 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.original) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.runtime_types
+        self.tables
+            .runtime_types
             .forward
             .get_in_scope(source, &self.candidate, scope, ty)
     }
@@ -404,7 +447,8 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.candidate) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.runtime_types
+        self.tables
+            .runtime_types
             .backward
             .get_in_scope(source, &self.original, scope, ty)
     }
@@ -417,7 +461,10 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.original) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.runtime_types.forward.row(source, &self.candidate, row)
+        self.tables
+            .runtime_types
+            .forward
+            .row(source, &self.candidate, row)
     }
 
     pub(crate) fn runtime_row_to_original(
@@ -428,7 +475,10 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.candidate) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.runtime_types.backward.row(source, &self.original, row)
+        self.tables
+            .runtime_types
+            .backward
+            .row(source, &self.original, row)
     }
 
     pub(crate) fn action_to_candidate(
@@ -439,7 +489,7 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.original) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.actions.to_candidate(action)
+        self.tables.actions.to_candidate(action)
     }
 
     pub(crate) fn corresponding_action(
@@ -447,7 +497,7 @@ impl RevisionTypeBridge {
         action: &etas_effects::ActionRef,
         forward: bool,
     ) -> Option<etas_effects::ActionRef> {
-        self.actions.corresponding_action(action, forward)
+        self.tables.actions.corresponding_action(action, forward)
     }
 
     pub(crate) fn action_to_original(
@@ -458,29 +508,29 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.candidate) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.actions.to_original(action)
+        self.tables.actions.to_original(action)
     }
 
     pub(crate) fn candidate_callable(
         &self,
         id: &etas_code::CallableId,
     ) -> Option<etas_hir::HirItemId> {
-        self.candidate_callables.get(id).copied()
+        self.tables.candidate_callables.get(id).copied()
     }
 
     pub(crate) fn original_callable(
         &self,
         id: &etas_code::CallableId,
     ) -> Option<etas_hir::HirItemId> {
-        self.original_callables.get(id).copied()
+        self.tables.original_callables.get(id).copied()
     }
 
     pub(crate) fn original_agent(&self, ty: TypeId) -> Option<etas_hir::HirItemId> {
-        self.original_agents.get(&ty).copied()
+        self.tables.original_agents.get(&ty).copied()
     }
 
     pub(crate) fn candidate_agent(&self, ty: TypeId) -> Option<etas_hir::HirItemId> {
-        self.candidate_agents.get(&ty).copied()
+        self.tables.candidate_agents.get(&ty).copied()
     }
 
     pub fn to_candidate(
@@ -492,7 +542,8 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.original) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.forward
+        self.tables
+            .forward
             .get(&(scope.clone(), ty))
             .copied()
             .flatten()
@@ -510,7 +561,8 @@ impl RevisionTypeBridge {
         if !std::sync::Arc::ptr_eq(source, &self.candidate) {
             return Err(RevisionTypeBridgeError::WrongProgram);
         }
-        self.backward
+        self.tables
+            .backward
             .get(&(scope.clone(), ty))
             .copied()
             .flatten()

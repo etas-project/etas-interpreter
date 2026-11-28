@@ -26,19 +26,24 @@ pub(crate) use methods::MethodDispatchPlan;
 
 use super::context::{PlanContext, plan_pass};
 
-#[derive(Clone, Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, Default)]
 pub struct IntrinsicDispatchTable {
     program: Arc<ProgramDispatch>,
     reflection_required: bool,
     reachable_intrinsics: HashSet<StdIntrinsicId>,
+    #[serde(skip)]
     pub pure_registry: PureIntrinsicRegistry,
 }
 
-#[derive(Debug, Default)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Default)]
 struct ProgramDispatch {
+    #[serde(with = "binding_sites")]
     call_bindings: HashMap<HirExprId, std::sync::Mutex<Option<Box<LastCallBindings>>>>,
+    #[serde(skip)]
     type_lookup: std::sync::OnceLock<etas_types::ty::TypeLookupIndex>,
+    #[serde(with = "methods::run_image")]
     methods: Arc<methods::MethodDispatchPlan>,
+    #[serde(skip)]
     compiler_actions: HashMap<etas_effects::ActionRef, forwarded_actions::CheckedCompilerAction>,
     forwarded_actions: HashMap<StdIntrinsicId, forwarded_actions::CheckedForwardedAction>,
     default_actions: HashMap<HirExprId, default_actions::CheckedDefaultAction>,
@@ -47,6 +52,7 @@ struct ProgramDispatch {
     std_type_members: HashSet<HirExprId>,
     std_call_origins: HashMap<HirExprId, CheckedStdIntrinsicCall>,
     pure_abi: Arc<PureAbiProjector>,
+    #[serde(skip)]
     handlers: StdIntrinsicHandlerRegistry,
     std_intrinsics: HashMap<SymbolId, StdIntrinsicIdentity>,
     enum_constructors: HashMap<SymbolId, StdEnumConstructor>,
@@ -63,20 +69,20 @@ struct LastCallBindings {
     resolved: crate::control::CheckedCallBindings,
 }
 
-#[derive(Debug, PartialEq, Eq, Hash)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, PartialEq, Eq, Hash)]
 struct IntrinsicCallableAbi {
     intrinsic: u32,
     input: Vec<etas_types::TypeId>,
     output: etas_types::TypeId,
 }
 
-#[derive(Clone, Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug)]
 pub(crate) struct StdEnumConstructor {
     pub name: String,
     pub arity: usize,
 }
 
-#[derive(Clone, Copy, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Copy, Debug, PartialEq, Eq)]
 pub enum BraceLiteralShape {
     Record,
     Map,
@@ -387,6 +393,12 @@ impl IntrinsicDispatchTable {
         })
     }
 
+    pub(super) fn restore(&mut self, project: &CheckedProject) -> Result<(), String> {
+        let program = Arc::get_mut(&mut self.program).expect("freshly decoded dispatch");
+        program.handlers = StdIntrinsicHandlerRegistry::build(&project.std_registry);
+        program.compiler_actions = forwarded_actions::lower_compilers(project)?;
+        Ok(())
+    }
     pub(super) fn installed_dispatch(
         &self,
     ) -> (Arc<methods::MethodDispatchPlan>, Arc<PureAbiProjector>) {
@@ -769,5 +781,20 @@ flow main() -> unit {
             .validate_std_intrinsic(identity)
             .expect_err("entry-unreachable intrinsic must not be checkpoint executable");
         assert!(error.contains("not reachable"), "{error}");
+    }
+}
+
+mod binding_sites {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    type Sites = HashMap<HirExprId, std::sync::Mutex<Option<Box<LastCallBindings>>>>;
+    pub(super) fn serialize<S: serde::Serializer>(sites: &Sites, s: S) -> Result<S::Ok, S::Error> {
+        sites.keys().collect::<Vec<_>>().serialize(s)
+    }
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(d: D) -> Result<Sites, D::Error> {
+        Ok(Vec::<HirExprId>::deserialize(d)?
+            .into_iter()
+            .map(|site| (site, Default::default()))
+            .collect())
     }
 }

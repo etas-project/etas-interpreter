@@ -6,12 +6,13 @@ use etas_types::TypeId;
 
 use super::{RevisionTypeBridgeError as Error, runtime::RuntimeTypeBridge};
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct ActionBridge {
     forward: BTreeMap<ActionRef, Arc<ActionPair>>,
     backward: BTreeMap<ActionRef, Arc<ActionPair>>,
 }
 
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 pub(crate) struct ActionPair {
     pub original: ActionRef,
     pub candidate: ActionRef,

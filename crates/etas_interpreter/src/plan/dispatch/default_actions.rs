@@ -1,7 +1,7 @@
 use super::*;
 use etas_std::{LoweringHint, StdDecl};
 
-#[derive(Clone, Debug, PartialEq, Eq)]
+#[derive(serde::Serialize, serde::Deserialize, Clone, Debug, PartialEq, Eq)]
 pub(crate) struct CheckedDefaultAction {
     pub invocation: etas_effects::Effect,
     pub payload: Vec<usize>,

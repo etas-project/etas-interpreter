@@ -49,7 +49,7 @@ pub(super) struct CallablePlan {
     pub diagnostics: Vec<Diagnostic>,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, Copy)]
 pub(crate) enum ExpressionRoute {
     Literal,
     Shallow,
@@ -75,14 +75,21 @@ pub(crate) struct PreparedProgram {
     pub(super) materializations: Mutex<HashMap<TypeId, (GenericBindings, TypeId)>>,
     pub(super) enum_layouts: Mutex<super::code::CheckedValueTypes>,
     pub(super) sequence_layouts: Mutex<HashSet<TypeId>>,
-    pub(crate) expression_routes: HashMap<etas_hir::HirExprId, ExpressionRoute>,
-    pub(crate) numeric_literals: super::arithmetic::NumericLiterals,
-    pub(crate) arithmetic:
-        std::collections::HashMap<etas_hir::HirItemId, super::arithmetic::ArithmeticBody>,
     pub(super) standard_library: Option<Arc<super::standard_library::StandardLibraryProgram>>,
     pub(super) program: etas_frontend::CheckedProject,
     pub(super) known_std_types: crate::eval::KnownStdTypes,
     pub(super) spec_facts: Arc<std::sync::OnceLock<etas_types::SpecFacts>>,
+    pub(super) layouts: Arc<PreparedLayouts>,
+    pub(super) residual: Arc<super::residual::PreparedResidualPlans>,
+    pub(super) diagnostics: Vec<Diagnostic>,
+}
+
+#[derive(Debug, serde::Serialize, serde::Deserialize)]
+pub(crate) struct PreparedLayouts {
+    pub(crate) expression_routes: HashMap<etas_hir::HirExprId, ExpressionRoute>,
+    pub(crate) numeric_literals: super::arithmetic::NumericLiterals,
+    pub(crate) arithmetic:
+        std::collections::HashMap<etas_hir::HirItemId, super::arithmetic::ArithmeticBody>,
     pub(super) slots: Arc<SlotLayoutTable>,
     pub(super) frames: Arc<super::frames::FrameLayoutTable>,
     pub(super) arguments: Arc<super::arguments::CallArgumentTable>,
@@ -92,8 +99,13 @@ pub(crate) struct PreparedProgram {
     pub(super) globals: Arc<GlobalTable>,
     pub(super) resources: Arc<ResourceTable>,
     pub(super) dispatch: IntrinsicDispatchTable,
-    pub(super) residual: Arc<super::residual::PreparedResidualPlans>,
-    pub(super) diagnostics: Vec<Diagnostic>,
+}
+
+impl std::ops::Deref for PreparedProgram {
+    type Target = PreparedLayouts;
+    fn deref(&self) -> &Self::Target {
+        &self.layouts
+    }
 }
 
 impl PreparedProgram {

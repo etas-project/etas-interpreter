@@ -90,8 +90,9 @@ type WitnessTable = HashMap<WitnessKey, PreparedWitness>;
 
 /// A consumer can extend the installed SDK with new types and implementations.
 /// Resolve against that immutable linked revision once per concrete receiver.
-#[derive(Debug)]
+#[derive(serde::Serialize, serde::Deserialize, Debug)]
 struct LinkedWitnesses {
+    #[serde(with = "receiver_slots")]
     receivers: Vec<OnceLock<Result<WitnessTable, String>>>,
     requirements: HashMap<RequirementKey, etas_types::SpecMethodFact>,
     specs: etas_types::SpecFacts,
@@ -821,4 +822,42 @@ fn validate_signature(
         );
     }
     Ok(())
+}
+
+mod receiver_slots {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    pub(super) fn serialize<S: serde::Serializer>(
+        slots: &[OnceLock<Result<WitnessTable, String>>],
+        s: S,
+    ) -> Result<S::Ok, S::Error> {
+        slots.len().serialize(s)
+    }
+    pub(super) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        d: D,
+    ) -> Result<Vec<OnceLock<Result<WitnessTable, String>>>, D::Error> {
+        Ok((0..usize::deserialize(d)?)
+            .map(|_| OnceLock::new())
+            .collect())
+    }
+}
+
+pub(super) mod run_image {
+    use super::*;
+    use serde::{Deserialize, Serialize};
+    use std::sync::Arc;
+    pub(crate) fn serialize<S: serde::Serializer>(
+        plan: &Arc<MethodDispatchPlan>,
+        serializer: S,
+    ) -> Result<S::Ok, S::Error> {
+        (plan.as_ref(), &plan.linked).serialize(serializer)
+    }
+    pub(crate) fn deserialize<'de, D: serde::Deserializer<'de>>(
+        deserializer: D,
+    ) -> Result<Arc<MethodDispatchPlan>, D::Error> {
+        let (mut plan, linked) =
+            <(MethodDispatchPlan, Option<Box<LinkedWitnesses>>)>::deserialize(deserializer)?;
+        plan.linked = linked;
+        Ok(Arc::new(plan))
+    }
 }

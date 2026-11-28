@@ -10,14 +10,17 @@ use std::collections::{BTreeMap, HashMap};
 
 use super::RevisionTypeBridgeError as Error;
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct RuntimeTypeBridge {
     pub forward: Direction,
     pub backward: Direction,
 }
 
+#[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct Direction {
     correspondence: NativeTypeCorrespondence,
-    pub(super) target_types: TypeLookupIndex,
+    #[serde(skip)]
+    pub(super) target_types: std::sync::OnceLock<TypeLookupIndex>,
     checked_types: HashMap<TypeId, Option<TypeId>>,
     relocation_types: HashMap<TypeId, TypeId>,
     scoped_types: BTreeMap<(etas_code::descriptor::GenericOwner, TypeId), Option<TypeId>>,
@@ -44,7 +47,6 @@ impl Direction {
         target: &DefinitionCatalog,
         checked: &BTreeMap<(etas_code::descriptor::GenericOwner, TypeId), Option<TypeId>>,
     ) -> Result<Self, Error> {
-        let to = target.checked_program();
         let mut scoped_types = checked.clone();
         let mut effect_parameters = BTreeMap::<_, HashMap<_, _>>::new();
         for (library, owner, reverse) in [
@@ -182,7 +184,7 @@ impl Direction {
             scoped_types,
             effect_parameters,
             correspondence,
-            target_types: TypeLookupIndex::new(&to.type_store),
+            target_types: Default::default(),
             checked_types,
             relocation_types,
         })
@@ -208,7 +210,9 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &self.relocation_types,
-            target_types: &self.target_types,
+            target_types: self
+                .target_types
+                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
             effect_names: self.correspondence.effect_names(),
         })
         .substitute(ty)
@@ -241,7 +245,9 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &declarations,
-            target_types: &self.target_types,
+            target_types: self
+                .target_types
+                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
             effect_names: self.correspondence.effect_names(),
         })
         .with_relocated_effect_parameters(self.effect_parameters.get(scope).unwrap_or(&empty))
@@ -259,7 +265,9 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &self.relocation_types,
-            target_types: &self.target_types,
+            target_types: self
+                .target_types
+                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
             effect_names: self.correspondence.effect_names(),
         })
         .substitute_effect_row(row)
@@ -289,7 +297,9 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &declarations,
-            target_types: &self.target_types,
+            target_types: self
+                .target_types
+                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
             effect_names: self.correspondence.effect_names(),
         })
         .with_relocated_effect_parameters(effect_parameters)
