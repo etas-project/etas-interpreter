@@ -210,6 +210,7 @@ impl<'a> EvalContext<'a> {
                 .hir
                 .item_annotations
                 .get(&method)
+                .filter(|_| method != item)
                 .cloned()
                 .unwrap_or_default(),
         );

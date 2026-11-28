@@ -312,10 +312,7 @@ impl EvalContext<'_> {
                 tool_choice: model_policy.tool_choice.clone(),
                 response_schema,
                 policy_ref: model_policy.policy_ref.clone(),
-                options: crate::orchestration::bounded_model_options(
-                    model_policy.options.clone(),
-                    &budget,
-                ),
+                options: model_policy.options.clone(),
                 authority: self.host_authority(),
                 trace: self.host_trace(),
                 budget,

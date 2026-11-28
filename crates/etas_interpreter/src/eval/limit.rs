@@ -483,16 +483,15 @@ impl<'a> EvalContext<'a> {
     ) -> Result<(), ExecutionFault> {
         match (&limit.kind, &limit.value) {
             (StdLimitKind::Tokens, RuntimeLimitValue::Count(value)) => {
-                policy.options.max_output_tokens = Some(
-                    policy
-                        .options
-                        .max_output_tokens
-                        .map_or(*value, |current| current.min(*value)),
-                );
                 set_token_budget(&mut policy.budget, *value);
             }
             (StdLimitKind::ContextTokens, RuntimeLimitValue::Count(value)) => {
-                set_token_budget(&mut policy.budget, *value);
+                policy.options.max_context_tokens = Some(
+                    policy
+                        .options
+                        .max_context_tokens
+                        .map_or(*value, |current| current.min(*value)),
+                );
             }
             (StdLimitKind::WallTime, RuntimeLimitValue::DurationMillis(value)) => {
                 let budget = policy.budget.get_or_insert_with(Budget::default);

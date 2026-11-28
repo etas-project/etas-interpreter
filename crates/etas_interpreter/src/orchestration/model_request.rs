@@ -52,27 +52,13 @@ impl ModelRequestSnapshot {
             tool_choice: self.tool_choice,
             response_schema: self.response_schema,
             policy_ref: self.policy_ref,
-            options: bounded_model_options(self.options, &budget),
+            options: self.options,
             authority: current.authority.clone(),
             trace: current.trace.clone(),
             // Scoped limits remain bounded by the current run-owned ledger.
             budget,
         })
     }
-}
-
-pub(crate) fn bounded_model_options(
-    mut options: ModelOptions,
-    budget: &etas_host::ExecutionBudget,
-) -> ModelOptions {
-    if let Some(tokens) = budget.limits().tokens {
-        options.max_output_tokens = Some(
-            options
-                .max_output_tokens
-                .map_or(tokens.max_tokens, |limit| limit.min(tokens.max_tokens)),
-        );
-    }
-    options
 }
 
 #[cfg(test)]
@@ -113,7 +99,7 @@ mod tests {
         assert_eq!(restored.id, HostRequestId(17));
         assert_eq!(restored.model.0, "current-model");
         assert_eq!(restored.authority, current.authority);
-        assert_eq!(restored.options.max_output_tokens, Some(7));
+        assert_eq!(restored.options.max_output_tokens, Some(23));
         assert_eq!(restored.budget.limits(), current.budget.limits());
         let reservation = restored.budget.reserve_tokens(3).unwrap();
         restored.budget.settle_tokens(reservation, 2).unwrap();

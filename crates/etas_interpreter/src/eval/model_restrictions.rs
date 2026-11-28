@@ -9,6 +9,7 @@ use crate::{api::ModelExecutionPolicy, control::ExecutionFault};
 pub(crate) struct AgentModelRestrictions {
     locked_model: Option<(Option<ModelProviderId>, ModelName)>,
     max_output_tokens: Option<u64>,
+    max_context_tokens: Option<u64>,
     max_tool_rounds: usize,
     pub(crate) policy_ref: Option<HostValue>,
     pub(crate) policy: PolicyContext,
@@ -21,6 +22,7 @@ impl AgentModelRestrictions {
                 .model_locked
                 .then(|| (policy.provider.clone(), policy.model.clone())),
             max_output_tokens: policy.options.max_output_tokens,
+            max_context_tokens: policy.options.max_context_tokens,
             max_tool_rounds: policy.max_tool_rounds,
             policy_ref: policy.policy_ref.clone(),
             policy: context,
@@ -59,6 +61,14 @@ impl AgentModelRestrictions {
                 policy
                     .options
                     .max_output_tokens
+                    .map_or(maximum, |current| current.min(maximum)),
+            );
+        }
+        if let Some(maximum) = self.max_context_tokens {
+            policy.options.max_context_tokens = Some(
+                policy
+                    .options
+                    .max_context_tokens
                     .map_or(maximum, |current| current.min(maximum)),
             );
         }

@@ -81,7 +81,10 @@ pub(in crate::driver) async fn begin_authorized<'host>(
         )));
         return ModelDispatchStart::Complete(true);
     }
+    let context_limit = pending.request.options.max_context_tokens;
     let reservation_amount = remaining_tokens
+        .map(|remaining| context_limit.map_or(remaining, |maximum| remaining.min(maximum)))
+        .or(context_limit)
         .or(pending.request.options.max_output_tokens)
         .unwrap_or(0);
     let reservation = match pending.request.budget.reserve_tokens(reservation_amount) {
@@ -182,10 +185,13 @@ pub(in crate::driver) fn finish(
                         "model usage token count overflowed",
                     )
                 }),
-                None if remaining_tokens.is_some() || remaining_cost.is_some() => {
+                None if remaining_tokens.is_some()
+                    || remaining_cost.is_some()
+                    || pending.request.options.max_context_tokens.is_some() =>
+                {
                     Err(HostError::new(
                         HostErrorCode::InvalidResponse,
-                        "model response omitted usage required by the run-owned execution budget",
+                        "model response omitted usage required by the execution token or cost limits",
                     ))
                 }
                 None => Ok(None),
@@ -208,6 +214,19 @@ pub(in crate::driver) fn finish(
                 },
                 _ => Ok(None),
             };
+            let context_exceeded =
+                pending
+                    .request
+                    .options
+                    .max_context_tokens
+                    .is_some_and(|maximum| {
+                        consumed
+                            .as_ref()
+                            .ok()
+                            .copied()
+                            .flatten()
+                            .is_some_and(|used| used > maximum)
+                    });
             let accounting = consumed.and_then(|consumed| {
                 cost_settlement.and_then(|cost| match consumed {
                     Some(consumed) => {
@@ -223,6 +242,10 @@ pub(in crate::driver) fn finish(
                 })
             });
             match accounting {
+                Ok(()) if context_exceeded => Err(HostError::new(
+                    HostErrorCode::BudgetExceeded,
+                    "model request exceeded its context token limit",
+                )),
                 Ok(()) => Ok(response),
                 Err(error) => {
                     let release = pending

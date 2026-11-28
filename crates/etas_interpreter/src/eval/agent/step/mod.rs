@@ -153,7 +153,7 @@ impl EvalContext<'_> {
             })?,
             None => self.host_budget(),
         };
-        let mut options = crate::orchestration::bounded_model_options(policy.options, &budget);
+        let mut options = policy.options;
         options.attempt_policy = ModelAttemptPolicy::Single;
         Ok(PendingModel {
             request: ModelRequest {

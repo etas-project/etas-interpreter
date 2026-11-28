@@ -1283,9 +1283,9 @@ flow main() -> string {
     assert!(result.value().cloned().is_none());
     assert!(
         result.diagnostics.iter().any(|diagnostic| {
-            diagnostic
-                .message
-                .contains("model response omitted usage required by the run-owned execution budget")
+            diagnostic.message.contains(
+                "model response omitted usage required by the execution token or cost limits",
+            )
         }),
         "{:?}",
         result.diagnostics
@@ -1687,7 +1687,7 @@ flow main(input: string) -> string {
         etas_host::ModelName("annotated-model".to_owned())
     );
     assert_eq!(request.tools.len(), 1);
-    assert_eq!(request.options.max_output_tokens, Some(31));
+    assert_eq!(request.options.max_output_tokens, None);
     assert_eq!(
         request.budget.limits().tokens,
         Some(TokenBudget { max_tokens: 31 })
@@ -1782,6 +1782,7 @@ agent Writer(input: string) -> string ![] {
   return perform infer(Prompt.new().user(Public(input)));
 }
 
+
 flow main(input: string) -> string {
   return Writer.run(input);
 }
@@ -1806,7 +1807,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
     let request = requests.first().expect("model request should be sent");
-    assert_eq!(request.options.max_output_tokens, Some(17));
+    assert_eq!(request.options.max_output_tokens, None);
     assert_eq!(
         request.budget.limits().tokens,
         Some(TokenBudget { max_tokens: 17 })
@@ -1853,7 +1854,7 @@ flow main(input: string) -> string {
     assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
     let requests = host.model_requests();
     let request = requests.first().expect("model request should be sent");
-    assert_eq!(request.options.max_output_tokens, Some(23));
+    assert_eq!(request.options.max_output_tokens, None);
     assert_eq!(
         request.budget.limits().tokens,
         Some(TokenBudget { max_tokens: 23 })
@@ -1921,7 +1922,7 @@ flow main() -> string { return "hello" ~> choose(); }
     assert!(resumed.checkpoints.is_empty());
     let requests = resumed_host.model_requests();
     assert_eq!(requests.len(), 1);
-    assert_eq!(requests[0].options.max_output_tokens, Some(23));
+    assert_eq!(requests[0].options.max_output_tokens, None);
     assert_eq!(
         requests[0].budget.limits().tokens,
         Some(TokenBudget { max_tokens: 23 })
@@ -2524,4 +2525,61 @@ async fn autonomous_main_is_cancelled_and_joined_when_its_owner_exits() {
         })
         .expect("automatic main request");
     assert!(result.events.iter().any(|event| matches!(event, WorkflowEvent::AgentRequestSettled { request: settled, committed: false, .. } if *settled == request)));
+}
+
+#[tokio::test(flavor = "current_thread")]
+async fn cumulative_context_and_output_token_limits_are_independent() {
+    let checked = checked_project(
+        r#"
+module app.main;
+import std.agent.prompt.Prompt;
+import std.runtime.limits.{Tokens, ContextTokens};
+agent Writer(input: string) -> string ![] {
+    return perform infer(Prompt.new().user(Public(input)));
+}
+@limits([Tokens(536870912), ContextTokens(1000000)])
+flow main() -> string {
+    var result = "";
+    for input in ["one", "two", "three"] { result = Writer(input); }
+    return result;
+}
+"#,
+    );
+    let host = FakeHost::new(availability(&[HostRequirementKind::Agentic]));
+    for text in ["first", "second", "third"] {
+        host.seed_model_response_text_with_usage(
+            text,
+            Some(etas_host::ModelUsage {
+                input_tokens: Some(100_000),
+                output_tokens: Some(20),
+                cost: None,
+            }),
+        );
+    }
+    let mut options = RunOptions::default();
+    options.model_policy.options.max_output_tokens = Some(131_072);
+    let result = Interpreter
+        .run_checked(
+            &checked,
+            EntryPoint {
+                item: checked.entry.unwrap(),
+            },
+            vec![],
+            &host,
+            options,
+        )
+        .await
+        .unwrap();
+    assert!(result.diagnostics.is_empty(), "{:?}", result.diagnostics);
+    assert_eq!(result.value(), Some(&InterpValue::String("third".into())));
+    let requests = host.model_requests();
+    assert_eq!(requests.len(), 3);
+    for request in &requests {
+        assert_eq!(request.options.max_output_tokens, Some(131_072));
+        assert_eq!(request.options.max_context_tokens, Some(1_000_000));
+        assert_eq!(
+            request.budget.remaining_tokens().unwrap(),
+            Some(536_870_912 - 300_060)
+        );
+    }
 }

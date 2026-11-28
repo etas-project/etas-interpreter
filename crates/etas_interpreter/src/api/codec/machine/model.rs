@@ -110,6 +110,7 @@ pub(crate) fn model_options_snapshot(options: &etas_host::ModelOptions) -> Value
         },
         "temperature": options.temperature,
         "max_output_tokens": options.max_output_tokens,
+        "max_context_tokens": options.max_context_tokens,
         "metadata": options.metadata.iter().map(|(key, value)| json!({
             "key": key,
             "value": crate::api::codec::host_value_json(value),
@@ -139,6 +140,15 @@ pub(crate) fn model_options_from_snapshot(
         ),
         None => return Err("machine model options are missing `max_output_tokens`".to_owned()),
     };
+    // Older snapshots predate the independent per-request context bound.
+    let max_context_tokens = match value.get("max_context_tokens") {
+        None | Some(Value::Null) => None,
+        Some(value) => Some(
+            value
+                .as_u64()
+                .ok_or_else(|| "machine max context tokens must be a u64".to_owned())?,
+        ),
+    };
     let metadata = required(value, "metadata")?
         .as_array()
         .ok_or_else(|| "machine model metadata must be an array".to_owned())?
@@ -159,6 +169,7 @@ pub(crate) fn model_options_from_snapshot(
         },
         temperature,
         max_output_tokens,
+        max_context_tokens,
         metadata,
     })
 }

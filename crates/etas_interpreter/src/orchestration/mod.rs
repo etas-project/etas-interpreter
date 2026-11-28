@@ -66,6 +66,6 @@ pub(crate) use checkpoint::{
 pub(crate) use identity::CHECKPOINT_ARTIFACT_SCHEMA;
 pub use ledger::{CpuWorkerId, WorkflowEvent, WorkflowEventLayer, WorkflowStepId};
 mod model_request;
-pub(crate) use model_request::{ModelRequestSnapshot, bounded_model_options};
+pub(crate) use model_request::ModelRequestSnapshot;
 
 pub(crate) use suspension::HandlerActivationSnapshot;

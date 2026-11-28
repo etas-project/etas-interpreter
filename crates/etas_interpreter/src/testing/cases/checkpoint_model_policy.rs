@@ -4,16 +4,16 @@ const NESTED: &str = r#"
 module app.main;
 import std.agent.prompt.Prompt;
 import std.runtime.checkpoint;
-import std.runtime.limits.Tokens;
+import std.runtime.limits.{Tokens, ContextTokens};
 agent Writer(input: string) -> string ![] {
     return perform infer(Prompt.new().user(Public(input)));
 }
-@limits([Tokens(11)])
+@limits([Tokens(11), ContextTokens(2)])
 flow inner(input: string) -> string {
     checkpoint("inner");
     return Writer(input);
 }
-@limits([Tokens(23)])
+@limits([Tokens(23), ContextTokens(3)])
 flow outer(input: string) -> string {
     let result = input ~> inner;
     checkpoint("outer");
@@ -35,7 +35,13 @@ fn model_host() -> FakeHost {
 fn token_limits(host: &FakeHost) -> Vec<Option<u64>> {
     host.model_requests()
         .iter()
-        .map(|request| request.options.max_output_tokens)
+        .map(|request| {
+            request
+                .budget
+                .limits()
+                .tokens
+                .map(|tokens| tokens.max_tokens)
+        })
         .collect()
 }
 
@@ -86,6 +92,18 @@ async fn checkpoint_inside_nested_limited_stages_preserves_the_active_and_outer_
         .unwrap();
     assert!(first.diagnostics.is_empty(), "{:?}", first.diagnostics);
     assert_eq!(token_limits(&host), vec![Some(11), Some(23)]);
+    assert_eq!(
+        host.model_requests()
+            .iter()
+            .map(|request| request.options.max_context_tokens)
+            .collect::<Vec<_>>(),
+        vec![Some(2), Some(3)]
+    );
+    assert!(
+        host.model_requests()
+            .iter()
+            .all(|request| request.options.max_output_tokens.is_none())
+    );
     assert_eq!(first.checkpoints.len(), 2);
     for (index, expected) in [(0, vec![Some(11), Some(23)]), (1, vec![Some(23)])] {
         for portable in [false, true] {
