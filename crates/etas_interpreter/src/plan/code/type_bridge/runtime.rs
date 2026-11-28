@@ -19,15 +19,24 @@ pub(super) struct RuntimeTypeBridge {
 #[derive(serde::Serialize, serde::Deserialize)]
 pub(super) struct Direction {
     correspondence: NativeTypeCorrespondence,
-    #[serde(skip)]
-    pub(super) target_types: std::sync::OnceLock<TypeLookupIndex>,
+    #[serde(skip, default = "empty_lookup")]
+    pub(super) target_types: TypeLookupIndex,
     checked_types: HashMap<TypeId, Option<TypeId>>,
     relocation_types: HashMap<TypeId, TypeId>,
     scoped_types: BTreeMap<(etas_code::descriptor::GenericOwner, TypeId), Option<TypeId>>,
     effect_parameters: BTreeMap<etas_code::descriptor::GenericOwner, HashMap<String, String>>,
 }
 
+fn empty_lookup() -> TypeLookupIndex {
+    TypeLookupIndex::new(&Default::default())
+}
+
 impl RuntimeTypeBridge {
+    pub(super) fn bind_indexes(&mut self, original: &CheckedProgram, candidate: &CheckedProgram) {
+        self.forward.target_types = TypeLookupIndex::new(&candidate.type_store);
+        self.backward.target_types = TypeLookupIndex::new(&original.type_store);
+    }
+
     pub fn new(
         original: &DefinitionCatalog,
         candidate: &DefinitionCatalog,
@@ -184,7 +193,7 @@ impl Direction {
             scoped_types,
             effect_parameters,
             correspondence,
-            target_types: Default::default(),
+            target_types: TypeLookupIndex::new(&target.checked_program().type_store),
             checked_types,
             relocation_types,
         })
@@ -210,9 +219,7 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &self.relocation_types,
-            target_types: self
-                .target_types
-                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
+            target_types: &self.target_types,
             effect_names: self.correspondence.effect_names(),
         })
         .substitute(ty)
@@ -245,9 +252,7 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &declarations,
-            target_types: self
-                .target_types
-                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
+            target_types: &self.target_types,
             effect_names: self.correspondence.effect_names(),
         })
         .with_relocated_effect_parameters(self.effect_parameters.get(scope).unwrap_or(&empty))
@@ -265,9 +270,7 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &self.relocation_types,
-            target_types: self
-                .target_types
-                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
+            target_types: &self.target_types,
             effect_names: self.correspondence.effect_names(),
         })
         .substitute_effect_row(row)
@@ -297,9 +300,7 @@ impl Direction {
             source: &source.type_store,
             target: &target.type_store,
             declaration_types: &declarations,
-            target_types: self
-                .target_types
-                .get_or_init(|| TypeLookupIndex::new(&target.type_store)),
+            target_types: &self.target_types,
             effect_names: self.correspondence.effect_names(),
         })
         .with_relocated_effect_parameters(effect_parameters)

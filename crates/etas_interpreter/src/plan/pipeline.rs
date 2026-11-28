@@ -159,7 +159,7 @@ pub(super) fn prepare_program_with_layouts(
         )]);
     };
     let numeric_literals = super::arithmetic::numeric_literals(project);
-    let layouts = Arc::new(super::types::PreparedLayouts {
+    let layouts = super::types::PreparedLayouts {
         expression_routes: expression_routes(project),
         arithmetic: super::arithmetic::prepare(project, &numeric_literals),
         numeric_literals,
@@ -172,7 +172,7 @@ pub(super) fn prepare_program_with_layouts(
         globals: Arc::new(globals),
         resources: Arc::new(resources),
         dispatch,
-    });
+    };
     let prepared = bind_layouts(project, layouts, residual, context.diagnostics)?;
     if let Some(cache) = etas_frontend::RunPreparationCache::for_owner(project)
         && cache.can_write()
@@ -225,12 +225,12 @@ pub(super) fn restore_layouts(
         return Err(context.diagnostics);
     }
     let residual = context.residual.expect("residual binding completed");
-    bind_layouts(project, Arc::new(layouts), residual, context.diagnostics)
+    bind_layouts(project, layouts, residual, context.diagnostics)
 }
 
 fn bind_layouts(
     project: &CheckedProject,
-    layouts: Arc<super::types::PreparedLayouts>,
+    layouts: super::types::PreparedLayouts,
     residual: super::residual::PreparedResidualPlans,
     diagnostics: Vec<Diagnostic>,
 ) -> Result<Arc<PreparedProgram>, Vec<Diagnostic>> {

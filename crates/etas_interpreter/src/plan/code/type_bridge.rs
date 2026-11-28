@@ -45,7 +45,7 @@ pub struct RevisionTypeBridge {
     standard_library: Option<std::sync::Arc<etas_frontend::StandardLibrary>>,
     original: CheckedProgram,
     candidate: CheckedProgram,
-    pub(crate) tables: std::sync::Arc<BridgeTables>,
+    pub(crate) tables: BridgeTables,
 }
 
 #[derive(serde::Serialize, serde::Deserialize)]
@@ -79,8 +79,9 @@ impl RevisionTypeBridge {
     pub(crate) fn from_installed_tables(
         owner: &CheckedProgram,
         library: &std::sync::Arc<etas_frontend::StandardLibrary>,
-        tables: std::sync::Arc<BridgeTables>,
+        mut tables: BridgeTables,
     ) -> Self {
+        tables.runtime_types.bind_indexes(owner, &library.program);
         Self {
             original: owner.clone(),
             candidate: library.program.clone(),
@@ -266,7 +267,7 @@ impl RevisionTypeBridge {
             standard_library: None,
             original: original.checked_program().clone(),
             candidate: compiled.checked_program().clone(),
-            tables: std::sync::Arc::new(BridgeTables {
+            tables: BridgeTables {
                 forward,
                 backward,
                 original_callables: original
@@ -287,7 +288,7 @@ impl RevisionTypeBridge {
                 },
                 runtime_types,
                 actions,
-            }),
+            },
         })
     }
 
@@ -338,21 +339,9 @@ impl RevisionTypeBridge {
         program: &CheckedProgram,
     ) -> Option<&etas_types::ty::TypeLookupIndex> {
         if std::sync::Arc::ptr_eq(program, &self.original) {
-            Some(
-                self.tables
-                    .runtime_types
-                    .backward
-                    .target_types
-                    .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&program.type_store)),
-            )
+            Some(&self.tables.runtime_types.backward.target_types)
         } else if std::sync::Arc::ptr_eq(program, &self.candidate) {
-            Some(
-                self.tables
-                    .runtime_types
-                    .forward
-                    .target_types
-                    .get_or_init(|| etas_types::ty::TypeLookupIndex::new(&program.type_store)),
-            )
+            Some(&self.tables.runtime_types.forward.target_types)
         } else {
             None
         }

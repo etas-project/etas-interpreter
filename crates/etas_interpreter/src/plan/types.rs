@@ -79,7 +79,7 @@ pub(crate) struct PreparedProgram {
     pub(super) program: etas_frontend::CheckedProject,
     pub(super) known_std_types: crate::eval::KnownStdTypes,
     pub(super) spec_facts: Arc<std::sync::OnceLock<etas_types::SpecFacts>>,
-    pub(super) layouts: Arc<PreparedLayouts>,
+    pub(super) layouts: PreparedLayouts,
     pub(super) residual: Arc<super::residual::PreparedResidualPlans>,
     pub(super) diagnostics: Vec<Diagnostic>,
 }
